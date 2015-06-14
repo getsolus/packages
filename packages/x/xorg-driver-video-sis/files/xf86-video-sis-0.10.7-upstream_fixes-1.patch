@@ -1,0 +1,125 @@
+Submitted By:            Armin K. <krejzi at email dot com>
+Date:                    2013-03-10
+Initial Package Version: 0.10.7
+Upstream Status:         Partialy fixed upstream.
+Origin:                  Upstream VCS and ArchLinux package repository.
+Description:             Fixes building with Xorg Server 1.14.0.
+
+--- a/src/sis_driver.c	2012-07-17 07:20:28.000000000 +0200
++++ b/src/sis_driver.c	2013-03-10 15:02:25.575038458 +0100
+@@ -57,7 +57,6 @@
+ #include "fb.h"
+ #include "micmap.h"
+ #include "mipointer.h"
+-#include "mibstore.h"
+ #include "edid.h"
+ 
+ #define SIS_NEED_inSISREG
+@@ -94,6 +93,10 @@
+ #include "dri.h"
+ #endif
+ 
++#ifndef DEFAULT_DPI
++#define DEFAULT_DPI 96
++#endif
++
+ /*
+  * LookupWindow was removed with video abi 11.
+  */
+@@ -7344,7 +7347,11 @@
+         if(pSiSEnt->MapCountIOBase) {
+ 	    pSiSEnt->MapCountIOBase--;
+ 	    if((pSiSEnt->MapCountIOBase == 0) || (pSiSEnt->forceUnmapIOBase)) {
++#ifndef XSERVER_LIBPCIACCESS
+ 		xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiSEnt->IOBase, (pSiS->mmioSize * 1024));
++#else
++	        pci_device_unmap_range(pSiS->PciInfo, pSiSEnt->IOBase, (pSiS->mmioSize * 1024));
++#endif
+ 		pSiSEnt->IOBase = NULL;
+ 		pSiSEnt->MapCountIOBase = 0;
+ 		pSiSEnt->forceUnmapIOBase = FALSE;
+@@ -7355,7 +7362,11 @@
+ 	if(pSiSEnt->MapCountIOBaseDense) {
+ 	    pSiSEnt->MapCountIOBaseDense--;
+ 	    if((pSiSEnt->MapCountIOBaseDense == 0) || (pSiSEnt->forceUnmapIOBaseDense)) {
++#ifndef XSERVER_LIBPCIACCESS
+ 		xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiSEnt->IOBaseDense, (pSiS->mmioSize * 1024));
++#else
++		pci_device_unmap_range(pSiS->PciInfo, (pointer)pSiSEnt->IOBaseDense, (pSiS->mmioSize * 1024));
++#endif
+ 		pSiSEnt->IOBaseDense = NULL;
+ 		pSiSEnt->MapCountIOBaseDense = 0;
+ 		pSiSEnt->forceUnmapIOBaseDense = FALSE;
+@@ -7366,7 +7377,11 @@
+ 	if(pSiSEnt->MapCountFbBase) {
+ 	    pSiSEnt->MapCountFbBase--;
+ 	    if((pSiSEnt->MapCountFbBase == 0) || (pSiSEnt->forceUnmapFbBase)) {
++#ifndef XSERVER_LIBPCIACCESS
+ 		xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiSEnt->RealFbBase, pSiS->FbMapSize);
++#else
++		pci_device_unmap_range(pSiS->PciInfo, (pointer)pSiSEnt->RealFbBase, pSiS->FbMapSize);
++#endif
+ 		pSiSEnt->FbBase = pSiSEnt->RealFbBase = NULL;
+ 		pSiSEnt->MapCountFbBase = 0;
+ 		pSiSEnt->forceUnmapFbBase = FALSE;
+@@ -7376,13 +7391,25 @@
+ 	}
+     } else {
+ #endif
++#ifndef XSERVER_LIBPCIACCESS
+ 	xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiS->IOBase, (pSiS->mmioSize * 1024));
++#else
++	pci_device_unmap_range(pSiS->PciInfo, (pointer)pSiS->IOBase, (pSiS->mmioSize * 1024));
++#endif
+ 	pSiS->IOBase = NULL;
+ #ifdef __alpha__
++#ifndef XSERVER_LIBPCIACCESS
+ 	xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiS->IOBaseDense, (pSiS->mmioSize * 1024));
++#else
++	pci_device_unmap_range(pSiS->PciInfo, (pointer)pSiS->IOBaseDense, (pSiS->mmioSize * 1024));
++#endif
+ 	pSiS->IOBaseDense = NULL;
+ #endif
++#ifndef XSERVER_LIBPCIACCESS
+ 	xf86UnMapVidMem(pScrn->scrnIndex, (pointer)pSiS->RealFbBase, pSiS->FbMapSize);
++#else
++	pci_device_unmap_range(pSiS->PciInfo, (pointer)pSiS->RealFbBase, pSiS->FbMapSize);
++#endif
+ 	pSiS->FbBase = pSiS->RealFbBase = NULL;
+ #ifdef SISDUALHEAD
+     }
+@@ -8859,7 +8886,6 @@
+     }
+     pSiS->SiSFastVidCopyDone = TRUE;
+ 
+-    miInitializeBackingStore(pScreen);
+     xf86SetBackingStore(pScreen);
+     xf86SetSilkenMouse(pScreen);
+ 
+@@ -9352,7 +9378,15 @@
+      }
+      if(doit) {
+ 	sigstate = xf86BlockSIGIO();
+-#if GET_ABI_MAJOR(ABI_XINPUT_VERSION) >= 15
++#if GET_ABI_MAJOR(ABI_XINPUT_VERSION) >= 18
++        {
++            double dx = x, dy = y;
++            miPointerSetPosition(inputInfo.pointer, Absolute, &dx, &dy,
++                NULL, NULL);
++            x = (int)dx;
++            y = (int)dy;
++        }
++#elif GET_ABI_MAJOR(ABI_XINPUT_VERSION) >= 15
+         {
+             double dx = x, dy = y;
+             miPointerSetPosition(inputInfo.pointer, Absolute, &dx, &dy);
+--- a/src/sis.h	2012-07-17 07:20:28.000000000 +0200
++++ b/src/sis.h	2013-03-10 15:02:25.571705065 +0100
+@@ -75,7 +75,6 @@
+ 
+ #include "compiler.h"
+ #include "xf86Pci.h"
+-#include "xf86Priv.h"
+ #include "xf86_OSproc.h"
+ #if GET_ABI_MAJOR(ABI_VIDEODRV_VERSION) < 6
+ #include "xf86Resources.h"
