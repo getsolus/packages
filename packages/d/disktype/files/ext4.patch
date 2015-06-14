@@ -1,0 +1,112 @@
+
+  We first get some sane ext3 poperties and try to match the invert
+of these with the filesystems related supoerblock sections. If we find
+something not related to ext3 and have journal, we guess the filesystem
+is of ext4 type. Then by checking EXT2_FLAGS_TEST_FILESYS in s_flags
+section we distinguish ext4 and ext4dev. There may be a better way but
+this is the way current e2fsprogs blkid probe does it. Ext4 sections
+and flags are taken from the kernel headers of 2.6.25 where ext4 is
+still marked as dev.
+
+                    Onur Küçük <onur@pardus.org.tr>
+
+
+diff -Nur disktype-9-old/detect.c disktype-9/detect.c
+--- disktype-9-old/detect.c	2009-03-09 12:38:20.000000000 +0200
++++ disktype-9/detect.c	2009-03-09 12:38:33.000000000 +0200
+@@ -59,7 +59,7 @@
+ void detect_udf(SECTION *section, int level);
+ 
+ /* in linux.c */
+-void detect_ext23(SECTION *section, int level);
++void detect_ext234(SECTION *section, int level);
+ void detect_reiser(SECTION *section, int level);
+ void detect_reiser4(SECTION *section, int level);
+ void detect_linux_raid(SECTION *section, int level);
+@@ -136,7 +136,7 @@
+   detect_udf,
+   detect_cdrom_misc,
+   detect_iso,
+-  detect_ext23,
++  detect_ext234,
+   detect_reiser,
+   detect_reiser4,
+   detect_linux_raid,
+diff -Nur disktype-9-old/linux.c disktype-9/linux.c
+--- disktype-9-old/linux.c	2009-03-09 12:38:20.000000000 +0200
++++ disktype-9/linux.c	2009-03-09 12:38:29.000000000 +0200
+@@ -28,10 +28,43 @@
+ #include "global.h"
+ 
+ /*
+- * ext2/ext3 file system
++ * ext2/ext3/ext4 file system
+  */
+ 
+-void detect_ext23(SECTION *section, int level)
++/* for s_flags */
++#define EXT2_FLAGS_TEST_FILESYS 0x0004
++
++/* for s_feature_compat */
++#define EXT3_FEATURE_COMPAT_HAS_JOURNAL     0x0004
++
++/* for s_feature_ro_compat */
++#define EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER 0x0001
++#define EXT2_FEATURE_RO_COMPAT_LARGE_FILE   0x0002
++#define EXT2_FEATURE_RO_COMPAT_BTREE_DIR    0x0004
++#define EXT4_FEATURE_RO_COMPAT_HUGE_FILE    0x0008
++#define EXT4_FEATURE_RO_COMPAT_GDT_CSUM     0x0010
++#define EXT4_FEATURE_RO_COMPAT_DIR_NLINK    0x0020
++#define EXT4_FEATURE_RO_COMPAT_EXTRA_ISIZE  0x0040
++
++/* for s_feature_incompat */
++#define EXT2_FEATURE_INCOMPAT_FILETYPE      0x0002
++#define EXT3_FEATURE_INCOMPAT_RECOVER       0x0004
++#define EXT3_FEATURE_INCOMPAT_JOURNAL_DEV   0x0008
++#define EXT2_FEATURE_INCOMPAT_META_BG       0x0010
++#define EXT4_FEATURE_INCOMPAT_EXTENTS       0x0040
++#define EXT4_FEATURE_INCOMPAT_64BIT         0x0080
++#define EXT4_FEATURE_INCOMPAT_MMP           0x0100
++#define EXT4_FEATURE_INCOMPAT_FLEX_BG       0x0200
++
++#define EXT3_FEATURE_RO_COMPAT_UNSUPPORTED ~(EXT2_FEATURE_RO_COMPAT_SPARSE_SUPER | \
++                                             EXT2_FEATURE_RO_COMPAT_LARGE_FILE | \
++                                             EXT2_FEATURE_RO_COMPAT_BTREE_DIR)
++
++#define EXT3_FEATURE_INCOMPAT_UNSUPPORTED  ~(EXT2_FEATURE_INCOMPAT_FILETYPE | \
++                                             EXT3_FEATURE_INCOMPAT_RECOVER | \
++                                             EXT2_FEATURE_INCOMPAT_META_BG)
++
++void detect_ext234(SECTION *section, int level)
+ {
+   unsigned char *buf;
+   char s[256];
+@@ -49,8 +82,26 @@
+     }
+     else if (get_le_long(buf + 92) & 0x0004)  /* HAS_JOURNAL flag */
+     {
+-      print_line(level, "Ext3 file system");
+-      print_line(level, "KERNELMODULE: ext3");
++      /* Try to find if it is ext4 by checking if there are any unsupported features of ext3 */
++      if ((get_le_long(buf + 96) & EXT3_FEATURE_INCOMPAT_UNSUPPORTED) && (get_le_long(buf + 100) & EXT3_FEATURE_RO_COMPAT_UNSUPPORTED))
++      {
++        /* We have ext4 but which version */
++        if (get_le_long(buf + 352) & EXT2_FLAGS_TEST_FILESYS)
++        {
++          print_line(level, "Ext4dev file system");
++          print_line(level, "KERNELMODULE: ext4dev");
++        }
++        else
++        {
++          print_line(level, "Ext4 file system");
++          print_line(level, "KERNELMODULE: ext4");
++        }
++      }
++      else
++      {
++        print_line(level, "Ext3 file system");
++        print_line(level, "KERNELMODULE: ext3");
++      }
+     }
+     else
+     {
