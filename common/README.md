@@ -3,7 +3,7 @@ Getting setup
 
     git clone https://git.solus-project.com/common
     ln -sv common/Makefile.common .
-    ln -sv  common/Makefile.toplevel Makefile
+    ln -sv common/Makefile.toplevel Makefile
 
 Cloning all repositories
 ---------------------
