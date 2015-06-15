@@ -66,4 +66,4 @@ evobuild emits the following warning, you will need to initialise the profile:
 This can be remedied as follows (note this may take some time depending on your
 connection)
 
-    sudo evobuild init -p unstable_x86-64
+    sudo evobuild init -p unstable-x86_64
