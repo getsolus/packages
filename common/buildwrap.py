@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 #
-#  USAGE: buildwrap.py start|stop|restart
+#  USAGE: buildwrap.py start|stop|restart -d
 #
 #  This requires the following sudo rule (change "ikey" for your username)
 #       Cmnd_Alias BOT_CMDS = /usr/bin/evobuild
@@ -16,7 +16,9 @@
 import os
 import commands
 import sys
-from daemon import runner
+
+if "-d" in sys.argv:
+    from daemon import runner
 import time
 import shutil
 import subprocess
@@ -182,5 +184,8 @@ class Builder():
 
 if __name__ == "__main__":
     app = Builder()
-    run = runner.DaemonRunner(app)
-    run.do_action()
+    if "-d" in sys.argv:
+        run = runner.DaemonRunner(app)
+        run.do_action()
+    else:
+        app.run()
