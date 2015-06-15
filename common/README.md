@@ -28,7 +28,7 @@ Submitting a build
 -----------------
 Submission is only possible for maintainers. As a maintainer you may freely
 push to your package(s) and initiate builds for them, which will be pushed to
-the unstable repository. You can watch builds at https://build.solus-project.com/
+the unstable repository. You can watch builds at the [Solus Package Build Status Page](https://build.solus-project.com/)
 
 If you're submitting a `package.yml` build, ensure you also commit the `pspec_$ARCH.xml`
 file, as builds are created from git tags.
