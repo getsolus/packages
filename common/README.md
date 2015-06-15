@@ -35,3 +35,18 @@ file, as builds are created from git tags.
 
     cd $somepkg
     make publish
+
+evobuild/setup
+-------------
+
+Solus users will have evobuild already available. *All* builds are performed in
+the unstable repository, so `unstable-x86_64` is the default build profile. If
+evobuild emits the following warning, you will need to initialise the profile:
+
+    Building $pkg for unstable-x86_64
+    Did you forget to init unstable-x86_64 profile?
+
+This can be remedied as follows (note this may take some time depending on your
+connection)
+
+    sudo evobuild init -p unstable_x86-64
