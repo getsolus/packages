@@ -543,7 +543,9 @@ def copy_aux(fname):
         return False
 
     # component.xml..
-    component = os.path.join(dir, "..", "component.xml")
+    component = os.path.join(dir, "component.xml")
+    if not os.path.exists(component):
+        component = os.path.join(dir, "..", "component.xml")
     if os.path.exists(component):
         component = os.path.abspath(component)
         try:
