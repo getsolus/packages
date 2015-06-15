@@ -1,5 +1,7 @@
 #!/bin/bash
 
+git -C common pull --rebase
+
 where=`realpath $(dirname $0)`
 while IFS='' read -r line || [[ -n $line ]]; do
     pname=`basename ${line}`
