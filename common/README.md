@@ -36,6 +36,20 @@ file, as builds are created from git tags.
     cd $somepkg
     make publish
 
+Maintainership
+-------------
+Note that the infrastructure (including git pushes) is entirely locked
+to your public key. Pushing changes is not possible unless you have maintainer
+access. The same is also true of `make publish`.
+
+To request maintainer rights for a repository, it is expect that some level
+of contribution/maintainence has already happened by way of testing/patching, and
+there is reasonable trust demonstrated to "hand the keys" over to a repository.
+
+Currently, the request mechanism is to [email ikey](mailto:root@solus-project.com), or [catch him on IRC](irc://irc.freenode.net/#Solus-Dev)
+Bluntly put, it is far easier to grant access to active community members than those
+unknown to the project.
+
 evobuild/setup
 -------------
 
