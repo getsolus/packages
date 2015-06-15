@@ -50,6 +50,9 @@ Currently, the request mechanism is to [email ikey](mailto:root@solus-project.co
 Bluntly put, it is far easier to grant access to active community members than those
 unknown to the project.
 
+Finally, note that the management reserve the right to revoke access at any time,
+in order to preserve project safety and integrity.
+
 evobuild/setup
 -------------
 
