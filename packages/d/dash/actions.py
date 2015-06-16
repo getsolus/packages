@@ -14,5 +14,4 @@ def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
 
     # Make dash the default shell on our system
-    pisitools.dosym("/bin/dash", "/bin/sh")
     pisitools.dosym("/bin/dash", "/usr/bin/dash")
