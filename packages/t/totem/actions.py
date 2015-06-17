@@ -4,7 +4,6 @@ from pisi.actionsapi import get, autotools, pisitools, shelltools
 
 
 def setup():
-    shelltools.export("CONFIG_SHELL", "/bin/bash")
     autotools.configure("--disable-static")
 
 
