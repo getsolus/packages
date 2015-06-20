@@ -25,7 +25,7 @@ def updateInitrd(filepath):
                 except Exception, e:
                     print("Failed to copy efi boot")
 
-            if os.path.exists("/proc/cmdline"):
+            if os.path.exists("/proc/cmdline") and not os.path.exists("/sys/firmware/efi"):
                 os.system("/usr/sbin/update-grub")
             break
 
