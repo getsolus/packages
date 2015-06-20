@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import os
 import os.path
+import shutil
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     # Generate an initramfs for all installed kernels
@@ -11,6 +12,13 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
             os.system(cmd)
             cmd = "dracut -N -f --kver %s" % version
             os.system (cmd)
+
+            initname = "/boot/initramfs-%s.img" % version
+            if os.path.exists("/boot/efi/solus"):
+                try:
+                    shutil.copy(initname, "/boot/efi/solus/initramfs")
+                except Exception, e:
+                    print("Failed to copy efi boot")
 
     # Determine whether to actually update grub or not.
     if os.path.exists("/proc/cmdline"):

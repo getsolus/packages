@@ -2,7 +2,7 @@
 import piksemel
 import os
 import os.path
-
+import shutil
 
 def updateInitrd(filepath):
     parse = piksemel.parse(filepath)
@@ -17,6 +17,14 @@ def updateInitrd(filepath):
             os.system(cmd)
             cmd = "dracut -N -f --kver %s" % version
             os.system(cmd)
+
+            initname = "/boot/initramfs-%s.img" % version
+            if os.path.exists("/boot/efi/solus"):
+                try:
+                    shutil.copy(initname, "/boot/efi/solus/initramfs")
+                except Exception, e:
+                    print("Failed to copy efi boot")
+
             if os.path.exists("/proc/cmdline"):
                 os.system("/usr/sbin/update-grub")
             break
