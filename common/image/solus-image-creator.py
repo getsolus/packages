@@ -58,6 +58,12 @@ def get_efi_path():
 def get_efi_root():
     return os.path.join(get_work_dir(), "efi")
 
+def get_cache_source():
+    return "/var/lib/evobuild/packages"
+
+def get_cache_target():
+    return os.path.join(get_image_root(), "var/cache/eopkg/packages")
+
 kernel_version = None
 
 def get_kernel_version():
@@ -97,6 +103,13 @@ def create_support_dirs():
     except Exception, ex:
         print "Unable to construct image dir: %s" % ex
         clean_exit(1)
+
+    if not os.path.exists(get_cache_source()):
+        try:
+            os.makedirs(get_cache_source())
+        except Exception, ex:
+            print("Unable to construct cache source: %s" % ex)
+            clean_exit(1)
 
 # Spot the C coder.
 did_mount = False
@@ -575,6 +588,17 @@ def main():
 
     init_root()
 
+    if not os.path.exists(get_cache_target()):
+        try:
+            os.makedirs(get_cache_target())
+        except Exception, ex:
+            print("Unable to create cache target: %s" % ex)
+            clean_exit(1)
+
+    if not do_mount(get_cache_source(), get_cache_target(), bind=True):
+        print("Unable to bind-mount cache")
+        clean_exit(1)
+
     # Apply package ops
     for listage in op_list:
         if len(listage) > 1:
@@ -610,8 +634,6 @@ def main():
     randr = os.path.join(get_image_root(), "dev/urandom")
     if not os.path.exists(randr):
         run_chroot("mknod -m 644 /dev/urandom c 1 9")
-    run_chroot("eopkg delete-cache")
-
     configure_root()
     # TODO: Fix this chmod inside dbus itself.
     run_chroot("chmod o+x /usr/lib/dbus-1.0/dbus-daemon-launch-helper")
@@ -644,6 +666,8 @@ def main():
     configure_boot()
 
     # Now ensure we have a clean image
+    do_umount(get_cache_target())
+    run_chroot("eopkg delete-cache")
     down_root()
     root_mounted = False
 
