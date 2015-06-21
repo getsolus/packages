@@ -22,6 +22,7 @@ import subprocess
 import shlex
 from op_helpers import OpItem, get_op_items
 import time
+from configobj import ConfigObj
 
 
 def check_call(cmd):
@@ -234,13 +235,13 @@ def run_chroot(cmd):
         print("Non-zero exit code from chroot command: %s" % cmd)
         clean_exit(1)
 
-def create_squash():
+def create_squash(compression):
     ''' Construct the squashfs wrapper. '''
     wdir = os.getcwd()
     try:
         os.chdir(get_live_dir())
         # ensures correct structure, and stops squashfs reading itself
-        check_call("mksquashfs \"%s\" \"%s\" -keep-as-directory -comp gzip" % (".", "../squashfs.img"))
+        check_call("mksquashfs \"%s\" \"%s\" -keep-as-directory -comp %s" % (".", "../squashfs.img", compression))
         shutil.move("../squashfs.img", "squashfs.img")
         os.unlink("rootfs.img")
     except Exception, ex:
@@ -328,7 +329,7 @@ def configure_boot():
         print("Unable to install boot kernel: %s" % ex)
         clean_exit(1)
 
-def create_efi():
+def create_efi(title, name, label):
     ''' Create the eltorito boot image '''
     global efi_mounted
 
@@ -395,10 +396,10 @@ def create_efi():
         # Solus entry
         os.makedirs(os.path.join(get_efi_root(), "loader/entries"))
         with open(os.path.join(get_efi_root(), "loader/entries/solus.conf"), "w") as conf:
-            conf.write("""title Solus
+            conf.write("""title %(TITLE)s
 linux /kernel
 initrd /initrd
-options root=live:LABEL=%(DESC)s""" % { 'DESC' : 'SolusLive'})
+options root=live:LABEL=%(DESC)s""" % { 'DESC' : label, 'TITLE': title})
     except Exception, ex:
         print("Unable to write gummiboot config: %s" % ex)
         clean_exit(1)
@@ -413,7 +414,7 @@ options root=live:LABEL=%(DESC)s""" % { 'DESC' : 'SolusLive'})
         clean_exit(1)
     efi_mounted = False
 
-def create_isolinux_boot():
+def create_isolinux_boot(title, name, label):
     ''' Set up the SYSLINUX/isolinux configuration '''
 
     requirements = ["vesamenu.c32", "isolinux.bin", "libutil.c32", "libcom32.c32", "ldlinux.c32", "vesa.c32"]
@@ -440,7 +441,7 @@ def create_isolinux_boot():
 default vesamenu.c32
 timeout 50
 
-menu title Solus Operating System (unstable build)
+menu title %(TITLE)s
 
 menu color screen       37;40      #80ffffff #00000000 std
 MENU COLOR border       30;44   #40ffffff #a0000000 std
@@ -461,21 +462,21 @@ MENU VSHIFT 7
 MENU TABMSGROW 11
 
 label live
-  menu label Start Solus
+  menu label Start %(NAME)s
   kernel /boot/kernel
   append initrd=/boot/initrd.img root=live:LABEL=%(LABEL)s --
 menu default
 label local
   menu label Boot from local drive
   localboot 0x80 
-""" % { 'LABEL': 'SolusLive' }
+""" % { 'LABEL': label, 'TITLE': title, 'NAME' : name }
         f.write(lines)
         f.close()
     except Exception, ex:
         print("Unable to write isolinux.cfg: %s" % ex)
         clean_exit(1)
 
-def spin_iso():
+def spin_iso(filename, label):
     wd = os.getcwd()
     isofile = os.path.join(wd, "SolusLive.iso")
 
@@ -484,7 +485,7 @@ def spin_iso():
     -volset "%(DESC)s" -J -joliet-long -r -v -T -x ./lost+found \
     -o %(ISOFILE)s \
     -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 \
-    -boot-info-table -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': 'SolusLive', 'ISOFILE': isofile }
+    -boot-info-table -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': label, 'ISOFILE': filename }
         os.chdir(get_deploy_dir())
         r = check_call(cmd)
         if r != 0:
@@ -498,7 +499,7 @@ def spin_iso():
     # Hybrid ISO. Because nobody *really* uses CDs anymore.
     # ..do they? o_O
     try:
-        r = check_call("isohybrid --uefi \"%s\"" % isofile)
+        r = check_call("isohybrid --uefi \"%s\"" % filename)
         if r != 0:
             print("Abnormal isohybrid exit code")
             clean_exit(1)
@@ -511,11 +512,48 @@ def main():
     global root_mounted
     targetDirectory = get_image_root()
 
+    if os.geteuid() != 0:
+        print("Must be root to use image-creator")
+        clean_exit(1)
+    if not os.path.exists("image.conf"):
+        print("image.conf does not exist - aborting")
+        clean_exit(1)
+
+    files = dict()
+    files["/usr/bin/isohybrid"] = "syslinux"
+    files["/usr/lib/gummiboot/gummibootx64.efi"] = "gummiboot"
+    files["/usr/lib/syslinux/vesamenu.c32"] = "syslinux"
+    files["/usr/bin/mksquashfs"] = "squashfs-tools"
+    files["/usr/bin/xorriso"] = "libisoburn"
+
+    bad = list()
+    for k in files:
+        if not os.path.exists(k):
+            if files[k] not in bad:
+                bad.append(files[k])
+    if len(bad) > 0:
+        print("Missing package(s): %s" % " ".join(bad))
+        clean_exit(1)
+
+    config = ConfigObj("image.conf")
+    try:
+        listfile = config["Image"]["Packages"]
+        compression = config["Image"]["Compression"]
+        label = config["Image"]["Label"]
+        title = config["Image"]["Title"]
+        name = config["Image"]["Name"]
+        filename = config["Image"]["Filename"]
+    except Exception, ex:
+        print("Error parsing image.conf: %s" % ex)
+        clean_exit(1)
+
+    tfilename = filename
+    filename = os.path.abspath(os.path.join(os.getcwd(), tfilename))
     op_list = None
 
     # Load package ops
     try:
-        op_list = get_op_items("packages")
+        op_list = get_op_items(listfile)
     except Exception, ex:
         print("Failed to load packages: %s" % ex)
         clean_exit(1)
@@ -616,10 +654,10 @@ def main():
         print("Failed e2fsck - aborting")
         clean_exit(1)
 
-    create_squash()
-    create_isolinux_boot()
-    create_efi()
-    spin_iso()
+    create_squash(compression)
+    create_isolinux_boot(title, name, label)
+    create_efi(title, name, label)
+    spin_iso(filename, label)
 
     clean_exit(0)
 
