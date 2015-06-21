@@ -18,7 +18,7 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
         pass
 
     if not os.path.exists (HOST_KEY):
-        os.system ("/usr/bin/ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key")
+        os.system ("/usr/bin/ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N \'\'")
 
 
 def postRemove():
