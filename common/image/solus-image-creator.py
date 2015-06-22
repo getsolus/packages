@@ -449,13 +449,24 @@ def create_isolinux_boot(title, name, label):
         conf = os.path.join(get_isolinux_dir(), "isolinux.cfg")
         f = open(conf, "w")
 
+        splash =  "menu background splash.png"
+        splashPath = os.path.join(os.path.dirname(get_work_dir()), "splash.png")
+        if not os.path.exists(splashPath):
+            splash = ""
+        else:
+            try:
+                shutil.copy(splashPath, os.path.join(get_isolinux_dir(), "splash.png"))
+            except:
+                splash = ""
+
         # TODO: Make this templated and configurable.. Move along, now.
         lines = """
-default vesamenu.c32
+ui vesamenu.c32
 timeout 50
+default live
 
 menu title %(TITLE)s
-
+%(SPLASH)s
 menu color screen       37;40      #80ffffff #00000000 std
 MENU COLOR border       30;44   #40ffffff #a0000000 std
 MENU COLOR title        1;36;44 #ffffffff #a0000000 std
@@ -482,7 +493,7 @@ menu default
 label local
   menu label Boot from local drive
   localboot 0x80 
-""" % { 'LABEL': label, 'TITLE': title, 'NAME' : name }
+""" % { 'LABEL': label, 'TITLE': title, 'NAME' : name, 'SPLASH': splash }
         f.write(lines)
         f.close()
     except Exception, ex:
