@@ -103,6 +103,7 @@ def scan_tree(p):
                     add_license(licenses[h], fname)
                 else:
                     if not scan_file(fname):
+                        # These are currently the only ones we want debugs for.
                         if p.startswith("COPYING") or p.startswith("LICENSE") or p.startswith("LICENCE"):
                             if h not in bad_licenses:
                                 bad_licenses[h] = list()
