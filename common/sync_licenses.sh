@@ -7,8 +7,8 @@ fail_exit(){
 
 git clone http://git.spdx.org/license-list.git --depth=1 || fail_exit "Failed to clone"
 
-if [[ -e "licenses" ]];
-        then rm -v licenses
+if [[ -e "licenses.spdx" ]];
+        then rm -v licenses.spdx
 fi
 
 pushd license-list
@@ -16,7 +16,7 @@ pushd license-list
 for i in *.txt ; do
         sum=`sha1sum "${i}"|cut -f 1 -d ' '`
         nom=`echo "$i" | sed 's@\.txt$@@'`
-        echo -e "${sum}\t${nom}" >> ../licenses
+        echo -e "${sum}\t${nom}" >> ../licenses.spdx
 done
 popd
 rm -rf license-list
