@@ -20,7 +20,7 @@ licenses = dict()
 def gen_list():
     global licenses
 
-    for i in ["licenses.spdx", "licenses.extra"]:
+    for i in ["../licenses.spdx", "../licenses.extra"]:
         fpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), i)
         if not os.path.exists(fpath):
             continue
