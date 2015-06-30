@@ -10,9 +10,10 @@ def setup():
     # We'll run from /run
     pisitools.dosed (hookFile, "/var/lib", "/run")
     autotools.configure ("--libexecdir=/lib/dhcpcd\
-                                              --dbdir=/run\
-                                              --sysconfdir=/etc\
-                                              --with-rootprefix=/")
+                          --dbdir=/run\
+                          --sysconfdir=/etc\
+                          --with-rootprefix=/ \
+                          CFLAGS=\"-D_GNU_SOURCE %s\"" % get.CFLAGS())
 
 def build():
     autotools.make ()
