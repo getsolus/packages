@@ -149,6 +149,7 @@ class Builder():
                 os.system(cmd)
             except Exception, e:
                 print e
+                sync_logs(tag, True)
                 self.report_status(id, "FAILED")
                 time.sleep(10)
                 continue
@@ -170,16 +171,19 @@ class Builder():
                 time.sleep(10)
                 continue
 
-            try:
-                check_output("scp \"%s.log\" logs@%s:logs/." % (tag, SSH_HOST))
-            except Exception, e:
-                print e
-                self.report_status(id, "FAILED")
-                time.sleep(10)
-                continue
+            sync_logs(tag)
 
             # technically finished?
             self.report_status(id, "OK")
+            time.sleep(10)
+
+def sync_logs(tag, skip=False):
+    try:
+        check_output("scp \"%s.log\" logs@%s:logs/." % (tag, SSH_HOST))
+    except Exception, e:
+        print e
+        if not skip:
+            self.report_status(id, "FAILED")
             time.sleep(10)
 
 if __name__ == "__main__":
