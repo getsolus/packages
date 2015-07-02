@@ -7,14 +7,14 @@ from pisi.actionsapi import get
 
 def install():
     def do_chmod(path, mode):
-        path = "%s/%s" % (get.installDIR(), path)
-        shelltools.chmod (path, mode=mode)
+        path = "%s/%s" %(get.installDIR(), path)
+        shelltools.chmod(path, mode=mode)
 
     # Install everything
     pisitools.insinto("/", "root/*")
 
     for dire in ["/tmp", "/var/tmp", "/dev", "/usr/lib64", "/lib64", "/proc", "/sys", "/run/lock", "/root", "/home", "/run"]:
-        pisitools.dodir (dire)
+        pisitools.dodir(dire)
 
     # Adjust permissions
     do_chmod("/tmp", 01777)
@@ -31,8 +31,9 @@ def install():
     pisitools.dosym("lib64", "/lib")
     pisitools.dosym("lib64", "/usr/lib")
 
-    pisitools.dosym ("/proc/self/mounts", "/etc/mtab")
+    pisitools.dosym("/proc/self/mounts", "/etc/mtab")
 
     # Write out a default .profile.. temporary
-    shelltools.echo ("%s/etc/skel/.profile" % get.installDIR(), "source /etc/profile")
-    shelltools.echo ("%s/etc/skel/.bashrc" % get.installDIR(), "source /etc/profile")
+    shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /etc/profile")
+    shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /etc/profile")
+    shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
