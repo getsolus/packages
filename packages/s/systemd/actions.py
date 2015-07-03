@@ -18,8 +18,7 @@ def setup():
                           --disable-networkd \
                           --disable-selinux \
                           --enable-compat-libs \
-                          --with-pamlibdir=/lib/security \
-                          CFLAGS=\"%s -fno-lto\"" % get.CFLAGS())
+                          --with-pamlibdir=/lib/security")
 
 def build():
     autotools.make ()
