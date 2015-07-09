@@ -15,7 +15,7 @@ def setup():
     os.system("tar xf %s" % SourceDist)
 
     os.chdir(BuildDir)
-    autotools.configure("--enable-dns-for-realm")
+    autotools.configure("--enable-dns-for-realm --with-system-es --with-system-et")
 
 def build():
     os.chdir(BuildDir)
@@ -29,6 +29,3 @@ def install():
     for library in ["gssapi_krb5", "gssrpc", "k5crypto", "kadm5clnt_mit", \
                     "kdb5", "krb5", "krb5support", "verto"]:
         shelltools.chmod("%s/usr/lib/lib%s.so*" %(get.installDIR(), library), mode=0755)
-
-    # This conflicts with e2fsprogs
-    pisitools.remove("/usr/lib/libcom_err.so")
