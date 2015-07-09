@@ -23,9 +23,11 @@ import shlex
 from op_helpers import OpItem, get_op_items
 import time
 from configobj import ConfigObj
+import version
 
 
 _target = os.path.abspath(os.getcwd())
+release = False
 
 def check_call(cmd):
     return subprocess.check_call(shlex.split(cmd))
@@ -66,9 +68,20 @@ def get_cache_source():
 def get_cache_target():
     return os.path.join(get_image_root(), "var/cache/eopkg/packages")
 
+imageversion = None
+def get_image_version():
+    global imageversion
+    if imageversion is not None:
+        return imageversion
+    imageversion = version.get_image_version()
+    return imageversion
+
+def get_image_version_file():
+    return os.path.join(get_image_root(), "etc", "image-version")
+
 def get_nvr_dir():
     global _target
-    return _target
+    return os.path.join(_target, "releases", get_image_version())
 
 def get_asset_dir():
     ''' i.e. script dir for /image/ '''
@@ -547,6 +560,7 @@ def spin_iso(filename, label):
 def main():
     ''' Main entry '''
     global root_mounted
+    global release
     targetDirectory = get_image_root()
 
     if os.geteuid() != 0:
@@ -580,6 +594,7 @@ def main():
         title = config["Image"]["Title"]
         name = config["Image"]["Name"]
         filename = config["Image"]["Filename"]
+        release = bool(config["Image"]["Release"])
     except Exception, ex:
         print("Error parsing image.conf: %s" % ex)
         clean_exit(1)
@@ -587,7 +602,10 @@ def main():
     tfilename = filename
     filename = os.path.abspath(os.path.join(os.getcwd(), tfilename))
     op_list = None
-
+    
+    # optional.
+    title = title.replace("##VERSION##", get_image_version())
+    
     # Load package ops
     try:
         op_list = get_op_items(listfile)
@@ -600,6 +618,9 @@ def main():
     if len(repos) == 0:
         print("Cannot continue without a repository definition")
         clean_exit(1)
+
+    # cache the image version
+    get_image_version()
 
     create_support_dirs()
     create_image()
@@ -689,15 +710,22 @@ def main():
     # set up dracut, pull out the initrd and kernel
     configure_boot()
 
+    with open(get_image_version_file(), "w") as outw:
+        outw.write(get_image_version() + "\n")
+
     # extract NVR
-    try:
-        shutil.copy(get_nvr_script(), os.path.join(get_image_root(), "grab-nvr.py"))
-        run_chroot("python /grab-nvr.py")
-        os.unlink(os.path.join(get_image_root(), "grab-nvr.py"))
-        for i in ["sources.nvr", "packages.nvr"]:
-            shutil.move(os.path.join(get_image_root(), i), os.path.join(get_nvr_dir(), i))
-    except Exception, ex:
-        print("Failed to extract NVR files: %s" % ex)
+    if release:
+        try:
+            shutil.copy(get_nvr_script(), os.path.join(get_image_root(), "grab-nvr.py"))
+            run_chroot("python /grab-nvr.py")
+            os.unlink(os.path.join(get_image_root(), "grab-nvr.py"))
+            for i in ["sources.nvr", "packages.nvr"]:
+                endp = os.path.join(get_nvr_dir(), i)
+                if not os.path.exists(get_nvr_dir()):
+                    os.makedirs(get_nvr_dir())
+                shutil.move(os.path.join(get_image_root(), i), endp)
+        except Exception, ex:
+            print("Failed to extract NVR files: %s" % ex)
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
