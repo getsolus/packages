@@ -25,6 +25,8 @@ import time
 from configobj import ConfigObj
 
 
+_target = os.path.abspath(os.getcwd())
+
 def check_call(cmd):
     return subprocess.check_call(shlex.split(cmd))
 
@@ -63,6 +65,17 @@ def get_cache_source():
 
 def get_cache_target():
     return os.path.join(get_image_root(), "var/cache/eopkg/packages")
+
+def get_nvr_dir():
+    global _target
+    return _target
+
+def get_asset_dir():
+    ''' i.e. script dir for /image/ '''
+    return os.path.abspath(os.path.dirname(__file__))
+
+def get_nvr_script():
+    return os.path.join(get_asset_dir(), "grab-nvr.py")
 
 kernel_version = None
 
@@ -676,6 +689,15 @@ def main():
     # set up dracut, pull out the initrd and kernel
     configure_boot()
 
+    # extract NVR
+    try:
+        shutil.copy(get_nvr_script(), os.path.join(get_image_root(), "grab-nvr.py"))
+        run_chroot("python /grab-nvr.py")
+        os.unlink(os.path.join(get_image_root(), "grab-nvr.py"))
+        for i in ["sources.nvr", "packages.nvr"]:
+            shutil.move(os.path.join(get_image_root(), i), os.path.join(get_nvr_dir(), i))
+    except Exception, ex:
+        print("Failed to extract NVR files: %s" % ex)
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
