@@ -1,0 +1,423 @@
+diff -up mozilla-release/toolkit/mozapps/downloads/nsHelperAppDlg.js.1129873-apppicker mozilla-release/toolkit/mozapps/downloads/nsHelperAppDlg.js
+--- mozilla-release/toolkit/mozapps/downloads/nsHelperAppDlg.js.1129873-apppicker	2015-05-25 23:28:55.000000000 +0200
++++ mozilla-release/toolkit/mozapps/downloads/nsHelperAppDlg.js	2015-06-09 09:37:35.313305562 +0200
+@@ -1004,6 +1004,34 @@ nsUnknownContentTypeDialog.prototype = {
+     return file.leafName;
+   },
+ 
++  finishChooseApp: function() {
++    if (this.chosenApp) {
++      // Show the "handler" menulist since we have a (user-specified)
++      // application now.
++      this.dialogElement("modeDeck").setAttribute("selectedIndex", "0");
++
++      // Update dialog.
++      var otherHandler = this.dialogElement("otherHandler");
++      otherHandler.removeAttribute("hidden");
++      otherHandler.setAttribute("path", this.getPath(this.chosenApp.executable));
++#ifdef XP_WIN
++      otherHandler.label = this.getFileDisplayName(this.chosenApp.executable);
++#else
++      otherHandler.label = this.chosenApp.name;
++#endif
++      this.dialogElement("openHandler").selectedIndex = 1;
++      this.dialogElement("openHandler").setAttribute("lastSelectedItemID", "otherHandler");
++
++      this.dialogElement("mode").selectedItem = this.dialogElement("open");
++    }
++    else {
++      var openHandler = this.dialogElement("openHandler");
++      var lastSelectedID = openHandler.getAttribute("lastSelectedItemID");
++      if (!lastSelectedID)
++        lastSelectedID = "defaultHandler";
++      openHandler.selectedItem = this.dialogElement(lastSelectedID);
++    }
++  },
+   // chooseApp:  Open file picker and prompt user for application.
+   chooseApp: function() {
+ #ifdef XP_WIN
+@@ -1047,7 +1075,23 @@ nsUnknownContentTypeDialog.prototype = {
+         params.handlerApp.executable.isFile()) {
+       // Remember the file they chose to run.
+       this.chosenApp = params.handlerApp;
+-
++    }
++#else
++#if MOZ_WIDGET_GTK == 3
++    var nsIApplicationChooser = Components.interfaces.nsIApplicationChooser;
++    var appChooser = Components.classes["@mozilla.org/applicationchooser;1"]
++                               .createInstance(nsIApplicationChooser);
++    appChooser.init(this.mDialog, this.dialogElement("strings").getString("chooseAppFilePickerTitle"));
++    var contentTypeDialogObj = this;
++    let appChooserCallback = function appChooserCallback_done(aResult) {
++      if (aResult) {
++         contentTypeDialogObj.chosenApp = aResult.QueryInterface(Components.interfaces.nsILocalHandlerApp);
++      }
++      contentTypeDialogObj.finishChooseApp();
++    };
++    appChooser.open(this.mLauncher.MIMEInfo.MIMEType, appChooserCallback);
++    // The finishChooseApp is called from appChooserCallback
++    return;
+ #else
+     var nsIFilePicker = Components.interfaces.nsIFilePicker;
+     var fp = Components.classes["@mozilla.org/filepicker;1"]
+@@ -1065,29 +1109,11 @@ nsUnknownContentTypeDialog.prototype = {
+                    createInstance(Components.interfaces.nsILocalHandlerApp);
+       localHandlerApp.executable = fp.file;
+       this.chosenApp = localHandlerApp;
+-#endif
+-
+-      // Show the "handler" menulist since we have a (user-specified)
+-      // application now.
+-      this.dialogElement("modeDeck").setAttribute("selectedIndex", "0");
+-
+-      // Update dialog.
+-      var otherHandler = this.dialogElement("otherHandler");
+-      otherHandler.removeAttribute("hidden");
+-      otherHandler.setAttribute("path", this.getPath(this.chosenApp.executable));
+-      otherHandler.label = this.getFileDisplayName(this.chosenApp.executable);
+-      this.dialogElement("openHandler").selectedIndex = 1;
+-      this.dialogElement("openHandler").setAttribute("lastSelectedItemID", "otherHandler");
+-
+-      this.dialogElement("mode").selectedItem = this.dialogElement("open");
+-    }
+-    else {
+-      var openHandler = this.dialogElement("openHandler");
+-      var lastSelectedID = openHandler.getAttribute("lastSelectedItemID");
+-      if (!lastSelectedID)
+-        lastSelectedID = "defaultHandler";
+-      openHandler.selectedItem = this.dialogElement(lastSelectedID);
+     }
++#endif // MOZ_WIDGET_GTK3
++
++#endif // XP_WIN
++    this.finishChooseApp();
+   },
+ 
+   // Turn this on to get debugging messages.
+diff -up mozilla-release/widget/gtk/moz.build.1129873-apppicker mozilla-release/widget/gtk/moz.build
+--- mozilla-release/widget/gtk/moz.build.1129873-apppicker	2015-05-25 23:28:56.000000000 +0200
++++ mozilla-release/widget/gtk/moz.build	2015-06-09 09:37:35.313305562 +0200
+@@ -74,6 +74,7 @@ if CONFIG['MOZ_ENABLE_GTK2']:
+ else:
+     UNIFIED_SOURCES += [
+         'gtk3drawing.c',
++        'nsApplicationChooser.cpp',
+     ]
+ 
+ include('/ipc/chromium/chromium-config.mozbuild')
+diff -up mozilla-release/widget/gtk/mozgtk/mozgtk.c.1129873-apppicker mozilla-release/widget/gtk/mozgtk/mozgtk.c
+--- mozilla-release/widget/gtk/mozgtk/mozgtk.c.1129873-apppicker	2015-05-25 23:28:56.000000000 +0200
++++ mozilla-release/widget/gtk/mozgtk/mozgtk.c	2015-06-09 09:37:35.313305562 +0200
+@@ -533,6 +533,11 @@ STUB(gtk_widget_get_style_context)
+ STUB(gtk_widget_path_append_type)
+ STUB(gtk_widget_path_new)
+ STUB(gtk_widget_set_visual)
++STUB(gtk_app_chooser_dialog_new_for_content_type)
++STUB(gtk_app_chooser_get_type)
++STUB(gtk_app_chooser_get_app_info)
++STUB(gtk_app_chooser_dialog_get_type)
++STUB(gtk_app_chooser_dialog_set_heading)
+ #endif
+ 
+ #ifdef GTK2_SYMBOLS
+diff -up mozilla-release/widget/gtk/nsApplicationChooser.cpp.1129873-apppicker mozilla-release/widget/gtk/nsApplicationChooser.cpp
+--- mozilla-release/widget/gtk/nsApplicationChooser.cpp.1129873-apppicker	2015-06-09 09:37:35.314305558 +0200
++++ mozilla-release/widget/gtk/nsApplicationChooser.cpp	2015-06-09 09:37:35.313305562 +0200
+@@ -0,0 +1,123 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "mozilla/Types.h"
++
++#include <gtk/gtk.h>
++
++#include "nsApplicationChooser.h"
++#include "WidgetUtils.h"
++#include "nsIMIMEInfo.h"
++#include "nsCExternalHandlerService.h"
++#include "nsGtkUtils.h"
++
++using namespace mozilla;
++
++NS_IMPL_ISUPPORTS(nsApplicationChooser, nsIApplicationChooser)
++
++nsApplicationChooser::nsApplicationChooser()
++{
++}
++
++nsApplicationChooser::~nsApplicationChooser()
++{
++}
++
++NS_IMETHODIMP
++nsApplicationChooser::Init(nsIDOMWindow* aParent, const nsACString& aTitle)
++{
++  NS_ENSURE_TRUE(aParent, NS_ERROR_FAILURE);
++  mParentWidget = widget::WidgetUtils::DOMWindowToWidget(aParent);
++  mWindowTitle.Assign(aTitle);
++  return NS_OK;
++}
++
++NS_IMETHODIMP
++nsApplicationChooser::Open(const nsACString& aContentType, nsIApplicationChooserFinishedCallback *aCallback)
++{
++  MOZ_ASSERT(aCallback);
++  if (mCallback) {
++    NS_WARNING("Chooser is already in progress.");
++    return NS_ERROR_ALREADY_INITIALIZED;
++  }
++  mCallback = aCallback;
++  NS_ENSURE_TRUE(mParentWidget, NS_ERROR_FAILURE);
++  GtkWindow *parent_widget =
++    GTK_WINDOW(mParentWidget->GetNativeData(NS_NATIVE_SHELLWIDGET));
++
++  GtkWidget* chooser =
++    gtk_app_chooser_dialog_new_for_content_type(parent_widget,
++        (GtkDialogFlags) (GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT),
++        PromiseFlatCString(aContentType).get());
++  gtk_app_chooser_dialog_set_heading(GTK_APP_CHOOSER_DIALOG(chooser), mWindowTitle.BeginReading());
++  NS_ADDREF_THIS();
++  g_signal_connect(chooser, "response", G_CALLBACK(OnResponse), this);
++  g_signal_connect(chooser, "destroy", G_CALLBACK(OnDestroy), this);
++  gtk_widget_show(chooser);
++  return NS_OK;
++}
++
++/* static */ void
++nsApplicationChooser::OnResponse(GtkWidget* chooser, gint response_id, gpointer user_data)
++{
++  static_cast<nsApplicationChooser*>(user_data)->Done(chooser, response_id);
++}
++
++/* static */ void
++nsApplicationChooser::OnDestroy(GtkWidget *chooser, gpointer user_data)
++{
++  static_cast<nsApplicationChooser*>(user_data)->Done(chooser, GTK_RESPONSE_CANCEL);
++}
++
++void nsApplicationChooser::Done(GtkWidget* chooser, gint response)
++{
++  nsCOMPtr<nsILocalHandlerApp> localHandler;
++  nsresult rv;
++  switch (response) {
++    case GTK_RESPONSE_OK:
++    case GTK_RESPONSE_ACCEPT:
++        {
++          localHandler = do_CreateInstance(NS_LOCALHANDLERAPP_CONTRACTID, &rv);
++          if (NS_FAILED(rv)) {
++            NS_WARNING("Out of memory.");
++            break;
++          }
++          GAppInfo *app_info = gtk_app_chooser_get_app_info(GTK_APP_CHOOSER(chooser));
++
++          nsCOMPtr<nsIFile> localExecutable;
++          gchar *fileWithFullPath = g_find_program_in_path(g_app_info_get_executable(app_info));
++          rv = NS_NewNativeLocalFile(nsDependentCString(fileWithFullPath), false, getter_AddRefs(localExecutable));
++          g_free(fileWithFullPath);
++          if (NS_FAILED(rv)) {
++            NS_WARNING("Cannot create local filename.");
++            localHandler = nullptr;
++          } else {
++            localHandler->SetExecutable(localExecutable);
++            localHandler->SetName(NS_ConvertUTF8toUTF16(g_app_info_get_display_name(app_info)));
++          }
++          g_object_unref(app_info);
++        }
++
++        break;
++    case GTK_RESPONSE_CANCEL:
++    case GTK_RESPONSE_CLOSE:
++    case GTK_RESPONSE_DELETE_EVENT:
++        break;
++    default:
++        NS_WARNING("Unexpected response");
++        break;
++  }
++
++  // A "response" signal won't be sent again but "destroy" will be.
++  g_signal_handlers_disconnect_by_func(chooser, FuncToGpointer(OnDestroy), this);
++  gtk_widget_destroy(chooser);
++
++  if (mCallback) {
++    mCallback->Done(localHandler);
++    mCallback = nullptr;
++  }
++  NS_RELEASE_THIS();
++}
++
+diff -up mozilla-release/widget/gtk/nsApplicationChooser.h.1129873-apppicker mozilla-release/widget/gtk/nsApplicationChooser.h
+--- mozilla-release/widget/gtk/nsApplicationChooser.h.1129873-apppicker	2015-06-09 09:37:35.314305558 +0200
++++ mozilla-release/widget/gtk/nsApplicationChooser.h	2015-06-09 09:37:35.314305558 +0200
+@@ -0,0 +1,28 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#ifndef nsApplicationChooser_h__
++#define nsApplicationChooser_h__
++
++#include <gtk/gtk.h>
++#include "nsIApplicationChooser.h"
++
++class nsApplicationChooser : public nsIApplicationChooser
++{
++public:
++  nsApplicationChooser();
++  NS_DECL_ISUPPORTS
++  NS_DECL_NSIAPPLICATIONCHOOSER
++  void Done(GtkWidget* chooser, gint response);
++
++private:
++  ~nsApplicationChooser();
++  nsCOMPtr<nsIWidget> mParentWidget;
++  nsCString mWindowTitle;
++  nsCOMPtr<nsIApplicationChooserFinishedCallback> mCallback;
++  static void OnResponse(GtkWidget* chooser, gint response_id, gpointer user_data);
++  static void OnDestroy(GtkWidget* chooser, gpointer user_data);
++};
++#endif
+diff -up mozilla-release/widget/gtk/nsWidgetFactory.cpp.1129873-apppicker mozilla-release/widget/gtk/nsWidgetFactory.cpp
+--- mozilla-release/widget/gtk/nsWidgetFactory.cpp.1129873-apppicker	2015-05-25 23:28:56.000000000 +0200
++++ mozilla-release/widget/gtk/nsWidgetFactory.cpp	2015-06-09 09:37:35.314305558 +0200
+@@ -21,6 +21,9 @@
+ #include "nsClipboard.h"
+ #include "nsDragService.h"
+ #endif
++#if (MOZ_WIDGET_GTK == 3)
++#include "nsApplicationChooser.h"
++#endif
+ #include "nsColorPicker.h"
+ #include "nsFilePicker.h"
+ #include "nsSound.h"
+@@ -152,6 +155,25 @@ nsFilePickerConstructor(nsISupports *aOu
+   return picker->QueryInterface(aIID, aResult);
+ }
+ 
++#if (MOZ_WIDGET_GTK == 3)
++static nsresult
++nsApplicationChooserConstructor(nsISupports *aOuter, REFNSIID aIID,
++                                void **aResult)
++{
++  *aResult = nullptr;
++  if (aOuter != nullptr) {
++    return NS_ERROR_NO_AGGREGATION;
++  }
++  nsCOMPtr<nsIApplicationChooser> chooser = new nsApplicationChooser;
++
++  if (!chooser) {
++    return NS_ERROR_OUT_OF_MEMORY;
++  }
++
++  return chooser->QueryInterface(aIID, aResult);
++}
++#endif
++
+ static nsresult
+ nsColorPickerConstructor(nsISupports *aOuter, REFNSIID aIID,
+                          void **aResult)
+@@ -175,6 +197,9 @@ NS_DEFINE_NAMED_CID(NS_CHILD_CID);
+ NS_DEFINE_NAMED_CID(NS_APPSHELL_CID);
+ NS_DEFINE_NAMED_CID(NS_COLORPICKER_CID);
+ NS_DEFINE_NAMED_CID(NS_FILEPICKER_CID);
++#if (MOZ_WIDGET_GTK == 3)
++NS_DEFINE_NAMED_CID(NS_APPLICATIONCHOOSER_CID);
++#endif
+ NS_DEFINE_NAMED_CID(NS_SOUND_CID);
+ NS_DEFINE_NAMED_CID(NS_TRANSFERABLE_CID);
+ #ifdef MOZ_X11
+@@ -206,6 +231,9 @@ static const mozilla::Module::CIDEntry k
+     { &kNS_APPSHELL_CID, false, nullptr, nsAppShellConstructor },
+     { &kNS_COLORPICKER_CID, false, nullptr, nsColorPickerConstructor, Module::MAIN_PROCESS_ONLY },
+     { &kNS_FILEPICKER_CID, false, nullptr, nsFilePickerConstructor, Module::MAIN_PROCESS_ONLY },
++#if (MOZ_WIDGET_GTK == 3)
++    { &kNS_APPLICATIONCHOOSER_CID, false, nullptr, nsApplicationChooserConstructor, Module::MAIN_PROCESS_ONLY },
++#endif
+     { &kNS_SOUND_CID, false, nullptr, nsSoundConstructor, Module::MAIN_PROCESS_ONLY },
+     { &kNS_TRANSFERABLE_CID, false, nullptr, nsTransferableConstructor },
+ #ifdef MOZ_X11
+@@ -239,6 +267,9 @@ static const mozilla::Module::ContractID
+     { "@mozilla.org/widget/appshell/gtk;1", &kNS_APPSHELL_CID },
+     { "@mozilla.org/colorpicker;1", &kNS_COLORPICKER_CID, Module::MAIN_PROCESS_ONLY },
+     { "@mozilla.org/filepicker;1", &kNS_FILEPICKER_CID, Module::MAIN_PROCESS_ONLY },
++#if (MOZ_WIDGET_GTK == 3)
++    { "@mozilla.org/applicationchooser;1", &kNS_APPLICATIONCHOOSER_CID, Module::MAIN_PROCESS_ONLY },
++#endif
+     { "@mozilla.org/sound;1", &kNS_SOUND_CID, Module::MAIN_PROCESS_ONLY },
+     { "@mozilla.org/widget/transferable;1", &kNS_TRANSFERABLE_CID },
+ #ifdef MOZ_X11
+diff -up mozilla-release/widget/moz.build.1129873-apppicker mozilla-release/widget/moz.build
+--- mozilla-release/widget/moz.build.1129873-apppicker	2015-05-25 23:28:56.000000000 +0200
++++ mozilla-release/widget/moz.build	2015-06-09 09:36:01.000000000 +0200
+@@ -207,6 +207,10 @@ if toolkit in ('qt', 'gtk2', 'gtk3', 'wi
+     UNIFIED_SOURCES += [
+         'nsNativeTheme.cpp',
+     ]
++if toolkit == 'gtk3':
++    XPIDL_SOURCES += [
++        'nsIApplicationChooser.idl',
++    ]
+ 
+ if not CONFIG['MOZ_B2G']:
+     DEFINES['MOZ_CROSS_PROCESS_IME'] = True
+diff -up mozilla-release/widget/nsIApplicationChooser.idl.1129873-apppicker mozilla-release/widget/nsIApplicationChooser.idl
+--- mozilla-release/widget/nsIApplicationChooser.idl.1129873-apppicker	2015-06-09 09:37:35.314305558 +0200
++++ mozilla-release/widget/nsIApplicationChooser.idl	2015-06-09 09:37:35.314305558 +0200
+@@ -0,0 +1,39 @@
++/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*-
++ *
++ * This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsISupports.idl"
++#include "nsIMIMEInfo.idl"
++interface nsIDOMWindow;
++
++[scriptable, function, uuid(8144404d-e6c7-4861-bcca-47de912ee811)]
++interface nsIApplicationChooserFinishedCallback : nsISupports
++{
++  void done(in nsIHandlerApp handlerApp);
++};
++
++[scriptable, uuid(8413fc42-d6c4-4d78-bf70-64cd78ebcc5c)]
++interface nsIApplicationChooser : nsISupports
++{
++ /**
++  * Initialize the application chooser picker widget.  The application chooser
++  * is not valid until this method is called.
++  *
++  * @param      parent   nsIDOMWindow parent.  This dialog will be dependent
++  *                      on this parent. parent must be non-null.
++  * @param      title    The title for the file widget
++  *
++  */
++  void init(in nsIDOMWindow parent, in ACString title);
++
++  /**
++   * Open application chooser dialog.
++   *
++   * @param    contentType   content type of file to open
++   * @param    applicationChooserFinishedCallback  callback fuction to run when dialog is closed
++   */
++  void open(in ACString contentType, in nsIApplicationChooserFinishedCallback applicationChooserFinishedCallback);
++};
++
+diff -up mozilla-release/widget/nsWidgetsCID.h.1129873-apppicker mozilla-release/widget/nsWidgetsCID.h
+--- mozilla-release/widget/nsWidgetsCID.h.1129873-apppicker	2015-05-25 23:28:56.000000000 +0200
++++ mozilla-release/widget/nsWidgetsCID.h	2015-06-09 09:37:35.315305554 +0200
+@@ -24,6 +24,11 @@
+ { 0xbd57cee8, 0x1dd1, 0x11b2, \
+     {0x9f, 0xe7, 0x95, 0xcf, 0x47, 0x09, 0xae, 0xa3} }
+ 
++/* e221df9b-3d66-4045-9a66-5720949f8d10 */
++#define NS_APPLICATIONCHOOSER_CID \
++{ 0xe221df9b, 0x3d66, 0x4045, \
++    {0x9a, 0x66, 0x57, 0x20, 0x94, 0x9f, 0x8d, 0x10} }
++
+ /* 0f872c8c-3ee6-46bd-92a2-69652c6b474e */
+ #define NS_COLORPICKER_CID \
+ { 0x0f872c8c, 0x3ee6, 0x46bd, \
