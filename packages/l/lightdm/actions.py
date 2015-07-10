@@ -12,6 +12,7 @@ def setup():
     autotools.configure("--enable-introspection \
                          --enable-liblightdm-gobject \
                          --disable-static \
+                         --disable-tests \
                          --libexecdir=/usr/lib/lightdm \
                          --with-greeter-session=lightdm-gtk-greeter")
 
