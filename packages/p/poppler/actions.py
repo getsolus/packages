@@ -10,6 +10,7 @@ def setup():
                          --enable-libtiff \
                          --enable-libjpeg \
                          --enable-libpng \
+                         --disable-libopenjpeg \
                          --enable-libcurl")
 
 
