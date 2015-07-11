@@ -66,9 +66,16 @@ def get_log(opkg, pkg):
             res = os.system("git -C \"%s\" fetch origin" % gitp)
             if res != 0:
                 print("Failed to fetch origin for %s" % pkg.name)
-        cmd = "git -C \"%s\" --no-pager log --pretty=format:\"%%h|%%an: %%s\" %s..%s" % (gitp, otag,tag)
+        cmd = "git -C \"%s\" --no-pager log --pretty=format:\"%%h|%%an: %%s\" " % (gitp)
+        if otag != "%s~1" % tag:
+            cmd += "%s..%s" % (otag, tag)
+        else:
+            cmd += tag
         print cmd
         log = commands.getoutput(cmd)
+        spl = log.split("\n")
+        if otag == "%s~1" % tag and len(spl) > 1:
+            log = "\n".join(spl[:-1])
     except Exception, ex:
         print("Exception: %s" % ex)
         return None
