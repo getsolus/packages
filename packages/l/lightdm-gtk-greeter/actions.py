@@ -15,3 +15,4 @@ def install():
     autotools.install()
 
     pisitools.dodoc("AUTHORS", "ChangeLog", "COPYING")
+    pisitools.remove("/usr/share/icons/hicolor/icon-theme.cache")
