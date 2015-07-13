@@ -313,7 +313,13 @@ def configure_root():
 
     run_chroot("groupadd -g %d %s" % (dbus_id, dbus_name))
     run_chroot("useradd -m -d /var/run/dbus -r -s /bin/false -u %d -g %d %s -c \"%s\"" % (dbus_id, dbus_id, dbus_name, dbus_desc))
-    run_chroot("/sbin/ldconfig")
+    run_chroot("/sbin/ldconfig -X")
+    
+    # ensure hwdb is generated, otherwise slow-ass boot times.
+    run_chroot("/usr/bin/udevadm hwdb --update")
+    
+    # lastly, update mtimes to stop systemd running units it doesn't need to
+    run_chroot("touch /etc")
 
 
 def configure_live_account():
@@ -336,6 +342,16 @@ def configure_live_account():
     cmd = "echo \"%s\" >> /etc/sudoers" % line
     run_chroot("/bin/bash --login -c '%s'" % cmd)
 
+    # skeleton files that /root/ is going to need.
+    skeldir = os.path.join(get_image_root(), "etc", "skel")
+    for i in os.listdir(skeldir):
+        tgt = os.path.join(get_image_root(), "root", i)
+        if not os.path.exists(tgt):
+            try:
+                shutil.copy(os.path.join(skeldir, i), tgt)
+            except Exception, ex:
+                print("Failed to install skeleton file: %s" % ex)
+        
 def configure_boot():
     ''' Configure dracut correctly, depmod, etc. '''
     kernel = get_kernel_version()
@@ -729,6 +745,10 @@ def main():
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
+    # Trick systemd into not running units it does not need to...
+    run_chroot("/usr/bin/systemd-sysusers")
+    run_chroot("touch /etc/.updated -r /usr")
+    run_chroot("touch /var/.updated -r /usr")
     down_root()
     root_mounted = False
 
