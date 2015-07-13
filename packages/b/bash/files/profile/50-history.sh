@@ -1,6 +1,6 @@
-# Begin /etc/profile.d/50-history.sh
+# Begin /usr/share/defaults/etc/profile.d/50-history.sh
 
 export HISTSIZE=1000
 export HISTIGNORE="&:[bf]g:exit"
 
-# End /etc/profile.d/50-history.sh
+# End /usr/share/defaults/etc/profile.d/50-history.sh

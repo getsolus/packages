@@ -1,4 +1,4 @@
-# Begin /etc/profile.d/50-prompt.sh
+# Begin /usr/share/defaults/etc/profile.d/50-prompt.sh
 
 endchar="\$"
 if [ "$UID" = "0" ]; then
@@ -18,4 +18,4 @@ fi
 
 shopt -s checkwinsize
 
-# End /etc/profile.d/50-prompt.sh
+# End /usr/share/defaults/etc/profile.d/50-prompt.sh

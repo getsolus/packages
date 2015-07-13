@@ -1,6 +1,6 @@
-# Begin /etc/profild.d/10-xdg.sh
+# Begin /usr/share/defaults/etc/profile.d/10-xdg.sh
 
 export XDG_DATA_DIRS="/usr/share"
-export XDG_CONFIG_DIRS="/etc/xdg:/usr/share"
+export XDG_CONFIG_DIRS="/usr/share/xdg:/etc/xdg:/usr/share"
 
-# End /etc/profild.d/10-xdg.sh
+# End /usr/share/defaults/etc/profile.d/10-xdg.sh

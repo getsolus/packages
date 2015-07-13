@@ -1,4 +1,4 @@
-# Begin /etc/profile.d/50-readline.sh
+# Begin /usr/share/defaults/etc/profile.d/50-readline.sh
 
 if [ -z "$INPUTRC" ]; then
   if [ -f "$HOME/.inputrc" ]; then
@@ -10,4 +10,4 @@ if [ -z "$INPUTRC" ]; then
   fi
 fi
 
-# End /etc/profile.d/50-readline.sh
+# End /usr/share/defaults/etc/profile.d/50-readline.sh

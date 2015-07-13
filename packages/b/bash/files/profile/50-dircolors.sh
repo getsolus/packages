@@ -1,4 +1,4 @@
-# Begin /etc/profile.d/50-dircolors.sh
+# Begin /usr/share/defaults/etc/profile.d/50-dircolors.sh
 
 alias ls='ls --color=auto'
 if [ -f "$HOME/.dircolors" ]; then
@@ -9,4 +9,4 @@ else
   fi
 fi
 
-# End /etc/profile.d/50-dircolors.sh
+# End /usr/share/defaults/etc/profile.d/50-dircolors.sh
