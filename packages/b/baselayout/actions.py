@@ -34,6 +34,6 @@ def install():
     pisitools.dosym("/proc/self/mounts", "/etc/mtab")
 
     # Write out a default .profile.. temporary
-    shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /etc/profile")
-    shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /etc/profile")
+    shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /usr/share/defaults/etc/profile")
+    shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
