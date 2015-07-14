@@ -10,7 +10,7 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
             version = possible.split ("-")[1]
             cmd = "/sbin/depmod %s" % version
             os.system(cmd)
-            cmd = "dracut -N -f --kver %s" % version
+            cmd = "dracut --lz4 -N -f --kver %s" % version
             os.system (cmd)
 
             initname = "/boot/initramfs-%s.img" % version
