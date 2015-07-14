@@ -4,10 +4,10 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 
 def setup():
-    # TODO: Check systemd integration
     autotools.configure("--with-xkb-output=/var/lib/xkb \
                          --enable-install-setuid \
                          --enable-suid-wrapper \
+                         --enable-systemd-logind \
                          --with-xkb-path=/usr/share/X11/xkb \
                          --with-fontrootdir=/usr/share/fonts \
                          --enable-glamor \
@@ -17,6 +17,8 @@ def setup():
                          --enable-kdrive-evdev \
                          --enable-kdrive-mouse \
                          --enable-xephyr \
+                         --with-systemd-daemon \
+                         --enable-dri \
                          --disable-static")
 
 def build():
