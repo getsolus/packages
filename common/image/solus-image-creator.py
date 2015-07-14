@@ -366,7 +366,7 @@ def configure_boot():
             clean_exit(1)
 
     # If this looks evil, you're not wrong.
-    cmd = "dracut --no-hostonly-cmdline -N --kver \"%s\" --force --xz --add \"dmsquash-live systemd pollcdrom\" --add-drivers \"squashfs ext3 ext2 vfat msdos sr_mod sd_mod ehci_hcd uhci_hcd xhci_hcd xhci_pci ohci_hcd usb_storage usbhid dm_mod device-mapper ata_generic libata\" /live.initrd" % kernel
+    cmd = "dracut --no-hostonly-cmdline -N --kver \"%s\" --force --lz4 --add \"dmsquash-live systemd pollcdrom\" --add-drivers \"squashfs ext3 ext2 vfat msdos sr_mod sd_mod ehci_hcd uhci_hcd xhci_hcd xhci_pci ohci_hcd usb_storage usbhid dm_mod device-mapper ata_generic libata\" /live.initrd" % kernel
     run_chroot(cmd)
     try:
         dsrc = os.path.join(get_image_root(), "live.initrd")
@@ -396,7 +396,7 @@ def create_efi(title, name, label):
             clean_exit(1)
 
     # in future we **must** check kernel/initrd sizes..
-    size = 20
+    size = 30
     cmd = "dd if=/dev/zero of=\"%s\" bs=1 count=0 seek=%sM" % (get_efi_path(), size)
     try:
         ret = check_call(cmd)
