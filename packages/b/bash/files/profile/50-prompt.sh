@@ -5,17 +5,17 @@ if [ "$UID" = "0" ]; then
     endchar="#"
 fi
 
-export FG="\033[38;5;111m"
-export BG="\033[38;5;168m"
-export AT="\033[38;5;235m"
-export HCOLOR="\033[38;5;61m"
+FG="\[\033[38;5;111m\]"
+BG="\[\033[38;5;168m\]"
+AT="\[\033[38;5;235m\]"
+HCOLOR="\[\033[38;5;61m\]"
 
-export PS1="${FG}\u${AT}@${HCOLOR}\H ${BG}\w 
-${FG}$endchar \[\e[0;0m\]"
-if [ "${TERM:0:5}" = "xterm" ]; then
-  export PS1="\[\e]2;\u@\H :: \w\a\]$PS1"
-fi
+PS1="${FG}\u${AT}@${HCOLOR}\H ${BG}\w ${FG}$endchar \[\e[0m\]"
 
+unset FG
+unset BG
+unset AT
+unset HCOLOR
 shopt -s checkwinsize
 
 # End /usr/share/defaults/etc/profile.d/50-prompt.sh
