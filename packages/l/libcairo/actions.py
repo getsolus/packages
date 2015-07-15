@@ -10,7 +10,9 @@ def setup():
     autotools.configure("--disable-static \
                          --disable-xlib-xcb \
                          --enable-tee \
-                         --enable-gl")
+                         --enable-gl \
+                         --enable-svg \
+                         --disable-lto")
 
 def build():
     autotools.make()
