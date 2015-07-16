@@ -10,9 +10,16 @@ def setup():
     if not shelltools.can_access_directory("tools/clang"):
         shelltools.system("tar xf ../cfe-%s.src.tar.xz -C tools" % get.srcVERSION())
         shelltools.move("tools/cfe-%s.src" % get.srcVERSION(), "tools/clang")
+        
+        di = os.getcwd()
+        os.chdir("tools/clang")
+        shelltools.system("patch -p1 < ../../0001-Use-usr-lib64-for-dynamic-linker.patch")
+        os.chdir(di)
+
     if not shelltools.can_access_directory("projects/compiler-rt"):
         shelltools.system("tar xf ../compiler-rt-%s.src.tar.xz -C projects" % get.srcVERSION())
         shelltools.move("projects/compiler-rt-%s.src" % get.srcVERSION(), "projects/compiler-rt")
+        
 
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
