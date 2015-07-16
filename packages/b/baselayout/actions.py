@@ -37,3 +37,8 @@ def install():
     shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
+    
+    shelltools.unlink("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR())
+    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/usr/lib64")
+    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/lib64")
+    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/usr/local/lib")
