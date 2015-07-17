@@ -27,15 +27,13 @@ def setup():
     shelltools.export("CXX", "g++")
     autotools.rawConfigure("--prefix=/usr              \
                             --sysconfdir=/etc          \
-                            --libdir=/usr/lib/llvm     \
+                            --libdir=/usr/lib64        \
                             --enable-libffi            \
                             --enable-optimized         \
                             --enable-shared            \
                             --disable-assertions       \
-                            --disable-debug-runtime    \
                             --host=%s \
                             --build=%s \
-                            --with-gcc-toolchain=/usr \
                             --disable-expensive-checks" % (get.HOST(), get.HOST()))
 
 def build():
