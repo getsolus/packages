@@ -3,9 +3,10 @@
 
 
 from pisi.actionsapi import shelltools, get, autotools, pisitools
-
+import os
 
 def setup():
+    del os.environ["LD_AS_NEEDED"]
     autotools.autoreconf ("-fi")
 
     #disabled r300,r600,radeonsi
