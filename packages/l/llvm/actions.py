@@ -23,6 +23,16 @@ def setup():
 
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
+    host = get.HOST()
+    version = "4.9.2" # GCC version
+
+    paths = ["/usr/include/",
+             "/usr/include/c++/%s" % version,
+             "/usr/include/c++/%s/%s" % (version,host),
+             "/usr/include/c++/%s/backward" % (version),
+             "/usr/lib64/gcc/%s/%s/include" % (host,version),
+             "/usr/local/include" ]
+
     shelltools.export("CC", "gcc")
     shelltools.export("CXX", "g++")
     autotools.rawConfigure("--prefix=/usr              \
@@ -34,7 +44,8 @@ def setup():
                             --disable-assertions       \
                             --host=%s \
                             --build=%s \
-                            --disable-expensive-checks" % (get.HOST(), get.HOST()))
+                            --disable-expensive-checks \
+                            --with-c-include-dirs=%s" % (get.HOST(), get.HOST(), ":".join(paths)))
 
 def build():
     autotools.make()
