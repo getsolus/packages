@@ -14,6 +14,7 @@ def setup():
         di = os.getcwd()
         os.chdir("tools/clang")
         shelltools.system("patch -p1 < ../../0001-Use-usr-lib64-for-dynamic-linker.patch")
+        shelltools.system("patch -p1 < ../../0002-Implement-Solus-s-default-toolchain-options.patch")
         os.chdir(di)
 
     if not shelltools.can_access_directory("projects/compiler-rt"):
