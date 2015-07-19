@@ -28,7 +28,7 @@ def setup():
 
     confFlags = "--prefix=/usr      \
         --sysconfdir=/etc           \
-        --with-vendor=\"Evolve OS\" \
+        --with-vendor=\"Solus Operating System\" \
         --with-lang=ALL             \
         --with-help                 \
         --with-myspell-dicts        \
