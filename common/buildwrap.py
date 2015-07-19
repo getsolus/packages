@@ -145,10 +145,18 @@ class Builder():
             os.chdir(builddir)
             cmd = "sudo evobuild build %s -p unstable-x86_64 > \"%s.log\" 2>&1" % (tgt, tag)
             self.report_status(id, "BUILDING")
+            r = 0
             try:
-                os.system(cmd)
+                r = os.system(cmd)
             except Exception, e:
                 print e
+                sync_logs(tag, True)
+                self.report_status(id, "FAILED")
+                time.sleep(10)
+                continue
+
+            # build failure.
+            if r != 0:
                 sync_logs(tag, True)
                 self.report_status(id, "FAILED")
                 time.sleep(10)
