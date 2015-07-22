@@ -8,7 +8,7 @@ from pisi.actionsapi import get, shelltools, pisitools, autotools, kerneltools
 wdir = "NVIDIA-Linux-x86_64-%s" % get.srcVERSION()
 
 # Required... built in tandem with kernel update
-kversion = "4.1.2"
+kversion = "4.1.3"
 
 def setup():
     shelltools.system("sh NVIDIA-Linux-x86_64-%s.run --extract-only" % get.srcVERSION())
