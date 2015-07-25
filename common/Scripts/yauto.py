@@ -53,7 +53,7 @@ class AutoPackage:
     def __init__(self, uri):
         self.package_uri = uri
         homeDir = os.environ ["HOME"]
-        config = ".evolveos/packager"
+        config = ".solus/packager"
         self.config_dir = os.path.join (homeDir, config)
         if not os.path.exists (self.config_dir):
             print "Config file not found at %s" % self.config_dir
