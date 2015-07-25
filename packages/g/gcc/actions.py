@@ -15,37 +15,8 @@ IgnoreAutodep = True
 LegacyTriplet = "x86_64-evolveos-linux"
 Triplet = "x86_64-solus-linux"
 
-def get_host_gcc_version():
-    return os.path.basename(glob.glob("/usr/lib64/gcc/*/*")[0])
-
-def check_host():
-    ''' To avoid a catastrophic build failure(+chain reaction), we trick the
-        bootstrap by making the new triplet name already exist..
-
-        Two things:
-            Don't try this at home, kids!
-            Symlinks are the magic that hold distributions together. Seriously.
-    '''
-    version = get_host_gcc_version()
-    bins = ["%s-gcc" % Triplet,
-            "%s-gcc-%s" % (Triplet, version),
-            "%s-g++" % Triplet,
-            "%s-c++" % Triplet,
-            "%s-gcc-ar" % Triplet,
-            "%s-gcc-nm" % Triplet,
-            "%s-gcc-ranlib" % Triplet]
-    if not os.path.exists(SupportDir):
-        os.makedirs(SupportDir)
-    for i in bins:
-        if not os.path.exists(os.path.join("/usr/bin", i)):
-            if not os.path.exists(os.path.join(SupportDir, i)):
-                os.system("ln -sv /usr/bin/%s %s/%s" % (i.replace(Triplet,LegacyTriplet), SupportDir, i))
-    if SupportDir not in os.environ['PATH']:
-        os.environ['PATH'] = "%s:%s" % (SupportDir, os.environ['PATH'])
-
 def setup():
     shelltools.makedirs (BuildDir)
-    check_host()
 
     shelltools.cd (BuildDir)
 
@@ -85,12 +56,10 @@ def setup():
     shelltools.system ("%s/contrib/test_summary" % GccDir)
 
 def build():
-    check_host()
     shelltools.cd (BuildDir)
     autotools.make ()
 
 def install():
-    check_host()
     shelltools.cd (BuildDir)
 
     autotools.rawInstall ("DESTDIR=%s" % get.installDIR())
@@ -100,4 +69,4 @@ def install():
 
     crtfiles = ["libgcc.a", "crtbegin.o", "crtend.o", "crtbeginS.o", "crtendS.o"]
     for crt in crtfiles:
-        pisitools.dosym("/usr/lib64/gcc/%s/%s/%s" % (get.HOST(), get.srcVERSION(), crt), "/usr/lib64/%s" % crt)
+        pisitools.dosym("/usr/lib64/gcc/%s/%s/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib64/%s" % crt)
