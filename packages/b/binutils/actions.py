@@ -22,8 +22,8 @@ def setup():
         --disable-gold \
         --disable-werror \
         --enable-plugins \
-        --target=x86_64-evolveos-linux \
-        --build=x86_64-evolveos-linux")
+        --target=x86_64-solus-linux \
+        --build=x86_64-solus-linux")
 
 def build():
     shelltools.cd (BuildDir)
