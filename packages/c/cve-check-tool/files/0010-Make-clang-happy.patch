@@ -1,0 +1,211 @@
+From 3b57d46503cd0b86b0e80541859d6a1af01a04ad Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <michael.i.doherty@intel.com>
+Date: Wed, 22 Jul 2015 20:12:00 +0100
+Subject: [PATCH 10/13] Make clang happy
+
+Signed-off-by: Ikey Doherty <michael.i.doherty@intel.com>
+---
+ src/core.c             |  2 +-
+ src/library/template.c |  1 -
+ src/library/util.c     |  4 ++--
+ src/library/util.h     |  4 ++--
+ src/main.c             |  6 +++---
+ src/output/html.c      | 19 -------------------
+ src/update-main.c      |  2 +-
+ src/update.c           |  4 +---
+ tests/check-core.c     |  2 +-
+ 9 files changed, 11 insertions(+), 33 deletions(-)
+
+diff --git a/src/core.c b/src/core.c
+index e009aee..7aed9cd 100644
+--- a/src/core.c
++++ b/src/core.c
+@@ -270,7 +270,7 @@ static void process_node(CveDB *self, xmlTextReaderPtr r)
+ {
+         const xmlChar *name = NULL;
+         const xmlChar *value = NULL;
+-        struct vulnerability_t vuln = {0};
++        struct vulnerability_t vuln = {.vendor = 0};
+         xmlChar *uri = NULL;
+         int64_t last_mod = -1;
+ 
+diff --git a/src/library/template.c b/src/library/template.c
+index 4952f29..44fa50e 100644
+--- a/src/library/template.c
++++ b/src/library/template.c
+@@ -307,7 +307,6 @@ char *template_context_process_line(TemplateContext *self, const char *original,
+ 
+         while ((c = memchr(input->str+offset, '{', input->len-offset))) {
+                 autofree(cve_string) *newstr = NULL;
+-                autofree(cve_string) *left = NULL;
+                 TCValue *val = NULL;
+ 
+                 int oldoffset = offset;
+diff --git a/src/library/util.c b/src/library/util.c
+index 3d55dbb..014c8f1 100644
+--- a/src/library/util.c
++++ b/src/library/util.c
+@@ -34,7 +34,7 @@ DEF_AUTOFREE(char, free)
+ 
+ bool find_sources(const char *path, package_match_func match, bool recurse)
+ {
+-        struct stat st = {0};
++        struct stat st = {.st_ino = 0};
+         bool ret = false;
+         DIR *dir = NULL;
+         struct dirent *ent = NULL;
+@@ -85,7 +85,7 @@ PackageType guess_package_type(gchar *path, bool recurse)
+         DIR *dir = NULL;
+         struct dirent *ent = NULL;
+         PackageType type = PACKAGE_TYPE_UNKNOWN;
+-        struct stat st = {0}, stc = {0};
++        struct stat st = {.st_ino = 0}, stc = {.st_ino = 0};
+         char *p = realpath(path, NULL);
+ 
+         if (!p) {
+diff --git a/src/library/util.h b/src/library/util.h
+index 69ae1fa..0105311 100644
+--- a/src/library/util.h
++++ b/src/library/util.h
+@@ -254,13 +254,13 @@ static inline void package_free(void *p)
+ 
+ static inline bool cve_file_exists(const char *p)
+ {
+-        struct stat st = {0};
++        struct stat st = {.st_ino = 0};
+         return (stat(p,&st) == 0);
+ }
+ 
+ static inline bool cve_is_dir(const char *p)
+ {
+-        struct stat st = {0};
++        struct stat st = {.st_ino = 0};
+         if (stat(p, &st) != 0) {
+                 return false;
+         }
+diff --git a/src/main.c b/src/main.c
+index a174c85..61f0955 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -248,7 +248,7 @@ static GOptionEntry _entries[] = {
+         { "auto-bug", 'b', 0, G_OPTION_ARG_NONE, &auto_bug, "Enable automatic bug tracking", NULL },
+         { "auto-bug-template", 'j', 0, G_OPTION_ARG_STRING, &auto_bug_template, "Path to optional auto-bug json template file", NULL },
+         { "mapping", 'M', 0, G_OPTION_ARG_STRING, &mapping_file, "Path to a mapping file", NULL},
+-        { NULL }
++        { .short_name = 0 }
+ };
+ 
+ static bool set_package_type(PackageType type)
+@@ -283,7 +283,7 @@ static bool set_package_type(PackageType type)
+ /**
+  * Helper utility to free the bug struct
+  */
+-static inline void bug_free(void *p)
++__attribute__ ((unused)) static inline void bug_free(void *p)
+ {
+         struct jira_issue_t *t = p;
+ 
+@@ -422,7 +422,7 @@ int main(int argc, char **argv)
+         autofree(CveDB) *cve_db = NULL;
+         int ret = EXIT_FAILURE;
+         PackageType type = PACKAGE_TYPE_UNKNOWN;
+-        CveCheckTool instance = {0};
++        CveCheckTool instance = {.is_patched = 0};
+         instance.modified = -1;
+         time_t ti;
+         CvePlugin *report = NULL;
+diff --git a/src/output/html.c b/src/output/html.c
+index c4f3312..e268b94 100644
+--- a/src/output/html.c
++++ b/src/output/html.c
+@@ -23,23 +23,6 @@
+ 
+ #define NVD_CVE_URI "http://web.nvd.nist.gov/view/vuln/detail?vulnId="
+ 
+-static inline gchar *_concat(gchar *source, gchar *moar)
+-{
+-        gchar *ret = g_strconcat(source, moar, NULL);
+-        if (ret) {
+-                g_free(source);
+-                return ret;
+-        }
+-        return source;
+-}
+-
+-static inline gchar *dotemplate(GHashTable *k, char *p)
+-{
+-        gchar *ret = template_string(p, k);
+-        g_free(p);
+-        return ret;
+-}
+-
+ static inline bool load_template(const char *tmpl_name, gchar **ret)
+ {
+         autofree(GError) *error = NULL;
+@@ -129,7 +112,6 @@ bool write_report(CveCheckTool *self)
+                 }
+ 
+                 for (c = v->issues; c; c = c->next) {
+-                        autofree(gchar) *ent = NULL;
+                         c_entry = cve_db_get_cve(self->cve_db, (gchar*)c->data);
+                         if (self->modified > 0 && c_entry->modified > self->modified) {
+                                 cve_free(c_entry);
+@@ -159,7 +141,6 @@ bool write_report(CveCheckTool *self)
+                 }
+                 if (!self->hide_patched && v->patched) {
+                         for (c = v->patched; c; c = c->next) {
+-                                autofree(gchar) *ent = NULL;
+                                 c_entry = cve_db_get_cve(self->cve_db, (gchar*)c->data);
+ 
+                                 if (self->modified > 0 && c_entry->modified > self->modified) {
+diff --git a/src/update-main.c b/src/update-main.c
+index d1c95c6..56ffc88 100644
+--- a/src/update-main.c
++++ b/src/update-main.c
+@@ -45,7 +45,7 @@ static bool _quiet = false;
+ static GOptionEntry _entries[] = {
+         { "version", 'v', 0, G_OPTION_ARG_NONE, &_show_version, "Show version", NULL },
+         { "quiet", 'q', 0, G_OPTION_ARG_NONE, &_quiet, "Run silently", NULL },
+-        { NULL }
++        { .short_name = 0 }
+ };
+ 
+ /**
+diff --git a/src/update.c b/src/update.c
+index a837f17..1853b2f 100644
+--- a/src/update.c
++++ b/src/update.c
+@@ -46,7 +46,7 @@ bool update_required()
+         time_t t;
+ 
+         autofree(gchar) *db = get_db_path();
+-        struct stat st = {0};
++        struct stat st = {.st_ino = 0};
+         if (stat(db, &st) != 0) {
+                 return true;
+         }
+@@ -61,8 +61,6 @@ bool update_required()
+ 
+ bool update_db(bool quiet)
+ {
+-        autofree(GError) *error = NULL;
+-        autofree(GOptionContext) *context = NULL;
+         autofree(gchar) *db_path = NULL;
+         autofree(cve_string) *workdir = NULL;
+         autofree(CveDB) *cve_db = NULL;
+diff --git a/tests/check-core.c b/tests/check-core.c
+index f4bbc26..c560211 100644
+--- a/tests/check-core.c
++++ b/tests/check-core.c
+@@ -126,7 +126,7 @@ START_TEST(cve_string_test)
+         fail_if(cve_string_const_equal(NULL, NULL), "const_equal on NULL string");
+ 
+         /* Forced empty ->str tests */
+-        cve_string st = { 0 };
++        cve_string st = { .len = 0 };
+         fail_if(cve_string_equal(&st, &st), "equal on NULL ->str");
+         fail_if(cve_string_const_equal(&st, "TEST"), "const_equal on NULL ->str");
+ }
+-- 
+2.4.6
+
