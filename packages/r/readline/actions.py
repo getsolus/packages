@@ -12,7 +12,7 @@ def setup():
                          --libdir=/usr/lib64")
 
 def build():
-    autotools.make()
+    autotools.make("SHLIB_LIBS=-lncursesw")
 
 def install():
     autotools.rawInstall("DESTDIR=%s install" % get.installDIR())
