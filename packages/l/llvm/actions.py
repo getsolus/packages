@@ -58,3 +58,6 @@ def install():
     shelltools.chmod("%s/usr/lib/*.a" % get.installDIR(), mode=0644)
 
     pisitools.domove("/usr/docs", "/usr/share/", "doc")
+
+    for i in ["scan-view", "scan-build"]:
+        pisitools.dobin("tools/clang/tools/%s" % i)
