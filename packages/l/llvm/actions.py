@@ -62,6 +62,6 @@ def install():
 
     for i in ["scan-view", "scan-build"]:
         shelltools.system("cp -Rv tools/clang/tools/%s %s/usr/lib/clang-analyzer" % (i, get.installDIR()))
-        shelltools.system("ln -sv /usr/lib/clang/analyzer/%s/%s %s/usr/bin/%s" % (i, i, get.installDIR(), i))
+        shelltools.system("ln -sv /usr/lib/clang-analyzer/%s/%s %s/usr/bin/%s" % (i, i, get.installDIR(), i))
 
     pisitools.dosym("/usr/bin/clang", "/usr/lib/clang-analyzer/scan-build/clang")
