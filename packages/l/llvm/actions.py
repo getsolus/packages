@@ -58,6 +58,10 @@ def install():
     shelltools.chmod("%s/usr/lib/*.a" % get.installDIR(), mode=0644)
 
     pisitools.domove("/usr/docs", "/usr/share/", "doc")
+    pisitools.dodir("/usr/lib/clang-analyzer")
 
     for i in ["scan-view", "scan-build"]:
-        pisitools.dobin("tools/clang/tools/%s" % i)
+        shelltools.system("cp -Rv tools/clang/tools/%s %s/usr/lib/clang-analyzer" % (i, get.installDIR()))
+        shelltools.system("ln -sv /usr/lib/clang/analyzer/%s/%s %s/usr/bin/%s" % (i, i, get.installDIR(), i))
+
+    pisitools.dosym("/usr/bin/clang", "/usr/lib/clang-analyzer/scan-build/clang")
