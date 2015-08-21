@@ -32,4 +32,4 @@ def setupPackage(metapath, filepath):
 
 
 def postCleanupPackage(metapath, filepath):
-    pass
+    updateSystemConfig(filepath)
