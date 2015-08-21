@@ -21,8 +21,8 @@ def setup():
     shelltools.cd (BuildDir)
 
     # Because GCC is a dope.
-    cflags = get.CFLAGS().replace("-D_FORTIFY_SOURCE=2", "")
-    cxxflags = get.CXXFLAGS().replace("-D_FORTIFY_SOURCE=2", "")
+    cflags = get.CFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "")
+    cxxflags = get.CXXFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "")
 
     shelltools.export("CFLAGS", cflags)
     shelltools.export("CXXFLAGS", cxxflags)
