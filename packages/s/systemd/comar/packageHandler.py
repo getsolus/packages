@@ -16,7 +16,7 @@ def updateSystemConfig(filepath):
             path = "/%s" % path # Just in case
         if path.startswith("/usr/lib/tmpfiles.d") or path.startswith("/usr/lib64/tmpfiles.d"):
             shouldTmp = True
-        if path.startswith("/usr/lib/sysusers.d") or path.startswith("/usr/lib/sysusers.d"):
+        if path.startswith("/usr/lib/sysusers.d") or path.startswith("/usr/lib64/sysusers.d"):
             shouldUser = True
         if shouldUser and shouldTmp:
             break
