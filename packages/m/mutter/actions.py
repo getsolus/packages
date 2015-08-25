@@ -8,6 +8,7 @@ shelltools.export("HOME", get.workDIR())
 
 
 def setup():
+    autotools.autoreconf("-vfi")
     autotools.configure("--disable-static \
                          --enable-introspection")
 
