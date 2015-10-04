@@ -12,6 +12,7 @@ def setup():
                          --with-docdir=/usr/share/cups/doc \
                          --with-system-groups=lpadmin \
                          --enable-openssl \
+                         --enable-systemd \
                          --enable-acl \
                          --enable-dbus \
                          --enable-libpaper ")
@@ -23,6 +24,5 @@ def install():
     autotools.rawInstall("BUILDROOT=%s" % get.installDIR() )
 
     pisitools.removeDir("/usr/share/cups/banners")
-    pisitools.removeDir("/usr/share/cups/data/testprint")
 
     shelltools.echo("%s/etc/cups/client.conf" % get.installDIR(), "ServerName /var/run/cups/cups.sock")
