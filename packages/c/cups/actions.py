@@ -26,3 +26,11 @@ def install():
     pisitools.removeDir("/usr/share/cups/banners")
 
     shelltools.echo("%s/etc/cups/client.conf" % get.installDIR(), "ServerName /var/run/cups/cups.sock")
+
+    pisitools.dodir("/usr/lib/systemd/system/printer.target.wants")
+    pisitools.dodir("/usr/lib/systemd/system/sockets.target.wants")
+    pisitools.dodir("/usr/lib/systemd/system/multi-user.target.wants")
+
+    pisitools.dosym("/usr/lib/systemd/system/org.cups.cupsd.service", "/usr/lib/systemd/system/printer.target.wants/org.cups.cupsd.service")
+    pisitools.dosym("/usr/lib/systemd/system/org.cups.cupsd.socket", "/usr/lib/systemd/system/sockets.target.wants/org.cups.cupsd.socket")
+    pisitools.dosym("/usr/lib/systemd/system/org.cups.cupsd.path", "/usr/lib/systemd/system/multi-user.target.wants/org.cups.cupsd.path")
