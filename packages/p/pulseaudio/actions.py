@@ -10,6 +10,7 @@ def setup():
                          --enable-alsa \
                          --disable-bluez4 \
                          --enable-bluez5 \
+                         --enable-bluez5-native-headset \
                          --enable-dbus")
 
 
