@@ -8,6 +8,8 @@ def setup():
     autotools.configure("--disable-static \
                          --libexecdir=/usr/lib \
                          --enable-alsa \
+                         --disable-bluez4 \
+                         --enable-bluez5 \
                          --enable-dbus")
 
 
