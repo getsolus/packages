@@ -15,5 +15,6 @@ def install():
     pisitools.insinto("/usr/include/irrlicht", "include/*")
     pisitools.dolib("lib/Linux/libIrrlicht.so.1.8.1")
     pisitools.dosym("/usr/lib/libIrrlicht.so.1.8.1", "/usr/lib/libIrrlicht.so")
+    pisitools.dosym("/usr/lib/libIrrlicht.so.1.8.1", "/usr/lib/libIrrlicht.so.1.8")
 
     
