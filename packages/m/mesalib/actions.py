@@ -13,9 +13,11 @@ def setup():
     autotools.configure ("--prefix=/usr                  \
                           --sysconfdir=/etc              \
                           --enable-texture-float         \
+                          --enable-egl                   \
                           --enable-gles1                 \
                           --enable-gles2                 \
                           --enable-osmesa                \
+                          --enable-vdpau                 \
                           --enable-xa                    \
                           --enable-gbm                   \
                           --enable-gallium-egl           \
