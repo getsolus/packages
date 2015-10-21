@@ -1,0 +1,140 @@
+From 8a81a6aff7c6ab6e9bff99ba0888b3ebd1d11f88 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Wed, 21 Oct 2015 22:56:16 +0100
+Subject: [PATCH] Implement proper build-id based debuginfo support
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ pisi/constants.py        |  1 +
+ pisi/operations/build.py | 69 +++++++++++++++++++++++++++++++++++++++++++-----
+ 2 files changed, 63 insertions(+), 7 deletions(-)
+
+diff --git a/pisi/constants.py b/pisi/constants.py
+index d001e9a..0af0d1e 100644
+--- a/pisi/constants.py
++++ b/pisi/constants.py
+@@ -62,6 +62,7 @@ class Constants:
+         # suffix for auto generated debug packages
+         self.__c.debug_name_suffix = "-dbginfo"
+         self.__c.debug_file_suffix = ".debug"
++        self.__c.debug_file_buildid = ".build-id"
+ 
+         # suffix for auto generated ar packages
+         self.__c.static_name_suffix = "-static"  # an admissible use of constant
+diff --git a/pisi/operations/build.py b/pisi/operations/build.py
+index e88a43d..e3ee80e 100644
+--- a/pisi/operations/build.py
++++ b/pisi/operations/build.py
+@@ -56,6 +56,9 @@ class ExcludedArchitectureException(Error):
+     pass
+ 
+ 
++global debug_map
++debug_map = dict()
++
+ # Helper Functions
+ def get_file_type(path, pinfo_list):
+     """Return the file type of a path according to the given PathInfo
+@@ -146,8 +149,38 @@ def exclude_special_files(filepath, fileinfo, ag):
+             # Remove dir if it becomes empty (Bug #11588)
+             util.rmdirs(os.path.dirname(filepath))
+ 
++def get_debug_path(filepath, fileinfo, install_dir):
++    """Query ELF files for the correct BuildID based location"""
++
++    if "SB executable" not in fileinfo and "SB relocatable" not in fileinfo \
++    and "SB shared object" not in fileinfo:
++        return None
++
++    code,out,err = pisi.util.run_batch("readelf -n \"%s\"" % filepath)
++    if code != 0:
++        return None
++    for line in out.split("\n"):
++        if "Build ID:" not in line:
++            continue
++        val = line.split(":")[1].strip()
++
++        suffix = util.join_path(ctx.const.debug_files_suffix,
++                                ".build-id",
++                                val[0:2],
++                                val[2:])
++
++        path = util.join_path(os.path.dirname(install_dir),
++                                ctx.const.debug_dir_suffix,
++                                ctx.const.debug_files_suffix,
++                                ".build-id",
++                                val[0:2],
++                                val[2:])
++
++        return (path, suffix)
++
+ def strip_debug_action(filepath, fileinfo, install_dir, ag):
+     excludelist = tuple(ag.get("NoStrip", []))
++    global debug_map
+ 
+     # real path in .pisi package
+     path = '/' + util.removepathprefix(install_dir, filepath)
+@@ -155,13 +188,27 @@ def strip_debug_action(filepath, fileinfo, install_dir, ag):
+     if path.startswith(excludelist):
+         return
+ 
+-    outputpath = util.join_path(os.path.dirname(install_dir),
+-                                ctx.const.debug_dir_suffix,
+-                                ctx.const.debug_files_suffix,
+-                                path)
++    outputpath, outclean = get_debug_path(filepath, fileinfo, install_dir)
++    buildID = None
+ 
++    if outputpath is None:
++        # Resort to old debug paths
++        outputpath = util.join_path(os.path.dirname(install_dir),
++                                    ctx.const.debug_dir_suffix,
++                                    ctx.const.debug_files_suffix,
++                                    path)
++    else:
++        clean = filepath.split(install_dir)[1]
++        if clean[0] != '/':
++            clean = '/%s' % clean
++
++        debug_map[clean] = outclean
++        buildID = True
+     if util.strip_file(filepath, fileinfo, outputpath):
+         ctx.ui.debug("%s [%s]" % (path, "stripped"))
++        if not buildID:
++            ctx.ui.warning("%s [%s]" % (path, "missing buildID"))
++
+ 
+ class Builder:
+     """Provides the package build and creation routines"""
+@@ -898,6 +945,8 @@ class Builder:
+         return static_package_obj
+ 
+     def generate_debug_package_object(self, package):
++        global debug_map
++
+         debug_package_obj = pisi.specfile.Package()
+         debug_package_obj.debug_package = True
+         debug_package_obj.name = package.name + ctx.const.debug_name_suffix
+@@ -911,10 +960,16 @@ class Builder:
+         dependency.release = self.spec.history[0].release
+         debug_package_obj.packageDependencies.append(dependency)
+ 
++        pops = list()
+         for path_info in package.files:
+-            path = util.join_path(ctx.const.debug_files_suffix, path_info.path)
+-            debug_path_info = pisi.specfile.Path(path=path, fileType="debug")
+-            debug_package_obj.files.append(debug_path_info)
++            for key in debug_map:
++                v = debug_map[key]
++                if key.startswith(path_info.path):
++                    debug_path_info = pisi.specfile.Path(path=os.path.dirname(v), fileType="debug")
++                    debug_package_obj.files.append(debug_path_info)
++                    pops.append(key)
++        for key in pops:
++            del debug_map[key]
+ 
+         return debug_package_obj
+ 
+-- 
+2.6.2
+
