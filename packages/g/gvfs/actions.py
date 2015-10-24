@@ -8,7 +8,8 @@ def setup():
     autotools.configure("--enable-gphoto2 \
                          --disable-documentation \
                          --enable-afc \
-                         --libexecdir=/usr/lib/gvfs")
+                         --libexecdir=/usr/lib/gvfs \
+                         --enable-cdda")
 
 def build():
     autotools.make()
