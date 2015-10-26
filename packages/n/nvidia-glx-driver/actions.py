@@ -4,6 +4,7 @@ import os.path
 NoStrip = ["/"]
 
 from pisi.actionsapi import get, shelltools, pisitools, autotools, kerneltools
+import commands
 
 wdir = "NVIDIA-Linux-x86_64-%s" % get.srcVERSION()
 
@@ -68,6 +69,13 @@ def install():
     # kernel portion, i.e. /lib/modules/3.19.7/kernel/drivers/video/nvidia.ko
     shelltools.cd("kernel")
     pisitools.dolib_a("nvidia.ko", kdir)
+
+    # install modalias
+    pisitools.dodir("/usr/share/doflicky/modaliases")
+    with open("%s/usr/share/doflicky/modaliases/%s.modaliases" % (get.installDIR(), get.srcNAME()), "w") as outp:
+        inp = commands.getoutput("../../nvidia_supported nvidia %s ../README.txt nvidia.ko" % get.srcNAME())
+        outp.write(inp)
+
     shelltools.cd("uvm")
     pisitools.dolib_a("nvidia-uvm.ko", kdir)
 
