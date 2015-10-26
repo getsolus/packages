@@ -61,6 +61,9 @@ def install():
         pisitools.dosym("/usr/lib/glx-provider/default/%s.so.%s" % (name,version), "/usr/lib/glx-provider/default/%s.so.%s" % (name, short_version))
         pisitools.dosym("/usr/lib/glx-provider/default/%s.so.%s" % (name, version), "/usr/lib/glx-provider/default/%s.so" % name)
 
+    # .la being a dick again
+    pisitools.remove("/usr/lib/lib*.la")
+    pisitools.remove("/usr/lib/dri/*.la")
     redo_lib("libEGL", "1.0.0", "1")
     redo_lib("libGL", "1.2.0", "1")
     redo_lib("libGLESv1_CM", "1.1.0", "1")
