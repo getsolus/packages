@@ -14,3 +14,6 @@ pref("browser.newtabpage.pinned",           '[{"url":"https://solus-project.com/
 pref("extensions.autoDisableScopes",        0);
 pref("general.skins.selectedSkin",          "arc-darker-theme");
 pref("extensions.enabledAddons",            "%7B8a01dfcc-450f-11e5-909b-fb581d5d46b0%7D:41.20150921");
+pref("layers.use-image-offscreen-surfaces", false);
+pref("media.mediasource.enabled",           true);
+pref("media.mediasource.webm.enabled",      true);
