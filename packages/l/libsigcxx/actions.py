@@ -4,7 +4,7 @@ from pisi.actionsapi import autotools, pisitools
 
 
 def setup():
-    autotools.configure("--disable-static")
+    autotools.configure("--disable-static --libdir=/usr/lib64")
 
 
 def build():
