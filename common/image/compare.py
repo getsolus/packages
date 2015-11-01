@@ -141,6 +141,8 @@ if __name__ == "__main__":
             changes.write("<h4>Changes in this release:</h4>\n\n")
             for key in changeTable.keys():
                 changes.write("<b>%s</b>\n<ul>\n" % key)
+                if key not in changeTable or changeTable[key] is None:
+                    print("%s MISSING !!! " % key)
                 for line in changeTable[key]:
                     spl = line.split("|")
                     com = spl[0]
