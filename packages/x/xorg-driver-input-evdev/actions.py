@@ -13,3 +13,4 @@ def build():
 
 def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
+    pisitools.removeDir("/usr/share/X11")
