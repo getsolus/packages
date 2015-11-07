@@ -1,11 +1,10 @@
-
 #!/usr/bin/python
 
 
 from pisi.actionsapi import get, autotools, pisitools
 import os
 
-WordsFile = "../cracklib-words-20080507.gz"
+WordsFile = "../cracklib-words-2.9.6.gz"
 
 def setup():
     autotools.configure ("--disable-static")
