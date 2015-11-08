@@ -20,5 +20,6 @@ def build():
 
 def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
+    pisitools.removeDir("/etc/bash_completion.d")
 
     pisitools.dodoc("LICENSE")
