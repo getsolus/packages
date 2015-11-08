@@ -13,10 +13,16 @@ def setup():
     autotools.configure("--disable-static \
                          --with-user=\"gdm\" \
                          --with-group=\"gdm\" \
-                         --with-plymouth \
+                         --without-plymouth \
+                         --with-systemd \
                          --with-default-pam-config=lfs \
                          --enable-introspection \
                          --enable-console-helper \
+                         --enable-gdm-xsession \
+                         --with-at-spi-registryd-directory=/usr/lib/at-spi2/core \
+                         --with-check-accelerated-directory=/usr/lib/gnome-session  \
+                         --without-console-kit \
+                         --with-initial-vt=7 \
                          --enable-systemd-journal")
 
 
