@@ -420,15 +420,10 @@ def create_efi(title, name, label):
         clean_exit(1)
     efi_mounted = True
 
-    # install shouty boot loader
     try:
-        target = os.path.join(get_efi_root(), "EFI/BOOT/BOOTX64.EFI")
-        d = os.path.dirname(target)
-        if not os.path.exists(d):
-            os.makedirs(d)
-        shutil.copy("/usr/lib/gummiboot/gummibootx64.efi", target)
+        os.system("goofiboot install --force --no-variables --path=%s" % get_efi_root())
     except Exception, ex:
-        print("Failed to install gummiboot: %s" % ex)
+        print("Failed to install goofiboot: %s" % ex)
         clean_exit(1)
 
     for i in ["kernel", "initrd.img"]:
@@ -442,21 +437,19 @@ def create_efi(title, name, label):
             print("Failed to install EFI boot file: %s" % ex)
             clean_exit(1)
 
-    # Write gummiboot config..
+    # Write UEFI config..
     try:
         # root loader config
-        os.makedirs(os.path.join(get_efi_root(), "loader"))
         with open(os.path.join(get_efi_root(), "loader/loader.conf"), "w") as conf:
-            conf.write("default Solus\ntimeout 4\n")
+            conf.write("default solus\ntimeout 4\n")
         # Solus entry
-        os.makedirs(os.path.join(get_efi_root(), "loader/entries"))
         with open(os.path.join(get_efi_root(), "loader/entries/solus.conf"), "w") as conf:
             conf.write("""title %(TITLE)s
 linux /kernel
 initrd /initrd
 options root=live:LABEL=%(DESC)s""" % { 'DESC' : label, 'TITLE': title})
     except Exception, ex:
-        print("Unable to write gummiboot config: %s" % ex)
+        print("Unable to write goofiboot config: %s" % ex)
         clean_exit(1)
 
     try:
@@ -588,7 +581,7 @@ def main():
 
     files = dict()
     files["/usr/bin/isohybrid"] = "syslinux"
-    files["/usr/lib/gummiboot/gummibootx64.efi"] = "gummiboot"
+    files["/usr/lib/goofiboot/goofibootx64.efi"] = "goofiboot (install from git)"
     files["/usr/lib/syslinux/vesamenu.c32"] = "syslinux"
     files["/usr/bin/mksquashfs"] = "squashfs-tools"
     files["/usr/bin/xorriso"] = "libisoburn"
