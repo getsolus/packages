@@ -581,7 +581,7 @@ def main():
 
     files = dict()
     files["/usr/bin/isohybrid"] = "syslinux"
-    files["/usr/lib/goofiboot/goofibootx64.efi"] = "goofiboot (install from git)"
+    files["/usr/lib/goofiboot/goofibootx64.efi"] = "goofiboot"
     files["/usr/lib/syslinux/vesamenu.c32"] = "syslinux"
     files["/usr/bin/mksquashfs"] = "squashfs-tools"
     files["/usr/bin/xorriso"] = "libisoburn"
