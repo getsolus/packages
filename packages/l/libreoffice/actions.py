@@ -3,7 +3,7 @@
 
 from pisi.actionsapi import get, autotools, pisitools, shelltools
 
-LoVersion = "5.0.1.2"
+LoVersion = "5.0.3.2"
 
 OurWorkDir = "%s/libreoffice-%s" % (get.workDIR(), LoVersion)
 
@@ -55,7 +55,7 @@ def setup():
         --with-system-openssl       \
         --with-system-poppler       \
         --with-system-zlib          \
-        --enable-gtk3               \
+        --disable-gtk3               \
         --with-parallelism=%s" % (get.makeJOBS().replace("-j",""))
     shelltools.system("./autogen.sh %s" % confFlags)
 
