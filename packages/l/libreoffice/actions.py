@@ -40,7 +40,7 @@ def setup():
         --disable-postgresql-sdbc   \
         --enable-release-build=yes  \
         --enable-python=system      \
-        --with-system-boost         \
+        --without-system-boost      \
         --with-system-cairo         \
         --with-system-curl          \
         --with-system-expat         \
