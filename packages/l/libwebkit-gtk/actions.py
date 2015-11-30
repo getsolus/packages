@@ -10,7 +10,7 @@ def setup():
     shelltools.export("CFLAGS", get.CFLAGS().replace("-Wl,-z,now", ""))
     shelltools.export("CXXFLAGS", get.CXXFLAGS().replace("-Wl,-z,now", ""))
     shelltools.export("LDFLAGS", get.LDFLAGS().replace("-Wl,-z,now", ""))
-    cmaketools.configure("-DPORT=GTK -DCMAKE_SKIP_RPATH=ON")
+    cmaketools.configure("-DCMAKE_BUILD_TYPE=Release -DPORT=GTK -DCMAKE_SKIP_RPATH=ON")
 
 def build():
     autotools.make()
