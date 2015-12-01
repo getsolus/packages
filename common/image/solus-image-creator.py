@@ -351,7 +351,20 @@ def configure_live_account():
                 shutil.copy(os.path.join(skeldir, i), tgt)
             except Exception, ex:
                 print("Failed to install skeleton file: %s" % ex)
-        
+
+    # do not run initial setup for live-user!
+    cdir = os.path.join(get_image_root(), "home/live/.config")
+    if not os.path.exists(cdir):
+        try:
+            os.makedirs(cdir)
+        except Exception, ex:
+            print("Failed to create config dir")
+    cmd = "echo \"yes\" >> /home/live/.config/gnome-initial-setup-done"
+    run_chroot("/bin/bash --login -c '%s'" % cmd)
+    # make sure live actually owns live
+    cmd = "chown -R %s:%s /home/%s" % ("live","live","live")
+    run_chroot("/bin/bash --login -c '%s'" % cmd)
+
 def configure_boot():
     ''' Configure dracut correctly, depmod, etc. '''
     kernel = get_kernel_version()
