@@ -460,7 +460,7 @@ def create_efi(title, name, label):
             conf.write("""title %(TITLE)s
 linux /kernel
 initrd /initrd
-options root=live:LABEL=%(DESC)s""" % { 'DESC' : label, 'TITLE': title})
+options root=live:LABEL=%(DESC)s ro rd.live.image rd.luks=0 rd.md=0 rd.dm=0""" % { 'DESC' : label, 'TITLE': title})
     except Exception, ex:
         print("Unable to write goofiboot config: %s" % ex)
         clean_exit(1)
@@ -536,7 +536,7 @@ MENU TABMSGROW 11
 label live
   menu label Start %(NAME)s
   kernel /boot/kernel
-  append initrd=/boot/initrd.img root=live:LABEL=%(LABEL)s --
+  append initrd=/boot/initrd.img root=live:LABEL=%(LABEL)s ro rd.live.image rd.luks=0 rd.md=0 rd.dm=0 --
 menu default
 label local
   menu label Boot from local drive
