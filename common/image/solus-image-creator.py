@@ -252,6 +252,12 @@ def create_image():
         print("Non-zero exit code")
         clean_exit(1)
 
+    try:
+        check_call("tune2fs -c0 -i0 \"%s\"" % get_image_path())
+    except Exception, e:
+        print("Unable to tune2fs image: %s" % e)
+
+
 def init_root():
     ''' Construct run links, etc '''
     try:
@@ -787,6 +793,8 @@ def main():
     # TODO: Check its actually ext :P
     try:
         check_call("e2fsck -y \"%s\"" % get_image_path())
+        check_call("e2fsck -f \"%s\"" % get_image_path())
+        check_call("resize2fs -M \"%s\"" % get_image_path())
     except Exception, e:
         print("Failed e2fsck - aborting")
         clean_exit(1)
