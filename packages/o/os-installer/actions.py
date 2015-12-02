@@ -14,9 +14,6 @@ def install():
     # Copy in our data files
     pisitools.insinto("/usr/share/os-installer", "data/*")
 
-    # Change log
-    pisitools.insinto("/usr/share/os-installer", "changes")
-
     # Icons
     pisitools.insinto("/usr/share/icons/gnome/scalable/actions", "dist/icons/*")
 
