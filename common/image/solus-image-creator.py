@@ -365,6 +365,31 @@ def configure_live_account():
     cmd = "chown -R %s:%s /home/%s" % ("live","live","live")
     run_chroot("/bin/bash --login -c '%s'" % cmd)
 
+    fname = "%s/var/lib/AccountsService/users/live" % get_image_root()
+    fdir = os.path.dirname(fname)
+    if not os.path.exists(fdir):
+        try:
+            os.makedirs(fdir)
+        except Exception, ex:
+            print("Unable to create directories for live config")
+
+    with open(fname, "w") as fout:
+        fout.write("""[User]
+Language=en_US.utf8
+XSession=budgie-desktop
+SystemAccount=false
+""")
+
+    assets = os.path.dirname(os.path.abspath(__file__))
+    try:
+        if os.path.exists(os.path.join(get_image_root(), "etc/gdm")):
+            shutil.copy(os.path.join(assets, "gdm.conf"), os.path.join(get_image_root(), "etc/gdm/custom.conf"))
+    except Exception, ex:
+        print("Unable to copy gdm.conf: %s" % e)
+
+
+
+
 def configure_boot():
     ''' Configure dracut correctly, depmod, etc. '''
     kernel = get_kernel_version()
