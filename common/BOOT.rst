@@ -79,6 +79,7 @@ to control upgrade and build flow
         Depend on latest LTS headers (linux-4.1-headers)
 
     *linux-mainline*:
+
         Depends on latest **stable** mainline kernel (linux-4.3)
 
     *linux-mainline-modules*:
