@@ -187,7 +187,8 @@ class Builder():
 
 def sync_logs(tag, skip=False):
     try:
-        check_output("scp \"%s.log\" logs@%s:logs/." % (tag, SSH_HOST))
+        check_output("gzip \"%s.log\"" % tag)
+        check_output("scp \"%s.log.gz\" logs@%s:logs/." % (tag, SSH_HOST))
     except Exception, e:
         print e
         if not skip:
