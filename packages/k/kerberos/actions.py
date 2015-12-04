@@ -6,9 +6,9 @@ import os
 
 WorkDir = "."
 
-SourceDist = "krb5-1.13.2.tar.gz"
+SourceDist = "krb5-1.14.tar.gz"
 
-BuildDir = "%s/krb5-1.13.2/src" % get.workDIR()
+BuildDir = "%s/krb5-1.14/src" % get.workDIR()
 
 def setup():
     print "Extracting source"
