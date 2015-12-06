@@ -1,0 +1,126 @@
+From e092b4c09dde2525879c5134048aba7acc5b568c Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 6 Dec 2015 00:46:15 +0000
+Subject: [PATCH] Support use of default Solus groups
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/daemon.c | 40 ++++++++++++++++++++++------------------
+ src/util.c   | 23 +++++++++++++++++++++++
+ src/util.h   |  4 ++++
+ 3 files changed, 49 insertions(+), 18 deletions(-)
+
+diff --git a/src/daemon.c b/src/daemon.c
+index 01afd07..5c748e6 100644
+--- a/src/daemon.c
++++ b/src/daemon.c
+@@ -881,7 +881,20 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+         CreateUserData *cd = data;
+         User *user;
+         GError *error;
+-        const gchar *argv[9];
++        const gchar *argv[] = {
++                "/usr/sbin/useradd",
++                "-m",
++                "-c",
++                cd->real_name,
++                "--",
++                cd->user_name,
++                NULL
++        };
++        const gchar *admin_groups[] = {
++                ADMIN_GROUP,
++                "adm",
++                "lpadmin"
++        };
+ 
+         if (getpwnam (cd->user_name) != NULL) {
+                 throw_error (context, ERROR_USER_EXISTS, "A user with name '%s' already exists", cd->user_name);
+@@ -891,23 +904,7 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+ 
+         sys_log (context, "create user '%s'", cd->user_name);
+ 
+-        argv[0] = "/usr/sbin/useradd";
+-        argv[1] = "-m";
+-        argv[2] = "-c";
+-        argv[3] = cd->real_name;
+-        if (cd->account_type == ACCOUNT_TYPE_ADMINISTRATOR) {
+-                argv[4] = "-G";
+-                argv[5] = ADMIN_GROUP;
+-                argv[6] = "--";
+-                argv[7] = cd->user_name;
+-                argv[8] = NULL;
+-        }
+-        else if (cd->account_type == ACCOUNT_TYPE_STANDARD) {
+-                argv[4] = "--";
+-                argv[5] = cd->user_name;
+-                argv[6] = NULL;
+-        }
+-        else {
++        if (cd->account_type != ACCOUNT_TYPE_ADMINISTRATOR && cd->account_type != ACCOUNT_TYPE_STANDARD) {
+                 throw_error (context, ERROR_FAILED, "Don't know how to add user of type %d", cd->account_type);
+                 return;
+         }
+@@ -919,6 +916,13 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+                 return;
+         }
+ 
++        /* Add all the default groups for an admininstrator */
++        if (cd->account_type == ACCOUNT_TYPE_ADMINISTRATOR) {
++                for (guint i = 0; i < (sizeof(admin_groups)/sizeof(gchar*)); i++) {
++                        add_user_to_group (context, cd->user_name, admin_groups[i]);
++                }
++        }
++
+         user = daemon_local_find_user_by_name (daemon, cd->user_name);
+         user_update_local_account_property (user, TRUE);
+         user_update_system_account_property (user, FALSE);
+diff --git a/src/util.c b/src/util.c
+index 84e7b78..944c1f7 100644
+--- a/src/util.c
++++ b/src/util.c
+@@ -313,3 +313,26 @@ get_caller_uid (GDBusMethodInvocation *context,
+ 
+         return TRUE;
+ }
++
++/**
++ * Inspired by http://bazaar.launchpad.net/~ubuntu-branches/ubuntu/wily/accountsservice/wily/view/head:/debian/patches/0002-create-and-manage-groups-like-on-a-ubuntu-system.patch
++ */
++void add_user_to_group (GDBusMethodInvocation *context,
++                        const gchar *username,
++                        const gchar *group)
++{
++        GError *error = NULL;
++        const gchar *argv[] = {
++                "/usr/sbin/usermod",
++                "-a",
++                "-G",
++                group,
++                username,
++                NULL
++        };
++
++        if (!spawn_with_login_uid (context, argv, &error)) {
++                g_warning ("Failed to add user %s to group %s", username, group);
++                g_error_free(error);
++        }
++};
+diff --git a/src/util.h b/src/util.h
+index 41ba545..a2c6688 100644
+--- a/src/util.h
++++ b/src/util.h
+@@ -40,6 +40,10 @@ gint get_user_groups (const gchar  *username,
+                       gid_t         group,
+                       gid_t       **groups);
+ 
++void add_user_to_group (GDBusMethodInvocation *context,
++                        const gchar *username,
++                        const gchar *group);
++
+ G_END_DECLS
+ 
+ #endif /* __UTIL_H__ */
+-- 
+2.6.3
+
