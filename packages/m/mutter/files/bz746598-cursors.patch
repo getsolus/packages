@@ -1,0 +1,72 @@
+From 96b5042dda6a46bee93867340b85ea176c8070b1 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 16 Oct 2015 15:13:40 +0200
+Subject: core: Unset "pointer emulating" sequence lazily
+
+Unsetting it in meta_display_handle_event() will make the pointer
+emulation checks fail on TOUCH_END event handlers across clutter
+actors, the sequence should still be considered as pointer emulating
+at that time.
+
+As we don't have a way to hook this post clutter event handling,
+instead unset/reset it lazily on the next pointer emulating TOUCH_BEGIN
+event, the checks would already fail on other sequences, even if the
+pointer emulating touch ended earlier. The only extra thing we need
+to take care about is sequence collision, at which point it's safe to
+just unset the stored sequence if its new incarnation isn't flagged/
+deemed as pointer emulating.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=756754
+---
+ src/core/events.c | 28 +++++++++++++++++++---------
+ 1 file changed, 19 insertions(+), 9 deletions(-)
+
+diff --git a/src/core/events.c b/src/core/events.c
+index 25e0719..7a1cbc9 100644
+--- a/src/core/events.c
++++ b/src/core/events.c
+@@ -182,10 +182,25 @@ meta_display_handle_event (MetaDisplay        *display,
+   sequence = clutter_event_get_event_sequence (event);
+ 
+   /* Set the pointer emulating sequence on touch begin, if eligible */
+-  if (event->type == CLUTTER_TOUCH_BEGIN &&
+-      !display->pointer_emulating_sequence &&
+-      sequence_is_pointer_emulated (display, event))
+-    display->pointer_emulating_sequence = sequence;
++  if (event->type == CLUTTER_TOUCH_BEGIN)
++    {
++      if (sequence_is_pointer_emulated (display, event))
++        {
++          /* This is the new pointer emulating sequence */
++          display->pointer_emulating_sequence = sequence;
++        }
++      else if (display->pointer_emulating_sequence == sequence)
++        {
++          /* This sequence was "pointer emulating" in a prior incarnation,
++           * but now it isn't. We unset the pointer emulating sequence at
++           * this point so the current sequence is not mistaken as pointer
++           * emulating, while we've ensured that it's been deemed
++           * "pointer emulating" throughout all of the event processing
++           * of the previous incarnation.
++           */
++          display->pointer_emulating_sequence = NULL;
++        }
++    }
+ 
+ #ifdef HAVE_WAYLAND
+   MetaWaylandCompositor *compositor = NULL;
+@@ -335,11 +350,6 @@ meta_display_handle_event (MetaDisplay        *display,
+     }
+ #endif
+ 
+-  /* Unset the pointer emulating sequence after its end event is processed */
+-  if (event->type == CLUTTER_TOUCH_END &&
+-      display->pointer_emulating_sequence == sequence)
+-    display->pointer_emulating_sequence = NULL;
+-
+   display->current_time = CurrentTime;
+   return bypass_clutter;
+ }
+-- 
+cgit v0.11.2
+
