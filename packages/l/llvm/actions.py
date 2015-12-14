@@ -74,7 +74,6 @@ def install():
 
     # Fix permissions of the static files
     if get.buildTYPE() != "emul32":
-        shelltools.chmod("%s/usr/lib64/*.a" % get.installDIR(), mode=0644)
 
         pisitools.dodir("/usr/lib64/clang-analyzer")
 
