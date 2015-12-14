@@ -43,7 +43,8 @@ def setup():
                         --disable-gold \
                         --enable-ld=default \
                         --enable-clocale=gnu \
-                        --disable-multilib \
+                        --enable-multilib \
+                        --with-multilib-list=m32,m64 \
                         --enable-lto \
                         --with-bugurl='https://bugs.solus-project.com' \
                         --with-arch_32=i686 \
@@ -70,3 +71,4 @@ def install():
     crtfiles = ["libgcc.a", "crtbegin.o", "crtend.o", "crtbeginS.o", "crtendS.o"]
     for crt in crtfiles:
         pisitools.dosym("/usr/lib64/gcc/%s/%s/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib64/%s" % crt)
+        pisitools.dosym("/usr/lib/gcc/%s/%s/%s/32" % (Triplet, get.srcVERSION(), crt), "/usr/lib32/%s" % crt)
