@@ -16,10 +16,12 @@ def setup():
     shelltools.system ("../binutils-%s/configure \
         --prefix=/usr \
         --enable-lto \
+        --with-lib-path=\"/usr/lib64:/lib64:/usr/lib32:/lib32 \" \
         --enable-multilib \
         --disable-gold \
         --disable-werror \
         --enable-plugins \
+        --enable-64-bit-bfd \
         --target=x86_64-solus-linux \
         --build=x86_64-solus-linux" % get.srcVERSION())
 
