@@ -60,6 +60,7 @@ def setup():
                           -DLLVM_ENABLE_ASSERTIONS=OFF \
                           -DLLVM_ENABLE_FFI=ON \
                           -DLLVM_BUILD_DOCS=OFF \
+                          -DLLVM_ENABLE_RTTI=ON \
                           -DBUILD_SHARED_LIBS=ON \
                           -DLLVM_INCLUDEDIR=/usr/include \
                           -DENABLE_SHARED=ON .." % (prefix, options))
