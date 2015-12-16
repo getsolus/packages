@@ -23,8 +23,6 @@ def build():
 def install():
     autotools.rawInstall("BUILDROOT=%s" % get.installDIR() )
 
-    pisitools.removeDir("/usr/share/cups/banners")
-
     shelltools.echo("%s/etc/cups/client.conf" % get.installDIR(), "ServerName /var/run/cups/cups.sock")
 
     pisitools.dodir("/usr/lib/systemd/system/printer.target.wants")

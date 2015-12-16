@@ -7,6 +7,11 @@ OUR_ID = 19
 OUR_NAME = "lpadmin"
 
 
+OUR_ID = 9
+OUR_NAME = "lp"
+OUR_DESC = "Print Service User"
+
+
 def is_group_empty(group):
     out = commands.getoutput("groupmems -l -g %s" % group)
     if len(out.strip()) == 0:
@@ -15,7 +20,14 @@ def is_group_empty(group):
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     try:
-        os.system("groupadd -g %d %s" % (OUR_ID, OUR_NAME))
+        os.system("groupadd -g %d %s" % (ID, NAME))
+    except:
+        pass
+    try:
+        os.system ("groupadd -g %d %s" % (OUR_ID, OUR_NAME))
+        os.system ("useradd -m -d /var/spool/cups -r -s /bin/false -u %d -g %d %s -c \"%s\"" % (OUR_ID, OUR_ID, OUR_NAME, OUR_DESC))
+        if os.path.exists("/var/spool/cups"):
+            os.system("chown -R lp:lp /var/spool/cups")
     except:
         pass
 
@@ -24,6 +36,11 @@ def postRemove():
 
     if (empty):
         try:
-            os.system("groupdel %s" % OUR_NAME)
+            os.system("groupdel %s" % NAME)
         except:
             pass
+    try:
+        os.system ("userdel %s" % OUR_NAME)
+        os.system ("groupdel %s" % OUR_NAME)
+    except:
+        pass
