@@ -6,8 +6,9 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 def setup():
     shelltools.system ("sed -i -e '/gets is a/d' grub-core/gnulib/stdio.in.h")
-    cflags = get.CFLAGS().replace("-fstack-protector","") # Fix build issue.
+    cflags = get.CFLAGS()
     cflags = cflags.replace("-fPIC", "") # clobbered asm issue (x86)
+    cflags = cflags.replace("-fstack-protector-strong", "")
     shelltools.export ("CFLAGS", cflags)
     autotools.configure ("--prefix=/usr\
                                               --sysconfdir=/etc\
