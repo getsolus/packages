@@ -583,23 +583,12 @@ def spin_iso(filename, label):
     wd = os.getcwd()
     isofile = os.path.join(wd, "SolusLive.iso")
 
-    # Validation command:
-    #xorriso -as mkisofs -U -A "SolusLive" -V "SolusLive" \
-    #-volset "SolusLive" -J -joliet-long -r -v -T -x ./lost+found \
-    #-isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
-    #-o ../../Solus-Daily.iso \
-    #-b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 \
-    #-boot-info-table \
-    #-eltorito-alt-boot \
-    #-e efi.img -no-emul-boot 
     try:
         cmd = """xorriso -as mkisofs -U -A "%(DESC)s" -V "%(DESC)s" \
     -volset "%(DESC)s" -J -joliet-long -r -v -T -x ./lost+found \
-    -isohybrid-mbr /usr/lib/syslinux/isohdpfx.bin \
     -o %(ISOFILE)s \
     -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 \
-    -boot-info-table \
-    -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': label, 'ISOFILE': filename }
+    -boot-info-table -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': label, 'ISOFILE': filename }
         os.chdir(get_deploy_dir())
         r = check_call(cmd)
         if r != 0:
@@ -610,6 +599,16 @@ def spin_iso(filename, label):
         clean_exit(1)
 
     os.chdir(wd)
+    # Hybrid ISO. Because nobody *really* uses CDs anymore.
+    # ..do they? o_O
+    try:
+        r = check_call("isohybrid --uefi \"%s\"" % filename)
+        if r != 0:
+            print("Abnormal isohybrid exit code")
+            clean_exit(1)
+    except Exception, ex:
+        print("ISO Hybrid change failed: %s" % ex)
+        clean_exit(1)
 
 def main():
     ''' Main entry '''
