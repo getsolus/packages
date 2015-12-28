@@ -3,8 +3,8 @@
 import os, re
 import commands
 
-OUR_ID = 19
-OUR_NAME = "lpadmin"
+ID = 19
+NAME = "lpadmin"
 
 
 OUR_ID = 9
@@ -27,7 +27,7 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
         os.system ("groupadd -g %d %s" % (OUR_ID, OUR_NAME))
         os.system ("useradd -m -d /var/spool/cups -r -s /bin/false -u %d -g %d %s -c \"%s\"" % (OUR_ID, OUR_ID, OUR_NAME, OUR_DESC))
         if os.path.exists("/var/spool/cups"):
-            os.system("chown -R lp:lp /var/spool/cups")
+            os.system("chown -R %s:%s /var/spool/cups" % (ID, ID))
     except:
         pass
 
