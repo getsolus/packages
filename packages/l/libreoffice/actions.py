@@ -3,7 +3,7 @@
 
 from pisi.actionsapi import get, autotools, pisitools, shelltools
 
-LoVersion = "5.0.3.2"
+LoVersion = "5.0.4.2"
 
 OurWorkDir = "%s/libreoffice-%s" % (get.workDIR(), LoVersion)
 
