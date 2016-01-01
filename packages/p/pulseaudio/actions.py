@@ -11,6 +11,7 @@ def setup():
                          --disable-bluez4 \
                          --enable-bluez5 \
                          --enable-bluez5-native-headset \
+                         --enable-orc \
                          --enable-dbus")
 
 
