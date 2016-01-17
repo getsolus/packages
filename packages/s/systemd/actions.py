@@ -12,13 +12,16 @@ IgnoreAutodep = True
 def setup():
     autotools.configure ("--libexecdir=/usr/lib \
                           --localstatedir=/var  \
-                          --disable-manpages \
                           --sysconfdir=/etc \
                           --with-sysvinit-path=/etc/init.d \
                           --disable-networkd \
                           --disable-selinux \
                           --enable-compat-libs \
                           --with-pamlibdir=/lib/security \
+                          --enable-split-usr \
+                          --disable-terminal \
+                          --enable-vconsole \
+                          --disable-kdbus \
                           CFLAGS=\"%s -fno-lto\"" % get.CFLAGS())
 
 def build():
