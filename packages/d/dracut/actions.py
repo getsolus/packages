@@ -14,5 +14,3 @@ def build():
 def install():
     autotools.rawInstall ("DESTDIR=%s" % get.installDIR())
     pisitools.removeDir("/usr/lib/dracut/modules.d/00dash")
-    pisitools.removeDir("/usr/lib/dracut/modules.d/00bootchart")
-    pisitools.removeDir("/usr/lib/dracut/modules.d/02caps")
