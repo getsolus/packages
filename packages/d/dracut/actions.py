@@ -6,8 +6,7 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 def setup():
     autotools.rawConfigure ("--prefix=/usr\
-                                                     --disable-documentation\
-                                                     --sysconfdir=/etc")
+                             --sysconfdir=/etc")
 
 def build():
     autotools.make ()
