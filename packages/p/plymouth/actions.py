@@ -11,7 +11,9 @@ def setup():
                          --enable-systemd-integration \
                          --enable-gdm-transition \
                          --enable-pango \
-                         --with-logo=/usr/share/pixmaps/SolusOS_Splash.png")
+                         --libdir=/usr/lib \
+                         --without-system-root-install \
+                         --with-logo=/usr/share/pixmaps/Solus.png")
 
 
 def build():
