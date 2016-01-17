@@ -339,7 +339,7 @@ def configure_live_account():
     run_chroot("/bin/bash --login -c \"%s\"" % ("echo 'live:' |chpasswd"))
 
     # Finally, add the user to the right groups
-    cmd = "usermod -a -G %s %s" % ("sudo,audio,video,cdrom", "live")
+    cmd = "usermod -a -G %s %s" % ("sudo,audio,video,cdrom,lpadmin", "live")
     run_chroot(cmd)
 
     # Modify sudoers so that live user is not asked for a password
