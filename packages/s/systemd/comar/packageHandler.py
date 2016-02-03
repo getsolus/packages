@@ -14,18 +14,23 @@ def updateSystemConfig(filepath):
         path = xmlfile.getTagData("Path")
         if not path.startswith("/"):
             path = "/%s" % path # Just in case
-        if path.startswith("/usr/lib/tmpfiles.d") or path.startswith("/usr/lib64/tmpfiles.d"):
+        if "lib64/tmpfiles.d" in path or "lib/tmpfiles.d" in path:
             shouldTmp = True
-        if path.startswith("/usr/lib/sysusers.d") or path.startswith("/usr/lib64/sysusers.d"):
+        if "lib/sysusers.d" in "lib64/sysusers.d" in path:
             shouldUser = True
         if shouldUser and shouldTmp:
             break
 
     if shouldUser:
-        os.system("/usr/bin/systemd-tmpfiles --create")
+        try:
+            os.system("/usr/bin/systemd-tmpfiles --create")
+        except Exception, e:
+            pass
     if shouldTmp:
-        os.system("/usr/bin/systemd-sysusers")
-
+        try:
+            os.system("/usr/bin/systemd-sysusers")
+        except Exception, e:
+            pass
 
 def setupPackage(metapath, filepath):
     updateSystemConfig(filepath)
