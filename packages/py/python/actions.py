@@ -9,7 +9,8 @@ IgnoreAutodep = True
 def setup():
     pisitools.dosed("setup.py","ndbm_libs =.*","ndbm_libs = ['gdbm', 'gdbm_compat']")
     autotools.autoreconf ("-vfi")
-    autotools.configure ("--prefix=/usr\
+    autotools.configure ("--prefix=/usr \
+                          --enable-unicode=ucs4 \
                           --enable-shared")
 
 def build():
