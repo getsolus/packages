@@ -11,6 +11,9 @@ def setup():
     autotools.autoreconf ("-vfi")
     autotools.configure ("--prefix=/usr \
                           --enable-unicode=ucs4 \
+                          --with-system-expat \
+                          --with-system-ffi \
+                          --with-threads \
                           --enable-shared")
 
 def build():
