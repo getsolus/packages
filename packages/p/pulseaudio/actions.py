@@ -12,6 +12,7 @@ def setup():
                          --enable-bluez5 \
                          --enable-bluez5-native-headset \
                          --enable-orc \
+                         --with-udev-rules-dir=/usr/lib/udev/rules.d \
                          --enable-dbus")
 
 
