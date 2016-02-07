@@ -21,6 +21,7 @@ def setup():
         --disable-gold \
         --disable-werror \
         --enable-plugins \
+        --enable-secureplt \
         --enable-64-bit-bfd \
         --target=x86_64-solus-linux \
         --build=x86_64-solus-linux" % get.srcVERSION())
