@@ -410,7 +410,7 @@ def configure_boot():
             clean_exit(1)
 
     # If this looks evil, you're not wrong.
-    cmd = "dracut --lz4 --no-hostonly-cmdline -N --kver \"%s\" --force --lz4 --add \"dmsquash-live systemd pollcdrom\" --add-drivers \"squashfs ext3 ext2 vfat msdos sr_mod sd_mod ehci_hcd uhci_hcd xhci_hcd xhci_pci ohci_hcd usb_storage usbhid dm_mod device-mapper ata_generic libata\" /live.initrd" % kernel
+    cmd = "dracut --lz4 --no-hostonly-cmdline -N --kver \"%s\" --force --add \"dmsquash-live systemd pollcdrom\" --add-drivers \"squashfs ext3 ext2 vfat msdos sr_mod sd_mod ehci_hcd uhci_hcd xhci_hcd xhci_pci ohci_hcd usb_storage usbhid dm_mod device-mapper ata_generic libata\" /live.initrd" % kernel
     run_chroot(cmd)
     try:
         dsrc = os.path.join(get_image_root(), "live.initrd")
@@ -602,7 +602,7 @@ def spin_iso(filename, label):
     # Hybrid ISO. Because nobody *really* uses CDs anymore.
     # ..do they? o_O
     try:
-        r = check_call("isohybrid --uefi \"%s\"" % filename)
+        r = check_call("isohybrid --uefi -h 255 -s 63 \"%s\"" % filename)
         if r != 0:
             print("Abnormal isohybrid exit code")
             clean_exit(1)
