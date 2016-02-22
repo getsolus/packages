@@ -585,7 +585,7 @@ def spin_iso(filename, label):
 
     try:
         cmd = """xorriso -as mkisofs -U -A "%(DESC)s" -V "%(DESC)s" \
-    -volset "%(DESC)s" -J -joliet-long -r -v -T -x ./lost+found \
+    -J -joliet-long -r -v -T -x ./lost+found \
     -o %(ISOFILE)s \
     -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 \
     -boot-info-table -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': label, 'ISOFILE': filename }
