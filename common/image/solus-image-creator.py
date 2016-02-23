@@ -449,7 +449,7 @@ def create_efi(title, name, label):
         clean_exit(1)
     pass
 
-    cmd = "mkfs -t vfat \"%s\"" % get_efi_path()
+    cmd = "mkfs -t vfat -F 12 -n SOLUSESP \"%s\"" % get_efi_path()
     try:
         r = check_call(cmd)
     except Exception, ex:
@@ -465,7 +465,11 @@ def create_efi(title, name, label):
     efi_mounted = True
 
     try:
-        os.system("goofiboot install --force --no-variables --path=%s" % get_efi_root())
+        target = os.path.join(get_efi_root(), "EFI/Boot/BOOTX64.EFI")
+        d = os.path.dirname(target)
+        if not os.path.exists(d):
+            os.makedirs(d)
+        shutil.copy("/usr/lib/goofiboot/goofibootx64.efi", target)
     except Exception, ex:
         print("Failed to install goofiboot: %s" % ex)
         clean_exit(1)
@@ -484,14 +488,17 @@ def create_efi(title, name, label):
     # Write UEFI config..
     try:
         # root loader config
+        os.makedirs(os.path.join(get_efi_root(), "loader"))
         with open(os.path.join(get_efi_root(), "loader/loader.conf"), "w") as conf:
             conf.write("default solus\ntimeout 4\n")
         # Solus entry
+        os.makedirs(os.path.join(get_efi_root(), "loader/entries"))
+
         with open(os.path.join(get_efi_root(), "loader/entries/solus.conf"), "w") as conf:
             conf.write("""title %(TITLE)s
 linux /kernel
 initrd /initrd
-options root=live:CDLABEL=%(DESC)s ro rd.live.image rd.luks=0 rd.md=0""" % { 'DESC' : label, 'TITLE': title})
+options root=live:CDLABEL=%(DESC)s ro rd.luks=0 rd.md=0""" % { 'DESC' : label, 'TITLE': title})
     except Exception, ex:
         print("Unable to write goofiboot config: %s" % ex)
         clean_exit(1)
@@ -509,7 +516,7 @@ options root=live:CDLABEL=%(DESC)s ro rd.live.image rd.luks=0 rd.md=0""" % { 'DE
 def create_isolinux_boot(title, name, label):
     ''' Set up the SYSLINUX/isolinux configuration '''
 
-    requirements = ["vesamenu.c32", "isolinux.bin", "libutil.c32", "libcom32.c32", "ldlinux.c32", "vesa.c32"]
+    requirements = ["vesamenu.c32", "isolinux.bin", "libutil.c32", "libcom32.c32", "ldlinux.c32", "vesa.c32", "isohdpfx.bin"]
     if not os.path.exists(get_isolinux_dir()):
         try:
             os.makedirs(get_isolinux_dir())
@@ -567,7 +574,7 @@ MENU TABMSGROW 11
 label live
   menu label Start %(NAME)s
   kernel /boot/kernel
-  append initrd=/boot/initrd.img root=live:CDLABEL=%(LABEL)s ro rd.live.image rd.luks=0 rd.md=0 --
+  append initrd=/boot/initrd.img root=live:CDLABEL=%(LABEL)s ro rd.luks=0 rd.md=0 --
 menu default
 label local
   menu label Boot from local drive
@@ -583,12 +590,10 @@ def spin_iso(filename, label):
     wd = os.getcwd()
     isofile = os.path.join(wd, "SolusLive.iso")
 
+    # sudo xorriso -as mkisofs -iso-level 3 -full-iso9660-filenames -volid SolusLive -appid SolusLive -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -isohybrid-mbr isolinux/isohdpfx.bin -eltorito-alt-boot -e efi.img -no-emul-boot -isohybrid-gpt-basdat -output ../../Solus-Daily.iso .
+
+    cmd = "xorriso -as mkisofs -iso-level 3 -full-iso9660-filenames -volid \"%(DESC)s\" -appid \"%(DESC)s\" -eltorito-boot isolinux/isolinux.bin -eltorito-catalog isolinux/boot.cat -no-emul-boot -boot-load-size 4 -boot-info-table -isohybrid-mbr isolinux/isohdpfx.bin -eltorito-alt-boot -e efi.img -no-emul-boot -isohybrid-gpt-basdat -output %(ISOFILE)s ." % { 'DESC': label, 'ISOFILE': filename }
     try:
-        cmd = """xorriso -as mkisofs -U -A "%(DESC)s" -V "%(DESC)s" \
-    -J -joliet-long -r -v -T -x ./lost+found \
-    -o %(ISOFILE)s \
-    -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 \
-    -boot-info-table -eltorito-alt-boot -e efi.img -no-emul-boot  .""" % { 'DESC': label, 'ISOFILE': filename }
         os.chdir(get_deploy_dir())
         r = check_call(cmd)
         if r != 0:
@@ -599,16 +604,6 @@ def spin_iso(filename, label):
         clean_exit(1)
 
     os.chdir(wd)
-    # Hybrid ISO. Because nobody *really* uses CDs anymore.
-    # ..do they? o_O
-    try:
-        r = check_call("isohybrid --uefi -h 255 -s 63 \"%s\"" % filename)
-        if r != 0:
-            print("Abnormal isohybrid exit code")
-            clean_exit(1)
-    except Exception, ex:
-        print("ISO Hybrid change failed: %s" % ex)
-        clean_exit(1)
 
 def main():
     ''' Main entry '''
