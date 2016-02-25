@@ -43,7 +43,7 @@ def setup():
                           --enable-shared-glapi \
                           --with-egl-platforms=\"drm,x11,wayland\" \
                           --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast\"\
-                          --disable-dri3 %s" % (prefix, libdir, mlib))
+                          --enable-dri3 %s" % (prefix, libdir, mlib))
 
 def build():
     autotools.make ()
@@ -83,7 +83,6 @@ def install():
 
     # .la being a dick again
     pisitools.remove("/usr/%s/lib*.la" % libdir)
-    pisitools.remove("/usr/%s/dri/*.la" % libdir)
     redo_lib("libEGL", "1.0.0", "1")
     redo_lib("libGL", "1.2.0", "1")
     redo_lib("libGLESv1_CM", "1.1.0", "1")
