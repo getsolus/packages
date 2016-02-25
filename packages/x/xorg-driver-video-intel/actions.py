@@ -10,7 +10,7 @@ def setup():
     shelltools.export("LDFLAGS", get.LDFLAGS().replace("-Wl,-z,now", ""))
     autotools.configure("--with-default-accel=sna \
                          --enable-uxa \
-                         --disable-dri3 ")
+                         --enable-dri3 ")
 
 def build():
     autotools.make()
