@@ -21,6 +21,10 @@ def setup():
                          --enable-xephyr \
                          --with-systemd-daemon \
                          --enable-dri \
+                         --enable-dri2 \
+                         --enable-dri3 \
+                         --enable-config-udev \
+                         --enable-config-udev-kms \
                          --disable-static")
 
 def build():
