@@ -6,10 +6,11 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 
 def setup():
-    autotools.configure ("--prefix=/usr\
-                          --disable-static\
+    libdir = "/usr/lib64" if get.buildTYPE() != "emul32" else "/usr/lib32"
+    autotools.configure ("--disable-static\
                           --disable-docs\
-                          --docdir=/usr/share/doc/fontconfig-2.10.2")
+                          --libdir=%s\
+                          --docdir=/usr/share/doc/fontconfig-2.10.2" % libdir)
 
 def build():
     autotools.make ()
