@@ -390,6 +390,8 @@ SystemAccount=false
     try:
         if os.path.exists(os.path.join(get_image_root(), "etc/gdm")):
             shutil.copy(os.path.join(assets, "gdm.conf"), os.path.join(get_image_root(), "etc/gdm/custom.conf"))
+        elif os.path.exists(os.path.join(get_image_root(), "etc/lightdm")):
+            shutil.copy(os.path.join(assets, "lightdm.conf"), os.path.join(get_image_root(), "etc/lightdm/lightdm.conf"))
     except Exception, ex:
         print("Unable to copy gdm.conf: %s" % e)
 
