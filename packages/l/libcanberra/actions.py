@@ -5,8 +5,13 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 
 def setup():
-    autotools.configure("--enable-gtk3 --enable-gtk2 --disable-static" )
-
+    autotools.configure("--disable-static \
+                         --enable-gtk2 \
+                         --enable-gtk3 \
+                         --enable-alsa \
+                         --enable-pulse \
+                         --with-builtin=dso \
+                         --disable-oss")
 def build():
     autotools.make()
 
