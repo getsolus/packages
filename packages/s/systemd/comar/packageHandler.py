@@ -16,17 +16,17 @@ def updateSystemConfig(filepath):
             path = "/%s" % path # Just in case
         if "lib64/tmpfiles.d" in path or "lib/tmpfiles.d" in path:
             shouldTmp = True
-        if "lib/sysusers.d" in "lib64/sysusers.d" in path:
+        if "lib/sysusers.d" in path or "lib64/sysusers.d" in path:
             shouldUser = True
         if shouldUser and shouldTmp:
             break
 
-    if shouldUser:
+    if shouldTmp:
         try:
             os.system("/usr/bin/systemd-tmpfiles --create")
         except Exception, e:
             pass
-    if shouldTmp:
+    if shouldUser:
         try:
             os.system("/usr/bin/systemd-sysusers")
         except Exception, e:
