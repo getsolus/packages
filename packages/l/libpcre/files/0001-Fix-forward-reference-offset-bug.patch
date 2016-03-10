@@ -1,0 +1,258 @@
+From 09f4a2ca22cbfbd3446c688ddda503bac918817f Mon Sep 17 00:00:00 2001
+From: ph10 <ph10@2f5784b3-3f2a-0410-8824-cb99058d5e15>
+Date: Sun, 3 May 2015 17:58:17 +0000
+Subject: [PATCH 01/12] Fix forward reference offset bug.
+
+git-svn-id: svn://vcs.exim.org/pcre/code/trunk@1555 2f5784b3-3f2a-0410-8824-cb99058d5e15
+---
+ ChangeLog                | 10 ++++++++++
+ configure.ac             |  6 +++---
+ pcre_compile.c           | 38 ++++++++++++++++++++------------------
+ testdata/testinput11     |  2 ++
+ testdata/testinput2      |  2 ++
+ testdata/testoutput11-16 | 17 +++++++++++++++++
+ testdata/testoutput11-32 | 17 +++++++++++++++++
+ testdata/testoutput11-8  | 17 +++++++++++++++++
+ testdata/testoutput2     | 17 +++++++++++++++++
+ 9 files changed, 105 insertions(+), 21 deletions(-)
+
+diff --git a/ChangeLog b/ChangeLog
+index 359b412..8ad2127 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -1,6 +1,16 @@
+ ChangeLog for PCRE
+ ------------------
+ 
++Version 8.38 xx-xxx-xxxx
++------------------------
++
++1.  If a group that contained a recursive back reference also contained a
++    forward reference subroutine call followed by a non-forward-reference
++    subroutine call, for example /.((?2)(?R)\1)()/, pcre2_compile() failed to
++    compile correct code, leading to undefined behaviour or an internally
++    detected error. This bug was discovered by the LLVM fuzzer.
++
++
+ Version 8.37 28-April-2015
+ --------------------------
+ 
+diff --git a/configure.ac b/configure.ac
+index 38d1dba..dcc9508 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -9,9 +9,9 @@ dnl The PCRE_PRERELEASE feature is for identifying release candidates. It might
+ dnl be defined as -RC2, for example. For real releases, it should be empty.
+ 
+ m4_define(pcre_major, [8])
+-m4_define(pcre_minor, [37])
+-m4_define(pcre_prerelease, [])
+-m4_define(pcre_date, [2015-04-28])
++m4_define(pcre_minor, [38])
++m4_define(pcre_prerelease, [-RC1])
++m4_define(pcre_date, [2015-05-03])
+ 
+ # NOTE: The CMakeLists.txt file searches for the above variables in the first
+ # 50 lines of this file. Please update that if the variables above are moved.
+diff --git a/pcre_compile.c b/pcre_compile.c
+index 0efad26..4807829 100644
+--- a/pcre_compile.c
++++ b/pcre_compile.c
+@@ -3985,11 +3985,12 @@ have their offsets adjusted. That one of the jobs of this function. Before it
+ is called, the partially compiled regex must be temporarily terminated with
+ OP_END.
+ 
+-This function has been extended with the possibility of forward references for
+-recursions and subroutine calls. It must also check the list of such references
+-for the group we are dealing with. If it finds that one of the recursions in
+-the current group is on this list, it adjusts the offset in the list, not the
+-value in the reference (which is a group number).
++This function has been extended to cope with forward references for recursions
++and subroutine calls. It must check the list of such references for the
++group we are dealing with. If it finds that one of the recursions in the
++current group is on this list, it does not adjust the value in the reference
++(which is a group number). After the group has been scanned, all the offsets in
++the forward reference list for the group are adjusted.
+ 
+ Arguments:
+   group      points to the start of the group
+@@ -4005,29 +4006,21 @@ static void
+ adjust_recurse(pcre_uchar *group, int adjust, BOOL utf, compile_data *cd,
+   size_t save_hwm_offset)
+ {
++int offset;
++pcre_uchar *hc;
+ pcre_uchar *ptr = group;
+ 
+ while ((ptr = (pcre_uchar *)find_recurse(ptr, utf)) != NULL)
+   {
+-  int offset;
+-  pcre_uchar *hc;
+-
+-  /* See if this recursion is on the forward reference list. If so, adjust the
+-  reference. */
+-
+   for (hc = (pcre_uchar *)cd->start_workspace + save_hwm_offset; hc < cd->hwm;
+        hc += LINK_SIZE)
+     {
+     offset = (int)GET(hc, 0);
+-    if (cd->start_code + offset == ptr + 1)
+-      {
+-      PUT(hc, 0, offset + adjust);
+-      break;
+-      }
++    if (cd->start_code + offset == ptr + 1) break;
+     }
+ 
+-  /* Otherwise, adjust the recursion offset if it's after the start of this
+-  group. */
++  /* If we have not found this recursion on the forward reference list, adjust
++  the recursion's offset if it's after the start of this group. */
+ 
+   if (hc >= cd->hwm)
+     {
+@@ -4037,6 +4030,15 @@ while ((ptr = (pcre_uchar *)find_recurse(ptr, utf)) != NULL)
+ 
+   ptr += 1 + LINK_SIZE;
+   }
++
++/* Now adjust all forward reference offsets for the group. */
++
++for (hc = (pcre_uchar *)cd->start_workspace + save_hwm_offset; hc < cd->hwm;
++     hc += LINK_SIZE)
++  {
++  offset = (int)GET(hc, 0);
++  PUT(hc, 0, offset + adjust);
++  }
+ }
+ 
+ 
+diff --git a/testdata/testinput11 b/testdata/testinput11
+index 65a4b03..ac9d228 100644
+--- a/testdata/testinput11
++++ b/testdata/testinput11
+@@ -136,4 +136,6 @@ is required for these tests. --/
+ 
+ /((?+1)(\1))/B
+ 
++/.((?2)(?R)\1)()/B
++
+ /-- End of testinput11 --/
+diff --git a/testdata/testinput2 b/testdata/testinput2
+index 58fe53b..949bbb9 100644
+--- a/testdata/testinput2
++++ b/testdata/testinput2
+@@ -4152,4 +4152,6 @@ backtracking verbs. --/
+ 
+ /((?2){73}(?2))((?1))/
+ 
++/.((?2)(?R)\1)()/BZ
++
+ /-- End of testinput2 --/
+diff --git a/testdata/testoutput11-16 b/testdata/testoutput11-16
+index 422f2ad..44ce7b0 100644
+--- a/testdata/testoutput11-16
++++ b/testdata/testoutput11-16
+@@ -748,4 +748,21 @@ Memory allocation (code space): 14
+  22     End
+ ------------------------------------------------------------------
+ 
++/.((?2)(?R)\1)()/B
++------------------------------------------------------------------
++  0  23 Bra
++  2     Any
++  3  13 Once
++  5   9 CBra 1
++  8  18 Recurse
++ 10   0 Recurse
++ 12     \1
++ 14   9 Ket
++ 16  13 Ket
++ 18   3 CBra 2
++ 21   3 Ket
++ 23  23 Ket
++ 25     End
++------------------------------------------------------------------
++
+ /-- End of testinput11 --/
+diff --git a/testdata/testoutput11-32 b/testdata/testoutput11-32
+index d953ec8..0c496c2 100644
+--- a/testdata/testoutput11-32
++++ b/testdata/testoutput11-32
+@@ -748,4 +748,21 @@ Memory allocation (code space): 28
+  22     End
+ ------------------------------------------------------------------
+ 
++/.((?2)(?R)\1)()/B
++------------------------------------------------------------------
++  0  23 Bra
++  2     Any
++  3  13 Once
++  5   9 CBra 1
++  8  18 Recurse
++ 10   0 Recurse
++ 12     \1
++ 14   9 Ket
++ 16  13 Ket
++ 18   3 CBra 2
++ 21   3 Ket
++ 23  23 Ket
++ 25     End
++------------------------------------------------------------------
++
+ /-- End of testinput11 --/
+diff --git a/testdata/testoutput11-8 b/testdata/testoutput11-8
+index 6ec18ec..a57eb36 100644
+--- a/testdata/testoutput11-8
++++ b/testdata/testoutput11-8
+@@ -748,4 +748,21 @@ Memory allocation (code space): 10
+  34     End
+ ------------------------------------------------------------------
+ 
++/.((?2)(?R)\1)()/B
++------------------------------------------------------------------
++  0  35 Bra
++  3     Any
++  4  20 Once
++  7  14 CBra 1
++ 12  27 Recurse
++ 15   0 Recurse
++ 18     \1
++ 21  14 Ket
++ 24  20 Ket
++ 27   5 CBra 2
++ 32   5 Ket
++ 35  35 Ket
++ 38     End
++------------------------------------------------------------------
++
+ /-- End of testinput11 --/
+diff --git a/testdata/testoutput2 b/testdata/testoutput2
+index b718df0..af4aec5 100644
+--- a/testdata/testoutput2
++++ b/testdata/testoutput2
+@@ -14423,4 +14423,21 @@ Failed: lookbehind assertion is not fixed length at offset 17
+ 
+ /((?2){73}(?2))((?1))/
+ 
++/.((?2)(?R)\1)()/BZ
++------------------------------------------------------------------
++        Bra
++        Any
++        Once
++        CBra 1
++        Recurse
++        Recurse
++        \1
++        Ket
++        Ket
++        CBra 2
++        Ket
++        Ket
++        End
++------------------------------------------------------------------
++
+ /-- End of testinput2 --/
+-- 
+1.9.1
+

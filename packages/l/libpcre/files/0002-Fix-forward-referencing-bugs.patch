@@ -1,0 +1,226 @@
+From a7776283693e2fd9034c5dc64edb2dedf2f7b4c6 Mon Sep 17 00:00:00 2001
+From: ph10 <ph10@2f5784b3-3f2a-0410-8824-cb99058d5e15>
+Date: Thu, 7 May 2015 16:31:58 +0000
+Subject: [PATCH 02/12] Fix forward referencing bugs.
+
+git-svn-id: svn://vcs.exim.org/pcre/code/trunk@1556 2f5784b3-3f2a-0410-8824-cb99058d5e15
+---
+ ChangeLog            |  5 +++++
+ pcre_compile.c       | 32 ++++++++++++++++++++++----------
+ testdata/testinput2  |  6 ++++++
+ testdata/testoutput2 |  8 ++++++++
+ 4 files changed, 41 insertions(+), 10 deletions(-)
+
+diff --git a/ChangeLog b/ChangeLog
+index 8ad2127..dd6a09c 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -9,6 +9,11 @@ Version 8.38 xx-xxx-xxxx
+     subroutine call, for example /.((?2)(?R)\1)()/, pcre2_compile() failed to
+     compile correct code, leading to undefined behaviour or an internally
+     detected error. This bug was discovered by the LLVM fuzzer.
++    
++2.  Quantification of certain items (e.g. atomic back references) could cause
++    incorrect code to be compiled when recursive forward references were
++    involved. For example, in this pattern: /(?1)()((((((\1++))\x85)+)|))/.
++    This bug was discovered by the LLVM fuzzer.
+ 
+ 
+ Version 8.37 28-April-2015
+diff --git a/pcre_compile.c b/pcre_compile.c
+index 4807829..ae235eb 100644
+--- a/pcre_compile.c
++++ b/pcre_compile.c
+@@ -4467,7 +4467,7 @@ const pcre_uchar *tempptr;
+ const pcre_uchar *nestptr = NULL;
+ pcre_uchar *previous = NULL;
+ pcre_uchar *previous_callout = NULL;
+-size_t save_hwm_offset = 0;
++size_t item_hwm_offset = 0;
+ pcre_uint8 classbits[32];
+ 
+ /* We can fish out the UTF-8 setting once and for all into a BOOL, but we
+@@ -4769,6 +4769,7 @@ for (;; ptr++)
+     zeroreqchar = reqchar;
+     zeroreqcharflags = reqcharflags;
+     previous = code;
++    item_hwm_offset = cd->hwm - cd->start_workspace;
+     *code++ = ((options & PCRE_DOTALL) != 0)? OP_ALLANY: OP_ANY;
+     break;
+ 
+@@ -4820,6 +4821,7 @@ for (;; ptr++)
+     /* Handle a real character class. */
+ 
+     previous = code;
++    item_hwm_offset = cd->hwm - cd->start_workspace;
+ 
+     /* PCRE supports POSIX class stuff inside a class. Perl gives an error if
+     they are encountered at the top level, so we'll do that too. */
+@@ -5932,7 +5934,7 @@ for (;; ptr++)
+       {
+       register int i;
+       int len = (int)(code - previous);
+-      size_t base_hwm_offset = save_hwm_offset;
++      size_t base_hwm_offset = item_hwm_offset;
+       pcre_uchar *bralink = NULL;
+       pcre_uchar *brazeroptr = NULL;
+ 
+@@ -5987,7 +5989,7 @@ for (;; ptr++)
+         if (repeat_max <= 1)    /* Covers 0, 1, and unlimited */
+           {
+           *code = OP_END;
+-          adjust_recurse(previous, 1, utf, cd, save_hwm_offset);
++          adjust_recurse(previous, 1, utf, cd, item_hwm_offset);
+           memmove(previous + 1, previous, IN_UCHARS(len));
+           code++;
+           if (repeat_max == 0)
+@@ -6011,7 +6013,7 @@ for (;; ptr++)
+           {
+           int offset;
+           *code = OP_END;
+-          adjust_recurse(previous, 2 + LINK_SIZE, utf, cd, save_hwm_offset);
++          adjust_recurse(previous, 2 + LINK_SIZE, utf, cd, item_hwm_offset);
+           memmove(previous + 2 + LINK_SIZE, previous, IN_UCHARS(len));
+           code += 2 + LINK_SIZE;
+           *previous++ = OP_BRAZERO + repeat_type;
+@@ -6269,7 +6271,7 @@ for (;; ptr++)
+               {
+               int nlen = (int)(code - bracode);
+               *code = OP_END;
+-              adjust_recurse(bracode, 1 + LINK_SIZE, utf, cd, save_hwm_offset);
++              adjust_recurse(bracode, 1 + LINK_SIZE, utf, cd, item_hwm_offset);
+               memmove(bracode + 1 + LINK_SIZE, bracode, IN_UCHARS(nlen));
+               code += 1 + LINK_SIZE;
+               nlen += 1 + LINK_SIZE;
+@@ -6403,7 +6405,7 @@ for (;; ptr++)
+         else
+           {
+           *code = OP_END;
+-          adjust_recurse(tempcode, 1 + LINK_SIZE, utf, cd, save_hwm_offset);
++          adjust_recurse(tempcode, 1 + LINK_SIZE, utf, cd, item_hwm_offset);
+           memmove(tempcode + 1 + LINK_SIZE, tempcode, IN_UCHARS(len));
+           code += 1 + LINK_SIZE;
+           len += 1 + LINK_SIZE;
+@@ -6452,7 +6454,7 @@ for (;; ptr++)
+ 
+         default:
+         *code = OP_END;
+-        adjust_recurse(tempcode, 1 + LINK_SIZE, utf, cd, save_hwm_offset);
++        adjust_recurse(tempcode, 1 + LINK_SIZE, utf, cd, item_hwm_offset);
+         memmove(tempcode + 1 + LINK_SIZE, tempcode, IN_UCHARS(len));
+         code += 1 + LINK_SIZE;
+         len += 1 + LINK_SIZE;
+@@ -6625,7 +6627,7 @@ for (;; ptr++)
+     newoptions = options;
+     skipbytes = 0;
+     bravalue = OP_CBRA;
+-    save_hwm_offset = cd->hwm - cd->start_workspace;
++    item_hwm_offset = cd->hwm - cd->start_workspace;
+     reset_bracount = FALSE;
+ 
+     /* Deal with the extended parentheses; all are introduced by '?', and the
+@@ -7249,6 +7251,7 @@ for (;; ptr++)
+             {
+             if (firstcharflags == REQ_UNSET) firstcharflags = REQ_NONE;
+             previous = code;
++            item_hwm_offset = cd->hwm - cd->start_workspace;
+             *code++ = ((options & PCRE_CASELESS) != 0)? OP_DNREFI : OP_DNREF;
+             PUT2INC(code, 0, index);
+             PUT2INC(code, 0, count);
+@@ -7362,6 +7365,7 @@ for (;; ptr++)
+           HANDLE_RECURSION:
+ 
+           previous = code;
++          item_hwm_offset = cd->hwm - cd->start_workspace;
+           called = cd->start_code;
+ 
+           /* When we are actually compiling, find the bracket that is being
+@@ -7563,7 +7567,11 @@ for (;; ptr++)
+       previous = NULL;
+       cd->iscondassert = FALSE;
+       }
+-    else previous = code;
++    else 
++      {
++      previous = code;
++      item_hwm_offset = cd->hwm - cd->start_workspace;
++      }
+ 
+     *code = bravalue;
+     tempcode = code;
+@@ -7811,7 +7819,7 @@ for (;; ptr++)
+         const pcre_uchar *p;
+         pcre_uint32 cf;
+ 
+-        save_hwm_offset = cd->hwm - cd->start_workspace;   /* Normally this is set when '(' is read */
++        item_hwm_offset = cd->hwm - cd->start_workspace;   /* Normally this is set when '(' is read */
+         terminator = (*(++ptr) == CHAR_LESS_THAN_SIGN)?
+           CHAR_GREATER_THAN_SIGN : CHAR_APOSTROPHE;
+ 
+@@ -7879,6 +7887,7 @@ for (;; ptr++)
+         HANDLE_REFERENCE:
+         if (firstcharflags == REQ_UNSET) firstcharflags = REQ_NONE;
+         previous = code;
++        item_hwm_offset = cd->hwm - cd->start_workspace;
+         *code++ = ((options & PCRE_CASELESS) != 0)? OP_REFI : OP_REF;
+         PUT2INC(code, 0, recno);
+         cd->backref_map |= (recno < 32)? (1 << recno) : 1;
+@@ -7908,6 +7917,7 @@ for (;; ptr++)
+         if (!get_ucp(&ptr, &negated, &ptype, &pdata, errorcodeptr))
+           goto FAILED;
+         previous = code;
++        item_hwm_offset = cd->hwm - cd->start_workspace;
+         *code++ = ((escape == ESC_p) != negated)? OP_PROP : OP_NOTPROP;
+         *code++ = ptype;
+         *code++ = pdata;
+@@ -7948,6 +7958,7 @@ for (;; ptr++)
+ 
+           {
+           previous = (escape > ESC_b && escape < ESC_Z)? code : NULL;
++          item_hwm_offset = cd->hwm - cd->start_workspace;
+           *code++ = (!utf && escape == ESC_C)? OP_ALLANY : escape;
+           }
+         }
+@@ -7991,6 +8002,7 @@ for (;; ptr++)
+ 
+     ONE_CHAR:
+     previous = code;
++    item_hwm_offset = cd->hwm - cd->start_workspace;
+ 
+     /* For caseless UTF-8 mode when UCP support is available, check whether
+     this character has more than one other case. If so, generate a special
+diff --git a/testdata/testinput2 b/testdata/testinput2
+index 949bbb9..1785b17 100644
+--- a/testdata/testinput2
++++ b/testdata/testinput2
+@@ -4154,4 +4154,10 @@ backtracking verbs. --/
+ 
+ /.((?2)(?R)\1)()/BZ
+ 
++/(?1)()((((((\1++))\x85)+)|))/
++
++/(\9*+(?2);\3++()2|)++{/
++
++/\V\x85\9*+((?2)\3++()2)*:2/
++
+ /-- End of testinput2 --/
+diff --git a/testdata/testoutput2 b/testdata/testoutput2
+index af4aec5..821c0ce 100644
+--- a/testdata/testoutput2
++++ b/testdata/testoutput2
+@@ -14440,4 +14440,12 @@ Failed: lookbehind assertion is not fixed length at offset 17
+         End
+ ------------------------------------------------------------------
+ 
++/(?1)()((((((\1++))\x85)+)|))/
++
++/(\9*+(?2);\3++()2|)++{/
++Failed: reference to non-existent subpattern at offset 22
++
++/\V\x85\9*+((?2)\3++()2)*:2/
++Failed: reference to non-existent subpattern at offset 26
++
+ /-- End of testinput2 --/
+-- 
+1.9.1
+

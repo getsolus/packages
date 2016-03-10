@@ -1,0 +1,87 @@
+From 4b79af6b4cbeb5326ae5e4d83f3e935e00286c19 Mon Sep 17 00:00:00 2001
+From: ph10 <ph10@2f5784b3-3f2a-0410-8824-cb99058d5e15>
+Date: Fri, 15 May 2015 17:17:03 +0000
+Subject: [PATCH 04/12] Fix buffer overflow for named recursive back reference
+ when the name is duplicated.
+
+git-svn-id: svn://vcs.exim.org/pcre/code/trunk@1558 2f5784b3-3f2a-0410-8824-cb99058d5e15
+---
+ ChangeLog            |  4 ++++
+ pcre_compile.c       | 16 ++++++++++++++--
+ testdata/testinput2  |  2 ++
+ testdata/testoutput2 |  2 ++
+ 4 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/ChangeLog b/ChangeLog
+index 1d8b4a2..f383e20 100644
+--- a/ChangeLog
++++ b/ChangeLog
+@@ -18,6 +18,10 @@ Version 8.38 xx-xxx-xxxx
+ 3.  A repeated conditional group whose condition was a reference by name caused
+     a buffer overflow if there was more than one group with the given name.
+     This bug was discovered by the LLVM fuzzer.
++    
++4.  A recursive back reference by name within a group that had the same name as
++    another group caused a buffer overflow. For example:
++    /(?J)(?'d'(?'d'\g{d}))/. This bug was discovered by the LLVM fuzzer.
+  
+ 
+ Version 8.37 28-April-2015
+diff --git a/pcre_compile.c b/pcre_compile.c
+index 164584b..fd413ac 100644
+--- a/pcre_compile.c
++++ b/pcre_compile.c
+@@ -7177,14 +7177,26 @@ for (;; ptr++)
+           number. If the name is not found, set the value to 0 for a forward
+           reference. */
+ 
++          recno = 0;
+           ng = cd->named_groups;
+           for (i = 0; i < cd->names_found; i++, ng++)
+             {
+             if (namelen == ng->length &&
+                 STRNCMP_UC_UC(name, ng->name, namelen) == 0)
+-              break;
++              {
++              open_capitem *oc;
++              recno = ng->number;
++              if (is_recurse) break;
++              for (oc = cd->open_caps; oc != NULL; oc = oc->next)         
++                {          
++                if (oc->number == recno)                                     
++                  {               
++                  oc->flag = TRUE;                                      
++                  break;
++                  }                                                         
++                }                          
++              }    
+             }
+-          recno = (i < cd->names_found)? ng->number : 0;
+ 
+           /* Count named back references. */
+ 
+diff --git a/testdata/testinput2 b/testdata/testinput2
+index b7cec5a..5eb4a33 100644
+--- a/testdata/testinput2
++++ b/testdata/testinput2
+@@ -4166,4 +4166,6 @@ backtracking verbs. --/
+ 
+ /(((?(R)){0,2}) (?''((?'X')((?'R')))))/
+ 
++"(?J)(?'d'(?'d'\g{d}))"
++
+ /-- End of testinput2 --/
+diff --git a/testdata/testoutput2 b/testdata/testoutput2
+index dcc4380..47f6dc9 100644
+--- a/testdata/testoutput2
++++ b/testdata/testoutput2
+@@ -14454,4 +14454,6 @@ Failed: reference to non-existent subpattern at offset 26
+ 
+ /(((?(R)){0,2}) (?''((?'X')((?'R')))))/
+ 
++"(?J)(?'d'(?'d'\g{d}))"
++
+ /-- End of testinput2 --/
+-- 
+1.9.1
+
