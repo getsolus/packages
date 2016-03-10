@@ -4,8 +4,10 @@
 from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 def setup():
+    libdir = "lib64" if get.buildTYPE() != "emul32" else "lib32"
     autotools.configure("--prefix=/usr\
-                         --with-pcre=system")
+                         --with-pcre=system \
+                         --libdir=/usr/%s" % libdir)
 
 def build():
     autotools.make()
