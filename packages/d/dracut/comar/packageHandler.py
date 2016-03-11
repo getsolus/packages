@@ -24,6 +24,42 @@ class initramfs:
     def getVersion(self):
         return self.version
 
+def makeOtherDistrosHappy():
+    if not os.path.exists("/vmlinuz"):
+        return
+    path = None
+    try:
+        path = os.path.realpath("/vmlinuz")
+    except Exception, e:
+        print("Broken /vmlinuz: %s" % e)
+        return
+    if not path:
+        return
+    kernel = path.split("/")[-1]
+    spl = kernel.split("kernel-")
+    if len(spl) < 2:
+        return
+    
+    version = spl[1]
+    # Skip dead kernels
+    if not os.path.exists("/lib/modules/%s/kernel/arch" % version):
+        return
+
+    target = "/boot/initramfs-%s.img" % version
+    if not os.path.exists(target):
+        return
+
+    target = target[1:]
+    if os.path.exists("/initrd.img"):
+        try:
+            os.unlink("/initrd.img")
+        except Exception, e:
+            print("Failed to remove /initrd.img: %s" % e)
+    try:
+        os.symlink(target, "/initrd.img")
+    except Exception, e:
+        print("Failed to update /initrd.img: %s" % e)
+
 def cleanupOldImages():
     images = glob.glob("/boot/initramfs-*.img")
     objs = list()
@@ -65,6 +101,8 @@ def updateInitrd(filepath):
                     shutil.copy(initname, "/boot/efi/solus/initramfs")
                 except Exception, e:
                     print("Failed to copy efi boot")
+
+            makeOtherDistrosHappy()
 
             if os.path.exists("/proc/cmdline") and not os.path.exists("/sys/firmware/efi"):
                 os.system("/usr/sbin/update-grub")
