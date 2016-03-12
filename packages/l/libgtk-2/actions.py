@@ -8,6 +8,7 @@ shelltools.export ("HOME", get.workDIR())
 def setup():
     os.system("sed -i 's#l \(gtk-.*\).sgml#& -o \1#' docs/faq/Makefile.in")
     os.system("sed -i 's#l \(gtk-.*\).sgml#& -o \1#' docs/tutorial/Makefile.in")
+    autotools.autoreconf()
     autotools.configure("--disable-static \
                          --enable-xinerama \
                          --with-x \
