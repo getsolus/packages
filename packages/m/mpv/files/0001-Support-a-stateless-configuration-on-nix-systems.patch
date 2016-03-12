@@ -1,0 +1,84 @@
+From e5ad826988bd2f9ad5e9d33ddf973298f8f06c4e Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sat, 12 Mar 2016 13:48:00 +0000
+Subject: [PATCH] Support a stateless configuration on *nix systems
+
+Using a stateless configuration, the often-untouched files in /etc/, which
+should be considered for local system administrator overrides, are no longer
+shipped on *nix systems.
+
+Instead, we ship them in a global read-only location on the filesystem, i.e.
+/usr/share/mpv/. This not only allows vendors to provide pre-defined configs
+for mpv, it allows the user to override the given defaults using the old
+/etc/mpv tree, whilst freeing them from upgrade conflicts.
+
+With this change, a "factory reset" of the mpv configuration is as simple as
+doing an "rm -rf /etc/mpv", and ensures there are no "three-way merges" on
+configuration files during system updates, which can often lead to undesirable
+side-effects.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ osdep/path-unix.c              | 12 ++++++++++--
+ waftools/generators/headers.py |  1 +
+ wscript_build.py               |  2 +-
+ 3 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/osdep/path-unix.c b/osdep/path-unix.c
+index d9a49ab..71466f4 100644
+--- a/osdep/path-unix.c
++++ b/osdep/path-unix.c
+@@ -17,6 +17,7 @@
+ 
+ #include <string.h>
+ #include <pthread.h>
++#include <unistd.h>
+ 
+ #include "options/path.h"
+ #include "path.h"
+@@ -58,8 +59,15 @@ const char *mp_get_platform_path_unix(void *talloc_ctx, const char *type)
+         return mpv_home;
+     if (strcmp(type, "old_home") == 0)
+         return old_home;
+-    if (strcmp(type, "global") == 0)
+-        return MPV_CONFDIR;
++    if (strcmp(type, "global") == 0) {
++        // Global can be the /etc/ directory if it exists, or alternatively
++        // use a stateless /usr/share/mpv for the vendor configuration file
++        if (access(MPV_CONFDIR, F_OK) == 0) {
++            return MPV_CONFDIR;
++        } else {
++            return MPV_SYSTEMCONFDIR;
++        }
++    }
+     if (strcmp(type, "desktop") == 0)
+         return getenv("HOME");
+     return NULL;
+diff --git a/waftools/generators/headers.py b/waftools/generators/headers.py
+index 84f914c..d06d1ed 100644
+--- a/waftools/generators/headers.py
++++ b/waftools/generators/headers.py
+@@ -28,6 +28,7 @@ def __add_mpv_defines__(ctx):
+     from sys import argv
+     ctx.define("CONFIGURATION", " ".join(argv))
+     ctx.define("MPV_CONFDIR", ctx.env.CONFLOADDIR)
++    ctx.define("MPV_SYSTEMCONFDIR", ctx.env.DATADIR + '/mpv')
+     ctx.define("FULLCONFIG", __escape_c_string(__get_features_string__(ctx)))
+ 
+ def configure(ctx):
+diff --git a/wscript_build.py b/wscript_build.py
+index 1bf67b0..190c9f8 100644
+--- a/wscript_build.py
++++ b/wscript_build.py
+@@ -577,7 +577,7 @@ def build(ctx):
+             ['etc/mpv.desktop'] )
+ 
+         if ctx.dependency_satisfied('encoding'):
+-            ctx.install_files(ctx.env.CONFDIR, ['etc/encoding-profiles.conf'] )
++            ctx.install_files(ctx.env.DATADIR + '/mpv', ['etc/encoding-profiles.conf'] )
+ 
+         for size in '16x16 32x32 64x64'.split():
+             ctx.install_as(
+-- 
+2.7.1
+
