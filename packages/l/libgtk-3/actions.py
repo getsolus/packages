@@ -7,6 +7,7 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 shelltools.export ("HOME", get.workDIR())
 
 def setup():
+    autotools.autoreconf("-vfi")
     autotools.configure("--enable-gtk2-dependency \
                          --enable-wayland-backend \
                          --disable-packagekit     \
