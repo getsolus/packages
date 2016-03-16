@@ -91,6 +91,6 @@ def install():
     pisitools.dolib_a("nvidia-uvm.ko", kdir)
 
     # Blacklist nouveau
-    pisitools.dodir("/etc/modprobe.d")
-    shelltools.echo("%s/etc/modprobe.d/nvidia.conf" % get.installDIR(),
+    pisitools.dodir("/usr/lib/modprobe.d")
+    shelltools.echo("%s/usr/lib/modprobe.d/nvidia.conf" % get.installDIR(),
         "blacklist nouveau")
