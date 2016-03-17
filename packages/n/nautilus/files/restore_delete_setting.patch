@@ -1,0 +1,151 @@
+From faa2e6da0f7e5ff0a11abf306bd21b27fb2d2fc0 Mon Sep 17 00:00:00 2001
+From: Carlos Soriano <csoriano@gnome.org>
+Date: Wed, 25 Nov 2015 23:21:22 +0100
+Subject: [PATCH 1/2] files-view: add setting for always show delete
+ permanently
+
+Maintenance is not that much as long as we don't show
+it in any UI, and was requested by several people.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=757375
+---
+
+Backported to the GNOME 3.18 branch for the Solus Operating System
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ libnautilus-private/nautilus-global-preferences.h     |  3 +++
+ libnautilus-private/org.gnome.nautilus.gschema.xml.in |  5 +++++
+ src/nautilus-files-view-context-menus.xml             |  5 +++++
+ src/nautilus-files-view.c                             | 16 ++++++++++++++++
+ 4 files changed, 29 insertions(+)
+
+diff --git a/libnautilus-private/nautilus-global-preferences.h b/libnautilus-private/nautilus-global-preferences.h
+index ffe1b76..af59b3f 100644
+--- a/libnautilus-private/nautilus-global-preferences.h
++++ b/libnautilus-private/nautilus-global-preferences.h
+@@ -162,6 +162,9 @@ typedef enum
+ /* Switch to list view while searching */
+ #define NAUTILUS_PREFERENCES_LIST_VIEW_ON_SEARCH "list-view-on-search"
+ 
++/* Context menu options */
++#define NAUTILUS_PREFERENCES_SHOW_DELETE_PERMANENTLY "show-delete-permanently"
++
+ void nautilus_global_preferences_init                      (void);
+ char *nautilus_global_preferences_get_default_folder_viewer_preference_as_iid (void);
+ 
+diff --git a/libnautilus-private/org.gnome.nautilus.gschema.xml.in b/libnautilus-private/org.gnome.nautilus.gschema.xml.in
+index c6cf481..113ba59 100644
+--- a/libnautilus-private/org.gnome.nautilus.gschema.xml.in
++++ b/libnautilus-private/org.gnome.nautilus.gschema.xml.in
+@@ -75,6 +75,11 @@
+       <_summary>Whether to enable recursive search or not</_summary>
+       <_description>Enables or disables recursive search in Nautilus.</_description>
+     </key>
++    <key name="show-delete-permanently" type="b">
++      <default>false</default>
++      <_summary>Whether to show a context menu item to delete permanently</_summary>
++      <_description>If set to true Nautilus will show a delete permanently context menu item to bypass the trash.</_description>
++    </key>
+     <key name="confirm-trash" type="b">
+       <default>true</default>
+       <_summary>Whether to ask for confirmation when deleting files, or emptying Trash</_summary>
+diff --git a/src/nautilus-files-view-context-menus.xml b/src/nautilus-files-view-context-menus.xml
+index df91fb8..238ac38 100644
+--- a/src/nautilus-files-view-context-menus.xml
++++ b/src/nautilus-files-view-context-menus.xml
+@@ -171,6 +171,11 @@
+         <attribute name="hidden-when">action-disabled</attribute>
+       </item>
+       <item>
++        <attribute name="label" translatable="yes">_Delete Permanently</attribute>
++        <attribute name="action">view.permanent-delete-permanently-menu-item</attribute>
++        <attribute name="hidden-when">action-disabled</attribute>
++      </item>
++      <item>
+         <attribute name="label" translatable="yes">Empty Trash</attribute>
+         <attribute name="action">view.empty-trash</attribute>
+         <attribute name="hidden-when">action-disabled</attribute>
+diff --git a/src/nautilus-files-view.c b/src/nautilus-files-view.c
+index d151228..53129a6 100644
+--- a/src/nautilus-files-view.c
++++ b/src/nautilus-files-view.c
+@@ -5877,6 +5877,11 @@ const GActionEntry view_entries[] = {
+          * shortcut. */
+         { "delete-permanently-shortcut", action_delete },
+         { "delete-permanently-menu-item", action_delete },
++        /* This is only shown when the setting to show always delete permanently
++         * is set and when the common use cases for delete permanently which uses
++         * Delete as a shortcut are not needed. For instance this will be only
++         * present when the setting is true and when it can trash files */
++        { "permanent-delete-permanently-menu-item", action_delete },
+         { "remove-from-recent", action_remove_from_recent },
+         { "restore-from-trash", action_restore_from_trash},
+         { "paste-into", action_paste_files_into },
+@@ -6151,6 +6156,7 @@ real_update_actions_state (NautilusFilesView *view)
+         gboolean show_start;
+         gboolean show_stop;
+         gboolean show_detect_media;
++        gboolean settings_show_delete_permanently;
+         GDriveStartStopType start_stop_type;
+ 
+         view_action_group = view->details->view_action_group;
+@@ -6185,6 +6191,8 @@ real_update_actions_state (NautilusFilesView *view)
+                                 selection_count == 1 &&
+                                 can_paste_into_file (NAUTILUS_FILE (selection->data)));
+         show_properties = !NAUTILUS_IS_DESKTOP_CANVAS_VIEW (view) || selection_count > 0;
++         settings_show_delete_permanently = g_settings_get_boolean (nautilus_preferences,
++                                                                    NAUTILUS_PREFERENCES_SHOW_DELETE_PERMANENTLY);
+ 
+         /* Right click actions */
+         /* Selection menu actions */
+@@ -6295,6 +6303,13 @@ real_update_actions_state (NautilusFilesView *view)
+                                      !selection_all_in_trash && !selection_contains_recent);
+ 
+         action = g_action_map_lookup_action (G_ACTION_MAP (view_action_group),
++                                             "permanent-delete-permanently-menu-item");
++        g_simple_action_set_enabled (G_SIMPLE_ACTION (action),
++                                     can_delete_files && can_trash_files &&
++                                     settings_show_delete_permanently &&
++                                     !selection_all_in_trash && !selection_contains_recent);
++
++        action = g_action_map_lookup_action (G_ACTION_MAP (view_action_group),
+                                              "remove-from-recent");
+         g_simple_action_set_enabled (G_SIMPLE_ACTION (action),
+                                      selection_contains_recent && selection_count > 0);
+@@ -8145,6 +8160,7 @@ nautilus_files_view_init (NautilusFilesView *view)
+          * the menu item is available, since we never make both the trash and delete-permanently-menu-item
+          * actions active */
+         nautilus_application_add_accelerator (app, "view.delete-permanently-menu-item", "Delete");
++        nautilus_application_add_accelerator (app, "view.permanent-delete-permanently-menu-item", "<shift>Delete");
+         nautilus_application_add_accelerator (app, "view.properties", "<control>i");
+         nautilus_application_add_accelerator (app, "view.open-item-location", "<control><alt>o");
+         nautilus_application_add_accelerator (app, "view.rename", "F2");
+-- 
+2.7.3
+
+From 5f891805ebf0d1eb6040eab304f16c487d313281 Mon Sep 17 00:00:00 2001
+From: Carlos Soriano <csoriano@gnome.org>
+Date: Wed, 25 Nov 2015 23:24:08 +0100
+Subject: [PATCH 2/2] files-view: clarify comment about delete-permanently
+
+---
+ src/nautilus-files-view.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/nautilus-files-view.c b/src/nautilus-files-view.c
+index 53129a6..99133cb 100644
+--- a/src/nautilus-files-view.c
++++ b/src/nautilus-files-view.c
+@@ -8156,7 +8156,7 @@ nautilus_files_view_init (NautilusFilesView *view)
+         nautilus_application_add_accelerator (app, "view.move-to-trash", "Delete");
+         nautilus_application_add_accelerator (app, "view.delete-from-trash", "Delete");
+         nautilus_application_add_accelerator (app, "view.delete-permanently-shortcut", "<shift>Delete");
+-        /* When trash is not available, allow the delete shortcut to delete permanently, that is, when
++        /* When trash is not available, allow the "Delete" key to delete permanently, that is, when
+          * the menu item is available, since we never make both the trash and delete-permanently-menu-item
+          * actions active */
+         nautilus_application_add_accelerator (app, "view.delete-permanently-menu-item", "Delete");
+-- 
+2.7.3
+
