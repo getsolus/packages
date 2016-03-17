@@ -1,0 +1,146 @@
+From c51bb755b82ccbfd9f38dec421043e99a906c518 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <michael.i.doherty@intel.com>
+Date: Thu, 10 Mar 2016 16:11:56 +0000
+Subject: [PATCH] Support a stateless configuration
+
+Signed-off-by: Ikey Doherty <michael.i.doherty@intel.com>
+
+--
+Modified for Solus which does not yet have stateless dbus
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ autogen.sh               |  4 ++++
+ configure.ac             |  2 ++
+ src/Makefile.am          |  4 ++--
+ src/daemon/daemon-conf.c | 40 +++++++++++++++++++++++++++++++++++-----
+ 4 files changed, 43 insertions(+), 7 deletions(-)
+ create mode 100755 autogen.sh
+
+diff --git a/autogen.sh b/autogen.sh
+new file mode 100755
+index 0000000..3ef451d
+--- /dev/null
++++ b/autogen.sh
+@@ -0,0 +1,4 @@
++#!/bin/bash
++
++intltoolize -f
++./bootstrap.sh $*
+diff --git a/configure.ac b/configure.ac
+index 3c71472..0bef050 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1325,6 +1325,8 @@ AC_DEFINE(PA_SOEXT, [".so"], [Shared object extension])
+ 
+ AC_SUBST(pulseconfdir, ["${sysconfdir}/pulse"])
+ AX_DEFINE_DIR(PA_DEFAULT_CONFIG_DIR, pulseconfdir, [Location of configuration files])
++AC_SUBST(pulsesystemdir, ["${datadir}/pulseaudio"])
++AX_DEFINE_DIR(PA_SYSTEM_CONFIG_DIR, pulsesystemdir, [Location of default configuration files])
+ 
+ #### Mac OSX specific stuff #####
+ 
+diff --git a/src/Makefile.am b/src/Makefile.am
+index 5cb5564..a7ebb78 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -25,7 +25,7 @@ pulseincludedir=$(includedir)/pulse
+ pulsecoreincludedir=$(includedir)/pulsecore
+ pulselibexecdir=$(libexecdir)/pulse
+ if HAVE_X11
+-xdgautostartdir=$(sysconfdir)/xdg/autostart
++xdgautostartdir=$(datadir)/xdg/autostart
+ endif
+ if HAVE_ALSA
+ alsaprofilesetsdir=$(datadir)/pulseaudio/alsa-mixer/profile-sets
+@@ -103,7 +103,7 @@ EXTRA_DIST = \
+ 		daemon/pulseaudio-system.conf \
+ 		modules/echo-cancel/adrian-license.txt
+ 
+-pulseconf_DATA = \
++pulsesystem_DATA = \
+ 		default.pa \
+ 		system.pa \
+ 		daemon.conf \
+diff --git a/src/daemon/daemon-conf.c b/src/daemon/daemon-conf.c
+index 6e9d377..09d0663 100644
+--- a/src/daemon/daemon-conf.c
++++ b/src/daemon/daemon-conf.c
+@@ -51,9 +51,17 @@
+ #define DEFAULT_SCRIPT_FILE_USER PA_PATH_SEP "default.pa"
+ #define DEFAULT_SYSTEM_SCRIPT_FILE PA_DEFAULT_CONFIG_DIR PA_PATH_SEP "system.pa"
+ 
++/* Stateless .pa files */
++#define DEFAULT_STATELESS_SCRIPT_FILE           PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "default.pa"
++#define DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE    PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "system.pa"
++
++
+ #define DEFAULT_CONFIG_FILE PA_DEFAULT_CONFIG_DIR PA_PATH_SEP "daemon.conf"
+ #define DEFAULT_CONFIG_FILE_USER PA_PATH_SEP "daemon.conf"
+ 
++/* Stateless daemon config */
++#define DEFAULT_STATELESS_CONFIG_FILE PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "daemon.conf"
++
+ #define ENV_SCRIPT_FILE "PULSE_SCRIPT"
+ #define ENV_CONFIG_FILE "PULSE_CONFIG"
+ #define ENV_DL_SEARCH_PATH "PULSE_DLPATH"
+@@ -603,9 +611,17 @@ int pa_daemon_conf_load(pa_daemon_conf *c, const char *filename) {
+     pa_xfree(c->config_file);
+     c->config_file = NULL;
+ 
++    const char *conf_path = NULL;
++
++    if (access(DEFAULT_CONFIG_FILE, F_OK) == 0)
++        conf_path = DEFAULT_CONFIG_FILE;
++    else
++        conf_path = DEFAULT_STATELESS_CONFIG_FILE;
++
++
+     f = filename ?
+         pa_fopen_cloexec(c->config_file = pa_xstrdup(filename), "r") :
+-        pa_open_config_file(DEFAULT_CONFIG_FILE, DEFAULT_CONFIG_FILE_USER, ENV_CONFIG_FILE, &c->config_file);
++        pa_open_config_file(conf_path, DEFAULT_CONFIG_FILE_USER, ENV_CONFIG_FILE, &c->config_file);
+ 
+     if (!f && errno != ENOENT) {
+         pa_log_warn(_("Failed to open configuration file: %s"), pa_cstrerror(errno));
+@@ -661,9 +677,17 @@ const char *pa_daemon_conf_get_default_script_file(pa_daemon_conf *c) {
+ 
+     if (!c->default_script_file) {
+         if (c->system_instance)
+-            c->default_script_file = pa_find_config_file(DEFAULT_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE);
++            if (access(DEFAULT_SYSTEM_SCRIPT_FILE, F_OK) == 0)
++                c->default_script_file = pa_find_config_file(DEFAULT_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE);
++            else
++                c->default_script_file = pa_find_config_file(DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE);
++
+         else
+-            c->default_script_file = pa_find_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
++            if (access(DEFAULT_SCRIPT_FILE, F_OK) == 0)
++                c->default_script_file = pa_find_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
++            else
++                c->default_script_file = pa_find_config_file(DEFAULT_STATELESS_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
++
+     }
+ 
+     return c->default_script_file;
+@@ -675,9 +699,15 @@ FILE *pa_daemon_conf_open_default_script_file(pa_daemon_conf *c) {
+ 
+     if (!c->default_script_file) {
+         if (c->system_instance)
+-            f = pa_open_config_file(DEFAULT_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE, &c->default_script_file);
++            if (access(DEFAULT_SYSTEM_SCRIPT_FILE, F_OK) == 0)
++                f = pa_open_config_file(DEFAULT_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE, &c->default_script_file);
++            else
++                f = pa_open_config_file(DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE, &c->default_script_file);
+         else
+-            f = pa_open_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE, &c->default_script_file);
++            if (access(DEFAULT_SCRIPT_FILE, F_OK) == 0)
++                f = pa_open_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE, &c->default_script_file);
++            else
++                f = pa_open_config_file(DEFAULT_STATELESS_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE, &c->default_script_file);
+     } else
+         f = pa_fopen_cloexec(c->default_script_file, "r");
+ 
+-- 
+2.7.3
+

@@ -1,10 +1,11 @@
 #!/usr/bin/python
 
 
-from pisi.actionsapi import get, autotools, pisitools
+from pisi.actionsapi import get, autotools, pisitools, shelltools
 
 
 def setup():
+    shelltools.system("./bootstrap.sh")
     autotools.configure("--disable-static \
                          --libexecdir=/usr/lib \
                          --enable-alsa \
