@@ -10,6 +10,8 @@ def setup():
     autotools.configure ("--disable-static\
                           --disable-docs\
                           --libdir=%s\
+                          --with-baseconfigdir=/usr/share/fonts \
+                          --with-configdir=/usr/share/fonts/conf.d \
                           --docdir=/usr/share/doc/fontconfig-2.10.2" % libdir)
 
 def build():
