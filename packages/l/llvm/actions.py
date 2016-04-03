@@ -60,7 +60,7 @@ def setup():
                           -DLLVM_ENABLE_FFI=ON \
                           -DLLVM_BUILD_DOCS=OFF \
                           -DLLVM_ENABLE_RTTI=ON \
-                          -DBUILD_SHARED_LIBS=ON \
+                          -DBUILD_SHARED_LIBS:BOOL=ON  \
                           -DLLVM_INCLUDEDIR=/usr/include \
                           -DENABLE_SHARED=ON .." % (prefix, options))
 
@@ -74,14 +74,6 @@ def install():
 
     # Fix permissions of the static files
     if get.buildTYPE() != "emul32":
-
-        pisitools.dodir("/usr/lib64/clang-analyzer")
-
-        for i in ["scan-view", "scan-build"]:
-            shelltools.system("cp -Rv ../tools/clang/tools/%s %s/usr/lib64/clang-analyzer" % (i, get.installDIR()))
-            shelltools.system("ln -sv /usr/lib64/clang-analyzer/%s/%s %s/usr/bin/%s" % (i, i, get.installDIR(), i))
-
-        pisitools.dosym("/usr/bin/clang", "/usr/lib64/clang-analyzer/scan-build/clang")
         shelltools.system("mv %s/usr/include/llvm/Config/llvm-config.h %s/usr/include/llvm/Config/llvm-config-64.h" % (get.installDIR(), get.installDIR()))
 
     else:
