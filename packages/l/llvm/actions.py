@@ -26,7 +26,7 @@ def setup():
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
     host = get.HOST()
-    version = "5.2.0" # GCC version
+    version = "5.3.0" # GCC version
 
     paths = ["/usr/include/",
              "/usr/include/c++/%s" % version,
@@ -56,7 +56,6 @@ def setup():
                           -DCMAKE_BUILD_TYPE=Release \
                           -DCMAKE_INSTALL_PREFIX=%s \
                           %s \
-                          -DENABLE_OPTIMIZED=ON \
                           -DLLVM_ENABLE_ASSERTIONS=OFF \
                           -DLLVM_ENABLE_FFI=ON \
                           -DLLVM_BUILD_DOCS=OFF \
