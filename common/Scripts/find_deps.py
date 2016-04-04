@@ -59,7 +59,7 @@ def is_dynamic_binary(path):
         mg = magic.from_file(path)
     except Exception, e:
         return (False,False)
-    emul32 = "ELF 32" in mg
+    emul32 = mg.startswith("ELF 32")
     if v_bin.match(mg):
         return (True,emul32)
     if v_dyn.match(mg):
