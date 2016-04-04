@@ -24,7 +24,7 @@ def get_soname(path):
             return g.group(1)
     return None
 
-def accumulate_dependencies(path, emul32=False):
+def accumulate_dependencies(path, provided, emul32=False):
     output = subprocess.check_output("/usr/bin/readelf -d {}".format(path), shell=True)
 
     check_deps = set()
@@ -42,7 +42,12 @@ def accumulate_dependencies(path, emul32=False):
         line = line.strip()
         g = shared_lib.match(line)
         if g:
-            check_deps.add(g.group(1))
+            lib = g.group(1)
+            if lib in provided:
+                print("\nSkipping internally provided so: {}\n".format(lib))
+                continue
+            check_deps.add(lib)
+            continue
         r = r_path.match(line)
         if r:
             r_paths.add(r.group(1))
@@ -65,17 +70,16 @@ def accumulate_dependencies(path, emul32=False):
 
 def is_dynamic_binary(path):
     if not os.path.exists(path) or not os.path.isfile(path):
-        return (False,False)
+        return False
     try:
         mg = magic.from_file(path)
     except Exception, e:
-        return (False,False)
-    emul32 = mg.startswith("ELF 32")
+        return False
     if v_bin.match(mg):
-        return (True,emul32)
+        return True
     if v_dyn.match(mg):
-        return (True,emul32)
-    return (False,False)
+        return True
+    return False
 
 def clean_path(p):
     if not p[0] == '/':
@@ -84,7 +88,10 @@ def clean_path(p):
 def main():
     le_files = set()
 
-    packages = ["gedit"]
+    packages = ["firefox"]
+
+    provided = set()
+    want_depends = set()
 
     for pkg in packages:
         (stuff,files,repo) = pisi.api.info_name(pkg, True)
@@ -93,19 +100,18 @@ def main():
         for f in files.list:
             f = clean_path(f.path)
 
-            (dyn,emul32) = is_dynamic_binary(f)
-            if not dyn:
+            if not is_dynamic_binary(f):
                 continue
-            deps.update(accumulate_dependencies(f, emul32))
-
             soname = get_soname(f)
             if soname is not None:
-                print("soname: {}".format(soname))
-            print("\n")
+                print("\n\nAdding %s to provided\n\n" % soname)
+                provided.add(soname)
+            want_depends.add(f)
 
-        print("Full binary dependencies for %s" % pkg)
-        for dep in deps:
-            print("  -> {}".format(dep))
+    for want in want_depends:
+        mg = magic.from_file(want)
+        emul32 = mg.startswith("ELF 32")
+        deps.update(accumulate_dependencies(want, provided, emul32))
 
 if __name__ == "__main__":
     main()
