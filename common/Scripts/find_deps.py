@@ -33,10 +33,10 @@ def accumulate_dependencies(path, provided, emul32=False):
     valid_libs = set()
 
     if emul32:
-        valid_libs.update(["/usr/lib32"])
+        valid_libs.update(["/usr/lib32", "/lib32"])
     else:
         # Currently on Solus this is the same thing as /usr/lib.
-        valid_libs.update(["/usr/lib64"])
+        valid_libs.update(["/usr/lib64", "/lib64"])
 
     for line in output.split("\n"):
         line = line.strip()
@@ -93,10 +93,11 @@ def main():
     provided = set()
     want_depends = set()
 
+    deps = set()
+
     for pkg in packages:
         (stuff,files,repo) = pisi.api.info_name(pkg, True)
 
-        deps = set()
         for f in files.list:
             f = clean_path(f.path)
 
@@ -112,6 +113,11 @@ def main():
         mg = magic.from_file(want)
         emul32 = mg.startswith("ELF 32")
         deps.update(accumulate_dependencies(want, provided, emul32))
+
+    print("\n\n")
+    print("Dependencies")
+    for i in deps:
+        print("  -> %s" % i)
 
 if __name__ == "__main__":
     main()
