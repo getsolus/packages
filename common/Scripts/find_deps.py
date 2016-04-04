@@ -12,6 +12,17 @@ v_dyn = re.compile(r"ELF (64|32)\-bit LSB shared object,")
 v_bin = re.compile(r"ELF (64|32)\-bit LSB executable,")
 shared_lib = re.compile(r".*Shared library: \[(.*)\].*")
 r_path = re.compile(r".*Library rpath: \[(.*)\].*")
+r_soname = re.compile(r".*Library soname: \[(.*)\].*")
+
+def get_soname(path):
+    output = subprocess.check_output("/usr/bin/readelf -d {}".format(path), shell=True)
+
+    for line in output.split("\n"):
+        line = line.strip()
+        g = r_soname.match(line)
+        if g:
+            return g.group(1)
+    return None
 
 def accumulate_dependencies(path, emul32=False):
     output = subprocess.check_output("/usr/bin/readelf -d {}".format(path), shell=True)
@@ -86,6 +97,11 @@ def main():
             if not dyn:
                 continue
             deps.update(accumulate_dependencies(f, emul32))
+
+            soname = get_soname(f)
+            if soname is not None:
+                print("soname: {}".format(soname))
+            print("\n")
 
         print("Full binary dependencies for %s" % pkg)
         for dep in deps:
