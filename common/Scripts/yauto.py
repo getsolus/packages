@@ -224,6 +224,7 @@ source     :
     - %(SOURCE)s : %(SHA256SUM)s
 license    : GPL-2.0 # CHECK ME
 summary    : PLEASE FILL ME IN
+component  : PLEASE FILL ME IN
 
 description: |
     PLEASE FILL ME IN""" % mapping
