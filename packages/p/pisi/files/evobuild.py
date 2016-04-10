@@ -508,6 +508,14 @@ def copy_aux(fname):
     else:
         # yaml
         files = [os.path.basename(fname)]
+        try:
+            gdir = os.path.join(dir, ".git")
+            if os.path.exists(gdir):
+                ccmd = "ypkg-gen-history \"{}\" -D \"{}\" 2>/dev/null 1>/dev/null".format(fname, target)
+                os.system(ccmd)
+        except Exception as e:
+            print(e)
+            pass
     try:
         for f in files:
             shutil.copyfile(os.path.join(dir, f), os.path.join(target, f))
