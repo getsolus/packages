@@ -1,7 +1,10 @@
 #!/usr/bin/python
 
 
-from pisi.actionsapi import get, shelltools
+from pisi.actionsapi import get, pisitools, pythonmodules
 
 def install():
-    shelltools.system("DESTDIR=%s ./install.sh" % get.installDIR())
+    pythonmodules.install()
+
+    for i in ["yupdate.py", "ybump.py"]:
+        pisitools.insinto("/usr/share/ypkg", "scripts/" + i)
