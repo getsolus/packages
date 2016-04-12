@@ -17,3 +17,6 @@ pref("extensions.enabledAddons",            "%7B8a01dfcc-450f-11e5-909b-fb581d5d
 pref("layers.use-image-offscreen-surfaces", false);
 pref("media.mediasource.enabled",           true);
 pref("media.mediasource.webm.enabled",      true);
+pref("app.update.auto",                     false);
+pref("app.update.enabled",                  false);
+pref("app.update.autoInstallEnabled",       false);
