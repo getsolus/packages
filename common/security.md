@@ -1,6 +1,6 @@
 *Changes needed for an improved security architecture in Solus*
 
-xattr
+xattr (DONE in eopkg)
 -----
 
 eopkg must support extended filesystem attributes. Until Solus 2 arrives, we
