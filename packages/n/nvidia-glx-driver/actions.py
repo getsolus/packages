@@ -9,7 +9,7 @@ import commands
 wdir = "NVIDIA-Linux-x86_64-%s" % get.srcVERSION()
 
 # Required... built in tandem with kernel update
-kversion = "4.4.6"
+kversion = "4.4.7"
 
 def setup():
     shelltools.system("sh NVIDIA-Linux-x86_64-%s.run --extract-only" % get.srcVERSION())
@@ -75,7 +75,7 @@ def install():
     pisitools.dosed("nvidia-settings.desktop", "__PIXMAP_PATH__", "/usr/share/pixmaps")
     pisitools.insinto("/usr/share/applications", "nvidia-settings.desktop")
     pisitools.insinto("/usr/share/pixmaps", "nvidia-settings.png")
-    pisitools.insinto("/etc/OpenCL/vendors", "nvidia.icd")
+    pisitools.insinto("/usr/share/OpenCL/vendors", "nvidia.icd")
 
     # kernel portion, i.e. /lib/modules/3.19.7/kernel/drivers/video/nvidia.ko
     shelltools.cd("kernel")
