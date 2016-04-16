@@ -5,8 +5,30 @@
 from pisi.actionsapi import shelltools, get, autotools, pisitools
 import os
 
+def speed_opt(name, cflags):
+    """ this package cannot yet be converted to ypkg, so emulates:
+        https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
+    """
+    fl = list(cflags.split(" "))
+    opt = "-flto -ffunction-sections -fno-semantic-interposition -O3".split(" ")
+    optimisations = ["-O%s" % x for x in range(0, 4)]
+    optimisations.extend("-Os")
+
+    fl = filter(lambda x: x not in optimisations, fl)
+    fl.extend(opt)
+    shelltools.export(name, " ".join(fl))
+    return " ".join(fl)
+
+
 def setup():
     del os.environ["LD_AS_NEEDED"]
+
+    cflags = speed_opt("CFLAGS", get.CFLAGS())
+    cxxflags = speed_opt("CXXFLAGS", get.CXXFLAGS())
+
+    shelltools.export("AR", "gcc-ar")
+    shelltools.export("RANLIB", "gcc-ranlib")
+    shelltools.export("NM", "gcc-nm")
 
     if get.buildTYPE() == "emul32":
         libdir = "lib32"
@@ -14,9 +36,9 @@ def setup():
         prefix = "/emul32"
         shelltools.export("CC", "gcc -m32")
         shelltools.export("CXX", "g++ -m32")
-        cflags = get.CFLAGS().replace("-march=x86-64", "-march=i686")
+        cflags = cflags.replace("-march=x86-64", "-march=i686")
         shelltools.export("CFLAGS", cflags)
-        cxxflags = get.CXXFLAGS().replace("-march=x86-64", "-march=i686")
+        cxxflags = cxxflags.replace("-march=x86-64", "-march=i686")
         shelltools.export("CXXFLAGS", cxxflags)
     else:
         libdir = "lib64"
