@@ -249,13 +249,9 @@ description: |
                 build = "python setup.py build"
                 install = "python setup.py install --root=%installroot% --no-compile -O0"
             elif self.compile_type == PERL_MODULES:
-                if self.buildpl:
-                    setup = "perl Build.PL installdirs=vendor destdir=%installroot%"
-                else:
-                    setup = "perl Makefile.PL PREFIX=/usr INSTALLDIRS=vendor DESTDIR=%installroot%"
-                if not self.makefile:
-                    build = "perl Build"
-                    install = "perl Build install"
+                setup = "%perl_setup"
+                build = "%perl_build"
+                install = "%perl_install"
                 sample_actions = os.path.join (self.template_dir, "actions.perlmodules.sample.py")
 
             if setup is None:
