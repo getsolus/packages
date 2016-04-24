@@ -83,6 +83,8 @@ def cleanupOldImages():
 
 def updateInitrd(filepath):
     parse = piksemel.parse(filepath)
+    kernels = set()
+
     for xmlfile in parse.tags("File"):
         path = xmlfile.getTagData("Path")
         if not path.startswith("/"):
@@ -90,6 +92,12 @@ def updateInitrd(filepath):
         if path.startswith("/lib/modules"):
             # Handle the proper case of modules
             version = path.split("/")[3]
+
+            kernels.add(version)
+            break
+
+    if len(kernels) > 1:
+        for kernel in kernels:
             cmd = "/sbin/depmod %s" % version
             os.system(cmd)
             cmd = "dracut -N -f --kver %s" % version
@@ -102,12 +110,10 @@ def updateInitrd(filepath):
                 except Exception, e:
                     print("Failed to copy efi boot")
 
-            makeOtherDistrosHappy()
+        makeOtherDistrosHappy()
 
-            if os.path.exists("/proc/cmdline") and not os.path.exists("/sys/firmware/efi"):
-                os.system("/usr/sbin/update-grub")
-            break
-
+        if os.path.exists("/proc/cmdline") and not os.path.exists("/sys/firmware/efi"):
+            os.system("/bin/bash /usr/sbin/update-grub")
 
 def setupPackage(metapath, filepath):
     cleanupOldImages()
