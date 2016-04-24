@@ -10,7 +10,8 @@ def setup():
     autotools.configure("--with-xkb-output=/var/lib/xkb \
                          --enable-install-setuid \
                          --enable-suid-wrapper \
-                         --enable-systemd-logind \
+                         --disable-systemd-logind \
+                         --with-int10=x86emu \
                          --with-xkb-path=/usr/share/X11/xkb \
                          --with-fontrootdir=/usr/share/fonts \
                          --enable-glamor \
@@ -20,7 +21,6 @@ def setup():
                          --enable-kdrive-evdev \
                          --enable-kdrive-mouse \
                          --enable-xephyr \
-                         --with-systemd-daemon \
                          --enable-dri \
                          --enable-dri2 \
                          --enable-dri3 \
