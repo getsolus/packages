@@ -96,7 +96,7 @@ def updateInitrd(filepath):
             kernels.add(version)
             break
 
-    if len(kernels) > 1:
+    if len(kernels) >= 1:
         for kernel in kernels:
             cmd = "/sbin/depmod %s" % version
             os.system(cmd)
