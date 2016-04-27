@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="45.0.2"
+VERSION="46.0"
 ARCH="x86_64"
 URL="http://ftp.mozilla.org/pub/firefox/releases/${VERSION}/linux-${ARCH}/xpi/"
 mkdir lang_pack
