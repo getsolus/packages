@@ -1,0 +1,149 @@
+From 5508ab403d71f003bddbf849eb1f57f371b18387 Mon Sep 17 00:00:00 2001
+From: Petri Lehtinen <petri@digip.org>
+Date: Thu, 18 Dec 2014 15:16:14 +0200
+Subject: [PATCH 1/1] Honor JSON_DECODE_INT_AS_REAL at lexical stage
+
+This has the consequence that numbers are never converted to integers
+when JSON_DECODE_INT_AS_REAL is set, and thus it works correctly all
+integers that are representable as double.
+
+Fixes #212.
+---
+ src/load.c                  | 27 +++++++++++----------------
+ test/suites/api/test_load.c | 14 ++++++++++++++
+ 2 files changed, 25 insertions(+), 16 deletions(-)
+
+diff --git a/src/load.c b/src/load.c
+index e96f8fe..28f6102 100644
+--- a/src/load.c
++++ b/src/load.c
+@@ -61,6 +61,7 @@ typedef struct {
+ typedef struct {
+     stream_t stream;
+     strbuffer_t saved_text;
++    size_t flags;
+     int token;
+     union {
+         struct {
+@@ -507,7 +508,9 @@ static int lex_scan_number(lex_t *lex, int c, json_error_t *error)
+         goto out;
+     }
+ 
+-    if(c != '.' && c != 'E' && c != 'e') {
++    if(!(lex->flags & JSON_DECODE_INT_AS_REAL) &&
++       c != '.' && c != 'E' && c != 'e')
++    {
+         json_int_t intval;
+ 
+         lex_unget_unsave(lex, c);
+@@ -654,12 +657,13 @@ static char *lex_steal_string(lex_t *lex, size_t *out_len)
+     return result;
+ }
+ 
+-static int lex_init(lex_t *lex, get_func get, void *data)
++static int lex_init(lex_t *lex, get_func get, size_t flags, void *data)
+ {
+     stream_init(&lex->stream, get, data);
+     if(strbuffer_init(&lex->saved_text))
+         return -1;
+ 
++    lex->flags = flags;
+     lex->token = TOKEN_INVALID;
+     return 0;
+ }
+@@ -798,7 +802,6 @@ error:
+ static json_t *parse_value(lex_t *lex, size_t flags, json_error_t *error)
+ {
+     json_t *json;
+-    double value;
+ 
+     switch(lex->token) {
+         case TOKEN_STRING: {
+@@ -821,15 +824,7 @@ static json_t *parse_value(lex_t *lex, size_t flags, json_error_t *error)
+         }
+ 
+         case TOKEN_INTEGER: {
+-            if (flags & JSON_DECODE_INT_AS_REAL) {
+-                if(jsonp_strtod(&lex->saved_text, &value)) {
+-                    error_set(error, lex, "real number overflow");
+-                    return NULL;
+-                }
+-                json = json_real(value);
+-            } else {
+-                json = json_integer(lex->value.integer);
+-            }
++            json = json_integer(lex->value.integer);
+             break;
+         }
+ 
+@@ -942,7 +937,7 @@ json_t *json_loads(const char *string, size_t flags, json_error_t *error)
+     stream_data.data = string;
+     stream_data.pos = 0;
+ 
+-    if(lex_init(&lex, string_get, (void *)&stream_data))
++    if(lex_init(&lex, string_get, flags, (void *)&stream_data))
+         return NULL;
+ 
+     result = parse_json(&lex, flags, error);
+@@ -987,7 +982,7 @@ json_t *json_loadb(const char *buffer, size_t buflen, size_t flags, json_error_t
+     stream_data.pos = 0;
+     stream_data.len = buflen;
+ 
+-    if(lex_init(&lex, buffer_get, (void *)&stream_data))
++    if(lex_init(&lex, buffer_get, flags, (void *)&stream_data))
+         return NULL;
+ 
+     result = parse_json(&lex, flags, error);
+@@ -1014,7 +1009,7 @@ json_t *json_loadf(FILE *input, size_t flags, json_error_t *error)
+         return NULL;
+     }
+ 
+-    if(lex_init(&lex, (get_func)fgetc, input))
++    if(lex_init(&lex, (get_func)fgetc, flags, input))
+         return NULL;
+ 
+     result = parse_json(&lex, flags, error);
+@@ -1095,7 +1090,7 @@ json_t *json_load_callback(json_load_callback_t callback, void *arg, size_t flag
+         return NULL;
+     }
+ 
+-    if(lex_init(&lex, (get_func)callback_get, &stream_data))
++    if(lex_init(&lex, (get_func)callback_get, flags, &stream_data))
+         return NULL;
+ 
+     result = parse_json(&lex, flags, error);
+diff --git a/test/suites/api/test_load.c b/test/suites/api/test_load.c
+index d451853..80d159f 100644
+--- a/test/suites/api/test_load.c
++++ b/test/suites/api/test_load.c
+@@ -97,6 +97,8 @@ static void decode_int_as_real()
+     json_int_t expected;
+ #endif
+ 
++    char big[311];
++
+     json = json_loads("42", JSON_DECODE_INT_AS_REAL | JSON_DECODE_ANY, &error);
+     if (!json || !json_is_real(json) || json_real_value(json) != 42.0)
+         fail("json_load decode int as real failed - int");
+@@ -113,6 +115,18 @@ static void decode_int_as_real()
+         fail("json_load decode int as real failed - expected imprecision");
+     json_decref(json);
+ #endif
++
++    /* 1E309 overflows. Here we create 1E309 as a decimal number, i.e.
++       1000...(309 zeroes)...0. */
++    big[0] = '1';
++    memset(big + 1, '0', 309);
++    big[310] = '\0';
++
++    json = json_loads(big, JSON_DECODE_INT_AS_REAL | JSON_DECODE_ANY, &error);
++    if (json || strcmp(error.text, "real number overflow") != 0)
++        fail("json_load decode int as real failed - expected overflow");
++    json_decref(json);
++
+ }
+ 
+ static void allow_nul()
+-- 
+2.8.2
+
