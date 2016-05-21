@@ -13,14 +13,17 @@ def setup():
     # TODO: Add Jasper support
     libdir="/usr/lib64"
     prefix = "/usr"
+    bindir = "/usr/bin"
     if get.buildTYPE() == "emul32":
         libdir = "/usr/lib32"
         prefix = "/emul32"
+        bindir = "/usr/lib32/gdk-pixbuf-2.0/bin"
 
     autotools.configure("--disable-static\
                          --prefix=%s \
                          --libdir=%s \
-                         --with-x11" % (prefix, libdir))
+                         --bindir=%s \
+                         --with-x11" % (prefix, libdir, bindir))
 
 def build():
     autotools.make()
