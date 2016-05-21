@@ -11,9 +11,16 @@ shelltools.export ("HOME", get.installDIR())
 
 def setup():
     # TODO: Add Jasper support
+    libdir="/usr/lib64"
+    prefix = "/usr"
+    if get.buildTYPE() == "emul32":
+        libdir = "/usr/lib32"
+        prefix = "/emul32"
+
     autotools.configure("--disable-static\
-                         --prefix=/usr\
-                         --with-x11")
+                         --prefix=%s \
+                         --libdir=%s \
+                         --with-x11" % (prefix, libdir))
 
 def build():
     autotools.make()
