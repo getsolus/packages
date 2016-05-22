@@ -730,8 +730,6 @@ def main():
     if not os.path.exists(randr):
         run_chroot("mknod -m 644 /dev/urandom c 1 9")
     configure_root()
-    # TODO: Fix this chmod inside dbus itself.
-    run_chroot("chmod o+x /usr/lib/dbus-1.0/dbus-daemon-launch-helper")
     run_chroot("dbus-daemon --system")
     # Shit ton of postinstalls. Can't wait till we're stateless.
     run_chroot("eopkg configure-pending")
