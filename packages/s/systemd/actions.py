@@ -2,6 +2,8 @@
 
 
 from pisi.actionsapi import shelltools, get, autotools, pisitools
+import os
+import shutil
 
 # Avoid g-ir-scanner FTB/SV
 shelltools.export ("HOME", get.installDIR())
@@ -10,7 +12,29 @@ shelltools.export ("HOME", get.installDIR())
 IgnoreAutodep = True
 
 def setup():
-    autotools.configure ("--libexecdir=/usr/lib \
+    if get.buildTYPE() == "emul32":
+        autotools.rawConfigure("--prefix=/usr \
+                            --libdir=/usr/lib32 \
+                            --disable-tests \
+                            --disable-ima \
+                            --disable-seccomp \
+                            --disable-pam \
+                            --disable-kmod \
+                            --disable-networkd \
+                            --enable-split-usr \
+                            --disable-libiptc \
+                            --disable-lz4 \
+                            --disable-manpages \
+                            --without-python \
+                            --disable-selinux \
+                            --enable-compat-libs \
+                            --disable-myhostname \
+                            --disable-libcurl \
+                            --disable-libidn \
+                            --disable-hostnamed \
+                            --disable-libcryptsetup")
+    else:
+        autotools.configure ("--libexecdir=/usr/lib \
                           --localstatedir=/var  \
                           --sysconfdir=/etc \
                           --with-sysvinit-path=/etc/init.d \
@@ -28,12 +52,30 @@ def build():
     autotools.make ()
 
 def install():
-    autotools.rawInstall ("DESTDIR=%s" % get.installDIR())
+    idir = get.installDIR()
+    # Force to subdirectory so we dont trash 64-bit installs
+    if get.buildTYPE() == "emul32":
+        idir += "/derpmcderp"
+
+    autotools.rawInstall ("DESTDIR=%s" % idir)
+
+    bdir = os.path.join(get.installDIR(), ".cache")
+    if os.path.exists(bdir):
+        shutil.rmtree(bdir)
+
+    if get.buildTYPE() == "emul32":
+        pisitools.dodir("/usr")
+        shelltools.system("mv \"%s/usr/lib32\" \"%s/usr/.\"" % (idir, get.installDIR()))
+        shutil.rmtree(idir)
+        # udev compatibility stuff
+        pisitools.dosym ("/usr/lib32/libudev.so", "/usr/lib32/libudev.so.0")
+        return
 
     # udev compatibility stuff
+    pisitools.dosym ("/usr/lib/libudev.so", "/usr/lib/libudev.so.0")
+
     pisitools.dosym ("/usr/bin/udevadm", "/sbin/udevadm")
     pisitools.dosym ("/usr/lib/systemd/systemd-udevd", "/lib/udev/udevd")
-    pisitools.dosym ("/usr/lib/libudev.so", "/usr/lib/libudev.so.0")
 
     # Final tweaks ^^
     pisitools.dosym ("/usr/lib/systemd/systemd", "/bin/systemd")
