@@ -4,6 +4,7 @@
 from pisi.actionsapi import shelltools, get, autotools, pisitools
 import os
 shelltools.export ("HOME", get.workDIR())
+import shutil
 
 def setup():
     os.system("sed -i 's#l \(gtk-.*\).sgml#& -o \1#' docs/faq/Makefile.in")
@@ -11,18 +12,28 @@ def setup():
     autotools.autoreconf()
     libdir = "/usr/lib32" if get.buildTYPE() == "emul32" else "/usr/lib64"
 
-    # Temporary, until we get emul32 cups
-    confopts = "--disable-cups" if get.buildTYPE() == "emul32" else ""
     autotools.configure("--disable-static \
                          --libdir=%s \
                          --enable-xinerama \
                          --with-x \
-                         --enable-explicit-deps %s" % (libdir, confopts))
+                         --prefix=/usr \
+                         --enable-explicit-deps \
+                         --enable-cups" % libdir)
 
 def build():
     autotools.make()
 
 def install():
-    autotools.rawInstall("RUN_QUERY_IMMODULES_TEST=false DESTDIR=%s" % get.installDIR())
-    if get.buildTYPE() != "emul32":
-        pisitools.rename("/usr/bin/gtk-update-icon-cache", "gtk-update-icon-cache-2.0")
+    idir = get.installDIR()
+    if get.buildTYPE() == "emul32":
+        idir += "/derpmcderp"
+
+    autotools.rawInstall("RUN_QUERY_IMMODULES_TEST=false DESTDIR=%s" % idir)
+
+    if get.buildTYPE() == "emul32":
+        pisitools.dodir("/usr")
+        shelltools.system("mv \"%s/usr/lib32\" \"%s/usr/.\"" % (idir, get.installDIR()))
+        shutil.rmtree(idir)
+        return
+
+    pisitools.rename("/usr/bin/gtk-update-icon-cache", "gtk-update-icon-cache-2.0")
