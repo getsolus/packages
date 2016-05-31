@@ -14,8 +14,8 @@ import os
 from datetime import date
 import time
 
-# Set to 1 for stable builds in future
-MAJOR = "0"
+# 1, stable Solus
+MAJOR = "1"
 
 def get_image_version():
     today = date.fromtimestamp(time.time())
