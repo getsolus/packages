@@ -553,6 +553,7 @@ ui vesamenu.c32
 timeout 50
 default live
 
+MENU RESOLUTION 1024 768
 menu title %(TITLE)s
 %(SPLASH)s
 menu color screen       37;40      #80ffffff #00000000 std
@@ -570,7 +571,8 @@ MENU HIDDENROW 7
 MENU WIDTH 78
 MENU MARGIN 15
 MENU ROWS 4
-MENU VSHIFT 7
+MENU VSHIFT 17
+MENU HSHIFT 25
 MENU TABMSGROW 11
 
 label live
