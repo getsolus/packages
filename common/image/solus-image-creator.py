@@ -779,9 +779,6 @@ def main():
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
-    # Restore systemd-resolved
-    run_chroot("rm -f /etc/resolv.conf")
-    run_chroot("ln -s ../run/systemd/resolve/resolv.conf /etc/resolv.conf")
     # Trick systemd into not running units it does not need to...
     run_chroot("/usr/bin/systemd-sysusers")
     run_chroot("touch /etc/.updated -r /etc")
