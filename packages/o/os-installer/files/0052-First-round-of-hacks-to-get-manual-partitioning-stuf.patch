@@ -1,0 +1,282 @@
+From 38d0e2040d2a7fb4c262c8cbee76f4186e701ad0 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 12 Jun 2016 19:28:27 +0100
+Subject: [PATCH 52/80] First round of hacks to get manual partitioning stuff
+ going
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ os_installer2/__init__.py           |   2 +
+ os_installer2/diskman.py            |   6 +-
+ os_installer2/mainwindow.py         |  23 ++++----
+ os_installer2/pages/partitioning.py | 110 ++++++++++++++++++++++++++++--------
+ 4 files changed, 106 insertions(+), 35 deletions(-)
+
+diff --git a/os_installer2/__init__.py b/os_installer2/__init__.py
+index 64c4a64..86e03cd 100644
+--- a/os_installer2/__init__.py
++++ b/os_installer2/__init__.py
+@@ -22,6 +22,8 @@ gi.require_version('TimezoneMap', '1.0')
+ 
+ # The path of the source filesystem
+ SOURCE_FILESYSTEM = "/run/initramfs/live/LiveOS/squashfs.img"
++SOURCE_FILESYSTEM = \
++    "/home/ikey/Solus/primary/IMAGEROOT/deploy/LiveOS/squashfs.img"
+ 
+ # The guy inside that is actually our filesystem to copy
+ INNER_FILESYSTEM = "LiveOS/rootfs.img"
+diff --git a/os_installer2/diskman.py b/os_installer2/diskman.py
+index 3619ce6..6fa2c4f 100644
+--- a/os_installer2/diskman.py
++++ b/os_installer2/diskman.py
+@@ -13,6 +13,7 @@
+ 
+ from . import format_size_local
+ from . import MIN_REQUIRED_SIZE
++from gi.repository import GObject
+ import re
+ import os
+ import subprocess
+@@ -121,9 +122,11 @@ class DriveProber:
+         return False
+ 
+ 
+-class SystemPartition:
++class SystemPartition(GObject.Object):
+     """ Wrapper around partition information """
+ 
++    __gtype_name__ = "OsSystemPartition"
++
+     # Our parted.Partition reference
+     partition = None
+ 
+@@ -199,6 +202,7 @@ class SystemPartition:
+             break
+ 
+     def __init__(self, partition, mount_point, dm):
++        GObject.GObject.__init__(self)
+         self.partition = partition
+         self.path = partition.path
+ 
+diff --git a/os_installer2/mainwindow.py b/os_installer2/mainwindow.py
+index b3b4033..dde779b 100644
+--- a/os_installer2/mainwindow.py
++++ b/os_installer2/mainwindow.py
+@@ -15,17 +15,17 @@ from .diskman import DiskManager
+ from .permissions import PermissionsManager
+ from .pages.welcome import InstallerWelcomePage
+ from .pages.language import InstallerLanguagePage
+-from .pages.location import InstallerLocationPage
+-from .pages.geoip import InstallerGeoipPage
+-from .pages.keyboard import InstallerKeyboardPage
+-from .pages.timezone import InstallerTimezonePage
++# from .pages.location import InstallerLocationPage
++# from .pages.geoip import InstallerGeoipPage
++# from .pages.keyboard import InstallerKeyboardPage
++# from .pages.timezone import InstallerTimezonePage
+ from .pages.disk_location import InstallerDiskLocationPage
+ from .pages.partitioning import InstallerPartitioningPage
+ from .pages.system import InstallerSystemPage
+-from .pages.users import InstallerUsersPage
+-from .pages.summary import InstallerSummaryPage
+-from .pages.progress import InstallerProgressPage
+-from .pages.complete import InstallationCompletePage
++# from .pages.users import InstallerUsersPage
++# from .pages.summary import InstallerSummaryPage
++# from .pages.progress import InstallerProgressPage
++# from .pages.complete import InstallationCompletePage
+ import sys
+ import threading
+ import traceback
+@@ -156,17 +156,18 @@ class MainWindow(Gtk.ApplicationWindow):
+         # Load other pages here into installer_stack
+         try:
+             self.add_installer_page(InstallerLanguagePage())
++            """
+             self.add_installer_page(InstallerLocationPage())
+             self.add_installer_page(InstallerGeoipPage())
+             self.add_installer_page(InstallerKeyboardPage())
+-            self.add_installer_page(InstallerTimezonePage())
++            self.add_installer_page(InstallerTimezonePage())"""
+             self.add_installer_page(InstallerDiskLocationPage())
+             self.add_installer_page(InstallerPartitioningPage())
+             self.add_installer_page(InstallerSystemPage())
+-            self.add_installer_page(InstallerUsersPage())
++            """self.add_installer_page(InstallerUsersPage())
+             self.add_installer_page(InstallerSummaryPage())
+             self.add_installer_page(InstallerProgressPage())
+-            self.add_installer_page(InstallationCompletePage())
++            self.add_installer_page(InstallationCompletePage())"""
+         except Exception as e:
+             print("Fatal error during startup: {}".format(e))
+             traceback.print_exc(file=sys.stderr)
+diff --git a/os_installer2/pages/partitioning.py b/os_installer2/pages/partitioning.py
+index 678e6ec..248f5a8 100644
+--- a/os_installer2/pages/partitioning.py
++++ b/os_installer2/pages/partitioning.py
+@@ -18,6 +18,7 @@ from os_installer2.strategy import ReplaceOSStrategy
+ from os_installer2.strategy import EmptyDiskStrategy
+ from os_installer2.strategy import WipeDiskStrategy
+ from os_installer2.strategy import UserPartitionStrategy
++from os_installer2.diskman import SystemPartition
+ from gi.repository import Gtk, GLib
+ import sys
+ import os
+@@ -38,6 +39,7 @@ class ManualPage(Gtk.VBox):
+     """ Manual partitioning page, mostly TreeView with gparted proxy """
+ 
+     info = None
++    store_mountpoints = None
+ 
+     def __init__(self):
+         Gtk.VBox.__init__(self)
+@@ -49,6 +51,12 @@ class ManualPage(Gtk.VBox):
+         lab.set_margin_bottom(20)
+         lab.set_halign(Gtk.Align.START)
+ 
++        self.store_mountpoints = Gtk.ListStore(str, str)
++        self.store_mountpoints.append(["/", "/"])
++        self.store_mountpoints.append(["/home", "/home"])
++        self.store_mountpoints.append(["swap", "swap"])
++        self.store_mountpoints.append([None, None])
++
+         self.treeview = Gtk.TreeView()
+         self.scrl = Gtk.ScrolledWindow(None, None)
+         self.scrl.add(self.treeview)
+@@ -65,8 +73,6 @@ class ManualPage(Gtk.VBox):
+         self.column3.add_attribute(ren, "markup", INDEX_PARTITION_PATH)
+         self.treeview.append_column(self.column3)
+ 
+-        # Type
+-        ren = Gtk.CellRendererText()
+         self.column4 = Gtk.TreeViewColumn("Type", ren)
+         self.column4.add_attribute(ren, "markup", INDEX_PARTITION_TYPE)
+         self.treeview.append_column(self.column4)
+@@ -78,9 +84,13 @@ class ManualPage(Gtk.VBox):
+         self.treeview.append_column(self.column5)
+ 
+         # mount point
+-        ren = Gtk.CellRendererText()
+-        self.column6 = Gtk.TreeViewColumn("Mount point", ren)
+-        self.column6.add_attribute(ren, "markup", INDEX_PARTITION_MOUNT_AS)
++        ren = Gtk.CellRendererCombo()
++        ren.set_property("editable", True)
++        ren.set_property("model", self.store_mountpoints)
++        ren.set_property("has-entry", False)
++        ren.set_property("text-column", 0)
++        ren.connect("edited", self.on_mount_changed)
++        self.column6 = Gtk.TreeViewColumn("Mount point", ren, text=4)
+         self.treeview.append_column(self.column6)
+ 
+         # format
+@@ -101,9 +111,6 @@ class ManualPage(Gtk.VBox):
+         self.column9.add_attribute(ren, "markup", INDEX_PARTITION_FREE_SPACE)
+         self.treeview.append_column(self.column9)
+ 
+-        self.treeview.get_selection().connect("changed",
+-                                              self._partition_selected)
+-
+         toolbar = Gtk.Toolbar()
+         toolbar.get_style_context().add_class(Gtk.STYLE_CLASS_INLINE_TOOLBAR)
+         junctions = Gtk.JunctionSides.TOP
+@@ -138,25 +145,82 @@ class ManualPage(Gtk.VBox):
+         self.queue_draw()
+         # TODO: Refresh
+ 
+-    def _partition_selected(self, selection):
+-        model, treeiter = selection.get_selected()
+-
+-        if treeiter is None:
+-            self.root.set_sensitive(False)
+-            self.swap.set_sensitive(False)
+-            return
+-
+-        part = model[treeiter][INDEX_PARTITION_OBJECT]
+-        swap = part.type == "swap"
+-        self.root.set_sensitive(part.type != "" and not swap)
+-        self.swap.set_sensitive(part.type != "" and swap)
+-
+-        self.selected_row = treeiter
+-        self.selected_partition = part
++    def on_mount_changed(self, widget, path, text):
++        print("{} = {}".format(path, text))
++        model = self.treeview.get_model()
++        model[path][4] = text
++
++    def push_partition(self, drive, part):
++        model = self.treeview.get_model()
++        os = None
++        if part.path in drive.operating_systems:
++            os = drive.operating_systems[part.path].name
++
++        fs = part.partition.fileSystem
++        fsname = None
++        if fs and fs.type:
++            fsname = fs.type
++
++        model.append([
++            part.path,
++            fsname,
++            os,
++            None,
++            None,
++            part.sizeString,
++            part.freespace_string,
++            part])
++        """
++        INDEX_PARTITION_PATH = 0
++        INDEX_PARTITION_TYPE = 1
++        INDEX_PARTITION_DESCRIPTION = 2
++        INDEX_PARTITION_FORMAT_AS = 3
++        INDEX_PARTITION_MOUNT_AS = 4
++        INDEX_PARTITION_SIZE = 5
++        INDEX_PARTITION_FREE_SPACE = 6
++        INDEX_PARTITION_OBJECT = 7
++        """
++
++    def push_swap(self, part):
++        model = self.treeview.get_model()
++        partSize = format_size_local(part.getLength() *
++                                     part.disk.device.sectorSize)
++        model.append([
++            part.path,
++            "swap",
++            None,
++            None,
++            None,
++            partSize,
++            None,
++            None])
++
++    def populate_ui(self):
++        prober = self.info.prober
++
++        model = Gtk.ListStore(str, str, str, str,
++                              str, str, str, SystemPartition)
++        self.treeview.set_model(model)
++        for drive in prober.drives:
++            for swap in drive.get_swap_partitions():
++                try:
++                    print(swap)
++                    self.push_swap(swap)
++                except Exception as e:
++                    print("Swap problem: {}".format(e))
++
++            for part in sorted(drive.partitions):
++                try:
++                    part_prop = drive.partitions[part]
++                    self.push_partition(drive, part_prop)
++                except Exception as e:
++                    print("Init problem: {}".format(e))
++            print(drive)
+ 
+     def update_strategy(self, info):
+         self.info = info
+         info.owner.set_can_next(False)
++        self.populate_ui()
+ 
+ 
+ class DualBootPage(Gtk.VBox):
+-- 
+2.8.3
+
