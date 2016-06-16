@@ -89,7 +89,7 @@ class UI(pisi.ui.UI):
     def display_progress(self, operation, percent, info="", **kw):
         if operation == "fetching":
             file_name = kw["filename"]
-            if not file_name.startswith("pisi-index.xml"):
+            if not file_name.startswith("eopkg-index.xml"):
                 file_name = pisi.util.parse_package_name(file_name)[0]
             out = (operation, file_name, str(percent), int(kw["rate"]), kw["symbol"], int(kw["downloaded_size"]), int(kw["total_size"]))
         else:
@@ -140,7 +140,7 @@ def privileged(func):
 def installPackage(package=None):
     if package:
         package = package.split(",")
-        reinstall = package[0].endswith(".pisi")
+        reinstall = package[0].endswith(".eopkg")
         pisi.api.install(package, ignore_file_conflicts=True, reinstall=reinstall)
 
 @privileged
@@ -206,14 +206,14 @@ def setRepositories(repos):
 @privileged
 # ex: setConfig("general", "bandwidth_limit", "30")
 def setConfig(category, name, value):
-    config = pisi.configfile.ConfigurationFile("/etc/pisi/pisi.conf")
+    config = pisi.configfile.ConfigurationFile("/etc/eopkg/eopkg.conf")
     config.set(category, name, value)
 
     config.write_config()
 
 @privileged
 def setCache(enabled, limit):
-    config = pisi.configfile.ConfigurationFile("/etc/pisi/pisi.conf")
+    config = pisi.configfile.ConfigurationFile("/etc/eopkg/eopkg.conf")
     config.set("general", "package_cache", str(enabled))
     config.set("general", "package_cache_limit", str(limit))
 
@@ -232,8 +232,8 @@ def clearCache(cacheDir, limit):
     pisi.api.clearCache(int(limit) == 0)
 
 def __checkCacheLimits():
-    cached_pkgs_dir = "/var/cache/pisi/packages"
-    config = pisi.configfile.ConfigurationFile("/etc/pisi/pisi.conf")
+    cached_pkgs_dir = "/var/cache/eopkg/packages"
+    config = pisi.configfile.ConfigurationFile("/etc/eopkg/eopkg.conf")
     cache = config.get("general", "package_cache")
     if cache == "True":
         limit = config.get("general", "package_cache_limit")
