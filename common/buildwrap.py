@@ -27,7 +27,7 @@ import glob
 
 WorkDir = "/BUILDDIR"
 SSH_HOST = "solus-project.com"
-BASE_REPO = "https://git.solus-project.com/packages"
+BASE_REPO = "git@solus-project.com:packages"
 
 
 def check_output(cmd):
