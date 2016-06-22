@@ -92,19 +92,11 @@ class Builder():
                 time.sleep(10)
                 continue
 
+            clcmd = "git clone -b {} --depth 1 --single-branch {}"
             wd = os.getcwd()
             try:
                 os.chdir(clone_base)
-                check_output("git clone %s" % clone_uri)
-            except Exception, e:
-                print e
-                self.report_status(id, "FAILED")
-                time.sleep(10)
-                continue
-
-            try:
-                os.chdir(clone_dir)
-                check_output("git checkout %s" % tag)
+                check_output(clcmd.format(tag, clone_uri))
             except Exception, e:
                 print e
                 self.report_status(id, "FAILED")
