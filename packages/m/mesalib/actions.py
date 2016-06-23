@@ -10,7 +10,7 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-flto -ffunction-sections -fno-semantic-interposition -O3".split(" ")
+    opt = "-flto -ffunction-sections -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
@@ -44,6 +44,8 @@ def setup():
         libdir = "lib64"
         mlib = ""
         prefix = "/usr"
+    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-ab99196\"")
+    shelltools.system("sed -e /pthread-stubs/d -i configure.ac")
     autotools.autoreconf ("-fi")
 
     #disabled r300,r600,radeonsi
@@ -63,6 +65,7 @@ def setup():
                           --with-llvm-shared-libs        \
                           --libdir=/usr/%s               \
                           --enable-shared-glapi \
+                          --with-vulkan-drivers=intel    \
                           --with-egl-platforms=\"drm,x11,wayland\" \
                           --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast\"\
                           --enable-dri3 %s" % (prefix, libdir, mlib))
