@@ -12,7 +12,6 @@ SupportDir = "%s/%s" % ( get.workDIR(), "PathSupport")
 
 IgnoreAutodep = True
 
-LegacyTriplet = "x86_64-evolveos-linux"
 Triplet = "x86_64-solus-linux"
 
 def setup():
@@ -21,18 +20,19 @@ def setup():
     shelltools.cd (BuildDir)
 
     # Because GCC is a dope.
-    cflags = get.CFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "")
-    cxxflags = get.CXXFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "")
+    cflags = get.CFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "").replace("-O2", "-O3")
+    cxxflags = get.CXXFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "").replace("-O2", "-O3")
 
     shelltools.export("CFLAGS", cflags)
     shelltools.export("CXXFLAGS", cxxflags)
+    shelltools.export("CFLAGS_FOR_TARGET", cflags)
     shelltools.export("CC", "%s-gcc" % Triplet)
     shelltools.export("CXX", "%s-g++" % Triplet)
 
     # Configure GCC
     shelltools.system ("%s/configure \
                         --prefix=/usr \
-                        --with-pkgversion='Solus Project' \
+                        --with-pkgversion='Solus' \
                         --libdir=/usr/lib64 \
                         --libexecdir=/usr/lib64 \
                         --with-system-zlib \
@@ -71,4 +71,4 @@ def install():
     crtfiles = ["libgcc.a", "crtbegin.o", "crtend.o", "crtbeginS.o", "crtendS.o"]
     for crt in crtfiles:
         pisitools.dosym("/usr/lib64/gcc/%s/%s/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib64/%s" % crt)
-        pisitools.dosym("/usr/lib/gcc/%s/%s/%s/32" % (Triplet, get.srcVERSION(), crt), "/usr/lib32/%s" % crt)
+        pisitools.dosym("/usr/lib64/gcc/%s/%s/32/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib32/%s" % crt)
