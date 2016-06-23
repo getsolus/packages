@@ -20,3 +20,4 @@ pref("media.mediasource.webm.enabled",      true);
 pref("app.update.auto",                     false);
 pref("app.update.enabled",                  false);
 pref("app.update.autoInstallEnabled",       false);
+pref("layers.acceleration.force-enabled",   true);
