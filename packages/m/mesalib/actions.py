@@ -44,7 +44,8 @@ def setup():
         libdir = "lib64"
         mlib = ""
         prefix = "/usr"
-    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-ab99196\"")
+    # Only for git builds
+    # shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-ab99196\"")
     shelltools.system("sed -e /pthread-stubs/d -i configure.ac")
     autotools.autoreconf ("-fi")
 
