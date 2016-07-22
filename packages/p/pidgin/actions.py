@@ -10,8 +10,7 @@ def setup():
                          --disable-gtkspell \
                          --disable-gstreamer \
                          --disable-schemas-install \
-                         --disable-tcl \
-                         --disable-avahi")
+                         --disable-tcl")
 
 def build():
     autotools.make()
