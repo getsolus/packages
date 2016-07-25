@@ -26,7 +26,7 @@ def setup():
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
     host = get.HOST()
-    version = "5.3.0" # GCC version
+    version = "6.1.0" # GCC version
 
     paths = ["/usr/include/",
              "/usr/include/c++/%s" % version,
