@@ -7,13 +7,17 @@ shelltools.export ("HOME", get.workDIR())
 
 def setup():
     libdir = "/usr/lib32" if get.buildTYPE() == "emul32" else "/usr/lib64"
+    host = "" if get.buildTYPE() != "emul32" else "--build=i686-pc-linux-gnu --host=i686-pc-linux-gnu"
     autotools.autoreconf("-vfi")
+    if get.buildTYPE() == "emul32":
+        shelltools.export("PKG_CONFIG_PATH", "/usr/lib32/pkgconfig:/usr/share/pkgconfig")
+        shelltools.export("CFLAGS", "-I/usr/lib32/glib-2.0/include " + get.CFLAGS())
     autotools.configure("--enable-gtk2-dependency \
                          --enable-wayland-backend \
                          --disable-packagekit     \
                          --prefix=/usr            \
                          --libdir=%s              \
-                         --enable-x11-backend" % libdir)
+                         --enable-x11-backend %s CFLAGS=\"$CFLAGS\"" % (libdir, host))
 
 def build():
     autotools.make()
