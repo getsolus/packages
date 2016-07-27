@@ -13,6 +13,9 @@ IgnoreAutodep = True
 
 def setup():
     if get.buildTYPE() == "emul32":
+        host = "--build=i686-pc-linux-gnu --host=i686-pc-linux-gnu"
+        shelltools.export("PKG_CONFIG_PATH", "/usr/lib32/pkgconfig:/usr/share/pkgconfig")
+        shelltools.export("CFLAGS", "-I/usr/lib32/glib-2.0/include " + get.CFLAGS() + " -fno-lto")
         autotools.rawConfigure("--prefix=/usr \
                             --libdir=/usr/lib32 \
                             --disable-tests \
@@ -32,7 +35,8 @@ def setup():
                             --disable-libcurl \
                             --disable-libidn \
                             --disable-hostnamed \
-                            --disable-libcryptsetup")
+                            --disable-libcryptsetup \
+                            CFLAGS=\"$CFLAGS\"")
     else:
         autotools.configure ("--libexecdir=/usr/lib \
                           --localstatedir=/var  \
