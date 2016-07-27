@@ -35,6 +35,7 @@ def install():
     autotools.rawInstall ("DESTDIR=%s" % idir)
     if get.buildTYPE() != "emul32":
         os.system("chmod o+x %s/usr/lib/dbus-1.0/dbus-daemon-launch-helper" % get.installDIR())
+        pisitools.removeDir("/var/run")
     else:
         pisitools.dodir("/usr")
         shelltools.system("mv \"%s/usr/lib32\" \"%s/usr/.\"" % (idir, get.installDIR()))
