@@ -16,7 +16,11 @@ def setup():
                           --libexecdir=/usr/lib/dbus-1.0 \
                           --with-console-auth-dir=/run/console/\
                           --with-systemdsystemunitdir=/usr/lib/systemd/system\
+                          --with-system-pid-file=/run/dbus/pid \
+                          --with-system-socket=/run/dbus/system_bus_socket \
                           --libdir=%s \
+                          --enable-epoll \
+                          --enable-user-session \
                           --disable-static %s" % (libdir, confEx))
 
 def build():
