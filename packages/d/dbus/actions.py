@@ -10,6 +10,7 @@ IgnoreAutodep = True
 def setup():
     libdir = "/usr/lib" if get.buildTYPE() != "emul32" else "/usr/lib32"
     confEx = "--disable-tests" if get.buildTYPE() == "emul32" else ""
+    del os.environ['LD_AS_NEEDED']
     autotools.configure ("--prefix=/usr \
                           --sysconfdir=/etc \
                           --localstatedir=/var \
