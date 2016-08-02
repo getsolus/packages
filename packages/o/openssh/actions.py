@@ -7,10 +7,11 @@ from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 def setup():
     autotools.rawConfigure("--prefix=/usr \
-                                                    --sysconfdir=/etc/ssh \
-                                                    --datadir=/usr/share/sshd \
-                                                    --with-md5-passwords \
-                                                    --with-privsep-path=/var/lib/sshd")
+                            --sysconfdir=/etc/ssh \
+                            --datadir=/usr/share/sshd \
+                            --with-md5-passwords \
+                            --with-pam \
+                            --with-privsep-path=/var/lib/sshd")
 
 def build():
     autotools.make()
