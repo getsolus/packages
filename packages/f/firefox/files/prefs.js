@@ -21,3 +21,4 @@ pref("app.update.auto",                     false);
 pref("app.update.enabled",                  false);
 pref("app.update.autoInstallEnabled",       false);
 pref("layers.acceleration.force-enabled",   true);
+pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
