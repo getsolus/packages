@@ -46,7 +46,7 @@ def setup():
         shelltools.export("CXX", "g++")
         host = get.HOST()
         prefix = "/usr"
-        options = "-DLLVM_LIBDIR_SUFFIX=64  -DCMAKE_C_FLAGS:STRING=-m64 -DCMAKE_CXX_FLAGS:STRING=-m64 -DLLVM_TARGET_ARCH:STRING=x86_64 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % host
+        options = "-DLLVM_INSTALL_UTILS=ON -DLLVM_LIBDIR_SUFFIX=64  -DCMAKE_C_FLAGS:STRING=-m64 -DCMAKE_CXX_FLAGS:STRING=-m64 -DLLVM_TARGET_ARCH:STRING=x86_64 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % host
 
     if not shelltools.can_access_directory("lebuild"):
         shelltools.makedirs("lebuild")
