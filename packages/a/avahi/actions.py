@@ -7,6 +7,7 @@ shelltools.export("HOME", get.workDIR())
 
 
 def setup():
+    autotools.autoreconf("-vfi")
     autotools.configure("--disable-static \
                          --disable-mono       \
                          --disable-monodoc    \
@@ -30,5 +31,4 @@ def install():
     pisitools.dodoc("ChangeLog", "LICENSE")
     pisitools.removeDir("/var/run")
     pisitools.removeDir("/var")
-    pisitools.removeDir("/usr/share/applications")
     pisitools.dosym("/usr/include/avahi-compat-libdns_sd/dns_sd.h", "/usr/include/dns_sd.h")
