@@ -1,0 +1,73 @@
+From ddcf47026dbbe58dca3b34c7bb1ec63bb50a861a Mon Sep 17 00:00:00 2001
+From: Benjamin Otte <otte@redhat.com>
+Date: Sat, 14 May 2016 18:35:27 +0200
+Subject: [PATCH] widget: No longer postpone style-updated on unrealized
+ widgets
+
+GTK used to not emit GtkWidget::style-updated on widgets that weren't
+realized. This sped up construction of complex widgetry in the early
+days of GTK3 where we instantly invalidated on every change.
+We don't do that anymore, so in theory (and in my limited testing with
+widget-factory) this shouldn't be a prolem anymore.
+
+What is a problem though is that postponing style-updated leads to 2
+problems:
+(1) Unrealized widgets will not emit style-updated which may cause them
+    to not properly update their state and return wrong values from
+    get_preferred_width/height() etc
+(2) Emitting style-updated during realize can happen too late.
+    When a widget is not made child-visible by its parent (common
+    examples: notebook, paned) it will also not be realized when the
+    parent is initially shown. However, when they get realized later
+    (after a resize of the parent), they will emit style-updated (and
+    potentially queue a resize) during size-allocate.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=765700
+---
+ gtk/gtkwidget.c        | 13 +------------
+ gtk/gtkwidgetprivate.h |  1 -
+ 2 files changed, 1 insertion(+), 13 deletions(-)
+
+diff --git a/gtk/gtkwidget.c b/gtk/gtkwidget.c
+index 292a0d9..c14e127 100644
+--- a/gtk/gtkwidget.c
++++ b/gtk/gtkwidget.c
+@@ -5443,9 +5443,6 @@ gtk_widget_realize (GtkWidget *widget)
+       gtk_widget_ensure_style (widget);
+       G_GNUC_END_IGNORE_DEPRECATIONS
+ 
+-      if (priv->style_update_pending)
+-        g_signal_emit (widget, widget_signals[STYLE_UPDATED], 0);
+-
+       g_signal_emit (widget, widget_signals[REALIZE], 0);
+ 
+       gtk_widget_real_set_has_tooltip (widget, gtk_widget_get_has_tooltip (widget), TRUE);
+@@ -16495,15 +16492,7 @@ gtk_widget_class_get_css_name (GtkWidgetClass *widget_class)
+ void
+ _gtk_widget_style_context_invalidated (GtkWidget *widget)
+ {
+-  if (_gtk_widget_get_realized (widget))
+-    g_signal_emit (widget, widget_signals[STYLE_UPDATED], 0);
+-  else
+-    {
+-      /* Compress all style updates so it
+-       * is only emitted once pre-realize.
+-       */
+-      widget->priv->style_update_pending = TRUE;
+-    }
++  g_signal_emit (widget, widget_signals[STYLE_UPDATED], 0);
+ }
+ 
+ GtkCssNode *
+diff --git a/gtk/gtkwidgetprivate.h b/gtk/gtkwidgetprivate.h
+index ebee09a..e51dd39 100644
+--- a/gtk/gtkwidgetprivate.h
++++ b/gtk/gtkwidgetprivate.h
+@@ -66,7 +66,6 @@ struct _GtkWidgetPrivate
+   guint receives_default      : 1;
+   guint has_grab              : 1;
+   guint shadowed              : 1;
+-  guint style_update_pending  : 1;
+   guint app_paintable         : 1;
+   guint double_buffered       : 1;
+   guint redraw_on_alloc       : 1;
