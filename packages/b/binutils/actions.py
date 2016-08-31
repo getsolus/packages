@@ -36,3 +36,4 @@ def install():
 
     # Include the libiberty header
     pisitools.insinto ("/usr/include", "../binutils-%s/include/libiberty.h" % get.srcVERSION())
+    pisitools.insinto ("/usr/lib", "libiberty/libiberty.a")
