@@ -293,8 +293,8 @@ def examine_abi(download_path):
                 tgt[soname] = set()
             tgt[soname].update(symbols)
 
-    report_file = os.path.join(download_path, "symbols")
-    report_file32 = os.path.join(download_path, "symbols32")
+    report_file = os.path.join(download_path, "abi_symbols")
+    report_file32 = os.path.join(download_path, "abi_symbols32")
 
     # 64-bit abi-report
     if len(abi_report) > 0:
@@ -324,8 +324,8 @@ def examine_abi(download_path):
     lib_deps = get_all_native_dependencies(source_dir)
     lib_deps32 = get_all_32bit_dependencies(source_dir)
 
-    report_file = os.path.join(download_path, "used_libs")
-    report_file32 = os.path.join(download_path, "used_libs32")
+    report_file = os.path.join(download_path, "abi_used_libs")
+    report_file32 = os.path.join(download_path, "abi_used_libs32")
 
     # 64-bit deps
     if len(lib_deps) > 0:
