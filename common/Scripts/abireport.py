@@ -28,7 +28,7 @@ import sys
 import util
 import shutil
 
-valid_dirs = ["/usr/lib", "/usr/lib64"]
+valid_dirs = ["/usr/lib", "/usr/lib64", "/usr/lib32", "/lib", "/lib32", "/lib64"]
 
 # For determining .so's
 reg = re.compile(r".* ELF (64|32)\-bit LSB shared object,")
