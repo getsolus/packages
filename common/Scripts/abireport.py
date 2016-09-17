@@ -283,7 +283,7 @@ def examine_abi(download_path):
         soname = get_soname(library)
         if not soname:
             util.print_fatal("Failed to determine soname of valid library!")
-            sys.exit(1)
+            # sys.exit(1)
         symbols = dump_symbols(library)
 
         tgt = abi_report if not is_32bit(library) else abi_report32
