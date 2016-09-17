@@ -86,7 +86,17 @@ def get_shared_dependencies(path):
     return ret
 
 
-def get_all_dependencies(path):
+def get_all_native_dependencies(path):
+    ''' Get all native dependencies only '''
+    return get_all_dependencies_internal(path, True)
+
+
+def get_all_32bit_dependencies(path):
+    ''' Determine all 32-bit dependencies in the given path '''
+    return get_all_dependencies_internal(path, False)
+
+
+def get_all_dependencies_internal(path, skip_32bit):
     ''' Determine all dependencies in the given path '''
 
     deps = set()
@@ -100,6 +110,8 @@ def get_all_dependencies(path):
             if not is_dynamic_binary(fpath):
                 continue
             # Encountered a valid dynamic linked object
+            if is_32bit(fpath) and skip_32bit:
+                continue
             if is_file_valid(fpath):
                 # We must account for *all* internal symbols due to rpaths and
                 # overriding of LD_LIBRARY_PATH
@@ -309,8 +321,13 @@ def examine_abi(download_path):
         truncate_file(report_file32)
 
     # Write the library report
-    lib_deps = get_all_dependencies(source_dir)
+    lib_deps = get_all_native_dependencies(source_dir)
+    lib_deps32 = get_all_32bit_dependencies(source_dir)
+
     report_file = os.path.join(download_path, "used_libs")
+    report_file32 = os.path.join(download_path, "used_libs32")
+
+    # 64-bit deps
     if len(lib_deps) > 0:
         report = open(report_file, "w", encoding="utf-8")
         for soname in sorted(lib_deps):
@@ -318,6 +335,15 @@ def examine_abi(download_path):
         report.close()
     else:
         truncate_file(report_file)
+
+    # 32-bit deps
+    if len(lib_deps32) > 0:
+        report = open(report_file32, "w", encoding="utf-8")
+        for soname in sorted(lib_deps32):
+            report.write("{}\n".format(soname))
+        report.close()
+    else:
+        truncate_file(report_file32)
 
     os.chdir(old_dir)
     purge_tree(extract_dir)
