@@ -88,16 +88,6 @@ def get_shared_dependencies(path):
 
 def get_all_native_dependencies(path):
     ''' Get all native dependencies only '''
-    return get_all_dependencies_internal(path, True)
-
-
-def get_all_32bit_dependencies(path):
-    ''' Determine all 32-bit dependencies in the given path '''
-    return get_all_dependencies_internal(path, False)
-
-
-def get_all_dependencies_internal(path, skip_32bit):
-    ''' Determine all dependencies in the given path '''
 
     deps = set()
 
@@ -110,7 +100,40 @@ def get_all_dependencies_internal(path, skip_32bit):
             if not is_dynamic_binary(fpath):
                 continue
             # Encountered a valid dynamic linked object
-            if is_32bit(fpath) and skip_32bit:
+            if is_32bit(fpath):
+                continue
+            if is_file_valid(fpath):
+                # We must account for *all* internal symbols due to rpaths and
+                # overriding of LD_LIBRARY_PATH
+                soname = get_soname(fpath)
+                if soname is not None:
+                    sonames.add(soname)
+            if is_dynamic_binary(fpath):
+                examine.add(fpath)
+
+    for path in examine:
+        current_deps = get_shared_dependencies(path)
+        # Ensure we don't add a dependency on an internally provided symbol
+        deps.update(set(filter(lambda s: s not in sonames, current_deps)))
+
+    return deps
+
+
+def get_all_32bit_dependencies(path):
+    ''' Determine all 32-bit dependencies in the given path '''
+
+    deps = set()
+
+    sonames = set()
+    examine = set()
+
+    for root, dirs, files in os.walk(path):
+        for file in files:
+            fpath = os.path.join(root, file)
+            if not is_dynamic_binary(fpath):
+                continue
+            # Encountered a valid dynamic linked object
+            if not is_32bit(fpath):
                 continue
             if is_file_valid(fpath):
                 # We must account for *all* internal symbols due to rpaths and
@@ -211,7 +234,7 @@ def is_32bit(path):
     mg = get_file_magic(path)
     if not mg:
         return False
-    if "32-bit" in mg:
+    if "ELF 32-bit" in mg:
         return True
     return False
 
