@@ -195,6 +195,15 @@ def truncate_file(path):
         trunc.truncate()
 
 
+def is_32bit(path):
+    mg = get_file_magic(path)
+    if not mg:
+        return False
+    if "32-bit" in mg:
+        return True
+    return False
+
+
 def examine_abi(download_path):
     download_path = os.path.abspath(download_path)
 
@@ -255,6 +264,7 @@ def examine_abi(download_path):
             collected_files.add(clean_path)
 
     abi_report = dict()
+    abi_report32 = dict()
 
     # Now examine these libraries
     for library in sorted(collected_files):
@@ -263,13 +273,18 @@ def examine_abi(download_path):
             util.print_fatal("Failed to determine soname of valid library!")
             sys.exit(1)
         symbols = dump_symbols(library)
+
+        tgt = abi_report if not is_32bit(library) else abi_report32
+
         if symbols and len(symbols) > 0:
-            if soname not in abi_report:
-                abi_report[soname] = set()
-            abi_report[soname].update(symbols)
+            if soname not in tgt:
+                tgt[soname] = set()
+            tgt[soname].update(symbols)
 
     report_file = os.path.join(download_path, "symbols")
+    report_file32 = os.path.join(download_path, "symbols32")
 
+    # 64-bit abi-report
     if len(abi_report) > 0:
         # Finally, write the report
         report = open(report_file, "w", encoding="utf-8")
@@ -280,6 +295,18 @@ def examine_abi(download_path):
         report.close()
     else:
         truncate_file(report_file)
+
+    # 32-bit abi-report
+    if len(abi_report32) > 0:
+        # Finally, write the report
+        report = open(report_file32, "w", encoding="utf-8")
+        for soname in sorted(abi_report32.keys()):
+            for symbol in sorted(abi_report32[soname]):
+                report.write("{}:{}\n".format(soname, symbol))
+
+        report.close()
+    else:
+        truncate_file(report_file32)
 
     # Write the library report
     lib_deps = get_all_dependencies(source_dir)
