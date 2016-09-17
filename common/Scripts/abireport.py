@@ -1,4 +1,4 @@
-#!/bin/true
+#!/usr/bin/env python3
 #
 # abireport.py - part of autospec
 # Copyright (C) 2016 Intel Corporation
@@ -197,21 +197,20 @@ def truncate_file(path):
 
 def examine_abi(download_path):
     download_path = os.path.abspath(download_path)
-    results_dir = os.path.abspath(os.path.join(download_path, "results"))
 
-    if not os.path.exists(results_dir):
-        util.print_fatal("Results directory does not exist, aborting")
+    if not os.path.exists(download_path):
+        util.print_fatal("Work directory does not exist, aborting")
         sys.exit(1)
 
     old_dir = os.getcwd()
 
-    rpms = set()
-    for item in os.listdir(results_dir):
-        if item.endswith(".rpm") and not item.endswith(".src.rpm"):
-            rpms.add(os.path.basename(item))
+    eopkgs = set()
+    for item in os.listdir(download_path):
+        if item.endswith(".eopkg"):
+            eopkgs.add(os.path.basename(item))
 
-    if len(rpms) == 0:
-        util.print_fatal("No usable rpms found, aborting")
+    if len(eopkgs) == 0:
+        util.print_fatal("No usable eopkgs found, aborting")
         sys.exit(1)
 
     extract_dir = os.path.abspath(os.path.join(download_path, "__extraction"))
@@ -227,13 +226,15 @@ def examine_abi(download_path):
 
     # Extract all those rpms to our current directory
     try:
-        for rpm in rpms:
-            cmd = "rpm2cpio \"{}\" | cpio -imd 2>/dev/null".format(os.path.join(results_dir, rpm))
+        for eopkg in eopkgs:
+            cmd = "unpisi \"{}\" 2>/dev/null".format(os.path.join(download_path, eopkg))
             subprocess.check_call(cmd, shell=True)
     except Exception as e:
-        util.print_fatal("Error extracting RPMS: {}".format(e))
+        util.print_fatal("Error extracting eopkgs: {}".format(e))
 
-    os.chdir(download_path)
+    # eopkg extraction root
+    source_dir = os.path.join(extract_dir, "install")
+    os.chdir(source_dir)
     collected_files = set()
 
     # Places we expect to find shared libraries
@@ -241,7 +242,7 @@ def examine_abi(download_path):
         if check_path[0] == '/':
             check_path = check_path[1:]
 
-        dirn = os.path.join(extract_dir, check_path)
+        dirn = os.path.join(source_dir, check_path)
         if not os.path.isdir(dirn):
             continue
 
@@ -281,7 +282,7 @@ def examine_abi(download_path):
         truncate_file(report_file)
 
     # Write the library report
-    lib_deps = get_all_dependencies(extract_dir)
+    lib_deps = get_all_dependencies(source_dir)
     report_file = os.path.join(download_path, "used_libs")
     if len(lib_deps) > 0:
         report = open(report_file, "w", encoding="utf-8")
@@ -293,3 +294,9 @@ def examine_abi(download_path):
 
     os.chdir(old_dir)
     purge_tree(extract_dir)
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        examine_abi(sys.argv[1])
+    else:
+        examine_abi(".")
