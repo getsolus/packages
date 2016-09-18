@@ -20,13 +20,18 @@ def setup():
 
         if not shelltools.can_access_directory("projects/compiler-rt"):
             shelltools.system("tar xf ../compiler-rt-%s.src.tar.xz -C projects" % get.srcVERSION())
+            # See: https://dev.solus-project.com/T479
             shelltools.move("projects/compiler-rt-%s.src" % get.srcVERSION(), "projects/compiler-rt")
+            wd = os.getcwd()
+            os.chdir("projects")
+            shelltools.system("patch -p1 < ../D20235.diff")
+            os.chdir(wd)
         
 
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
     host = get.HOST()
-    version = "6.1.0" # GCC version
+    version = "6.2.0" # GCC version
 
     paths = ["/usr/include/",
              "/usr/include/c++/%s" % version,
