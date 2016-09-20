@@ -14,3 +14,8 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
 
         if not os.path.exists (dest_path):
             shutil.copy2 (source_path, dest_path)
+
+    try:
+        os.system("/sbin/ldconfig")
+    except:
+        pass
