@@ -1,0 +1,277 @@
+From 2a2ba3d98079d9bb16c70c46261d23e15bd757d4 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Tue, 20 Sep 2016 03:19:18 +0100
+Subject: [PATCH 6/6] Implement support for the AVX2 compile time option
+
+Currently this adds a complete new set of build steps with different flags,
+with the aim of being placed in /usr/lib64/avx2. Our glibc, where appropriate,
+will automatically load these libraries instead of the normal libraries inside
+/usr/lib64/.
+
+Right now we're simply setting the march/mtune to Haswell, which is the minimum
+baseline required for AVX2 instruction set, but *may* expand or adjust this in
+future for compatibility with non-Intel CPUs, depending on how portable and
+feasible it is.
+
+The sole aim here is to provide further optimisations and offer seamless use
+of "better" libraries so that users can automatically benefit from libraries
+that are optimizes for their CPUs, as opposed to being restricted to the current
+stock offering of "-march=x86-64 -mtune=generic".
+
+The original concept of using the separate avx2 directory and implementing a
+TLS-like provider in the ld cascade came from the Clear Linux Project, and
+has been documented here: https://dev.solus-project.com/T503
+
+The work added in ypkg to support this is native to ypkg and original within
+this tree.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ ypkg2/examine.py     |  7 +++++++
+ ypkg2/main.py        | 31 +++++++++++++++++++++----------
+ ypkg2/packages.py    |  1 +
+ ypkg2/scripts.py     |  6 +++++-
+ ypkg2/ypkgcontext.py | 35 +++++++++++++++++++++++++++++++----
+ ypkg2/ypkgspec.py    |  2 ++
+ 6 files changed, 67 insertions(+), 15 deletions(-)
+
+diff --git a/ypkg2/examine.py b/ypkg2/examine.py
+index 546ceee..872d9e2 100644
+--- a/ypkg2/examine.py
++++ b/ypkg2/examine.py
+@@ -328,6 +328,13 @@ class PackageExaminer:
+             return True
+         if pretty.startswith("/emul32"):
+             return True
++        # Nuke AVX2 dir .a files with no remorse
++        if pretty.startswith("/usr/lib64/avx2/"):
++            if ".so" not in pretty:
++                return True
++            # Don't want .so links, they're useless.
++            if pretty.endswith(".so") and os.path.islink(file):
++                return True
+         return False
+ 
+     def file_is_of_interest(self, pretty, file, mgs):
+diff --git a/ypkg2/main.py b/ypkg2/main.py
+index 6b0867d..566003b 100644
+--- a/ypkg2/main.py
++++ b/ypkg2/main.py
+@@ -112,6 +112,8 @@ def execute_step(context, step, step_n, work_dir):
+     if context.emul32:
+         script.define_export("EMUL32BUILD", "1")
+         script.define_export("PKG_CONFIG_PATH", EMUL32PC)
++    if context.avx2:
++        script.define_export("AVX2BUILD", "1")
+ 
+     exports = script.emit_exports()
+ 
+@@ -237,37 +239,46 @@ def build_package(filename, outputDir):
+     if not ctx.clean_pkg():
+         console_ui.emit_error("Build", "Failed to clean pkg directory")
+ 
+-    possible_sets = [False]
++    possible_sets = []
++    # Emul32 is *always* first
+     if spec.pkg_emul32:
+-        possible_sets.append(True)
+-        possible_sets.reverse()  # Always build emul32 first
++        possible_sets.append((True, False))
+ 
+-    for emul32 in possible_sets:
++    # Build AVX2 before native, but after emul32
++    if spec.pkg_avx2:
++        possible_sets.append((False, True))
++
++    # Main step, always last
++    possible_sets.append((False, False))
++
++    for emul32, avx2 in possible_sets:
+         r_steps = list()
+-        c = YpkgContext(spec, emul32=emul32)
++        c = YpkgContext(spec, emul32=emul32, avx2=avx2)
+         if spec.step_profile is not None:
+-            c = YpkgContext(spec, emul32=emul32)
++            c = YpkgContext(spec, emul32=emul32, avx2=avx2)
+             c.enable_pgo_generate()
+             r_steps.append(['setup', c])
+             r_steps.append(['build', c])
+             r_steps.append(['profile', c])
+-            c = YpkgContext(spec, emul32=emul32)
++            c = YpkgContext(spec, emul32=emul32, avx2=avx2)
+             c.enable_pgo_use()
+             r_steps.append(['setup', c])
+             r_steps.append(['build', c])
+             r_steps.append(['install', c])
+             r_steps.append(['check', c])
+         else:
+-            c = YpkgContext(spec, emul32=emul32)
++            c = YpkgContext(spec, emul32=emul32, avx2=avx2)
+             r_steps.append(['setup', c])
+             r_steps.append(['build', c])
+             r_steps.append(['install', c])
+             r_steps.append(['check', c])
+-        r_runs.append((emul32, r_steps))
++        r_runs.append((emul32, avx2, r_steps))
+ 
+-    for emul32, run in r_runs:
++    for emul32, avx2, run in r_runs:
+         if emul32:
+             console_ui.emit_info("Build", "Building for emul32")
++        elif avx2:
++            console_ui.emit_info("Build", "Building for AVX2 optimisations")
+         else:
+             console_ui.emit_info("Build", "Building native package")
+ 
+diff --git a/ypkg2/packages.py b/ypkg2/packages.py
+index c426f5d..efe6a01 100644
+--- a/ypkg2/packages.py
++++ b/ypkg2/packages.py
+@@ -137,6 +137,7 @@ class PackageGenerator:
+         self.add_pattern("/bin", "main")
+         self.add_pattern("/usr/share/info", "main")
+         self.add_pattern("/usr/lib64/lib*.so.*", "main")
++        self.add_pattern("/usr/lib64/avx2/*.so*", "main")
+         self.add_pattern("/usr/lib/lib*.so.*", "main")
+         self.add_pattern("/usr/lib32/", "32bit")
+         self.add_pattern("/usr/lib32/lib*.so.*", "32bit",
+diff --git a/ypkg2/scripts.py b/ypkg2/scripts.py
+index 4126cb2..3c90acb 100644
+--- a/ypkg2/scripts.py
++++ b/ypkg2/scripts.py
+@@ -109,7 +109,11 @@ class ScriptGenerator:
+             self.define_macro("LIBSUFFIX", "32")
+             self.define_macro("PREFIX", "/emul32")
+         else:
+-            self.define_macro("libdir", "/usr/lib64")
++            # 64-bit AVX2 build in subdirectory
++            if self.context.avx2:
++                self.define_macro("libdir", "/usr/lib64/avx2")
++            else:
++                self.define_macro("libdir", "/usr/lib64")
+             self.define_macro("LIBSUFFIX", "64")
+             self.define_macro("PREFIX", "/usr")
+ 
+diff --git a/ypkg2/ypkgcontext.py b/ypkg2/ypkgcontext.py
+index 680e8bd..d609875 100644
+--- a/ypkg2/ypkgcontext.py
++++ b/ypkg2/ypkgcontext.py
+@@ -26,6 +26,10 @@ PGO_GEN_FLAGS = "-fprofile-generate -fprofile-dir=\"{}\""
+ PGO_USE_FLAGS = "-fprofile-use -fprofile-dir=\"{}\" -fprofile-correction"
+ BIND_NOW_FLAGS = ["-Wl,-z,now"]
+ 
++# AVX2/Haswell optimisations
++AVX2_ARCH = "haswell"
++AVX2_TUNE = "haswell"
++
+ 
+ class Flags:
+ 
+@@ -125,12 +129,14 @@ class YpkgContext:
+     emul32 = False
+     files_dir = None
+     pconfig = None
++    avx2 = False
+ 
+     can_dbginfo = False
+ 
+-    def __init__(self, spec, emul32=False):
++    def __init__(self, spec, emul32=False, avx2=False):
+         self.spec = spec
+         self.emul32 = emul32
++        self.avx2 = avx2
+         self.build = BuildConfig()
+         self.init_config()
+         if os.geteuid() == 0 and "FAKED_MODE" not in os.environ:
+@@ -179,7 +185,9 @@ class YpkgContext:
+     def get_build_dir(self):
+         """ Get the build directory for the given package """
+         buildSuffix = "build"
+-        if self.emul32:
++        if self.avx2:
++            buildSuffix = "build-avx2"
++        elif self.emul32:
+             buildSuffix = "build-32"
+ 
+         return os.path.abspath("{}/root/{}/{}".format(
+@@ -190,7 +198,9 @@ class YpkgContext:
+     def get_pgo_dir(self):
+         """ Get the PGO data directory for the given package """
+         pgoSuffix = "pgo"
+-        if self.emul32:
++        if self.avx2:
++            pgoSuffix = "pgo-avx2"
++        elif self.emul32:
+             pgoSuffix = "pgo-32"
+ 
+         return os.path.abspath("{}/root/{}/{}".format(
+@@ -198,6 +208,17 @@ class YpkgContext:
+                                 self.spec.pkg_name,
+                                 pgoSuffix))
+ 
++    def repl_flags_avx2(self, flags):
++        """ Adjust flags to compensate for avx2 build """
++        ncflags = list()
++        for flag in flags:
++            if flag.startswith("-march="):
++                flag = "-march={}".format(AVX2_ARCH)
++            elif flag.startswith("-mtune="):
++                flag = "-mtune={}".format(AVX2_TUNE)
++            ncflags.append(flag)
++        return ncflags
++
+     def init_config(self):
+         """ Initialise our configuration prior to building """
+         conf = pisi.config.Config()
+@@ -232,6 +253,7 @@ class YpkgContext:
+             self.build.ldflags = Flags.optimize_flags(self.build.ldflags,
+                                                       self.spec.pkg_optimize)
+ 
++        # Adjust for emul32 (-m32) build
+         if self.emul32:
+             ncflags = list()
+             for flag in self.build.cflags:
+@@ -256,6 +278,11 @@ class YpkgContext:
+                 self.build.cc = "gcc -m32"
+                 self.build.cxx = "g++ -m32"
+ 
++        # Adjust flags for AVX2 build (currently Haswell+ specific)
++        if self.avx2:
++            self.build.cflags = self.repl_flags_avx2(self.build.cflags)
++            self.build.cxxflags = self.repl_flags_avx2(self.build.cxxflags)
++
+         # Set the $pkgfiles up properly
+         spec_dir = os.path.dirname(os.path.abspath(self.spec.path))
+         self.files_dir = os.path.join(spec_dir, "files")
+@@ -287,7 +314,7 @@ class YpkgContext:
+         self.build.cxxflags = Flags.pgo_use_flags(self.build.cxxflags, pgo_dir)
+ 
+     def clean_pgo(self):
+-        suffixes = ["pgo", "pgo-32"]
++        suffixes = ["pgo", "pgo-avx2", "pgo-32"]
+         pgo_dirs = [os.path.abspath("{}/root/{}/{}".format(
+                     self.get_build_prefix(),
+                     self.spec.pkg_name, x)) for x in suffixes]
+diff --git a/ypkg2/ypkgspec.py b/ypkg2/ypkgspec.py
+index a773789..75c9244 100644
+--- a/ypkg2/ypkgspec.py
++++ b/ypkg2/ypkgspec.py
+@@ -85,6 +85,7 @@ class YpkgSpec:
+     pkg_strip = True
+     pkg_ccache = True
+     pkg_emul32 = False
++    pkg_avx2 = False
+     pkg_autodep = True
+     pkg_extract = True
+     pkg_optimize = None
+@@ -188,6 +189,7 @@ class YpkgSpec:
+             ("strip", bool),
+             ("ccache", bool),
+             ("emul32", bool),
++            ("avx2", bool),
+             ("autodep", bool),
+             ("extract", bool),
+             ("libsplit", bool),
+-- 
+2.10.0
+
