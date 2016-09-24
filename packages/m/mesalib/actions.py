@@ -45,8 +45,7 @@ def setup():
         mlib = ""
         prefix = "/usr"
     # Only for git builds
-    # shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-ab99196\"")
-    shelltools.system("sed -e /pthread-stubs/d -i configure.ac")
+    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-cb7c2c9\"")
     autotools.autoreconf ("-fi")
 
     #disabled r300,r600,radeonsi
