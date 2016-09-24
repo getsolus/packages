@@ -245,9 +245,9 @@ description: |
             elif self.compile_type == CMAKE:
                 setup = "%cmake ."
             elif self.compile_type == PYTHON_MODULES:
-                setup = "python setup.py configure"
-                build = "python setup.py build"
-                install = "python setup.py install --root=%installroot% --no-compile -O0"
+                setup = "%python_setup"
+                build = ""
+                install = "%python_install"
             elif self.compile_type == PERL_MODULES:
                 setup = "%perl_setup"
                 build = "%perl_build"
