@@ -14,6 +14,9 @@ def updateLdConfig(filepath):
         path = xmlfile.getTagData("Path")
         if not path.startswith("/"):
             path = "/%s" % path # Just in case
+        if path.startswith("/etc/ld.so.conf"):
+            shouldConf = True
+            break
         if not ".so" in path:
             continue
         if os.path.dirname(path) in LIBRARY_DIRS:
