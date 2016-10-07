@@ -66,6 +66,7 @@ def setup():
                           -DLLVM_BUILD_DOCS=OFF \
                           -DLLVM_ENABLE_RTTI=ON \
                           -DBUILD_SHARED_LIBS:BOOL=ON  \
+                          -DENABLE_LINKER_BUILD_ID:BOOL=ON \
                           -DLLVM_INCLUDEDIR=/usr/include \
                           -DENABLE_SHARED=ON .." % (prefix, options))
 
