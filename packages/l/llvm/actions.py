@@ -40,7 +40,7 @@ def setup():
         shelltools.export("CXX", "g++ -m32")
         host = "i686-pc-linux-gnu"
         prefix = "/emul32"
-        options = "-DLLVM_LIBDIR_SUFFIX=32  -DCMAKE_C_FLAGS:STRING=-m32 -DCMAKE_CXX_FLAGS:STRING=-m32 -DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % host
+        options = "-DLLVM_LIBDIR_SUFFIX=32  -DCMAKE_C_FLAGS:STRING=-m32 -DCMAKE_CXX_FLAGS:STRING=-m32 -DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\" -DFFI_LIBRARY_DIR:STRING=/usr/lib32" % host
     else:
         shelltools.export("CC", "gcc")
         shelltools.export("CXX", "g++")
