@@ -7,6 +7,7 @@ WorkDir = "llvm-%s.src" % get.srcVERSION()
 IgnoreAutodep = True
 
 def setup():
+    shelltools.system("patch -p1 < 0001-Completely-ignore-the-borky-FFI_LIBRARY_PATH.patch")
     if get.buildTYPE() != "emul32":
         if not shelltools.can_access_directory("tools/clang"):
             shelltools.system("tar xf ../cfe-%s.src.tar.xz -C tools" % get.srcVERSION())
