@@ -13,18 +13,22 @@ kversion = "4.8.1"
 
 def setup():
     shelltools.system("sh NVIDIA-Linux-x86_64-%s.run --extract-only" % get.srcVERSION())
-    shelltools.cd(wdir)
-    shelltools.system("patch -p1 < ../0001-Port-to-Linux-4.7-API.patch")
 
 def build():
     shelltools.cd(wdir + "/kernel")
-    autotools.make("\"SYSSRC=/lib64/modules/%s/build\" module" % kversion)
-    shelltools.cd("uvm")
     autotools.make("\"SYSSRC=/lib64/modules/%s/build\" module" % kversion)
 
 def link_install(lib, libdir='/usr/lib', abi='1', cdir='.'):
     ''' Install a library with necessary links '''
     pisitools.dolib("%s/%s.so.%s" % (cdir, lib, get.srcVERSION()), libdir)
+    pisitools.dosym("%s/%s.so.%s" % (libdir, lib, get.srcVERSION()), "%s/%s.so.%s" % (libdir, os.path.basename(lib), abi))
+    pisitools.dosym("%s/%s.so.%s" % (libdir, lib, abi), "%s/%s.so" % (libdir, os.path.basename(lib)))
+
+def link_install_egl(lib, libdir='/usr/lib', abi='1', cdir='.'):
+    ''' Install EGL '''
+    pisitools.dolib("%s.so.%s" % (lib, abi), libdir)
+    pisitools.rename("%s/%s.so.%s" % (libdir, lib, abi), "%s.so.%s" % (lib, get.srcVERSION()))
+
     pisitools.dosym("%s/%s.so.%s" % (libdir, lib, get.srcVERSION()), "%s/%s.so.%s" % (libdir, os.path.basename(lib), abi))
     pisitools.dosym("%s/%s.so.%s" % (libdir, lib, abi), "%s/%s.so" % (libdir, os.path.basename(lib)))
         
@@ -36,12 +40,19 @@ def install():
     kdir = "/lib64/modules/%s/kernel/drivers/video" % kversion
 
     # libGL replacement - conflicts
-    libs = ["libGL", "libEGL", "libGLESv1_CM", "libGLESv2", "libglx"]
+    libs = ["libGL", "libglx"]
     for lib in libs:
         abi = '2' if lib == "libGLESv2" else "1"
         link_install(lib, "/usr/lib/glx-provider/nvidia", abi)
         if lib != "libglx":
             link_install(lib, "/usr/lib32/glx-provider/nvidia", abi, cdir='32')
+
+    # EGL = special..
+    spec_libs = ["libEGL", "libGLESv1_CM", "libGLESv2"]
+    for lib in spec_libs:
+        abi = '2' if lib == "libGLESv2" else "1"
+        link_install_egl(lib, "/usr/lib/glx-provider/nvidia", abi)
+        link_install_egl(lib, "/usr/lib32/glx-provider/nvidia", abi, cdir='32')
 
     # non-conflict libraries
     libs =  ["libnvidia-glcore", "libnvidia-eglcore", "libnvidia-glsi",
@@ -81,7 +92,9 @@ def install():
 
     # kernel portion, i.e. /lib/modules/3.19.7/kernel/drivers/video/nvidia.ko
     shelltools.cd("kernel")
-    pisitools.dolib_a("nvidia.ko", kdir)
+    modules = ["nvidia.ko", "nvidia-modeset.ko", "nvidia-drm.ko", "nvidia-uvm.ko"]
+    for mod in modules:
+        pisitools.dolib_a(mod, kdir)
 
     # install modalias
     pisitools.dodir("/usr/share/doflicky/modaliases")
@@ -89,8 +102,6 @@ def install():
         inp = commands.getoutput("../../nvidia_supported nvidia %s ../README.txt nvidia.ko" % get.srcNAME())
         outp.write(inp)
 
-    shelltools.cd("uvm")
-    pisitools.dolib_a("nvidia-uvm.ko", kdir)
 
     # Blacklist nouveau
     pisitools.dodir("/usr/lib/modprobe.d")
