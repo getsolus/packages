@@ -50,6 +50,7 @@ def setup():
                           --disable-terminal \
                           --enable-vconsole \
                           --disable-kdbus \
+                          --enable-libcryptsetup \
                           CFLAGS=\"%s -fno-lto\"" % get.CFLAGS())
 
 def build():
