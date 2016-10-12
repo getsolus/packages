@@ -54,12 +54,33 @@ def install():
         link_install_egl(lib, "/usr/lib/glx-provider/nvidia", abi)
         link_install_egl(lib, "/usr/lib32/glx-provider/nvidia", abi, cdir='32')
 
-    # non-conflict libraries
-    libs =  ["libnvidia-glcore", "libnvidia-eglcore", "libnvidia-glsi",
-        "libnvidia-ifr", "libnvidia-fbc", "libnvidia-encode",
-        "libnvidia-ml", "libcuda", "libnvcuvid", "libnvidia-opencl"]
+    # multilib friendly
+    libs = [
+        "libcuda",
+        "libEGL_nvidia",
+        "libGLESv1_CM_nvidia",
+        "libGLESv2_nvidia",
+        "libGLX_nvidia",
+        "libnvcuvid",
+        "libnvidia-compiler",
+        "libnvidia-eglcore",
+        "libnvidia-encode",
+        "libnvidia-fatbinaryloader",
+        "libnvidia-fbc",
+        "libnvidia-glcore",
+        "libnvidia-glsi",
+        "libnvidia-ifr",
+        "libnvidia-ml",
+        "libnvidia-opencl",
+        "libnvidia-ptxjitcompiler",
+    ]
 
-    native_libs = ["libnvidia-cfg", "libnvidia-gtk2", "libnvidia-gtk3"]
+    # native only
+    native_libs = ["libnvidia-cfg",
+                   "libnvidia-egl-wayland",
+                   "libnvidia-gtk2",
+                   "libnvidia-gtk3",
+                   "libnvidia-wfb"]
 
     for lib in libs:
         link_install(lib)
