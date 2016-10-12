@@ -110,6 +110,8 @@ def install():
     pisitools.insinto("/usr/share/applications", "nvidia-settings.desktop")
     pisitools.insinto("/usr/share/pixmaps", "nvidia-settings.png")
     pisitools.insinto("/usr/share/OpenCL/vendors", "nvidia.icd")
+    # Vulkan
+    pisitools.insinto("/usr/share/vulkan/icd.d", "nvidia_icd.json")
 
     # kernel portion, i.e. /lib/modules/3.19.7/kernel/drivers/video/nvidia.ko
     shelltools.cd("kernel")
