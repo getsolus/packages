@@ -26,7 +26,7 @@ def link_install(lib, libdir='/usr/lib', abi='1', cdir='.'):
 
 def link_install_egl(lib, libdir='/usr/lib', abi='1', cdir='.'):
     ''' Install EGL '''
-    pisitools.dolib("%s.so.%s" % (lib, abi), libdir)
+    pisitools.dolib("%s/%s.so.%s" % (cdir, lib, abi), libdir)
     pisitools.rename("%s/%s.so.%s" % (libdir, lib, abi), "%s.so.%s" % (lib, get.srcVERSION()))
 
     pisitools.dosym("%s/%s.so.%s" % (libdir, lib, get.srcVERSION()), "%s/%s.so.%s" % (libdir, os.path.basename(lib), abi))
