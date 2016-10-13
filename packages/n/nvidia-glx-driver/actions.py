@@ -96,6 +96,10 @@ def install():
     link_install("tls/libnvidia-tls")
     link_install("tls/libnvidia-tls", libdir='/usr/lib32', cdir='32')
 
+    # Required for everything.
+    pisitools.dolib("libGLdispatch.so.0", "/usr/lib")
+    pisitools.dolib("32/libGLdispatch.so.0", "/usr/lib32")
+
     # binaries
     bins = ["nvidia-debugdump", "nvidia-xconfig", "nvidia-settings",
         "nvidia-bug-report.sh", "nvidia-smi", "nvidia-modprobe",
