@@ -1,0 +1,71 @@
+From 2a81b98e7bcad05bf54d9c423f68df6492ae4326 Mon Sep 17 00:00:00 2001
+From: Patrick Griffis <tingping@tingping.se>
+Date: Mon, 10 Oct 2016 14:08:47 -0400
+Subject: [PATCH 3/7] Don't abort if translated text event fails
+
+At least try the untranslated one...
+
+Also while at it don't present a ton of dialogs to the user
+about this failure, they wouldn't even know what to do with
+that information.
+---
+ src/common/text.c | 33 ++++++++++++++++++++++-----------
+ 1 file changed, 22 insertions(+), 11 deletions(-)
+
+diff --git a/src/common/text.c b/src/common/text.c
+index 1e9b313..e491b51 100644
+--- a/src/common/text.c
++++ b/src/common/text.c
+@@ -1517,27 +1517,38 @@ void
+ pevent_make_pntevts (void)
+ {
+ 	int i, m;
+-	char out[1024];
+ 
+ 	for (i = 0; i < NUM_XP; i++)
+ 	{
+ 		g_free (pntevts[i]);
+ 		if (pevt_build_string (pntevts_text[i], &(pntevts[i]), &m) != 0)
+ 		{
+-			g_snprintf (out, sizeof (out),
+-						 _("Error parsing event %s.\nLoading default."), te[i].name);
+-			fe_message (out, FE_MSG_WARN);
+-			g_free (pntevts_text[i]);
+ 			/* make-te.c sets this 128 flag (DON'T call gettext() flag) */
+-			if (te[i].num_args & 128)
++			const gboolean translate = !(te[i].num_args & 128);
++
++			g_warning ("Error parsing event %s\nLoading default.", te[i].name);
++			g_free (pntevts_text[i]);
++
++			if (translate)
++				pntevts_text[i] = g_strdup (_(te[i].def));
++			else
+ 				pntevts_text[i] = g_strdup (te[i].def);
++
++			if (pevt_build_string (pntevts_text[i], &(pntevts[i]), &m) != 0 && !translate)
++			{
++				g_error ("HexChat CRITICAL *** default event text failed to build!");
++			}
+ 			else
+-				pntevts_text[i] = g_strdup (_(te[i].def));
+-			if (pevt_build_string (pntevts_text[i], &(pntevts[i]), &m) != 0)
+ 			{
+-				fprintf (stderr,
+-							"HexChat CRITICAL *** default event text failed to build!\n");
+-				abort ();
++				g_warning ("Error parsing translated event %s\nLoading untranslated.", te[i].name);
++				g_free (pntevts_text[i]);
++
++				pntevts_text[i] = g_strdup (te[i].def);
++
++				if (pevt_build_string (pntevts_text[i], &(pntevts[i]), &m) != 0)
++				{
++					g_error ("HexChat CRITICAL *** default event text failed to build!");
++				}
+ 			}
+ 		}
+ 	}
+-- 
+2.10.1
+
