@@ -11,8 +11,8 @@ def setup():
     cflags = cflags.replace("-fstack-protector-strong", "")
     shelltools.export ("CFLAGS", cflags)
     autotools.configure ("--prefix=/usr\
-                                              --sysconfdir=/etc\
-                                              --disable-werror")
+                          --sysconfdir=/etc\
+                          --disable-werror")
 
 def build():
     autotools.make ()
