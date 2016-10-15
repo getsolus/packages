@@ -380,7 +380,7 @@ def configure_live_account():
             print("Unable to create directories for live config")
 
     default_desktop = "budgie-desktop"
-    if os.path.exists(os.path.join(get_image_root(), "usr/bin/mate-panel"):
+    if os.path.exists(os.path.join(get_image_root(), "usr/bin/mate-panel")):
         default_desktop = "mate"
     with open(fname, "w") as fout:
         fout.write("""[User]
