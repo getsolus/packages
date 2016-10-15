@@ -9,6 +9,7 @@ shelltools.export("HOME", get.workDIR())
 def setup():
     shelltools.system("sed -i -e 's:getgroups:lightdm_&:' tests/src/libsystem.c")
 
+    autotools.autoreconf("-fi")
     autotools.configure("--enable-introspection \
                          --enable-liblightdm-gobject \
                          --disable-static \
@@ -25,3 +26,7 @@ def install():
     pisitools.dosym("/usr/lib/systemd/system/lightdm.service", "/usr/lib/systemd/system/displaymanager.service")
     pisitools.dosym("/usr/lib/systemd/system/lightdm.service", "/usr/lib/systemd/system/graphical.target.wants/lightdm.service")
     pisitools.removeDir("/etc/init")
+    # Stateless configuration
+    pisitools.removeDir("/etc/lightdm")
+    # We don't use apparmor
+    pisitools.removeDir("/etc/apparmor.d")
