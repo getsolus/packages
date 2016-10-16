@@ -398,9 +398,9 @@ SystemAccount=false
 
     try:
         ddir = os.path.join(get_image_root(), "home/Desktop")
-        spath = os.path.join(get_image_root(), "usr/share/applications/os-installer.desktop")
+        spath = os.path.join(get_image_root(), "usr/share/applications/os-installer-gtk.desktop")
         if os.path.exists(spath):
-            dpath = os.path.join(ddir, "os-installer.desktop")
+            dpath = os.path.join(ddir, "os-installer-gtk.desktop")
             if not os.path.exists(ddir):
                 print("Warning: Manually constructing home dirs")
                 os.makedirs(ddir, mode=00755)
