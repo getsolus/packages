@@ -396,6 +396,19 @@ SystemAccount=false
     except Exception, ex:
         print("Unable to copy gdm.conf: %s" % e)
 
+    try:
+        ddir = os.path.join(get_image_root(), "home/Desktop")
+        spath = os.path.join(get_image_root(), "usr/share/applications/os-installer.desktop")
+        if os.path.exists(spath):
+            dpath = os.path.join(ddir, "os-installer.desktop")
+            if not os.path.exists(ddir):
+                print("Warning: Manually constructing home dirs")
+                os.makedirs(ddir, mode=00755)
+            shutil.copy(spath, dpath)
+            # Restore permissions
+            run_chroot("chown -R live:live /home/live")
+    except Exception as e:
+        print("Unable to copy os-installer.desktop to new live user")
 
 
 
