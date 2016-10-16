@@ -1,10 +1,10 @@
-#!/bin/bash
-# Begin /bin/remove-expired-certs.sh
+#!/bin/sh
+# Begin /usr/sbin/remove-expired-certs.sh
 #
 # Version 20120211
 
 # Make sure the date is parsed correctly on all systems
-function mydate()
+mydate()
 {
   local y=$( echo $1 | cut -d" " -f4 )
   local M=$( echo $1 | cut -d" " -f1 )

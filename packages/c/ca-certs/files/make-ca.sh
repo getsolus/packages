@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Begin make-ca.sh
 # Script to populate OpenSSL's CApath from a bundle of PEM formatted CAs
 #
@@ -9,6 +9,9 @@
 #          Bruce Dubbs
 #
 # Version 20120211
+
+# Some data in the certs have UTF-8 characters
+export LANG=en_US.utf8
 
 certdata="certdata.txt"
 
@@ -34,7 +37,7 @@ SSLDIR="/etc/ssl"
 
 mkdir "${TEMPDIR}/certs"
 
-# Get a list of staring lines for each cert
+# Get a list of starting lines for each cert
 CERTBEGINLIST=$(grep -n "^# Certificate" "${certdata}" | cut -d ":" -f1)
 
 # Get a list of ending lines for each cert
@@ -52,10 +55,10 @@ for certbegin in ${CERTBEGINLIST}; do
   sed -n "${certbegin},${certend}p" "${certdata}" > "${TEMPDIR}/certs/${certbegin}.tmp"
 done
 
-unset CERTBEGINLIST CERTDATA CERTENDLIST certebegin certend
+unset CERTBEGINLIST CERTDATA CERTENDLIST certbegin certend
 
 mkdir -p certs
-rm certs/*      # Make sure the directory is clean
+rm -f certs/*      # Make sure the directory is clean
 
 for tempfile in ${TEMPDIR}/certs/*.tmp; do
   # Make sure that the cert is trusted...
