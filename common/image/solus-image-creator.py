@@ -404,7 +404,7 @@ SystemAccount=false
             if not os.path.exists(ddir):
                 print("Warning: Manually constructing home dirs")
                 os.makedirs(ddir, mode=00755)
-            shutil.copy(spath, dpath)
+            run_chroot("cp -v /usr/share/applications/os-installer-gtk.desktop /home/live/Desktop/os-installer-gtk.desktop")
             # Restore permissions
             run_chroot("chown -R live:live /home/live")
     except Exception as e:
