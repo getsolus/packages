@@ -1,37 +1,48 @@
-Description: Support setting/reading LightDM autologin setings
-Author: Michael Terry <michael.terry@canonical.com>
-Bug: https://bugs.freedesktop.org/show_bug.cgi?id=40020
-Bug-Ubuntu: https://launchpad.net/bugs/798962
-Reviewed-by: Alessio Treglia <alessio@debian.org>
-Last-Update: 2012-04-30
----
- src/daemon.c |  143 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-----
- 1 file changed, 132 insertions(+), 11 deletions(-)
+From fe41e6090f2269ad026dd522f3a9fa21fd9ae8ed Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 16 Oct 2016 01:07:07 +0100
+Subject: [PATCH] Support automatic login for LightDM in a stateless
+ configuration
 
-Index: accountsservice-0.6.40/src/daemon.c
-===================================================================
---- accountsservice-0.6.40.orig/src/daemon.c
-+++ accountsservice-0.6.40/src/daemon.c
-@@ -49,6 +49,7 @@
+This is a modification of the original patch from Michael Terry at
+Canonical. It's modified to support a stateless configuration, in the
+instance the lightdm.conf file doesn't exist yet.
+
+To support this we use a new control file presence, i.e. /usr/sbin/lightdm.
+If we have a config when we start up we'll automatically start a monitor on
+it, otherwise we'll set up a monitor the first time we ever write the config
+out.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/daemon.c | 168 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-----
+ 1 file changed, 154 insertions(+), 14 deletions(-)
+
+diff --git a/src/daemon.c b/src/daemon.c
+index e62e124..3c87dc2 100644
+--- a/src/daemon.c
++++ b/src/daemon.c
+@@ -49,6 +49,8 @@
  #define PATH_SHADOW "/etc/shadow"
  #define PATH_GROUP "/etc/group"
  #define PATH_GDM_CUSTOM "/etc/gdm/custom.conf"
 +#define PATH_LIGHTDM_CONFIG "/etc/lightdm/lightdm.conf"
-
++#define LIGHTDM_TEST_FILE "/usr/sbin/lightdm"
+ 
  enum {
          PROP_0,
-@@ -67,6 +68,7 @@ struct DaemonPrivate {
+@@ -66,6 +68,7 @@ struct DaemonPrivate {
          GFileMonitor *shadow_monitor;
          GFileMonitor *group_monitor;
          GFileMonitor *gdm_monitor;
 +        GFileMonitor *lightdm_monitor;
          GFileMonitor *wtmp_monitor;
-
+ 
          guint reload_id;
-@@ -534,9 +536,20 @@ daemon_init (Daemon *daemon)
+@@ -533,9 +536,20 @@ daemon_init (Daemon *daemon)
                                                      wtmp_helper_get_path_for_monitor (),
                                                      on_users_monitor_changed);
-
+ 
 -        daemon->priv->gdm_monitor = setup_monitor (daemon,
 -                                                   PATH_GDM_CUSTOM,
 -                                                   on_gdm_monitor_changed);
@@ -42,7 +53,7 @@ Index: accountsservice-0.6.40/src/daemon.c
 +                                                           on_gdm_monitor_changed);
 +        }
 +
-+        if (g_file_test ("/etc/lightdm", G_FILE_TEST_EXISTS))
++        if (g_file_test (PATH_LIGHTDM_CONFIG, G_FILE_TEST_EXISTS))
 +        {
 +                daemon->priv->lightdm_monitor = setup_monitor (daemon,
 +                                                           PATH_LIGHTDM_CONFIG,
@@ -52,9 +63,9 @@ Index: accountsservice-0.6.40/src/daemon.c
          reload_users_timeout (daemon);
          queue_reload_autologin (daemon);
  }
-@@ -1266,10 +1279,10 @@ daemon_local_check_auth (Daemon
+@@ -1268,10 +1282,10 @@ daemon_local_check_auth (Daemon                *daemon,
  }
-
+ 
  gboolean
 -load_autologin (Daemon      *daemon,
 -                gchar      **name,
@@ -67,10 +78,10 @@ Index: accountsservice-0.6.40/src/daemon.c
  {
          GKeyFile *keyfile;
          GError *local_error;
-@@ -1312,23 +1325,90 @@ load_autologin (Daemon      *daemon,
+@@ -1314,23 +1328,90 @@ load_autologin (Daemon      *daemon,
          return TRUE;
  }
-
+ 
 -static gboolean
 -save_autologin (Daemon      *daemon,
 -                const gchar *name,
@@ -146,7 +157,7 @@ Index: accountsservice-0.6.40/src/daemon.c
 +
 +        if (!g_file_test ("/etc/gdm", G_FILE_TEST_EXISTS))
 +                return TRUE; /* not an error, just not installed */
-
+ 
          keyfile = g_key_file_new ();
          if (!g_key_file_load_from_file (keyfile,
                                          PATH_GDM_CUSTOM,
@@ -163,12 +174,12 @@ Index: accountsservice-0.6.40/src/daemon.c
 +                }
 +                g_error_free (local_error);
          }
-
+ 
          g_key_file_set_string (keyfile, "daemon", "AutomaticLoginEnable", enabled ? "True" : "False");
-@@ -1343,6 +1423,58 @@ save_autologin (Daemon      *daemon,
+@@ -1345,6 +1426,65 @@ save_autologin (Daemon      *daemon,
          return result;
  }
-
+ 
 +static gboolean
 +save_autologin_lightdm (Daemon      *daemon,
 +                        const gchar *name,
@@ -180,7 +191,7 @@ Index: accountsservice-0.6.40/src/daemon.c
 +        gboolean result;
 +        GError *local_error = NULL;
 +
-+        if (!g_file_test ("/etc/lightdm", G_FILE_TEST_EXISTS))
++        if (!g_file_test (LIGHTDM_TEST_FILE, G_FILE_TEST_EXISTS))
 +                return TRUE; /* not an error, just not installed */
 +
 +        keyfile = g_key_file_new ();
@@ -205,6 +216,13 @@ Index: accountsservice-0.6.40/src/daemon.c
 +        g_key_file_free (keyfile);
 +        g_free (data);
 +
++        /* It's possible we just created this file, set up a monitor for it now */
++        if (result && !daemon->priv->lightdm_monitor) {
++                daemon->priv->lightdm_monitor = setup_monitor (daemon,
++                                                       PATH_LIGHTDM_CONFIG,
++                                                       on_gdm_monitor_changed);
++        }
++
 +        return result;
 +}
 +
@@ -224,3 +242,6 @@ Index: accountsservice-0.6.40/src/daemon.c
  gboolean
  daemon_local_set_automatic_login (Daemon    *daemon,
                                    User      *user,
+-- 
+2.10.1
+
