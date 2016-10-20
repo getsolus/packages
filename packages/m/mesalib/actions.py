@@ -45,9 +45,8 @@ def setup():
         mlib = ""
         prefix = "/usr"
     # Only for git builds
-    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-e45c458\"")
-    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-493237d\"")
-    autotools.autoreconf ("-fi")
+    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-889ee4d\"")
+    autotools.autoreconf("-fi")
 
     #disabled r300,r600,radeonsi
     autotools.rawConfigure ("--prefix=%s                  \
