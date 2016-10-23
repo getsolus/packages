@@ -1,0 +1,97 @@
+From 26806da46e4fe78a6c6c26b5a330023423a1de24 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 23 Oct 2016 01:34:31 +0100
+Subject: [PATCH] update: Ensure we invalidate the database to find new updates
+
+Previously we retained a cached copy of the database, so despite actually
+running the update on the index, we were still using an outdated version,
+so we'd always hash_match on the first update we ever found. In most cases
+this means the user sees the update notification once upon login, and
+never again.
+
+With this change we dynamically discover and report the updates as soon
+as we encounter *new* updates. The decision was also made to switch to
+sha256 to prevent hash collision issues.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ solus_update/application.py | 25 ++++++++++++++-----------
+ 1 file changed, 14 insertions(+), 11 deletions(-)
+
+diff --git a/solus_update/application.py b/solus_update/application.py
+index a969c93..ce3dfbd 100644
+--- a/solus_update/application.py
++++ b/solus_update/application.py
+@@ -208,14 +208,18 @@ class ScUpdateApp(Gio.Application):
+         self.pmanager = self.link.System.Manager['pisi']
+         self.link.listenSignals("System.Manager", self.pisi_callback)
+ 
++    def invalidate_all(self):
++        # Forcibly reload the repos if we got this far
++        pisi.db.invalidate_caches()
++        self.is_updating = False
++
+     def pisi_callback(self, package, signal, args):
+         """ Just let us know that things are done """
+-        if signal in ["finished", None]:
++        if signal == 'finished' or signal is None:
++            self.invalidate_all()
+             self.build_available_updates()
+-            self.is_updating = False
+-        elif signal.startswith("tr.org.pardus.comar.Comar.PolicyKit"):
+-            self.eval_connection()
+-            self.is_updating = False
++        elif str(signal).startswith("tr.org.pardus.comar.Comar.PolicyKit"):
++            self.invalidate_all()
+ 
+     def reload_repos(self):
+         """ Actually refresh the repos.. """
+@@ -237,6 +241,7 @@ class ScUpdateApp(Gio.Application):
+ 
+     def build_available_updates(self):
+         """ Check the actual update availability - post refresh """
++        self.is_updating = False
+         upds = None
+         try:
+             upds = pisi.api.list_upgradable()
+@@ -254,7 +259,8 @@ class ScUpdateApp(Gio.Application):
+         security_ups = []
+         mandatory_ups = []
+ 
+-        pkg_hash = hashlib.sha1()
++        pkg_hash = hashlib.sha256()
++        ssz = ""
+ 
+         for up in upds:
+             # Might be obsolete, skip it
+@@ -262,7 +268,7 @@ class ScUpdateApp(Gio.Application):
+                 continue
+             candidate = pdb.get_package(up)
+             old_pkg = None
+-            pkg_hash.update(candidate.packageHash)
++            ssz += str(candidate.packageHash)
+             if idb.has_package(up):
+                 old_pkg = idb.get_package(up)
+             sc = ScUpdateObject(old_pkg, candidate)
+@@ -271,6 +277,7 @@ class ScUpdateApp(Gio.Application):
+             if candidate.partOf == "system.base":
+                 mandatory_ups.append(sc)
+ 
++        pkg_hash.update(ssz)
+         hx = pkg_hash.hexdigest()
+ 
+         # If this packageset is identical to the last package set that we
+@@ -306,10 +313,6 @@ class ScUpdateApp(Gio.Application):
+                                      self.action_show_updates)
+         self.notification.show()
+ 
+-    def eval_connection(self):
+-        """ Check if networking actually works """
+-        pass
+-
+     def store_update_time(self):
+         # Store the actual update time
+         timestamp = time.time()
+-- 
+2.10.1
+
