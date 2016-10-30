@@ -13,7 +13,7 @@ PosixDir = "%s/posix" % TargetDir
 WorkDir = "."
 
 Components = ["etcetera", "southamerica", "northamerica", "europe", "africa", "antarctica", \
-              "asia", "australasia", "backward", "pacificnew", "solar87", "solar88", "solar89", \
+              "asia", "australasia", "backward", "pacificnew", \
               "systemv" ]
 
 ExtraDist = ["zone.tab", "iso3166.tab"]
