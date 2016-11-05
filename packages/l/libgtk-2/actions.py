@@ -10,6 +10,10 @@ def setup():
     os.system("sed -i 's#l \(gtk-.*\).sgml#& -o \1#' docs/faq/Makefile.in")
     os.system("sed -i 's#l \(gtk-.*\).sgml#& -o \1#' docs/tutorial/Makefile.in")
     autotools.autoreconf()
+    if get.buildTYPE() == "emul32":
+        shelltools.export("PKG_CONFIG_PATH", "/usr/lib32/pkgconfig:/usr/share/pkgconfig")
+        shelltools.export("CFLAGS", "-I/usr/lib32/glib-2.0/include " + get.CFLAGS())
+
     libdir = "/usr/lib32" if get.buildTYPE() == "emul32" else "/usr/lib64"
 
     autotools.configure("--disable-static \
@@ -18,7 +22,7 @@ def setup():
                          --with-x \
                          --prefix=/usr \
                          --enable-explicit-deps \
-                         --enable-cups" % libdir)
+                         --enable-cups CFLAGS=\"$CFLAGS\"" % libdir)
 
 def build():
     autotools.make()
