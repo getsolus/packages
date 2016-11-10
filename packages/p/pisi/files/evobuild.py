@@ -656,6 +656,9 @@ def up_root():
             tgt = os.path.join(union_dir(), "etc/eopkg/eopkg.conf")
             if os.path.exists(tgt):
                 os.unlink(tgt)
+            dname = os.path.dirname(tgt)
+            if not os.path.exists(dname):
+                os.makedirs(dname)
             shutil.copyfile("/etc/eopkg/eopkg.conf", tgt)
             print "Copied host eopkg.conf"
         except Exception, e:
