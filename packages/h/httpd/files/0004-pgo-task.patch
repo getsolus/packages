@@ -1,0 +1,93 @@
+From fd3728bba2e3ed292819039cfb056c2cc9d0f7dd Mon Sep 17 00:00:00 2001
+From: David Esparza Borquez <david.esparza.borquez@intel.com>
+Date: Mon, 29 Feb 2016 17:40:40 -0600
+Subject: [PATCH] pgo feature update
+
+---
+ Makefile.in | 66 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/Makefile.in b/Makefile.in
+index c1b08f9..be5d57b 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -26,6 +26,20 @@ DISTCLEAN_TARGETS  = include/ap_config_auto.h include/ap_config_layout.h \
+ EXTRACLEAN_TARGETS = configure include/ap_config_auto.h.in generated_lists \
+ 	httpd.spec
+ 
++PGO_DIR = /var/tmp/profiles
++PGO_USE_CFLAGS= -fprofile-use -fprofile-dir=$(PGO_DIR) -fprofile-correction
++PGO_GEN_CFLAGS= -fprofile-generate -fprofile-dir=$(PGO_DIR) -free
++PGO_BASE_CFLAGS= -O3
++CONFFILE=	$(DESTDIR)$(sysconfdir)/httpd.conf
++PATCH_ERDIR=	$(shell sed -n '/ErrorLog \"/p' $(CONFFILE) | sed 's/\(ErrorLog \"\)//' | sed s'/\/error_log\"//')
++PATCH_LOGDIR=	$(shell sed -n '/PidFile /p' $(CONFFILE) | sed 's/\(PidFile \)//' | sed 's/\(\/httpd.pid\)//')
++PATCH_PIDDIR=	sed -i 's|\(PidFile \/\)|PidFile $(DESTDIR)\/|g' $(CONFFILE)
++PATCH_ERRLOG=	sed -i 's|\(ErrorLog \"\)|ErrorLog \"$(DESTDIR)|g' $(CONFFILE)
++PATCH_CUSLOG=	sed -i 's|\(CustomLog \"\)|CustomLog \"\/$(DESTDIR)|g' $(CONFFILE)
++START_AB_TEST=	$(DESTDIR)$(sbindir)/ab -n 1000000 -c 100 http://localhost:8088/test.html
++START_APACHE=	$(DESTDIR)$(sbindir)/apachectl -k start -f $(CONFFILE)
++STOP_APACHE=	$(DESTDIR)$(sbindir)/apachectl -k stop -f $(CONFFILE)
++
+ include $(top_builddir)/build/rules.mk
+ include $(top_srcdir)/build/program.mk
+ 
+@@ -273,3 +287,55 @@ x-local-distclean:
+ 
+ # XXX: This looks awfully platform-specific [read: bad form and style]
+ include $(top_srcdir)/os/os2/core.mk
++
++pgo-testing-files-gen:
++	@echo Generting pgo testing files...
++	@if [ -d $(DESTDIR)$(htdocsdir) ]; then \
++		cd $(DESTDIR)$(htdocsdir) ; \
++		head -c 4810 </dev/urandom >pts.png ; \
++		head -c 3072 </dev/urandom >test.html ; \
++	fi
++
++pgo-httpdconf-update:
++	@echo httpd.conf update...
++	$(PATCH_PIDDIR)
++	$(PATCH_ERRLOG)
++	$(PATCH_CUSLOG)
++	mkdir -p $(DESTDIR)$(PATCH_ERDIR)
++	mkdir -p $(DESTDIR)$(PATCH_LOGDIR)
++
++pgo-run_benchmark:
++	@echo Running apache benchmark...
++	$(START_APACHE)
++	$(START_AB_TEST)
++	$(STOP_APACHE)
++
++pgo-patch-results:
++	-rm $(PGO_DIR)/fdqueue.gcda
++
++enable-pgo-flags:
++	-rm -rf $(PGO_DIR)
++	@$(MKINSTALLDIRS) $(PGO_DIR)
++ifeq ("$(findstring O2,$(ALL_CFLAGS))","O2")
++	$(MAKE) ALL_CFLAGS="$(PGO_GEN_CFLAGS) $(subst -O2,$(PGO_BASE_CFLAGS), $(ALL_CFLAGS))"
++endif
++ifeq ("$(findstring O3,$(ALL_CFLAGS))","O3")
++	$(MAKE) ALL_CFLAGS="$(PGO_GEN_CFLAGS) $(subst -O3,$(PGO_BASE_CFLAGS), $(ALL_CFLAGS))"
++endif
++
++pgo-use-profile: clean
++ifeq ("$(findstring O2,$(ALL_CFLAGS))","O2")
++	$(MAKE) ALL_CFLAGS="$(PGO_USE_CFLAGS) $(subst -O2,$(PGO_BASE_CFLAGS), $(ALL_CFLAGS))"
++endif
++ifeq ("$(findstring O3,$(ALL_CFLAGS))","O3")
++	$(MAKE) ALL_CFLAGS="$(PGO_USE_CFLAGS) $(subst -O3,$(PGO_BASE_CFLAGS), $(ALL_CFLAGS))"
++endif
++
++
++pgo-generate:
++	@echo "=============="
++	@echo "PGO PROFILING"
++	@echo "=============="
++	$(MAKE) pgo-httpdconf-update
++	$(MAKE) pgo-testing-files-gen
++	$(MAKE) pgo-run_benchmark
+-- 
+2.7.2
+
