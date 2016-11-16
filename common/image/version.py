@@ -10,12 +10,11 @@
 #  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
 #
+
 import os
 from datetime import date
 import time
 
-# 1, stable Solus
-MAJOR = "1"
 
 def get_image_version():
     today = date.fromtimestamp(time.time())
@@ -30,7 +29,7 @@ def get_image_version():
     version = None
 
     while (True):
-        version = "%s.%s%s.%s.%s" % (MAJOR, iso_year, iso_week, iso_day, build_id)
+        version = "{}{}.{}.{}".format(iso_year, iso_week, iso_day, build_id)
         rel_path = os.path.join("./releases", version)
         if not os.path.exists(rel_path):
             break
