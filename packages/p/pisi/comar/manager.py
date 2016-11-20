@@ -17,6 +17,7 @@ import gc
 gc.disable()
 
 import os
+import os.path
 import locale
 import string
 
@@ -102,6 +103,11 @@ def _init_pisi():
         pisi.api.set_userinterface(ui)
     except KeyboardInterrupt:
         cancelled()
+
+def _get_eopkg_config():
+    if os.path.exists("/etc/eopkg/eopkg.conf"):
+        return "/etc/eopkg/eopkg.conf"
+    return "/usr/share/defaults/eopkg/eopkg.conf"
 
 def cancelled():
     notify("System.Manager", "cancelled", None)
@@ -233,7 +239,7 @@ def clearCache(cacheDir, limit):
 
 def __checkCacheLimits():
     cached_pkgs_dir = "/var/cache/eopkg/packages"
-    config = pisi.configfile.ConfigurationFile("/etc/eopkg/eopkg.conf")
+    config = pisi.configfile.ConfigurationFile(_get_eopkg_config())
     cache = config.get("general", "package_cache")
     if cache == "True":
         limit = config.get("general", "package_cache_limit")
