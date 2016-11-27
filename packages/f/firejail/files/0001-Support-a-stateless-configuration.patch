@@ -1,0 +1,167 @@
+From 24b252d3761ce21131e4dbe91da9606bb0cb628c Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 27 Nov 2016 19:05:55 +0000
+Subject: [PATCH] Support a stateless configuration
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ Makefile.in                     |  9 +++++----
+ configure.ac                    |  1 +
+ src/firejail/Makefile.in        |  3 ++-
+ src/firejail/checkcfg.c         | 10 ++++++----
+ src/firejail/main.c             | 11 +++++++++++
+ src/firejail/restricted_shell.c | 12 ++++++++++--
+ 6 files changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/Makefile.in b/Makefile.in
+index dbf53e2..d608c36 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -8,6 +8,7 @@ exec_prefix=@exec_prefix@
+ bindir=@bindir@
+ libdir=@libdir@
+ datarootdir=@datarootdir@
++datadir=@datadir@
+ mandir=@mandir@
+ sysconfdir=@sysconfdir@
+ 
+@@ -82,12 +83,12 @@ realinstall:
+ 	install -c -m 0644 README $(DESTDIR)/$(DOCDIR)/.
+ 	install -c -m 0644 RELNOTES $(DESTDIR)/$(DOCDIR)/.
+ 	# etc files
+-	./mketc.sh $(sysconfdir) $(BUSYBOX_WORKAROUND)
+-	install -m 0755 -d $(DESTDIR)/$(sysconfdir)/firejail
++	./mketc.sh $(datadir)/defaults $(BUSYBOX_WORKAROUND)
++	install -m 0755 -d $(DESTDIR)/$(datadir)/defaults/firejail
+ 	for file in .etc/* etc/firejail.config; do \
+-		install -c -m 0644 $$file $(DESTDIR)/$(sysconfdir)/firejail; \
++		install -c -m 0644 $$file $(DESTDIR)/$(datadir)/defaults/firejail; \
+ 	done
+-	sh -c "if [ ! -f $(DESTDIR)/$(sysconfdir)/firejail/login.users ]; then install -c -m 0644 etc/login.users $(DESTDIR)/$(sysconfdir)/firejail/.; fi;"
++	sh -c "if [ ! -f $(DESTDIR)/$(datadir)/defaults/firejail/login.users ]; then install -c -m 0644 etc/login.users $(DESTDIR)/$(datadir)/defaults/firejail/.; fi;"
+ 	rm -fr .etc
+ ifeq ($(HAVE_APPARMOR),-DHAVE_APPARMOR)	
+ 	# install apparmor profile
+diff --git a/configure.ac b/configure.ac
+index da4b315..f776f99 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -154,6 +154,7 @@ echo
+ echo "Configuration options:"
+ echo "   prefix: $prefix"
+ echo "   sysconfdir: $sysconfdir"
++echo "   defaultsdir: $datadir/defaults/firejail"
+ echo "   seccomp: $HAVE_SECCOMP"
+ echo "   <linux/seccomp.h>: $HAVE_SECCOMP_H"
+ echo "   apparmor: $HAVE_APPARMOR"
+diff --git a/src/firejail/Makefile.in b/src/firejail/Makefile.in
+index fce4609..819464b 100644
+--- a/src/firejail/Makefile.in
++++ b/src/firejail/Makefile.in
+@@ -4,6 +4,7 @@ prefix=@prefix@
+ exec_prefix=@exec_prefix@
+ libdir=@libdir@
+ sysconfdir=@sysconfdir@
++datadir=@datadir@
+ 
+ VERSION=@PACKAGE_VERSION@
+ NAME=@PACKAGE_NAME@
+@@ -27,7 +28,7 @@ H_FILE_LIST       = $(sort $(wildcard *.[h]))
+ C_FILE_LIST       = $(sort $(wildcard *.c))
+ OBJS = $(C_FILE_LIST:.c=.o)
+ BINOBJS =  $(foreach file, $(OBJS), $file)
+-CFLAGS += -ggdb $(HAVE_FATAL_WARNINGS) -O2 -DVERSION='"$(VERSION)"' -DPREFIX='"$(prefix)"'  -DSYSCONFDIR='"$(sysconfdir)/firejail"' -DLIBDIR='"$(libdir)"' $(HAVE_X11) $(HAVE_PRIVATE_HOME) $(HAVE_APPARMOR) $(HAVE_OVERLAYFS) $(HAVE_SECCOMP) $(HAVE_GLOBALCFG) $(HAVE_SECCOMP_H) $(HAVE_CHROOT) $(HAVE_NETWORK) $(HAVE_USERNS) $(HAVE_BIND) $(HAVE_FILE_TRANSFER) $(HAVE_WHITELIST) -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIE -pie -Wformat -Wformat-security
++CFLAGS += -ggdb $(HAVE_FATAL_WARNINGS) -O2 -DVERSION='"$(VERSION)"' -DPREFIX='"$(prefix)"'  -DSYSCONFDIR='"$(sysconfdir)/firejail"' -DDATADIR='"$(datadir)"' -DLIBDIR='"$(libdir)"' $(HAVE_X11) $(HAVE_PRIVATE_HOME) $(HAVE_APPARMOR) $(HAVE_OVERLAYFS) $(HAVE_SECCOMP) $(HAVE_GLOBALCFG) $(HAVE_SECCOMP_H) $(HAVE_CHROOT) $(HAVE_NETWORK) $(HAVE_USERNS) $(HAVE_BIND) $(HAVE_FILE_TRANSFER) $(HAVE_WHITELIST) -fstack-protector-all -D_FORTIFY_SOURCE=2 -fPIE -pie -Wformat -Wformat-security
+ LDFLAGS += -pie -Wl,-z,relro -Wl,-z,now -lpthread
+ 
+ %.o : %.c $(H_FILE_LIST) ../include/common.h ../include/euid_common.h ../include/libnetlink.h ../include/pid.h
+diff --git a/src/firejail/checkcfg.c b/src/firejail/checkcfg.c
+index 78c0e5c..d82e01c 100644
+--- a/src/firejail/checkcfg.c
++++ b/src/firejail/checkcfg.c
+@@ -43,9 +43,12 @@ int checkcfg(int val) {
+ 		cfg_val[CFG_PRIVATE_BIN_NO_LOCAL] = 0; // disabled by default
+ 		
+ 		// open configuration file
+-		char *fname;
+-		if (asprintf(&fname, "%s/firejail.config", SYSCONFDIR) == -1)
+-			errExit("asprintf");
++		const char *fname;
++		if (access(SYSCONFDIR "/firejail.config", F_OK) == 0) {
++			fname = SYSCONFDIR "/firejail.config";
++		} else {
++			fname = DATADIR "/defaults/firejail/firejail.config";
++		}
+ 
+ 		FILE *fp = fopen(fname, "r");
+ 		if (!fp) {
+@@ -274,7 +277,6 @@ int checkcfg(int val) {
+ 		}
+ 
+ 		fclose(fp);
+-		free(fname);
+ 		initialized = 1;
+ 	}
+ 	
+diff --git a/src/firejail/main.c b/src/firejail/main.c
+index b5a97c7..6529f97 100644
+--- a/src/firejail/main.c
++++ b/src/firejail/main.c
+@@ -45,6 +45,9 @@ printf("time %s:%d %u\n", __FILE__, __LINE__, (uint32_t) systick);
+ }
+ #endif
+ 
++// Stateless configuration directory
++#define DEFAULTSDIR DATADIR "/defaults/firejail"
++
+ uid_t firejail_uid = 0;
+ gid_t firejail_gid = 0;
+ 
+@@ -2361,6 +2364,10 @@ int main(int argc, char **argv) {
+ 				rv = profile_find(cfg.command_name, SYSCONFDIR);
+ 			custom_profile = rv;
+ 		}
++		if (!custom_profile && !custom_profile_dir) {
++			// look for a user profile in /usr/share/defaults directory
++			custom_profile = profile_find(cfg.command_name, DEFAULTSDIR);
++		}
+ 	}
+ 
+ 	// use default.profile as the default
+@@ -2395,6 +2402,10 @@ int main(int argc, char **argv) {
+ 				else
+ 					custom_profile = profile_find(profile_name, SYSCONFDIR);
+ 			}
++			if (!custom_profile && !custom_profile_dir) {
++				// look for the profile in /usr/share/defaults directory
++				custom_profile = profile_find(profile_name, DEFAULTSDIR);
++			}
+ 			if (!custom_profile) {
+ 				fprintf(stderr, "Error: no default.profile installed\n");
+ 				exit(1);
+diff --git a/src/firejail/restricted_shell.c b/src/firejail/restricted_shell.c
+index 979bb1e..2817f93 100644
+--- a/src/firejail/restricted_shell.c
++++ b/src/firejail/restricted_shell.c
+@@ -34,8 +34,16 @@ int restricted_shell(const char *user) {
+ 		errExit("asprintf");
+ 	FILE *fp = fopen(fname, "r");
+ 	free(fname);
+-	if (fp == NULL)
+-		return 0;
++	fname = NULL;
++	if (fp == NULL) {
++		// Grab the stateless version
++		if (asprintf(&fname, "%s/defaults/firejail/login.users", DATADIR) == -1)
++			errExit("asprintf");
++		FILE *fp = fopen(fname, "r");
++		free(fname);
++		if (fp == NULL)
++			return 0;
++	}
+ 
+ 	int lineno = 0;
+ 	char buf[MAX_READ];
+-- 
+2.10.2
+
