@@ -1,0 +1,77 @@
+From c21823be42c12f2d17be23364137af0a5a10f6b3 Mon Sep 17 00:00:00 2001
+From: Rui Matos <tiagomatos@gmail.com>
+Date: Sun, 10 Jul 2016 16:35:41 +0200
+Subject: [PATCH] screenshot-dialog: Avoid resizing the preview too much
+
+Relying on configure events to resize the preview makes us do more
+work than necessary and, in particular, gtk+ sometimes sends us phony
+configure events sized 1x1 which make us hit a pretty CPU intensive
+resize operation in gdk-pixbuf.
+
+Instead, we can avoid all that by creating the preview pixbuf lazily
+on the draw handler using the actual allocated widget size.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=768087
+---
+ src/screenshot-dialog.c | 32 +++++++++++++++-----------------
+ 1 file changed, 15 insertions(+), 17 deletions(-)
+
+diff --git a/src/screenshot-dialog.c b/src/screenshot-dialog.c
+index fd0cbdc..b436df0 100644
+--- a/src/screenshot-dialog.c
++++ b/src/screenshot-dialog.c
+@@ -43,6 +43,21 @@ on_preview_draw (GtkWidget      *drawing_area,
+ {
+   ScreenshotDialog *dialog = data;
+   GtkStyleContext *context;
++  int width, height;
++
++  width = gtk_widget_get_allocated_width (drawing_area);
++  height = gtk_widget_get_allocated_height (drawing_area);
++
++  if (!dialog->preview_image ||
++      gdk_pixbuf_get_width (dialog->preview_image) != width ||
++      gdk_pixbuf_get_height (dialog->preview_image) != height)
++    {
++      g_clear_object (&dialog->preview_image);
++      dialog->preview_image = gdk_pixbuf_scale_simple (dialog->screenshot,
++                                                       width,
++                                                       height,
++                                                       GDK_INTERP_BILINEAR);
++    }
+ 
+   context = gtk_widget_get_style_context (drawing_area);
+   gtk_style_context_save (context);
+@@ -80,22 +95,6 @@ on_preview_button_release_event (GtkWidget      *drawing_area,
+ }
+ 
+ static void
+-on_preview_configure_event (GtkWidget         *drawing_area,
+-			    GdkEventConfigure *event,
+-			    gpointer           data)
+-{
+-  ScreenshotDialog *dialog = data;
+-
+-  if (dialog->preview_image)
+-    g_object_unref (G_OBJECT (dialog->preview_image));
+-
+-  dialog->preview_image = gdk_pixbuf_scale_simple (dialog->screenshot,
+-						   event->width,
+-						   event->height,
+-						   GDK_INTERP_BILINEAR);
+-}
+-
+-static void
+ drag_data_get (GtkWidget          *widget,
+ 	       GdkDragContext     *context,
+ 	       GtkSelectionData   *selection_data,
+@@ -179,7 +178,6 @@ setup_drawing_area (ScreenshotDialog *dialog, GtkBuilder *ui)
+   g_signal_connect (preview_darea, "draw", G_CALLBACK (on_preview_draw), dialog);
+   g_signal_connect (preview_darea, "button_press_event", G_CALLBACK (on_preview_button_press_event), dialog);
+   g_signal_connect (preview_darea, "button_release_event", G_CALLBACK (on_preview_button_release_event), dialog);
+-  g_signal_connect (preview_darea, "configure_event", G_CALLBACK (on_preview_configure_event), dialog);
+ 
+   /* setup dnd */
+   gtk_drag_source_set (preview_darea,
+-- 
+2.7.4
