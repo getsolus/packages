@@ -1,0 +1,121 @@
+From d060b7aa5fc64902ea89416e58b57d6a90f5aea6 Mon Sep 17 00:00:00 2001
+From: Thiago Macieira <thiago.macieira@intel.com>
+Date: Tue, 31 May 2016 17:33:03 -0300
+Subject: [PATCH] Fix some QtDBus crashes during application destruction
+
+It's possible that some code executes after QDBusConnectionManager is
+destroyed and still tries to access QtDBus. Protect against such
+crashes.
+
+Change-Id: I87e17314d8b24ae983b1fffd1453c13fbd3cf48e
+---
+ src/dbus/qdbusconnection.cpp | 12 ++++++++----
+ src/dbus/qdbusintegrator.cpp |  3 +++
+ src/dbus/qdbusserver.cpp     | 12 ++++++++++--
+ 3 files changed, 21 insertions(+), 6 deletions(-)
+
+diff --git a/src/dbus/qdbusconnection.cpp b/src/dbus/qdbusconnection.cpp
+index 4db6396..c1c4f05 100644
+--- a/src/dbus/qdbusconnection.cpp
++++ b/src/dbus/qdbusconnection.cpp
+@@ -429,7 +429,7 @@ void QDBusConnectionManager::createServer(const QString &address, void *server)
+ */
+ QDBusConnection::QDBusConnection(const QString &name)
+ {
+-    if (name.isEmpty()) {
++    if (name.isEmpty() || _q_manager.isDestroyed()) {
+         d = 0;
+     } else {
+         QMutexLocker locker(&_q_manager()->mutex);
+@@ -494,7 +494,7 @@ QDBusConnection &QDBusConnection::operator=(const QDBusConnection &other)
+ */
+ QDBusConnection QDBusConnection::connectToBus(BusType type, const QString &name)
+ {
+-    if (!qdbus_loadLibDBus()) {
++    if (_q_manager.isDestroyed() || !qdbus_loadLibDBus()) {
+         QDBusConnectionPrivate *d = 0;
+         return QDBusConnection(d);
+     }
+@@ -508,7 +508,7 @@ QDBusConnection QDBusConnection::connectToBus(BusType type, const QString &name)
+ QDBusConnection QDBusConnection::connectToBus(const QString &address,
+                                               const QString &name)
+ {
+-    if (!qdbus_loadLibDBus()) {
++    if (_q_manager.isDestroyed() || !qdbus_loadLibDBus()) {
+         QDBusConnectionPrivate *d = 0;
+         return QDBusConnection(d);
+     }
+@@ -523,7 +523,7 @@ QDBusConnection QDBusConnection::connectToBus(const QString &address,
+ QDBusConnection QDBusConnection::connectToPeer(const QString &address,
+                                                const QString &name)
+ {
+-    if (!qdbus_loadLibDBus()) {
++    if (_q_manager.isDestroyed() || !qdbus_loadLibDBus()) {
+         QDBusConnectionPrivate *d = 0;
+         return QDBusConnection(d);
+     }
+@@ -1178,6 +1178,8 @@ bool QDBusConnection::unregisterService(const QString &serviceName)
+ */
+ QDBusConnection QDBusConnection::sessionBus()
+ {
++    if (_q_manager.isDestroyed())
++        return QDBusConnection(Q_NULLPTR);
+     return QDBusConnection(_q_manager()->busConnection(SessionBus));
+ }
+
+@@ -1190,6 +1192,8 @@ QDBusConnection QDBusConnection::sessionBus()
+ */
+ QDBusConnection QDBusConnection::systemBus()
+ {
++    if (_q_manager.isDestroyed())
++        return QDBusConnection(Q_NULLPTR);
+     return QDBusConnection(_q_manager()->busConnection(SystemBus));
+ }
+
+diff --git a/src/dbus/qdbusintegrator.cpp b/src/dbus/qdbusintegrator.cpp
+index 37d2ae1..9ea30d1 100644
+--- a/src/dbus/qdbusintegrator.cpp
++++ b/src/dbus/qdbusintegrator.cpp
+@@ -293,6 +293,9 @@ static void qDBusNewConnection(DBusServer *server, DBusConnection *connection, v
+     Q_ASSERT(connection);
+     Q_ASSERT(data);
+
++    if (!QDBusConnectionManager::instance())
++        return;
++
+     // keep the connection alive
+     q_dbus_connection_ref(connection);
+     QDBusConnectionPrivate *serverConnection = static_cast<QDBusConnectionPrivate *>(data);
+diff --git a/src/dbus/qdbusserver.cpp b/src/dbus/qdbusserver.cpp
+index babb270..ecb7d4f 100644
+--- a/src/dbus/qdbusserver.cpp
++++ b/src/dbus/qdbusserver.cpp
+@@ -62,7 +62,11 @@ QDBusServer::QDBusServer(const QString &address, QObject *parent)
+     if (!qdbus_loadLibDBus())
+         return;
+
+-    emit QDBusConnectionManager::instance()->serverRequested(address, this);
++    QDBusConnectionManager *instance = QDBusConnectionManager::instance();
++    if (!instance)
++        return;
++
++    emit instance->serverRequested(address, this);
+     QObject::connect(d, SIGNAL(newServerConnection(QDBusConnectionPrivate*)),
+                      this, SLOT(_q_newConnection(QDBusConnectionPrivate*)), Qt::QueuedConnection);
+ }
+@@ -87,7 +91,11 @@ QDBusServer::QDBusServer(QObject *parent)
+         return;
+     }
+
+-    emit QDBusConnectionManager::instance()->serverRequested(address, this);
++    QDBusConnectionManager *instance = QDBusConnectionManager::instance();
++    if (!instance)
++        return;
++
++    emit instance->serverRequested(address, this);
+     QObject::connect(d, SIGNAL(newServerConnection(QDBusConnectionPrivate*)),
+                      this, SLOT(_q_newConnection(QDBusConnectionPrivate*)), Qt::QueuedConnection);
+ }
+--
+2.7.4
+
