@@ -23,6 +23,7 @@ def setup():
         --enable-plugins \
         --enable-secureplt \
         --enable-64-bit-bfd \
+        --enable-deterministic-archives \
         --target=x86_64-solus-linux \
         --build=x86_64-solus-linux" % get.srcVERSION())
 
