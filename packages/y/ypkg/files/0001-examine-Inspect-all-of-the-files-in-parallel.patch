@@ -1,0 +1,87 @@
+From ad38a7b15d75acae2bc47b2978048c1bd0a5b1c0 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Mon, 5 Dec 2016 22:45:35 +0000
+Subject: [PATCH] examine: Inspect all of the files in parallel
+
+This change restores parallel processing to the PackageExaminer, which
+should help to significantly reduce the amount of time spent looking at
+the file set we've been handed.
+
+As we're liable for race conditions in shared directory names, we first
+assume that makedirs will fail, as another thread may have already
+created the directory. Thus the error is fallthrough, and we check
+again immediately for it's existence.
+
+This will help creation of dbginfo packages and still retain a highly
+parallel examination routine.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ ypkg2/examine.py | 30 +++++++++++++++---------------
+ 1 file changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/ypkg2/examine.py b/ypkg2/examine.py
+index 4b76f13..ae0ba79 100644
+--- a/ypkg2/examine.py
++++ b/ypkg2/examine.py
+@@ -287,14 +287,15 @@ def store_debug(context, pretty, file, magic_string):
+ 
+     did_full = os.path.join(context.get_install_dir(), did[1:])
+ 
++    # Account for race condition in directory creation
+     dirs = os.path.dirname(did_full)
++    try:
++        os.makedirs(dirs, mode=00755)
++    except Exception as e:
++        pass
+     if not os.path.exists(dirs):
+-        try:
+-            os.makedirs(dirs, mode=00755)
+-        except Exception as e:
+-            console_ui.emit_error("Debug", "Failed to make directory")
+-            print e
+-            return
++        console_ui.emit_error("Debug", "Failed to make directory")
++        return
+ 
+     cmd = "objcopy --only-keep-debug \"{}\" \"{}\"".format(file, did_full)
+     try:
+@@ -359,7 +360,7 @@ class PackageExaminer:
+         # Right now we actually only care about magic matching
+         removed = set()
+ 
+-        # pool = multiprocessing.Pool()
++        pool = multiprocessing.Pool()
+         results = list()
+ 
+         for file in package.emit_files():
+@@ -389,19 +390,18 @@ class PackageExaminer:
+             if not self.file_is_of_interest("/" + file, fpath, mgs):
+                 continue
+             # Handle this asynchronously
+-            results.append(examine_file(package, "/" + file, fpath, mgs))
+-            # results.append(pool.apply_async(examine_file, [
+-            #               package, "/" + file, fpath, mgs],
+-            #               callback=None))
++            results.append(pool.apply_async(examine_file, [
++                           package, "/" + file, fpath, mgs],
++                           callback=None))
+ 
+-        # pool.close()
+-        # pool.join()
++        pool.close()
++        pool.join()
+ 
+-        # infos = [x.get() for x in results]
++        infos = [x.get() for x in results]
+ 
+         for r in removed:
+             package.remove_file(r)
+-        return results
++        return infos
+ 
+     def examine_packages(self, context, packages):
+         """ Examine all packages, in order to update dependencies, etc """
+-- 
+2.11.0
+
