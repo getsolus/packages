@@ -22,20 +22,27 @@ def main():
     if len(sys.argv) < 2:
         usage(0)
     pcs = sys.argv[1:]
-    idb = pisi.db.installdb.InstallDB()
+    fdb = pisi.db.filesdb.FilesDB()
     pdb = pisi.db.packagedb.PackageDB()
 
+    availPcs, availPcs32 = pdb.get_pkgconfig_providers()
+
     for pkgconfig in pcs:
-        pc = pdb.get_package_by_pkgconfig(pkgconfig)
+        hit = False
+        if pkgconfig in availPcs:
+            print("pkgconfig(%s) found in: %s" % (pkgconfig, availPcs[pkgconfig]))
+            hit = True
+        if pkgconfig in availPcs32:
+            print("pkgconfig32(%s) found in: %s" % (pkgconfig, availPcs32[pkgconfig]))
+            hit = True
+        if hit:
+            continue
+        pc = fdb.get_pkgconfig_provider(pkgconfig)
         if not pc:
-            pc = idb.get_package_by_pkgconfig(pkgconfig)
-            if pc:
-                print "%s found in: %s" % (pkgconfig, pc.name)
-                print "Warning: Package does not appear in repository"
-            else:
-                print "Error: %s not found in repository or local install" % pkgconfig
-        else:
-            print "%s found in: %s" % (pkgconfig, pc.name)
+            print "Error: %s not found in repository or local install" % pkgconfig
+            continue
+        print "%s found in: %s" % (pkgconfig, pc.name)
+        print "Warning: Package does not appear in repository"
 
 if __name__ == "__main__":
     main()
