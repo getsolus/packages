@@ -21,7 +21,7 @@ Updating all repositories
 Building a package
 ----------------
 
-    # Ensure evobuild is setup..
+    # Ensure solbuild is setup..
     cd $somepkg
     make
 
@@ -54,17 +54,12 @@ unknown to the project.
 Finally, note that the management reserve the right to revoke access at any time,
 in order to preserve project safety and integrity.
 
-evobuild/setup
+solbuild/setup
 -------------
 
-Solus users will have evobuild already available. *All* builds are performed in
-the unstable repository, so `unstable-x86_64` is the default build profile. If
-evobuild emits the following warning, you will need to initialise the profile:
+Install `solbuild` from the main repository.. *All* builds are performed in
+the unstable repository, so `unstable-x86_64` is the default build profile.
 
-    Building $pkg for unstable-x86_64
-    Did you forget to init unstable-x86_64 profile?
+Install `solbuild-config-unstable` to lock builds to the unstable repository.
 
-This can be remedied as follows (note this may take some time depending on your
-connection)
-
-    sudo evobuild init -p unstable-x86_64
+See `man solbuild` for further details.
