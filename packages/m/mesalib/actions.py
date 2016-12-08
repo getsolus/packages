@@ -45,7 +45,7 @@ def setup():
         mlib = ""
         prefix = "/usr"
     # Only for git builds
-    # shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-889ee4d\"")
+    shelltools.echo("src/git_sha1.h", "#define MESA_GIT_SHA1 \"git-13c34cf\"")
     autotools.autoreconf("-fi")
 
     #disabled r300,r600,radeonsi
@@ -67,7 +67,7 @@ def setup():
                           --enable-shared-glapi \
                           --with-vulkan-drivers=intel,radeon \
                           --with-egl-platforms=\"drm,x11,wayland\" \
-                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,swr\"\
+                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,swr,virgl\"\
                           --enable-dri3 %s" % (prefix, libdir, mlib))
 
 def build():
