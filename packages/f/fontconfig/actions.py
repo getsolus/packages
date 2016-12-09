@@ -14,6 +14,7 @@ def setup():
                           --disable-docs\
                           --libdir=%s\
                           --prefix=/usr \
+                          --with-default-hinting=slight \
                           --with-baseconfigdir=/usr/share/fonts \
                           --with-configdir=/usr/share/fonts/conf.d \
                           --docdir=/usr/share/doc/fontconfig" % libdir)
