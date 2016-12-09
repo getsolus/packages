@@ -9,13 +9,14 @@ import shutil
 
 def setup():
     libdir = "/usr/lib64" if get.buildTYPE() != "emul32" else "/usr/lib32"
+    autotools.autoreconf("-vfi")
     autotools.configure ("--disable-static\
                           --disable-docs\
                           --libdir=%s\
                           --prefix=/usr \
                           --with-baseconfigdir=/usr/share/fonts \
                           --with-configdir=/usr/share/fonts/conf.d \
-                          --docdir=/usr/share/doc/fontconfig-2.10.2" % libdir)
+                          --docdir=/usr/share/doc/fontconfig" % libdir)
 
 def build():
     autotools.make ()
