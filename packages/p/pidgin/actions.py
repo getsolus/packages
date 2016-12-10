@@ -4,11 +4,9 @@
 from pisi.actionsapi import shelltools, get, autotools, pisitools
 
 def setup():
-    autotools.configure("--disable-vv \
+    autotools.configure("--libdir=/usr/lib64 \
                          --disable-idn \
                          --disable-meanwhile \
-                         --disable-gtkspell \
-                         --disable-gstreamer \
                          --disable-schemas-install \
                          --disable-tcl")
 
@@ -17,4 +15,4 @@ def build():
 
 def install():
     autotools.rawInstall ("DESTDIR=%s" % get.installDIR())
-    pisitools.removeDir("/usr/lib/perl5")
+    pisitools.removeDir("/usr/lib")
