@@ -37,6 +37,9 @@ def install():
     shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
-    
+
+    # TODO: Fix this cruft out in baselayout source package..
     shelltools.unlink("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR())
     pisitools.removeDir("/etc/ld.so.conf.d")
+    shelltools.unlink("%s/etc/ld.so.conf" % get.installDIR())
+    shelltools.unlink("%s/usr/share/baselayout/ld.so.conf" % get.installDIR())

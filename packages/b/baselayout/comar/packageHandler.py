@@ -17,6 +17,9 @@ def updateLdConfig(filepath):
         if path.startswith("/etc/ld.so.conf"):
             shouldConf = True
             break
+        if path.startswith("/usr/share/ld.so.conf"):
+            shouldConf = True
+            break
         if not ".so" in path:
             continue
         if os.path.dirname(path) in LIBRARY_DIRS:
