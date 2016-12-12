@@ -39,8 +39,4 @@ def install():
     shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
     
     shelltools.unlink("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR())
-    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/usr/lib64")
-    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/lib64")
-    shelltools.echo("%s/etc/ld.so.conf.d/20-multi.conf" % get.installDIR(), "/usr/lib32")
-    shelltools.echo("%s/etc/ld.so.conf.d/20-multi.conf" % get.installDIR(), "/lib32")
-    shelltools.echo("%s/etc/ld.so.conf.d/10-local.conf" % get.installDIR(), "/usr/local/lib")
+    pisitools.removeDir("/etc/ld.so.conf.d")
