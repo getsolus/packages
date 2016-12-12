@@ -1,0 +1,220 @@
+From da75a4e484b67a1f9dbe1688a81c7e7661ac4a98 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Mon, 12 Dec 2016 02:28:35 +0000
+Subject: [PATCH] applets/icon-tasklist: Fix the Spinny Wheel Of Doucheness
+
+This change ensures we don't accidently create a new startup ID, which
+was only discovered after digging into the GTK source code to figure
+out that a "get" function is in fact a "set, send, return", which in
+turn is then reused inside th GDesktopAppInfo implementation...
+
+So now we remove the hacks, use a per-button GdkAppLaunchContext, and
+correctly "turn off" the notify via Gdk to stop the spinning wheel
+when launching applications.
+
+In short, startup notify support is properly implemented in the
+panel now, thanks to some investigative work done for the Brisk Menu.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/panel/applets/icon-tasklist/Buttons.vala       | 61 ++++++++++++++++++----
+ .../applets/icon-tasklist/IconTasklistApplet.vala  | 26 +--------
+ 2 files changed, 54 insertions(+), 33 deletions(-)
+
+diff --git a/panel/applets/icon-tasklist/Buttons.vala b/panel/applets/icon-tasklist/Buttons.vala
+index 8004155..bf46263 100644
+--- a/panel/applets/icon-tasklist/Buttons.vala
++++ b/panel/applets/icon-tasklist/Buttons.vala
+@@ -79,6 +79,8 @@ public class IconButton : Gtk.ToggleButton
+ 
+     public int panel_size = 10;
+ 
++    protected Gdk.AppLaunchContext launch_context;
++
+     private void update_app_info()
+     {
+         // Actions menu
+@@ -128,7 +130,6 @@ public class IconButton : Gtk.ToggleButton
+                     if (ainfo == null) {
+                         return;
+                     }
+-                    var launch_context = Gdk.Screen.get_default().get_display().get_app_launch_context();
+                     launch_context.set_screen(get_screen());
+                     launch_context.set_timestamp(Gdk.CURRENT_TIME);
+                     ainfo.launch_action(act, launch_context);
+@@ -258,6 +259,7 @@ public class IconButton : Gtk.ToggleButton
+     {
+         this.settings = settings;
+         this.helper = helper;
++        this.launch_context = get_display().get_app_launch_context();
+ 
+         image = new Gtk.Image();
+         image.pixel_size = size;
+@@ -435,19 +437,17 @@ public class IconButton : Gtk.ToggleButton
+ public class PinnedIconButton : IconButton
+ {
+     public DesktopAppInfo app_info;
+-    protected unowned Gdk.AppLaunchContext? context;
+     public string? id = null;
+     private Gtk.Menu alt_menu;
+ 
+     unowned Settings? settings;
+ 
+-    public PinnedIconButton(Settings settings, DesktopAppInfo info, int size, ref Gdk.AppLaunchContext context, AppSystem? helper, int panel_size)
++    public PinnedIconButton(Settings settings, DesktopAppInfo info, int size, AppSystem? helper, int panel_size)
+     {
+         base(settings, null, size, info, helper, panel_size);
+         this.app_info = info;
+         this.settings = settings;
+ 
+-        this.context = context;
+         set_tooltip_text(info.get_display_name());
+         image.set_from_gicon(info.get_icon(), Gtk.IconSize.INVALID);
+ 
+@@ -472,11 +472,56 @@ public class PinnedIconButton : IconButton
+             }
+         });
+ 
++        launch_context.launched.connect(this.on_launched);
++        launch_context.launch_failed.connect(this.on_launch_failed);
++
+         drag_data_get.connect((widget, context, selection_data, info, time)=> {
+             selection_data.set(selection_data.get_target(), 8, (uchar []) this.app_info.get_id().to_utf8());
+         });
+     }
+ 
++    /**
++     * Handle startup notification, set our own ID to the ID selected
++     */
++    private void on_launched(GLib.AppInfo info, Variant v)
++    {
++        Variant? elem;
++
++        var iter = v.iterator();
++
++        while ((elem = iter.next_value()) != null) {
++            string? key = null;
++            Variant? val = null;
++
++            elem.get("{sv}", out key, out val);
++
++            if (key == null) {
++                continue;
++            }
++
++            if (!val.is_of_type(VariantType.STRING)) {
++                continue;
++            }
++
++            if (key != "startup-notification-id") {
++                continue;
++            }
++
++            // Force vala to ref this
++            this.id = val.dup_string();
++            get_display().notify_startup_complete(this.id);
++        }
++    }
++
++    /**
++     * Not much to do just set our ID to null
++     */
++    private void on_launch_failed(string id)
++    {
++        get_display().notify_startup_complete(id);
++        this.id = null;
++    }
++
+     protected override bool on_button_release(Gdk.EventButton event)
+     {
+         if (window == null)
+@@ -491,11 +536,9 @@ public class PinnedIconButton : IconButton
+             }
+             /* Launch ourselves. */
+             try {
+-                context.set_screen(get_screen());
+-                context.set_timestamp(event.time);
+-                var id = context.get_startup_notify_id(app_info, null);
+-                this.id = id;
+-                app_info.launch(null, this.context);
++                launch_context.set_screen(get_screen());
++                launch_context.set_timestamp(event.time);
++                app_info.launch(null, launch_context);
+             } catch (Error e) {
+                 /* Animate a UFAILED image? */
+                 message(e.message);
+diff --git a/panel/applets/icon-tasklist/IconTasklistApplet.vala b/panel/applets/icon-tasklist/IconTasklistApplet.vala
+index 12390a1..7375240 100644
+--- a/panel/applets/icon-tasklist/IconTasklistApplet.vala
++++ b/panel/applets/icon-tasklist/IconTasklistApplet.vala
+@@ -9,23 +9,6 @@
+  * (at your option) any later version.
+  */
+ 
+-/**
+- * Attempt to match startup notification IDs
+- */
+-public static bool startupid_match(string id1, string id2)
+-{
+-    /* Simple. If id1 == id2, or id1(WINID+1) == id2 */
+-    if (id1 == id2) {
+-        return true;
+-    }
+-    string[] spluts = id1.split("_");
+-    string[] splits = spluts[0].split("-");
+-    int winid = int.parse(splits[splits.length-1])+1;
+-    string id3 = "%s-%d_%s".printf(string.joinv("-", splits[0:splits.length-1]), winid, string.joinv("_", spluts[1:spluts.length]));
+-
+-    return (id2 == id3);
+-}
+-
+ public class IconTasklist : Budgie.Plugin, Peas.ExtensionBase
+ {
+     public Budgie.Applet get_panel_widget(string uuid)
+@@ -84,7 +67,6 @@ public class IconTasklistApplet : Budgie.Applet
+     protected int icon_size = 32;
+     private Settings settings;
+ 
+-    protected Gdk.AppLaunchContext context;
+     protected AppSystem? helper;
+ 
+     private unowned IconButton? active_button;
+@@ -111,7 +93,7 @@ public class IconTasklistApplet : Budgie.Applet
+             PinnedIconButton? pbtn = null;
+             var iter = HashTableIter<string?,PinnedIconButton?>(pin_buttons);
+             while (iter.next(null, out pbtn)) {
+-                if (pbtn.id != null && startupid_match(pbtn.id, launch_id)) {
++                if (pbtn.id != null && pbtn.id == launch_id) {
+                     btn = pbtn;
+                     break;
+                 }
+@@ -202,8 +184,6 @@ public class IconTasklistApplet : Budgie.Applet
+     {
+         Object(uuid: uuid);
+ 
+-        this.context = Gdk.Screen.get_default().get_display().get_app_launch_context();
+-
+         settings_schema = "com.solus-project.icon-tasklist";
+         settings_prefix = "/com/solus-project/budgie-panel/instance/icon-tasklist";
+ 
+@@ -350,8 +330,6 @@ public class IconTasklistApplet : Budgie.Applet
+ 
+             Gtk.Allocation alloc;
+ 
+-            var launcher = launchers[i];
+-
+             (pin_buttons[launchers[i]].get_parent() as ButtonWrapper).get_allocation(out alloc);
+ 
+             if(x <= (alloc.x + (alloc.width / 2) - main_layout_allocation.x)) {
+@@ -404,7 +382,7 @@ public class IconTasklistApplet : Budgie.Applet
+                 message("Invalid application! %s", desktopfile);
+                 continue;
+             }
+-            var button = new PinnedIconButton(settings, info, icon_size, ref this.context, this.helper, panel_size);
++            var button = new PinnedIconButton(settings, info, icon_size, this.helper, panel_size);
+             var button_wrap = new ButtonWrapper(button);
+             pin_buttons[desktopfile] = button;
+             pinned.pack_start(button_wrap, false, false, 0);
+-- 
+2.11.0
+
