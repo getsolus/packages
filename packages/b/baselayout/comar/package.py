@@ -6,7 +6,7 @@ import shutil
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     interested = ["fstab", "group-", "gshadow-", "issue", "machine-id",\
                   "passwd-", "shadow", "group", "gshadow", "hosts",\
-                  "ld.so.conf", "passwd", "resolv.conf", "shadow-"]
+                  "passwd", "resolv.conf", "shadow-"]
 
     for item in interested:
         source_path = os.path.join ("/usr/share/baselayout", item)
