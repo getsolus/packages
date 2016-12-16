@@ -2,11 +2,31 @@
 
 from pisi.actionsapi import shelltools, get, autotools, pisitools
 
+def speed_opt(name, cflags):
+    """ this package cannot yet be converted to ypkg, so emulates:
+        https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
+    """
+    fl = list(cflags.split(" "))
+    opt = "-ffunction-sections -flto -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    optimisations = ["-O%s" % x for x in range(0, 4)]
+    optimisations.extend("-Os")
+
+    fl = filter(lambda x: x not in optimisations, fl)
+    fl.extend(opt)
+    shelltools.export(name, " ".join(fl))
+    return " ".join(fl)
 
 def setup():
-    shelltools.export("CFLAGS", get.CFLAGS().replace("-Wl,-z,now", ""))
+    cflags = speed_opt("CFLAGS", get.CFLAGS()).replace("-Wl,-z,now", "")
+    cxxflags = speed_opt("CXXFLAGS", get.CXXFLAGS()).replace("-Wl,-z,now", "")
     shelltools.export("LDFLAGS", get.LDFLAGS().replace("-Wl,-z,now", ""))
-    shelltools.export("CXXFLAGS", get.CXXFLAGS().replace("-Wl,-z,now", ""))
+    shelltools.export("AR", "gcc-ar")
+    shelltools.export("RANLIB", "gcc-ranlib")
+    shelltools.export("NM", "gcc-nm")
+    shelltools.export("CFLAGS", cflags)
+    shelltools.export("CXXFLAGS", cxxflags)
+
+    autotools.autoreconf("-vfi")
     autotools.configure("--with-xkb-output=/var/lib/xkb \
                          --enable-install-setuid \
                          --enable-suid-wrapper \
@@ -26,10 +46,11 @@ def setup():
                          --enable-dri3 \
                          --enable-config-udev \
                          --enable-config-udev-kms \
+                         --disable-selective-werror \
                          --disable-static")
 
 def build():
-    autotools.make()
+    autotools.make("V=1")
 
 def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
