@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="45.5.0"
+VERSION="45.5.1"
 ARCH="x86_64"
 URL="http://ftp.mozilla.org/pub/thunderbird/releases/${VERSION}/linux-${ARCH}/xpi/"
 mkdir lang_pack
