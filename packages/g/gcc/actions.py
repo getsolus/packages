@@ -46,7 +46,7 @@ def setup():
                         --enable-multilib \
                         --with-multilib-list=m32,m64 \
                         --enable-lto \
-                        --with-bugurl='https://bugs.solus-project.com' \
+                        --with-bugurl='https://dev.solus-project.com/' \
                         --with-arch_32=i686 \
                         --enable-linker-build-id  \
                         --build=%s \
