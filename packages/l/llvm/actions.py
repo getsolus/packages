@@ -27,7 +27,7 @@ def setup():
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
     host = get.HOST()
-    version = "6.2.0" # GCC version
+    version = "6.3.0" # GCC version
 
     paths = ["/usr/include/",
              "/usr/include/c++/%s" % version,
@@ -41,13 +41,20 @@ def setup():
         shelltools.export("CXX", "g++ -m32")
         host = "i686-pc-linux-gnu"
         prefix = "/emul32"
-        options = "-DLLVM_LIBDIR_SUFFIX=32  -DCMAKE_C_FLAGS:STRING=-m32 -DCMAKE_CXX_FLAGS:STRING=-m32 -DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\" -DFFI_LIBRARY_DIR:STRING=/usr/lib32" % host
+        options = "-DLLVM_LIBDIR_SUFFIX=32  " \
+                  "-DCMAKE_C_FLAGS:STRING=\"%s -m32\" -DCMAKE_CXX_FLAGS:STRING=\"%s -m32\" -DCMAKE_LD_FLAGS=\"%s\" " \
+                  "-DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\" " \
+                  "-DFFI_LIBRARY_DIR:STRING=/usr/lib32" % (get.CFLAGS(), get.CXXFLAGS(), get.LDFLAGS(), host)
     else:
         shelltools.export("CC", "gcc")
         shelltools.export("CXX", "g++")
         host = get.HOST()
         prefix = "/usr"
-        options = "-DLLVM_INSTALL_UTILS=ON -DLLVM_LIBDIR_SUFFIX=64  -DCMAKE_C_FLAGS:STRING=-m64 -DCMAKE_CXX_FLAGS:STRING=-m64 -DLLVM_TARGET_ARCH:STRING=x86_64 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % host
+        options = "-DLLVM_INSTALL_UTILS=ON -DLLVM_LIBDIR_SUFFIX=64 " \
+                  "-DCMAKE_C_FLAGS:STRING=\"%s\" -DCMAKE_CXX_FLAGS:STRING=\"%s\" -DCMAKE_LD_FLAGS=\"%s\" " \
+                  "-DLLVM_TARGET_ARCH:STRING=x86_64 " \
+                  "-DLLVM_BINUTILS_INCDIR=/usr/include " \
+                  "-DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % (get.CFLAGS(), get.CXXFLAGS(), get.LDFLAGS(), host)
 
     if not shelltools.can_access_directory("lebuild"):
         shelltools.makedirs("lebuild")
@@ -64,7 +71,8 @@ def setup():
                           -DBUILD_SHARED_LIBS:BOOL=ON  \
                           -DENABLE_LINKER_BUILD_ID:BOOL=ON \
                           -DLLVM_INCLUDEDIR=/usr/include \
-                          -DENABLE_SHARED=ON .." % (prefix, options))
+                          -DLLVM_TARGETS_TO_BUILD=\"X86;AMDGPU;BPF\" \
+                          -DENABLE_SHARED=ON" % (prefix, options))
 
 def build():
     shelltools.cd("lebuild")
