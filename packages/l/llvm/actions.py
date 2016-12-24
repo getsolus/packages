@@ -61,10 +61,9 @@ def setup():
 
     shelltools.cd("lebuild")
     shelltools.system("cmake .. \
-                          -DCMAKE_BUILD_TYPE=Release \
+                          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                           -DCMAKE_INSTALL_PREFIX=%s \
                           %s \
-                          -DLLVM_ENABLE_ASSERTIONS=OFF \
                           -DLLVM_ENABLE_FFI=ON \
                           -DLLVM_BUILD_DOCS=OFF \
                           -DLLVM_ENABLE_RTTI=ON \
