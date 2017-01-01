@@ -18,18 +18,15 @@ import time
 
 def get_image_version():
     today = date.fromtimestamp(time.time())
-    iso = today.isocalendar()
-
-    iso_year = iso[0]
-    iso_week = iso[1]
-    iso_day = iso[2]
-    
+    year = today.year
+    month = today.month
+    day = today.day
     build_id = 0
 
     version = None
 
     while (True):
-        version = "{}{}.{}.{}".format(iso_year, iso_week, iso_day, build_id)
+        version = "{}.{:02d}.{:02d}.{}".format(year, month, day, build_id)
         rel_path = os.path.join("./releases", version)
         if not os.path.exists(rel_path):
             break
