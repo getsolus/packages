@@ -125,22 +125,21 @@ if __name__ == "__main__":
     (added,removed) = add_remove(sys.argv[1], sys.argv[2])
     changeTable = changed(sys.argv[1], sys.argv[2])
     
-    with open("changes.htm", "w") as changes:
-        changes.write("<html><head><title>Changelog</title><body>\n")
+    with open("changes.md", "w") as changes:
         if len(added) > 0:
-            changes.write("<h4>Packages added to this release:</h4>\n<ul>\n")
+            changes.write("#### Packages added to this release:\n\n")
             for a in added:
-                changes.write("<li>%s</li>\n" % a)
-            changes.write("\n</ul>\n")
+                changes.write(" - %s\n" % a)
+            changes.write("\n\n")
         if len(removed) > 0:
-            changes.write("<h4>Packages removed from this release:</h4>\n<ul>\n")
+            changes.write("#### Packages removed from this release:\n\n")
             for a in removed:
-                changes.write("<li>%s</li>\n" % a)
-            changes.write("\n</ul>\n")
+                changes.write("- %s\n" % a)
+            changes.write("\n\n")
         if len(changeTable) > 0:
-            changes.write("<h4>Changes in this release:</h4>\n\n")
+            changes.write("#### Changes in this release:\n\n")
             for key in changeTable.keys():
-                changes.write("<b>%s</b>\n<ul>\n" % key)
+                changes.write("**%s**\n\n" % key)
                 if key not in changeTable or changeTable[key] is None:
                     print("%s MISSING !!! " % key)
                 for line in changeTable[key]:
@@ -148,7 +147,5 @@ if __name__ == "__main__":
                     com = spl[0]
                     words = "|".join(spl[1:])
                     href = "https://git.solus-project.com/packages/%s/commit/?id=%s" % (key, com)
-                    changes.write("<li><a href=\"%s\">%s</a></li>" % (href, words))
-                changes.write("\n</ul>\n")
-                changes.write("\n")
-        changes.write("</body></html>")
+                    changes.write(" - [%s](%s)\n" % (words, href))
+                changes.write("\n\n")
