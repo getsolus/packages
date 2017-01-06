@@ -8,4 +8,4 @@ help:
 
 
 update:
-	@curl -o packages https://build.solus-project.com/projects.list
+	@curl https://build.solus-project.com/projects.list | grep -E "^packages/" | cut -d '/' -f 2 | sed -e 's/\.git$$//g' | sort > packages
