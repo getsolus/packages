@@ -1,0 +1,195 @@
+From 4556a8f895add65e32561ef5ad3ae5347e0ec99d Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Tue, 10 Jan 2017 00:03:50 +0000
+Subject: [PATCH] Add support for permanent paths in packages
+
+As per issue #23, this change adds support for permanent paths to ypkg.
+These files are matched by the built-in ypkg pattern system, and any
+resulting path is then marked as being "permanent" within the resulting
+.eopkg's.
+
+These packages contain "resident" files, i.e. files that are *not* removed
+on upgrade. Normal removals will cause the file to "disappear", but the
+files will stay on the filesystem in the event of an upgrade.
+
+This should be used sparingly, and only in areas where the domain of
+control lies outside of the update delivery mechanism, i.e. kernel and
+driver packages.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ man/package.yml.5.md | 14 ++++++++++++++
+ ypkg2/metadata.py    |  7 +++++--
+ ypkg2/packages.py    | 37 +++++++++++++++++++++++++++++++++++--
+ ypkg2/ypkgspec.py    |  4 ++++
+ 4 files changed, 58 insertions(+), 4 deletions(-)
+
+diff --git a/man/package.yml.5.md b/man/package.yml.5.md
+index c274cab..066fc2d 100644
+--- a/man/package.yml.5.md
++++ b/man/package.yml.5.md
+@@ -239,6 +239,20 @@ additional functionality.
+     even possible to supress generation of the main package, by pattern
+     globbing `/*` to a subpackage. This will not cause any breakage.
+ 
++* `permanent` [list]
++
++    A list of patterns used to mark files as permanent. Any file within the
++    resulting binary packages that matches the path pattern, is marked as
++    a permanent file.
++
++    These files will not be removed from the filesystem when upgrading or
++    reinstalling the package. They will persist during standard upgrade
++    operations.
++
++    This should only be used in critical chain packages such as the kernel
++    or drivers, where the domain of control is outside of the package manager,
++    and the package is simply used as an update delivery mechanism.
++
+ * `strip` [boolean]
+ 
+     By default, this key is enabled, and as a result `ypkg-build(1)` will
+diff --git a/ypkg2/metadata.py b/ypkg2/metadata.py
+index cf295e9..f39e511 100644
+--- a/ypkg2/metadata.py
++++ b/ypkg2/metadata.py
+@@ -128,8 +128,11 @@ def create_files_xml(context, package):
+             fsize = long(os.path.getsize(full_path))
+             st = os.stat(fpath)
+ 
+-        # We don't support this concept right now in ypkg.
+-        permanent = None
++        permanent = package.is_permanent("/" + path)
++        if not permanent:
++            permanent = None
++        else:
++            permanent = "true"
+         ftype = get_file_type("/" + path)
+ 
+         if (stat.S_IMODE(st.st_mode) & stat.S_ISUID):
+diff --git a/ypkg2/packages.py b/ypkg2/packages.py
+index b93d279..5a0769a 100644
+--- a/ypkg2/packages.py
++++ b/ypkg2/packages.py
+@@ -44,11 +44,15 @@ class Package:
+     # Symbols depended upon by this package
+     depend_packages = None
+ 
++    # List of permanent files
++    permanent = None
++
+     def __init__(self, name):
+         self.name = name
+         self.patterns = dict()
+         self.files = set()
+         self.excludes = set()
++        self.permanent = set()
+ 
+         self.provided_symbols = set()
+         self.depend_packages = set()
+@@ -67,7 +71,7 @@ class Package:
+                          reverse=True)
+         return matches[0]
+ 
+-    def add_file(self, pattern, path):
++    def add_file(self, pattern, path, permanent):
+         """ Add a file by a given pattern to this package """
+         if pattern is None:
+             pattern = self.default_policy
+@@ -75,6 +79,8 @@ class Package:
+             self.patterns[pattern] = set()
+         self.patterns[pattern].add(path)
+         self.files.add(path)
++        if permanent:
++            self.permanent.add(path)
+ 
+     def remove_file(self, path):
+         """ Remove a file from this package if it owns it """
+@@ -103,6 +109,10 @@ class Package:
+             ret.update(adds)
+         return sorted(ret)
+ 
++    def is_permanent(self, path):
++        """ Determine if a path if a permanent path or not """
++        return path in self.permanent
++
+     def emit_files_by_pattern(self):
+         """ Emit file lists, using the globs though. Note that eopkg has no
+             exclude concept, this is left for us to handle as we build the
+@@ -126,10 +136,16 @@ class PackageGenerator:
+ 
+     patterns = None
+     packages = None
++    permanent = None
+ 
+     def __init__(self, spec):
+         self.patterns = dict()
+         self.packages = dict()
++        self.permanent = set()
++
++        if spec.pkg_permanent:
++            for perm in spec.pkg_permanent:
++                self.add_permanent_pattern(perm)
+ 
+         self.add_pattern("/usr/bin", "main")
+         self.add_pattern("/usr/sbin", "main")
+@@ -209,9 +225,15 @@ class PackageGenerator:
+         if pattern:
+             target = self.patterns[pattern]
+ 
++        permanent = False
++        for perm in self.permanent:
++            if perm.match(path):
++                permanent = True
++                break
++
+         if target not in self.packages:
+             self.packages[target] = Package(target)
+-        self.packages[target].add_file(pattern, path)
++        self.packages[target].add_file(pattern, path, permanent)
+ 
+     def remove_file(self, path):
+         """ Remove a file from our set, in any of our main or sub packages
+@@ -245,6 +267,17 @@ class PackageGenerator:
+         obj = StringPathGlob(pattern, prefixMatch=is_prefix, priority=priority)
+         self.patterns[obj] = pkgName
+ 
++    def add_permanent_pattern(self, pattern):
++        """ Add a pattern to our mapping of permanent paths. """
++        obj = None
++        is_prefix = False
++        if pattern.endswith(os.sep):
++            if not StringPathGlob.is_a_pattern(pattern):
++                is_prefix = True
++
++        obj = StringPathGlob(pattern, prefixMatch=is_prefix)
++        self.permanent.add(obj)
++
+     def emit_packages(self):
+         """ Ensure we've finalized our state, allowing proper theft and
+             exclusion to take place, and then return all package objects
+diff --git a/ypkg2/ypkgspec.py b/ypkg2/ypkgspec.py
+index af42b06..6b2932c 100644
+--- a/ypkg2/ypkgspec.py
++++ b/ypkg2/ypkgspec.py
+@@ -121,6 +121,9 @@ class YpkgSpec:
+     # Path to filename
+     path = None
+ 
++    # Permanent paths
++    pkg_permanent = None
++
+     # Custom user provided patterns
+     patterns = None
+ 
+@@ -198,6 +201,7 @@ class YpkgSpec:
+             ("extract", bool),
+             ("libsplit", bool),
+             ("patterns", MultimapFormat(self, self.add_pattern, "main")),
++            ("permanent", OneOrMoreString),
+             ("builddeps", OneOrMoreString),
+             ("rundeps", MultimapFormat(self, self.add_rundep, "main")),
+             ("component", MultimapFormat(self, self.add_component, "main")),
+-- 
+2.11.0
+
