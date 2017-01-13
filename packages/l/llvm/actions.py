@@ -13,6 +13,8 @@ def dropFlags():
         del os.environ["CXXFLAGS"]
     if "LDFLAGS" in os.environ:
         del os.environ["LDFLAGS"]
+    # Force disable ccache for local builds
+    os.environ["PATH"] = "/bin:/usr/bin:/sbin:/usr/sbin"
 
 def setup():
     dropFlags()
