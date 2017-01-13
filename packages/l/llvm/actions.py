@@ -6,7 +6,16 @@ WorkDir = "llvm-%s.src" % get.srcVERSION()
 
 IgnoreAutodep = True
 
+def dropFlags():
+    if "CFLAGS" in os.environ:
+        del os.environ["CFLAGS"]
+    if "CXXFLAGS" in os.environ:
+        del os.environ["CXXFLAGS"]
+    if "LDFLAGS" in os.environ:
+        del os.environ["LDFLAGS"]
+
 def setup():
+    dropFlags()
     shelltools.system("patch -p1 < 0001-Completely-ignore-the-borky-FFI_LIBRARY_PATH.patch")
     if get.buildTYPE() != "emul32":
         if not shelltools.can_access_directory("tools/clang"):
@@ -73,10 +82,12 @@ def setup():
                           -DENABLE_SHARED=ON" % (prefix, options))
 
 def build():
+    dropFlags()
     shelltools.cd("lebuild")
     autotools.make()
 
 def install():
+    dropFlags()
     shelltools.cd("lebuild")
     autotools.make("install DESTDIR=%s" % get.installDIR())
 
