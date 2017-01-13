@@ -48,8 +48,8 @@ def setup():
              "/usr/local/include" ]
 
     if get.buildTYPE() == "emul32":
-        shelltools.export("CC", "gcc -m32")
-        shelltools.export("CXX", "g++ -m32")
+        shelltools.export("CC", "clang -m32")
+        shelltools.export("CXX", "clang++ -m32")
         host = "i686-pc-linux-gnu"
         prefix = "/emul32"
         options = "-DLLVM_LIBDIR_SUFFIX=32  " \
@@ -57,8 +57,8 @@ def setup():
                   "-DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\" " \
                   "-DFFI_LIBRARY_DIR:STRING=/usr/lib32" % host
     else:
-        shelltools.export("CC", "gcc")
-        shelltools.export("CXX", "g++")
+        shelltools.export("CC", "clang")
+        shelltools.export("CXX", "clang++")
         host = get.HOST()
         prefix = "/usr"
         options = "-DLLVM_INSTALL_UTILS=ON -DLLVM_LIBDIR_SUFFIX=64 " \
