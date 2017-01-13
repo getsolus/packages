@@ -42,31 +42,30 @@ def setup():
         host = "i686-pc-linux-gnu"
         prefix = "/emul32"
         options = "-DLLVM_LIBDIR_SUFFIX=32  " \
-                  "-DCMAKE_C_FLAGS:STRING=\"%s -m32\" -DCMAKE_CXX_FLAGS:STRING=\"%s -m32\" -DCMAKE_LD_FLAGS=\"%s\" " \
+                  "-DCMAKE_C_FLAGS:STRING=\"-m32\" -DCMAKE_CXX_FLAGS:STRING=\"-m32\" " \
                   "-DLLVM_TARGET_ARCH:STRING=i686 -DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\" " \
-                  "-DFFI_LIBRARY_DIR:STRING=/usr/lib32" % (get.CFLAGS(), get.CXXFLAGS(), get.LDFLAGS(), host)
+                  "-DFFI_LIBRARY_DIR:STRING=/usr/lib32" % host
     else:
         shelltools.export("CC", "gcc")
         shelltools.export("CXX", "g++")
         host = get.HOST()
         prefix = "/usr"
         options = "-DLLVM_INSTALL_UTILS=ON -DLLVM_LIBDIR_SUFFIX=64 " \
-                  "-DCMAKE_C_FLAGS:STRING=\"%s\" -DCMAKE_CXX_FLAGS:STRING=\"%s\" -DCMAKE_LD_FLAGS=\"%s\" " \
                   "-DLLVM_TARGET_ARCH:STRING=x86_64 " \
                   "-DLLVM_BINUTILS_INCDIR=/usr/include " \
-                  "-DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % (get.CFLAGS(), get.CXXFLAGS(), get.LDFLAGS(), host)
+                  "-DLLVM_DEFAULT_TARGET_TRIPLE=\"%s\"" % host
 
     if not shelltools.can_access_directory("lebuild"):
         shelltools.makedirs("lebuild")
 
     shelltools.cd("lebuild")
     shelltools.system("cmake .. \
-                          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                          -DCMAKE_BUILD_TYPE=Release \
                           -DCMAKE_INSTALL_PREFIX=%s \
                           %s \
                           -DLLVM_ENABLE_FFI=ON \
                           -DLLVM_BUILD_DOCS=OFF \
-                          -DLLVM_ENABLE_RTTI=ON \
+                          -DLLVM_ENABLE_RTTI=OFF \
                           -DBUILD_SHARED_LIBS:BOOL=ON  \
                           -DENABLE_LINKER_BUILD_ID:BOOL=ON \
                           -DLLVM_INCLUDEDIR=/usr/include \
