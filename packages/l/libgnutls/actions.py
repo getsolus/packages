@@ -44,4 +44,3 @@ def install():
 
     # Install docs
     autotools.make("-C doc/reference install-data-local DESTDIR=%s" % get.installDIR())
-    pisitools.dodoc("COPYING", "COPYING.LESSER", "ChangeLog")
