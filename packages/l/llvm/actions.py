@@ -19,6 +19,7 @@ def dropFlags():
 def setup():
     dropFlags()
     shelltools.system("patch -p1 < 0001-Completely-ignore-the-borky-FFI_LIBRARY_PATH.patch")
+    shelltools.system("patch -p1 -R < bug99078.patch")
     if get.buildTYPE() != "emul32":
         if not shelltools.can_access_directory("tools/clang"):
             shelltools.system("tar xf ../cfe-%s.src.tar.xz -C tools" % get.srcVERSION())
