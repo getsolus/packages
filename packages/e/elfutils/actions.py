@@ -5,7 +5,7 @@ from pisi.actionsapi import get, autotools, pisitools
 
 def setup():
     libdir = "lib64" if get.buildTYPE() != "emul32" else "lib32"
-    autotools.configure("--program-prefix=eu \
+    autotools.configure("--program-prefix=eu- \
                          --libdir=/usr/%s \
                          --disable-static" % libdir)
 
