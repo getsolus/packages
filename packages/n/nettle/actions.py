@@ -17,7 +17,7 @@ def install():
 
     libdir = "/usr/lib32" if get.buildTYPE() == "emul32" else "/usr/lib64"
 
-    for target in ["%s/libhogweed.so.4.2" % libdir, "%s/libnettle.so.6.2" % libdir]:
+    for target in ["%s/libhogweed.so.4.3" % libdir, "%s/libnettle.so.6.3" % libdir]:
         shelltools.chmod("%s%s" % (get.installDIR(), target), mode=0755)
 
     pisitools.dodoc("nettle.html")
