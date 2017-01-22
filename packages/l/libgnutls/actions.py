@@ -6,6 +6,9 @@ import os
 import shutil
 
 def setup():
+    if "LD_AS_NEEDED" in os.environ:
+        del os.environ["LD_AS_NEEDED"]
+
     libdir = "/usr/lib64" if get.buildTYPE() != "emul32" else "/usr/lib32"
 
 
@@ -26,7 +29,7 @@ def setup():
         shelltools.system("./configure %s" % confOpts)
 
 def build():
-    autotools.make("-j1")
+    autotools.make()
 
 def install():
     idir = get.installDIR()
