@@ -14,7 +14,12 @@ IgnoreAutodep = True
 
 Triplet = "x86_64-solus-linux"
 
+def noCcache():
+    # Force disable ccache for local builds
+    os.environ["PATH"] = "/bin:/usr/bin:/sbin:/usr/sbin"
+
 def setup():
+    noCcache()
     shelltools.makedirs (BuildDir)
 
     shelltools.cd (BuildDir)
@@ -57,10 +62,12 @@ def setup():
     shelltools.system ("%s/contrib/test_summary" % GccDir)
 
 def build():
+    noCcache()
     shelltools.cd (BuildDir)
-    autotools.make ()
+    autotools.make ( "profiledbootstrap" )
 
 def install():
+    noCcache()
     shelltools.cd (BuildDir)
 
     autotools.rawInstall ("DESTDIR=%s" % get.installDIR())
