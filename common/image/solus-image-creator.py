@@ -745,6 +745,9 @@ def main():
     randr = os.path.join(get_image_root(), "dev/urandom")
     if not os.path.exists(randr):
         run_chroot("mknod -m 644 /dev/urandom c 1 9")
+    devnull = os.path.join(get_image_root(), "dev/null")
+    if not os.path.exists(devnull):
+        run_chroot("mknod -m 644 /dev/null c 1 3")
     configure_root()
     run_chroot("dbus-daemon --system")
     # Shit ton of postinstalls. Can't wait till we're stateless.
