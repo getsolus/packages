@@ -1,8 +1,7 @@
-From c22c1f0d126c968d02177259fc71924238f4b310 Mon Sep 17 00:00:00 2001
+From 89b4d1f4b6d247c840048c2d3f0a22e0a18f9522 Mon Sep 17 00:00:00 2001
 From: Debarshi Ray <debarshir@gnome.org>
 Date: Wed, 7 Jan 2015 16:01:00 +0100
-Subject: [PATCH 1/6] emulation: Add sequences and signals for desktop
- notification
+Subject: [PATCH 1/5] Add sequences and signals for desktop notification
 
 Add sequences
   OSC 777 ; notify ; SUMMARY ; BODY BEL
@@ -21,16 +20,16 @@ https://bugzilla.gnome.org/show_bug.cgi?id=711059
  src/caps.cc           |  4 +++
  src/marshal.list      |  1 +
  src/vte.cc            | 12 +++++++
- src/vte/vteterminal.h |  3 +-
+ src/vte/vteterminal.h |  4 ++-
  src/vtegtk.cc         | 21 ++++++++++++
  src/vtegtk.hh         |  1 +
  src/vteinternal.hh    |  5 +++
  src/vteseq-n.gperf    |  1 +
  src/vteseq.cc         | 90 +++++++++++++++++++++++++++++++++++++++++++++++++++
- 9 files changed, 137 insertions(+), 1 deletion(-)
+ 9 files changed, 138 insertions(+), 1 deletion(-)
 
 diff --git a/src/caps.cc b/src/caps.cc
-index f5ad64a1c7b2..d74971870955 100644
+index 47571269b883..3e496ff33194 100644
 --- a/src/caps.cc
 +++ b/src/caps.cc
 @@ -255,6 +255,8 @@ const char _vte_xterm_capability_strings[] =
@@ -39,18 +38,18 @@ index f5ad64a1c7b2..d74971870955 100644
          ENTRY(OSC "777;%s" BEL, "urxvt-777")
 +        ENTRY(OSC "777;%s;%s;%s" BEL, "send-notification")
 +        ENTRY(OSC "777;%s;%s" BEL, "send-notification")
+         ENTRY(OSC "1337;%s" BEL, "iterm2-1337")
  
          COMMENT(/* Set text parameters, ST-terminated versions. */)
-         ENTRY(OSC ";%s" ST, "set-icon-and-window-title") COMMENT(/* undocumented default */)
-@@ -291,6 +293,8 @@ const char _vte_xterm_capability_strings[] =
+@@ -292,6 +294,8 @@ const char _vte_xterm_capability_strings[] =
          ENTRY(OSC "118" ST, "reset-tek-cursor-color")
          ENTRY(OSC "119" ST, "reset-highlight-foreground-color")
          ENTRY(OSC "777;%s" ST, "urxvt-777")
 +        ENTRY(OSC "777;%s;%s;%s" ST, "send-notification")
 +        ENTRY(OSC "777;%s;%s" ST, "send-notification")
+         ENTRY(OSC "1337;%s" ST, "iterm2-1337")
  
          COMMENT(/* These may be bogus, I can't find docs for them anywhere (#104154). */)
-         ENTRY(OSC "21;%s" BEL, "set-text-property-21")
 diff --git a/src/marshal.list b/src/marshal.list
 index 0276422ec6d4..2c35c685930a 100644
 --- a/src/marshal.list
@@ -62,10 +61,10 @@ index 0276422ec6d4..2c35c685930a 100644
  VOID:STRING,UINT
  VOID:UINT,UINT
 diff --git a/src/vte.cc b/src/vte.cc
-index 02bea92e85d3..33a4e77f177d 100644
+index 14f6bf55ae4b..2e9c798ac016 100644
 --- a/src/vte.cc
 +++ b/src/vte.cc
-@@ -8528,6 +8528,9 @@ VteTerminalPrivate::~VteTerminalPrivate()
+@@ -8292,6 +8292,9 @@ VteTerminalPrivate::~VteTerminalPrivate()
  
  	remove_update_timeout(this);
  
@@ -75,7 +74,7 @@ index 02bea92e85d3..33a4e77f177d 100644
  	/* discard title updates */
          g_free(m_window_title);
          g_free(m_window_title_changed);
-@@ -10566,6 +10569,15 @@ VteTerminalPrivate::emit_pending_signals()
+@@ -10328,6 +10331,15 @@ VteTerminalPrivate::emit_pending_signals()
  
  	emit_adjustment_changed();
  
@@ -92,20 +91,15 @@ index 02bea92e85d3..33a4e77f177d 100644
  		g_free (m_window_title);
  		m_window_title = m_window_title_changed;
 diff --git a/src/vte/vteterminal.h b/src/vte/vteterminal.h
-index 38ea8c3bc460..cb00855f0cf8 100644
+index 7836271db108..f514c3b227f9 100644
 --- a/src/vte/vteterminal.h
 +++ b/src/vte/vteterminal.h
-@@ -71,6 +71,7 @@ struct _VteTerminalClass {
- 	void (*child_exited)(VteTerminal* terminal, int status);
- 	void (*encoding_changed)(VteTerminal* terminal);
- 	void (*char_size_changed)(VteTerminal* terminal, guint char_width, guint char_height);
-+	void (*notification_received)(VteTerminal* terminal, const gchar *summary, const gchar *body);
- 	void (*window_title_changed)(VteTerminal* terminal);
- 	void (*icon_title_changed)(VteTerminal* terminal);
- 	void (*selection_changed)(VteTerminal* terminal);
-@@ -104,7 +105,7 @@ struct _VteTerminalClass {
+@@ -104,8 +104,10 @@ struct _VteTerminalClass {
+ 
  	void (*bell)(VteTerminal* terminal);
  
++	void (*notification_received)(VteTerminal* terminal, const gchar *summary, const gchar *body);
++
          /* Padding for future expansion. */
 -        gpointer padding[16];
 +        gpointer padding[15];
@@ -113,10 +107,10 @@ index 38ea8c3bc460..cb00855f0cf8 100644
          VteTerminalClassPrivate *priv;
  };
 diff --git a/src/vtegtk.cc b/src/vtegtk.cc
-index 6ea47f949a72..c81cff0331ce 100644
+index 924b5a084dd3..a65a2a98b44a 100644
 --- a/src/vtegtk.cc
 +++ b/src/vtegtk.cc
-@@ -675,6 +675,7 @@ vte_terminal_class_init(VteTerminalClass *klass)
+@@ -657,6 +657,7 @@ vte_terminal_class_init(VteTerminalClass *klass)
  	klass->child_exited = NULL;
  	klass->encoding_changed = NULL;
  	klass->char_size_changed = NULL;
@@ -124,7 +118,7 @@ index 6ea47f949a72..c81cff0331ce 100644
  	klass->window_title_changed = NULL;
  	klass->icon_title_changed = NULL;
  	klass->selection_changed = NULL;
-@@ -751,6 +752,26 @@ vte_terminal_class_init(VteTerminalClass *klass)
+@@ -733,6 +734,26 @@ vte_terminal_class_init(VteTerminalClass *klass)
                               1, G_TYPE_INT);
  
          /**
@@ -152,22 +146,22 @@ index 6ea47f949a72..c81cff0331ce 100644
           * @vteterminal: the object which received the signal
           *
 diff --git a/src/vtegtk.hh b/src/vtegtk.hh
-index 5fd8c1161538..d28c72ff5adb 100644
+index 5340725d374c..f8a83525b18c 100644
 --- a/src/vtegtk.hh
 +++ b/src/vtegtk.hh
-@@ -53,6 +53,7 @@ enum {
+@@ -55,6 +55,7 @@ enum {
          SIGNAL_TEXT_INSERTED,
          SIGNAL_TEXT_MODIFIED,
          SIGNAL_TEXT_SCROLLED,
 +        SIGNAL_NOTIFICATION_RECEIVED,
          SIGNAL_WINDOW_TITLE_CHANGED,
-         COPY_CLIPBOARD,
-         PASTE_CLIPBOARD,
+         LAST_SIGNAL
+ };
 diff --git a/src/vteinternal.hh b/src/vteinternal.hh
-index 1ef0cea59b0d..5e0b846f9dfc 100644
+index cff2157cc0d0..31636f0bc56b 100644
 --- a/src/vteinternal.hh
 +++ b/src/vteinternal.hh
-@@ -513,6 +513,11 @@ public:
+@@ -493,6 +493,11 @@ public:
          gboolean m_cursor_moved_pending;
          gboolean m_contents_changed_pending;
  
@@ -180,16 +174,17 @@ index 1ef0cea59b0d..5e0b846f9dfc 100644
          char* m_window_title;
          char* m_window_title_changed;
 diff --git a/src/vteseq-n.gperf b/src/vteseq-n.gperf
-index e58dd9475a22..2788d541d3ef 100644
+index f060c98200dd..b530e3194eac 100644
 --- a/src/vteseq-n.gperf
 +++ b/src/vteseq-n.gperf
-@@ -169,3 +169,4 @@ struct vteseq_n_struct {
+@@ -169,4 +169,5 @@ struct vteseq_n_struct {
  "set-current-directory-uri", VTE_SEQUENCE_HANDLER(vte_sequence_handler_set_current_directory_uri)
  "set-current-file-uri", VTE_SEQUENCE_HANDLER(vte_sequence_handler_set_current_file_uri)
  "urxvt-777", VTE_SEQUENCE_HANDLER(vte_sequence_handler_urxvt_777)
 +"send-notification", VTE_SEQUENCE_HANDLER(vte_sequence_handler_send_notification)
+ "iterm2-1337", VTE_SEQUENCE_HANDLER(vte_sequence_handler_iterm2_1337)
 diff --git a/src/vteseq.cc b/src/vteseq.cc
-index c83391c7dc0f..0152c1a55ecb 100644
+index 2330939d8068..53ade2e3d4ad 100644
 --- a/src/vteseq.cc
 +++ b/src/vteseq.cc
 @@ -2322,6 +2322,96 @@ vte_sequence_handler_return_terminal_id (VteTerminalPrivate *that, GValueArray *
@@ -290,13 +285,13 @@ index c83391c7dc0f..0152c1a55ecb 100644
  static void
  vte_sequence_handler_send_secondary_device_attributes (VteTerminalPrivate *that, GValueArray *params)
 -- 
-2.5.5
+2.9.3
 
 
-From f8cc6cff12059d32dfc731897961ed3ec1493d52 Mon Sep 17 00:00:00 2001
+From a1d5c9c46f967dc2eeee0dd696b1da4efbad0e7a Mon Sep 17 00:00:00 2001
 From: Debarshi Ray <debarshir@gnome.org>
 Date: Thu, 29 Jan 2015 13:09:17 +0100
-Subject: [PATCH 2/6] vte.sh: Emit OSC 777 from PROMPT_COMMAND
+Subject: [PATCH 2/5] vte.sh: Emit OSC 777 from PROMPT_COMMAND
 
 https://bugzilla.gnome.org/show_bug.cgi?id=711059
 ---
@@ -321,23 +316,23 @@ index 2d211caa2f17..1c0543bd9d26 100644
  
  case "$TERM" in
 -- 
-2.5.5
+2.9.3
 
 
-From 4aa708b29f8b102732e3ad2fe73ede1cafea3c56 Mon Sep 17 00:00:00 2001
+From 40d6105ed753298695c4fa87a5b3ffc7e1b803a2 Mon Sep 17 00:00:00 2001
 From: Debarshi Ray <debarshir@gnome.org>
 Date: Thu, 22 Jan 2015 16:37:10 +0100
-Subject: [PATCH 3/6] vteapp: Add a test for the notification-received signal
+Subject: [PATCH 3/5] vteapp: Add a test for the notification-received signal
 
 ---
  src/app.vala | 7 +++++++
  1 file changed, 7 insertions(+)
 
 diff --git a/src/app.vala b/src/app.vala
-index 81049640358f..364836a61f1c 100644
+index 58698f92fc10..464a02a00230 100644
 --- a/src/app.vala
 +++ b/src/app.vala
-@@ -332,6 +332,8 @@ class Window : Gtk.ApplicationWindow
+@@ -309,6 +309,8 @@ class Window : Gtk.ApplicationWindow
      if (App.Options.object_notifications)
        terminal.notify.connect(notify_cb);
  
@@ -346,7 +341,7 @@ index 81049640358f..364836a61f1c 100644
      /* Settings */
      if (App.Options.no_double_buffer)
        terminal.set_double_buffered(false);
-@@ -797,6 +799,11 @@ class Window : Gtk.ApplicationWindow
+@@ -772,6 +774,11 @@ class Window : Gtk.ApplicationWindow
      set_title(terminal.get_window_title());
    }
  
@@ -359,49 +354,13 @@ index 81049640358f..364836a61f1c 100644
  
  class App : Gtk.Application
 -- 
-2.5.5
+2.9.3
 
 
-From f3f2d97ef01e2678aa40802f1c1600c30967acbd Mon Sep 17 00:00:00 2001
-From: Debarshi Ray <debarshir@gnome.org>
-Date: Mon, 9 May 2016 12:48:46 +0200
-Subject: [PATCH 4/6] Fix the order of vfunc pointers in VteTerminalClass to
- undo ABI break
-
-https://bugzilla.gnome.org/show_bug.cgi?id=711059
----
- src/vte/vteterminal.h | 3 ++-
- 1 file changed, 2 insertions(+), 1 deletion(-)
-
-diff --git a/src/vte/vteterminal.h b/src/vte/vteterminal.h
-index cb00855f0cf8..7dc616c13fbb 100644
---- a/src/vte/vteterminal.h
-+++ b/src/vte/vteterminal.h
-@@ -71,7 +71,6 @@ struct _VteTerminalClass {
- 	void (*child_exited)(VteTerminal* terminal, int status);
- 	void (*encoding_changed)(VteTerminal* terminal);
- 	void (*char_size_changed)(VteTerminal* terminal, guint char_width, guint char_height);
--	void (*notification_received)(VteTerminal* terminal, const gchar *summary, const gchar *body);
- 	void (*window_title_changed)(VteTerminal* terminal);
- 	void (*icon_title_changed)(VteTerminal* terminal);
- 	void (*selection_changed)(VteTerminal* terminal);
-@@ -104,6 +103,8 @@ struct _VteTerminalClass {
- 
- 	void (*bell)(VteTerminal* terminal);
- 
-+	void (*notification_received)(VteTerminal* terminal, const gchar *summary, const gchar *body);
-+
-         /* Padding for future expansion. */
-         gpointer padding[15];
- 
--- 
-2.5.5
-
-
-From ee2cb8443cf0628c76461d710b0901ad83fb17cc Mon Sep 17 00:00:00 2001
+From cb3a4f0cc2648ed310cdceceb4d5a7a3536a6432 Mon Sep 17 00:00:00 2001
 From: Debarshi Ray <debarshir@gnome.org>
 Date: Fri, 13 May 2016 17:53:54 +0200
-Subject: [PATCH 5/6] Add a property to configure the scroll speed
+Subject: [PATCH 4/5] Add a property to configure the scroll speed
 
 By default, it is set to zero which gives the current behaviour of
 moving the buffer by a function of the number of visible rows.
@@ -417,7 +376,7 @@ https://bugzilla.redhat.com/show_bug.cgi?id=1103380
  6 files changed, 71 insertions(+), 1 deletion(-)
 
 diff --git a/doc/reference/vte-sections.txt b/doc/reference/vte-sections.txt
-index 7969e2fe6d85..722e2a73ac13 100644
+index 56ae7754491d..58ce6c2c5c23 100644
 --- a/doc/reference/vte-sections.txt
 +++ b/doc/reference/vte-sections.txt
 @@ -41,6 +41,7 @@ vte_terminal_set_cursor_shape
@@ -429,10 +388,10 @@ index 7969e2fe6d85..722e2a73ac13 100644
  vte_terminal_set_font
  vte_terminal_get_font
 diff --git a/src/vte.cc b/src/vte.cc
-index 33a4e77f177d..a0fcc0021e7c 100644
+index 2e9c798ac016..b402a96a7e80 100644
 --- a/src/vte.cc
 +++ b/src/vte.cc
-@@ -9847,6 +9847,7 @@ void
+@@ -9611,6 +9611,7 @@ void
  VteTerminalPrivate::widget_scroll(GdkEventScroll *event)
  {
  	gdouble delta_x, delta_y;
@@ -440,7 +399,7 @@ index 33a4e77f177d..a0fcc0021e7c 100644
  	gdouble v;
  	gint cnt, i;
  	int button;
-@@ -9900,7 +9901,13 @@ VteTerminalPrivate::widget_scroll(GdkEventScroll *event)
+@@ -9664,7 +9665,13 @@ VteTerminalPrivate::widget_scroll(GdkEventScroll *event)
  		return;
  	}
  
@@ -455,7 +414,7 @@ index 33a4e77f177d..a0fcc0021e7c 100644
  	_vte_debug_print(VTE_DEBUG_EVENTS,
  			"Scroll speed is %d lines per non-smooth scroll unit\n",
  			(int) v);
-@@ -10117,6 +10124,16 @@ VteTerminalPrivate::decscusr_cursor_shape()
+@@ -9881,6 +9888,16 @@ VteTerminalPrivate::decscusr_cursor_shape()
  }
  
  bool
@@ -473,10 +432,10 @@ index 33a4e77f177d..a0fcc0021e7c 100644
  {
          glong low, high, next;
 diff --git a/src/vte/vteterminal.h b/src/vte/vteterminal.h
-index 7dc616c13fbb..e78f9b8a90fd 100644
+index f514c3b227f9..89c267555cf9 100644
 --- a/src/vte/vteterminal.h
 +++ b/src/vte/vteterminal.h
-@@ -266,6 +266,10 @@ void vte_terminal_set_cursor_shape(VteTerminal *terminal,
+@@ -267,6 +267,10 @@ void vte_terminal_set_cursor_shape(VteTerminal *terminal,
  _VTE_PUBLIC
  VteCursorShape vte_terminal_get_cursor_shape(VteTerminal *terminal) _VTE_GNUC_NONNULL(1);
  
@@ -488,10 +447,10 @@ index 7dc616c13fbb..e78f9b8a90fd 100644
  _VTE_PUBLIC
  void vte_terminal_set_scrollback_lines(VteTerminal *terminal,
 diff --git a/src/vtegtk.cc b/src/vtegtk.cc
-index c81cff0331ce..cf37d3d1078f 100644
+index a65a2a98b44a..20d36449368c 100644
 --- a/src/vtegtk.cc
 +++ b/src/vtegtk.cc
-@@ -482,6 +482,9 @@ vte_terminal_get_property (GObject *object,
+@@ -464,6 +464,9 @@ vte_terminal_get_property (GObject *object,
                  case PROP_REWRAP_ON_RESIZE:
                          g_value_set_boolean (value, vte_terminal_get_rewrap_on_resize (terminal));
                          break;
@@ -501,7 +460,7 @@ index c81cff0331ce..cf37d3d1078f 100644
                  case PROP_SCROLLBACK_LINES:
                          g_value_set_uint (value, impl->m_scrollback_lines);
                          break;
-@@ -568,6 +571,9 @@ vte_terminal_set_property (GObject *object,
+@@ -550,6 +553,9 @@ vte_terminal_set_property (GObject *object,
                  case PROP_REWRAP_ON_RESIZE:
                          vte_terminal_set_rewrap_on_resize (terminal, g_value_get_boolean (value));
                          break;
@@ -511,7 +470,7 @@ index c81cff0331ce..cf37d3d1078f 100644
                  case PROP_SCROLLBACK_LINES:
                          vte_terminal_set_scrollback_lines (terminal, g_value_get_uint (value));
                          break;
-@@ -1424,6 +1430,21 @@ vte_terminal_class_init(VteTerminalClass *klass)
+@@ -1406,6 +1412,21 @@ vte_terminal_class_init(VteTerminalClass *klass)
                                        (GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS | G_PARAM_EXPLICIT_NOTIFY));
  
          /**
@@ -533,7 +492,7 @@ index c81cff0331ce..cf37d3d1078f 100644
           * VteTerminal:scrollback-lines:
           *
           * The length of the scrollback buffer used by the terminal.  The size of
-@@ -3463,6 +3484,30 @@ vte_terminal_get_row_count(VteTerminal *terminal)
+@@ -3448,6 +3469,30 @@ vte_terminal_get_row_count(VteTerminal *terminal)
  }
  
  /**
@@ -565,7 +524,7 @@ index c81cff0331ce..cf37d3d1078f 100644
   * @terminal: a #VteTerminal
   * @lines: the length of the history buffer
 diff --git a/src/vtegtk.hh b/src/vtegtk.hh
-index d28c72ff5adb..faf1484dcc21 100644
+index f8a83525b18c..98c616f54de6 100644
 --- a/src/vtegtk.hh
 +++ b/src/vtegtk.hh
 @@ -80,6 +80,7 @@ enum {
@@ -577,10 +536,10 @@ index d28c72ff5adb..faf1484dcc21 100644
          PROP_SCROLL_ON_KEYSTROKE,
          PROP_SCROLL_ON_OUTPUT,
 diff --git a/src/vteinternal.hh b/src/vteinternal.hh
-index 5e0b846f9dfc..59ad70b0c12e 100644
+index 31636f0bc56b..e38176cb3ff5 100644
 --- a/src/vteinternal.hh
 +++ b/src/vteinternal.hh
-@@ -404,6 +404,7 @@ public:
+@@ -385,6 +385,7 @@ public:
          gboolean m_scroll_on_output;
          gboolean m_scroll_on_keystroke;
          gboolean m_alternate_screen_scroll;
@@ -588,7 +547,7 @@ index 5e0b846f9dfc..59ad70b0c12e 100644
          vte::grid::row_t m_scrollback_lines;
  
          /* Restricted scrolling */
-@@ -1142,6 +1143,7 @@ public:
+@@ -1093,6 +1094,7 @@ public:
          bool set_mouse_autohide(bool autohide);
          bool set_pty(VtePty *pty);
          bool set_rewrap_on_resize(bool rewrap);
@@ -597,13 +556,13 @@ index 5e0b846f9dfc..59ad70b0c12e 100644
          bool set_scroll_on_keystroke(bool scroll);
          bool set_scroll_on_output(bool scroll);
 -- 
-2.5.5
+2.9.3
 
 
-From a82ea79b3c28be65074b161096a9b43337df86eb Mon Sep 17 00:00:00 2001
+From 20c4541a4e3bc3d8ddb5332c730808e35bdbe48e Mon Sep 17 00:00:00 2001
 From: Debarshi Ray <debarshir@gnome.org>
 Date: Fri, 13 May 2016 17:54:57 +0200
-Subject: [PATCH 6/6] vteapp: Add a test for the scroll-speed property
+Subject: [PATCH 5/5] vteapp: Add a test for the scroll-speed property
 
 https://bugzilla.redhat.com/show_bug.cgi?id=1103380
 ---
@@ -611,10 +570,10 @@ https://bugzilla.redhat.com/show_bug.cgi?id=1103380
  1 file changed, 4 insertions(+)
 
 diff --git a/src/app.vala b/src/app.vala
-index 364836a61f1c..b0ebb47c4c5d 100644
+index 464a02a00230..31b10aef55d2 100644
 --- a/src/app.vala
 +++ b/src/app.vala
-@@ -357,6 +357,7 @@ class Window : Gtk.ApplicationWindow
+@@ -334,6 +334,7 @@ class Window : Gtk.ApplicationWindow
      terminal.set_rewrap_on_resize(!App.Options.no_rewrap);
      terminal.set_scroll_on_output(false);
      terminal.set_scroll_on_keystroke(true);
@@ -622,7 +581,7 @@ index 364836a61f1c..b0ebb47c4c5d 100644
      terminal.set_scrollback_lines(App.Options.scrollback_lines);
  
      /* Style */
-@@ -872,6 +873,7 @@ class App : Gtk.Application
+@@ -847,6 +848,7 @@ class App : Gtk.Application
      public static bool object_notifications = false;
      public static string? output_filename = null;
      public static bool reverse = false;
@@ -630,15 +589,15 @@ index 364836a61f1c..b0ebb47c4c5d 100644
      public static int scrollback_lines = 512;
      public static int transparency_percent = 0;
      public static bool version = false;
-@@ -1063,6 +1065,8 @@ class App : Gtk.Application
+@@ -1038,6 +1040,8 @@ class App : Gtk.Application
          "Save terminal contents to file at exit", null },
        { "reverse", 0, 0, OptionArg.NONE, ref reverse,
          "Reverse foreground/background colors", null },
-+      { "scroll-speed", 'n', 0, OptionArg.INT, ref scroll_speed,
++      { "scroll-speed", 0, 0, OptionArg.INT, ref scroll_speed,
 +        "Specify the scroll speed", null },
        { "scrollback-lines", 'n', 0, OptionArg.INT, ref scrollback_lines,
          "Specify the number of scrollback-lines", null },
        { "transparent", 'T', 0, OptionArg.INT, ref transparency_percent,
 -- 
-2.5.5
+2.9.3
 
