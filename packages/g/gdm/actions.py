@@ -32,8 +32,6 @@ def build():
 
 def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
-    pisitools.dodir("/lib")
-    shelltools.system("mv %s/usr/lib/security %s/lib/security" % (get.installDIR(), get.installDIR()))
 
     # Enable ourselves by default(will conflict with lightdm)
     pisitools.dodir("/usr/lib/systemd/system/graphical.target.wants")
