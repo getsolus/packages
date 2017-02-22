@@ -45,7 +45,7 @@ def setup():
                         --enable-threads=posix \
                         --enable-__cxa_atexit \
                         --enable-plugin \
-                        --disable-gold \
+                        --enable-gold \
                         --enable-ld=default \
                         --enable-clocale=gnu \
                         --enable-multilib \
@@ -79,3 +79,7 @@ def install():
     for crt in crtfiles:
         pisitools.dosym("/usr/lib64/gcc/%s/%s/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib64/%s" % crt)
         pisitools.dosym("/usr/lib64/gcc/%s/%s/32/%s" % (Triplet, get.srcVERSION(), crt), "/usr/lib32/%s" % crt)
+
+    # Ensure LTO will work properly.
+    pisitools.dodir("/usr/lib64/bfd-plugins")
+    pisitools.dosym("/usr/lib64/gcc/%s/%s/liblto_plugin.so" % (Triplet, get.srcVERSION()), "/usr/lib64/bfd-plugins/liblto_plugin.so")
