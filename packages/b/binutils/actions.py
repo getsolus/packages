@@ -18,13 +18,17 @@ def setup():
         --enable-lto \
         --with-lib-path=\"/usr/lib64:/lib64:/usr/lib32:/lib32 \" \
         --enable-multilib \
-        --disable-gold \
+        --enable-gold \
+        --enable-shared \
+        --disable-static \
         --disable-werror \
         --enable-plugins \
+        --enable-ld=default \
         --enable-secureplt \
         --enable-64-bit-bfd \
         --enable-deterministic-archives \
         --target=x86_64-solus-linux \
+        --libdir=/usr/lib64 \
         --build=x86_64-solus-linux" % get.srcVERSION())
 
 def build():
