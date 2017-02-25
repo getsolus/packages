@@ -10,7 +10,7 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -flto -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    opt = "-ffunction-sections -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
@@ -55,19 +55,20 @@ def setup():
                           --enable-egl                   \
                           --enable-gles1                 \
                           --enable-gles2                 \
-                          --enable-osmesa                \
                           --enable-vdpau                 \
                           --enable-xa                    \
                           --enable-gbm                   \
                           --enable-gallium-egl           \
                           --enable-gallium-gbm           \
+                          --enable-gallium-llvm          \
                           --enable-glx-tls               \
+                          --enable-gallium-osmesa        \
                           --with-llvm-shared-libs        \
                           --libdir=/usr/%s               \
                           --enable-shared-glapi \
                           --with-vulkan-drivers=intel,radeon \
                           --with-egl-platforms=\"drm,x11,wayland\" \
-                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,swr\"\
+                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,virgl\"\
                           --enable-dri3 %s" % (prefix, libdir, mlib))
 
 def build():
