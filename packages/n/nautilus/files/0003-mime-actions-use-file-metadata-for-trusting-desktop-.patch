@@ -1,0 +1,409 @@
+From 426ab52b4e68931c6cfd9b0d6a1ae8d006198e39 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Thu, 2 Mar 2017 19:35:06 +0000
+Subject: [PATCH 3/3] mime-actions: use file metadata for trusting desktop
+ files
+
+This is a backported version of 1630f53481f445ada0a455e9979236d31a8d3bb0
+Original author: Carlos Soriano <csoriano@gnome.org>
+See original commit in git for source/meta.
+
+ - https://bugzilla.gnome.org/show_bug.cgi?id=777991
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/nautilus-directory-async.c |   7 +-
+ src/nautilus-file-operations.c | 153 +++++++++--------------------------------
+ src/nautilus-file-operations.h |  10 +--
+ src/nautilus-metadata.c        |   1 +
+ src/nautilus-metadata.h        |   2 +
+ src/nautilus-mime-actions.c    |  46 ++++++++-----
+ 6 files changed, 74 insertions(+), 145 deletions(-)
+
+diff --git a/src/nautilus-directory-async.c b/src/nautilus-directory-async.c
+index e8a10cd..b02e3de 100644
+--- a/src/nautilus-directory-async.c
++++ b/src/nautilus-directory-async.c
+@@ -30,6 +30,7 @@
+ #include "nautilus-global-preferences.h"
+ #include "nautilus-link.h"
+ #include "nautilus-profile.h"
++#include "nautilus-metadata.h"
+ #include <eel/eel-glib-extensions.h>
+ #include <gtk/gtk.h>
+ #include <libxml/parser.h>
+@@ -3580,13 +3581,17 @@ is_link_trusted (NautilusFile *file,
+ {
+     GFile *location;
+     gboolean res;
++    g_autofree gchar* trusted = NULL;
+ 
+     if (!is_launcher)
+     {
+         return TRUE;
+     }
+ 
+-    if (nautilus_file_can_execute (file))
++    trusted = nautilus_file_get_metadata (file,
++                                          NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED,
++                                          NULL);
++    if (nautilus_file_can_execute (file) && trusted != NULL)
+     {
+         return TRUE;
+     }
+diff --git a/src/nautilus-file-operations.c b/src/nautilus-file-operations.c
+index 6b5a9a1..2d6105f 100644
+--- a/src/nautilus-file-operations.c
++++ b/src/nautilus-file-operations.c
+@@ -235,10 +235,10 @@ typedef struct
+ #define COPY_FORCE _("Copy _Anyway")
+ 
+ static void
+-mark_desktop_file_trusted (CommonJob    *common,
+-                           GCancellable *cancellable,
+-                           GFile        *file,
+-                           gboolean      interactive);
++mark_desktop_file_executable (CommonJob    *common,
++                              GCancellable *cancellable,
++                              GFile        *file,
++                              gboolean      interactive);
+ 
+ static gboolean
+ is_all_button_text (const char *button_text)
+@@ -5290,10 +5290,10 @@ retry:
+             g_file_equal (copy_job->desktop_location, dest_dir) &&
+             is_trusted_desktop_file (src, job->cancellable))
+         {
+-            mark_desktop_file_trusted (job,
+-                                       job->cancellable,
+-                                       dest,
+-                                       FALSE);
++            mark_desktop_file_executable (job,
++                                          job->cancellable,
++                                          dest,
++                                          FALSE);
+         }
+ 
+         if (job->undo_info != NULL)
+@@ -7887,9 +7887,9 @@ nautilus_file_operations_empty_trash (GtkWidget *parent_view)
+ }
+ 
+ static void
+-mark_trusted_task_done (GObject      *source_object,
+-                        GAsyncResult *res,
+-                        gpointer      user_data)
++mark_desktop_file_executable_task_done (GObject      *source_object,
++                                        GAsyncResult *res,
++                                        gpointer      user_data)
+ {
+     MarkTrustedJob *job = user_data;
+ 
+@@ -7907,110 +7907,19 @@ mark_trusted_task_done (GObject      *source_object,
+ #define TRUSTED_SHEBANG "#!/usr/bin/env xdg-open\n"
+ 
+ static void
+-mark_desktop_file_trusted (CommonJob    *common,
+-                           GCancellable *cancellable,
+-                           GFile        *file,
+-                           gboolean      interactive)
++mark_desktop_file_executable (CommonJob    *common,
++                              GCancellable *cancellable,
++                              GFile        *file,
++                              gboolean      interactive)
+ {
+-    char *contents, *new_contents;
+-    gsize length, new_length;
+     GError *error;
+     guint32 current_perms, new_perms;
+     int response;
+     GFileInfo *info;
+ 
+ retry:
+-    error = NULL;
+-    if (!g_file_load_contents (file,
+-                               cancellable,
+-                               &contents, &length,
+-                               NULL, &error))
+-    {
+-        if (interactive)
+-        {
+-            response = run_error (common,
+-                                  g_strdup (_("Unable to mark launcher trusted (executable)")),
+-                                  error->message,
+-                                  NULL,
+-                                  FALSE,
+-                                  CANCEL, RETRY,
+-                                  NULL);
+-        }
+-        else
+-        {
+-            response = 0;
+-        }
+-
+-
+-        if (response == 0 || response == GTK_RESPONSE_DELETE_EVENT)
+-        {
+-            abort_job (common);
+-        }
+-        else if (response == 1)
+-        {
+-            goto retry;
+-        }
+-        else
+-        {
+-            g_assert_not_reached ();
+-        }
+-
+-        goto out;
+-    }
+-
+-    if (!g_str_has_prefix (contents, "#!"))
+-    {
+-        new_length = length + strlen (TRUSTED_SHEBANG);
+-        new_contents = g_malloc (new_length);
+-
+-        strcpy (new_contents, TRUSTED_SHEBANG);
+-        memcpy (new_contents + strlen (TRUSTED_SHEBANG),
+-                contents, length);
+-
+-        if (!g_file_replace_contents (file,
+-                                      new_contents,
+-                                      new_length,
+-                                      NULL,
+-                                      FALSE, 0,
+-                                      NULL, cancellable, &error))
+-        {
+-            g_free (contents);
+-            g_free (new_contents);
+-
+-            if (interactive)
+-            {
+-                response = run_error (common,
+-                                      g_strdup (_("Unable to mark launcher trusted (executable)")),
+-                                      error->message,
+-                                      NULL,
+-                                      FALSE,
+-                                      CANCEL, RETRY,
+-                                      NULL);
+-            }
+-            else
+-            {
+-                response = 0;
+-            }
+-
+-            if (response == 0 || response == GTK_RESPONSE_DELETE_EVENT)
+-            {
+-                abort_job (common);
+-            }
+-            else if (response == 1)
+-            {
+-                goto retry;
+-            }
+-            else
+-            {
+-                g_assert_not_reached ();
+-            }
+-
+-            goto out;
+-        }
+-        g_free (new_contents);
+-    }
+-    g_free (contents);
+ 
++    error = NULL;
+     info = g_file_query_info (file,
+                               G_FILE_ATTRIBUTE_STANDARD_TYPE ","
+                               G_FILE_ATTRIBUTE_UNIX_MODE,
+@@ -8101,10 +8010,10 @@ out:
+ }
+ 
+ static void
+-mark_trusted_task_thread_func (GTask        *task,
+-                               gpointer      source_object,
+-                               gpointer      task_data,
+-                               GCancellable *cancellable)
++mark_desktop_file_executable_task_thread_func (GTask        *task,
++                                               gpointer      source_object,
++                                               gpointer      task_data,
++                                               GCancellable *cancellable)
+ {
+     MarkTrustedJob *job = task_data;
+     CommonJob *common;
+@@ -8113,18 +8022,18 @@ mark_trusted_task_thread_func (GTask        *task,
+ 
+     nautilus_progress_info_start (job->common.progress);
+ 
+-    mark_desktop_file_trusted (common,
+-                               cancellable,
+-                               job->file,
+-                               job->interactive);
++    mark_desktop_file_executable (common,
++                                  cancellable,
++                                  job->file,
++                                  job->interactive);
+ }
+ 
+ void
+-nautilus_file_mark_desktop_file_trusted (GFile              *file,
+-                                         GtkWindow          *parent_window,
+-                                         gboolean            interactive,
+-                                         NautilusOpCallback  done_callback,
+-                                         gpointer            done_callback_data)
++nautilus_file_mark_desktop_file_executable (GFile              *file,
++                                            GtkWindow          *parent_window,
++                                            gboolean            interactive,
++                                            NautilusOpCallback  done_callback,
++                                            gpointer            done_callback_data)
+ {
+     GTask *task;
+     MarkTrustedJob *job;
+@@ -8135,9 +8044,9 @@ nautilus_file_mark_desktop_file_trusted (GFile              *file,
+     job->done_callback = done_callback;
+     job->done_callback_data = done_callback_data;
+ 
+-    task = g_task_new (NULL, NULL, mark_trusted_task_done, job);
++    task = g_task_new (NULL, NULL, mark_desktop_file_executable_task_done, job);
+     g_task_set_task_data (task, job, NULL);
+-    g_task_run_in_thread (task, mark_trusted_task_thread_func);
++    g_task_run_in_thread (task, mark_desktop_file_executable_task_thread_func);
+     g_object_unref (task);
+ }
+ 
+diff --git a/src/nautilus-file-operations.h b/src/nautilus-file-operations.h
+index 31b782d..a479ee6 100644
+--- a/src/nautilus-file-operations.h
++++ b/src/nautilus-file-operations.h
+@@ -146,11 +146,11 @@ void nautilus_file_operations_link      (GList                *files,
+ 					 GtkWindow            *parent_window,
+ 					 NautilusCopyCallback  done_callback,
+ 					 gpointer              done_callback_data);
+-void nautilus_file_mark_desktop_file_trusted (GFile           *file,
+-					      GtkWindow        *parent_window,
+-					      gboolean          interactive,
+-					      NautilusOpCallback done_callback,
+-					      gpointer          done_callback_data);
++void nautilus_file_mark_desktop_file_executable (GFile           *file,
++                                                 GtkWindow        *parent_window,
++                                                 gboolean          interactive,
++                                                 NautilusOpCallback done_callback,
++                                                 gpointer          done_callback_data);
+ void nautilus_file_operations_extract_files (GList                   *files,
+                                              GFile                   *destination_directory,
+                                              GtkWindow               *parent_window,
+diff --git a/src/nautilus-metadata.c b/src/nautilus-metadata.c
+index 8316426..bee04e7 100644
+--- a/src/nautilus-metadata.c
++++ b/src/nautilus-metadata.c
+@@ -51,6 +51,7 @@ static char *used_metadata_names[] =
+     NAUTILUS_METADATA_KEY_CUSTOM_ICON_NAME,
+     NAUTILUS_METADATA_KEY_SCREEN,
+     NAUTILUS_METADATA_KEY_EMBLEMS,
++    NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED,
+     NULL
+ };
+ 
+diff --git a/src/nautilus-metadata.h b/src/nautilus-metadata.h
+index 7a734af..c4a303e 100644
+--- a/src/nautilus-metadata.h
++++ b/src/nautilus-metadata.h
+@@ -67,6 +67,8 @@
+ #define NAUTILUS_METADATA_KEY_SCREEN				"screen"
+ #define NAUTILUS_METADATA_KEY_EMBLEMS				"emblems"
+ 
++#define NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED				"trusted"
++
+ guint nautilus_metadata_get_id (const char *metadata);
+ 
+ #endif /* NAUTILUS_METADATA_H */
+diff --git a/src/nautilus-mime-actions.c b/src/nautilus-mime-actions.c
+index 3f7033b..c42ccc8 100644
+--- a/src/nautilus-mime-actions.c
++++ b/src/nautilus-mime-actions.c
+@@ -42,6 +42,7 @@
+ #include "nautilus-program-choosing.h"
+ #include "nautilus-global-preferences.h"
+ #include "nautilus-signaller.h"
++#include "nautilus-metadata.h"
+ 
+ #define DEBUG_FLAG NAUTILUS_DEBUG_MIME
+ #include "nautilus-debug.h"
+@@ -221,7 +222,6 @@ struct
+ #define RESPONSE_RUN 1000
+ #define RESPONSE_DISPLAY 1001
+ #define RESPONSE_RUN_IN_TERMINAL 1002
+-#define RESPONSE_MARK_TRUSTED 1003
+ 
+ #define SILENT_WINDOW_OPEN_LIMIT 5
+ #define SILENT_OPEN_LIMIT 5
+@@ -1517,24 +1517,36 @@ untrusted_launcher_response_callback (GtkDialog                 *dialog,
+ 
+     switch (response_id)
+     {
+-        case RESPONSE_RUN:
+-            {
++        case GTK_RESPONSE_OK:
++        {
++                file = nautilus_file_get_location (parameters->file);
++
++                /* We need to do this in order to prevent malicious desktop files
++                * with the executable bit already set.
++                * See https://bugzilla.gnome.org/show_bug.cgi?id=777991
++                */
++                nautilus_file_set_metadata (parameters->file, NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED,
++                                            NULL,
++                                            "yes");
++
++                nautilus_file_mark_desktop_file_executable (file,
++                                                            parameters->parent_window,
++                                                            TRUE,
++                                                            NULL, NULL);
++
++                /* Need to force a reload of the attributes so is_trusted is marked
++                * correctly. Not sure why the general monitor doesn't fire in this
++                * case when setting the metadata
++                */
++                nautilus_file_invalidate_all_attributes (parameters->file);
++
+                 screen = gtk_widget_get_screen (GTK_WIDGET (parameters->parent_window));
+                 uri = nautilus_file_get_uri (parameters->file);
+                 DEBUG ("Launching untrusted launcher %s", uri);
+                 nautilus_launch_desktop_file (screen, uri, NULL,
+                                               parameters->parent_window);
+                 g_free (uri);
+-            }
+-            break;
+ 
+-        case RESPONSE_MARK_TRUSTED:
+-            {
+-                file = nautilus_file_get_location (parameters->file);
+-                nautilus_file_mark_desktop_file_trusted (file,
+-                                                         parameters->parent_window,
+-                                                         TRUE,
+-                                                         NULL, NULL);
+                 g_object_unref (file);
+             }
+             break;
+@@ -1591,15 +1603,15 @@ activate_desktop_file (ActivateParameters *parameters,
+                       "secondary-text", secondary,
+                       NULL);
+         gtk_dialog_add_button (GTK_DIALOG (dialog),
+-                               _("_Launch Anyway"), RESPONSE_RUN);
++                               _("_Cancel"), GTK_RESPONSE_CANCEL);
++
++        gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CANCEL);
++
+         if (nautilus_file_can_set_permissions (file))
+         {
+             gtk_dialog_add_button (GTK_DIALOG (dialog),
+-                                   _("Mark as _Trusted"), RESPONSE_MARK_TRUSTED);
++                                 _("Trust and _Launch"), GTK_RESPONSE_OK);
+         }
+-        gtk_dialog_add_button (GTK_DIALOG (dialog),
+-                               _("_Cancel"), GTK_RESPONSE_CANCEL);
+-        gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CANCEL);
+ 
+         g_signal_connect (dialog, "response",
+                           G_CALLBACK (untrusted_launcher_response_callback),
+-- 
+2.12.0
+
