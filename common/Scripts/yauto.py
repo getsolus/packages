@@ -37,6 +37,7 @@ AUTOTOOLS = 2
 CMAKE = 3
 PYTHON_MODULES = 4
 PERL_MODULES = 5
+CABAL = 6
 
 class DepObject:
 
@@ -154,6 +155,8 @@ class AutoPackage:
                     known_types.append(PERL_MODULES)
                 if "BUILD.PL" in file:
                     self.buildpl = True
+                if ".cabal" in file:
+                    known_types.append(CABAL)
 
         # We may have hit several systems..
         if CMAKE in known_types:
@@ -171,6 +174,9 @@ class AutoPackage:
         elif PERL_MODULES in known_types:
             print "perl"
             self.compile_type = PERL_MODULES
+        elif CABAL in known_types:
+            print "cabal"
+            self.compile_type = CABAL
         else:
             print "unknown"
 
@@ -253,6 +259,10 @@ description: |
                 build = "%perl_build"
                 install = "%perl_install"
                 sample_actions = os.path.join (self.template_dir, "actions.perlmodules.sample.py")
+            elif self.compile_type == CABAL:
+                setup = "%cabal_configure"
+                build = "%cabal_build"
+                install = "%cabal_install"
 
             if setup is None:
                 setup = "%configure"
