@@ -6,12 +6,12 @@ kver = "4.9.13"
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     try:
-        os.system("/usr/bin/gl-driver-switch set-link nvidia")
+        os.system("/usr/bin/linux-driver-management configure gpu")
     except Exception, e:
         print "Post-install error: %s" % e
 
 def postRemove():
     try:
-        os.system("/usr/bin/gl-driver-switch set-link default")
+        os.system("/usr/bin/linux-driver-management configure gpu")
     except Exception, e:
         print "Post-remove error: %s" % e
