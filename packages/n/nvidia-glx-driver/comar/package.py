@@ -8,7 +8,6 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     try:
         os.system("/usr/bin/linux-driver-management configure gpu")
         os.system("/sbin/depmod %s" % kver)
-        os.system("nvidia-xconfig")
     except Exception, e:
         print "Post-install error: %s" % e
 
