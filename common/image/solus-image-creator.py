@@ -405,6 +405,7 @@ SystemAccount=false
                 print("Warning: Manually constructing home dirs")
                 os.makedirs(ddir, mode=00755)
             shutil.copy(spath, dpath)
+            os.chmod(dpath, 00755)
             # Restore permissions
             run_chroot("chown -R live:live /home/live")
     except Exception as e:
