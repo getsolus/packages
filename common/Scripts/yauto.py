@@ -18,16 +18,6 @@ import dloader
 import datetime
 import shutil
 
-from configobj import ConfigObj
-
-''' Example config file
-~/.evolveos/packager
-
-[Packager]
-Name=Your Name Goes Here
-Email=Your Email Goes Here
-'''
-
 # What we term as needed doc files
 KnownDocFiles = [ "COPYING", "COPYING.LESSER", "ChangeLog", "COPYING.GPL", "AUTHORS", "BUGS", "CHANGELOG", "LICENSE"]
 
@@ -53,17 +43,6 @@ class AutoPackage:
 
     def __init__(self, uri):
         self.package_uri = uri
-        homeDir = os.environ ["HOME"]
-        config = ".solus/packager"
-        self.config_dir = os.path.join (homeDir, config)
-        if not os.path.exists (self.config_dir):
-            print "Config file not found at %s" % self.config_dir
-            sys.exit (-1)
-
-        # See the above commentary for details on the file format
-        self.config = ConfigObj (self.config_dir)
-        self.email = self.config["Packager"]["Email"]
-        self.packager_name = self.config["Packager"]["Name"]
 
         # Templates
         us = os.path.dirname(os.path.abspath(__file__))
