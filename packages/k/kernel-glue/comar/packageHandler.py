@@ -26,7 +26,7 @@ def updateCBM(filepath):
             updates = True
             break
         # Goofiboot update
-        if path.startwith("/usr/lib/goofiboot") or path.startswith("/usr/lib64/goofiboot"):
+        if path.startswith("/usr/lib/goofiboot") or path.startswith("/usr/lib64/goofiboot"):
             updates = True
             break
 
