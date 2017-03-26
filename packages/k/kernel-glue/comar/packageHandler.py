@@ -3,6 +3,7 @@ import piksemel
 import os
 import os.path
 import shutil
+import glob
 
 def cleanupOldImages():
     """ Legacy paths """
