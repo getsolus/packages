@@ -37,3 +37,6 @@ def install():
     shelltools.echo("%s/etc/skel/.profile" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/skel/.bashrc" % get.installDIR(), "source /usr/share/defaults/etc/profile")
     shelltools.echo("%s/etc/nsswitch.conf" % get.installDIR(), "hosts: files dns")
+
+    # Remove legacy boot link
+    pisitools.remove("/boot/boot")
