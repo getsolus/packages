@@ -5,15 +5,6 @@ import os.path
 import shutil
 import glob
 
-def cleanupOldImages():
-    """ Legacy paths """
-    images = glob.glob("/boot/initramfs-*.img")
-    for image in images:
-        try:
-            os.remove(image)
-        except Exception, e:
-            continue
-
 def updateCBM(filepath):
     parse = piksemel.parse(filepath)
     updates = False
@@ -23,7 +14,7 @@ def updateCBM(filepath):
         if not path.startswith("/"):
             path = "/%s" % path # Just in case
         # Kernel update
-        if path.startswith("/lib/modules"):
+        if path.startswith("/lib/modules") or path.startswith("/lib64/modules"):
             updates = True
             break
         # Goofiboot update
@@ -34,7 +25,6 @@ def updateCBM(filepath):
     if not updates:
         return
 
-    cleanupOldImages()
     try:
         os.system("clr-boot-manager update")
     except Exception, e:
