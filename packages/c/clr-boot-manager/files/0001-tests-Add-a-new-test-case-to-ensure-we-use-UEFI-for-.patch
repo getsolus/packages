@@ -1,0 +1,97 @@
+From 834dbe7fb685acc2c321df28c60aaceda5a6a492 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <michael.i.doherty@intel.com>
+Date: Thu, 30 Mar 2017 17:55:15 +0100
+Subject: [PATCH 1/2] tests: Add a new test case to ensure we use UEFI for
+ legacy native
+
+With a GPT disk, in native mode, we should ensure that we only use syslinux
+if the native system isn't actually UEFI. This test will account for that,
+in preparation for issue #58.
+
+Signed-off-by: Ikey Doherty <michael.i.doherty@intel.com>
+---
+ tests/check-select-bootloader.c | 61 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 61 insertions(+)
+
+diff --git a/tests/check-select-bootloader.c b/tests/check-select-bootloader.c
+index 482c3c7..6b7860f 100644
+--- a/tests/check-select-bootloader.c
++++ b/tests/check-select-bootloader.c
+@@ -337,6 +337,61 @@ START_TEST(bootman_select_grub2_native_without_boot)
+ }
+ END_TEST
+ 
++/**
++ * ############ BEGIN EDGE CASE TESTS #################
++ */
++
++/**
++ * We have a GPT disk that contains a legacy partition, but we're in native
++ * mode with UEFI available
++ * We should select UEFI bootloader when /sys/firmware/efi exists
++ */
++START_TEST(bootman_select_edge_uefi_with_legacy_part_native)
++{
++        static PlaygroundConfig config = { "4.2.1-121.kvm", NULL, 0, .uefi = false };
++        autofree(BootManager) *m = NULL;
++        bootman_select_set_legacy_vtables();
++
++        /* At this point we would've selected syslinux */
++        m = prepare_playground(&config);
++        ensure_bootloader_is(m, "syslinux");
++
++        /* Construct /sys/firmware/efi. Now we need it to be UEFI bootloader */
++        fail_if(!nc_mkdir_p(PLAYGROUND_ROOT "/sys/firmware/efi", 00755), "Failed to emulate EFI");
++        boot_manager_set_prefix(m, PLAYGROUND_ROOT);
++        ensure_bootloader_is(m, UEFI_BOOTLOADER_NAME);
++}
++END_TEST
++
++/**
++ * We have a GPT disk that contains a legacy partition, but we're in image
++ * mode with UEFI available
++ * We should only ever select syslinux
++ */
++START_TEST(bootman_select_edge_uefi_with_legacy_part_image)
++{
++        static PlaygroundConfig config = { "4.2.1-121.kvm", NULL, 0, .uefi = false };
++        autofree(BootManager) *m = NULL;
++        bootman_select_set_legacy_vtables();
++
++        /* At this point we would've selected syslinux */
++        m = prepare_playground(&config);
++        ensure_bootloader_is(m, "syslinux");
++
++        /* Ensure it's still syslinux in image mode */
++        boot_manager_set_image_mode(m, true);
++        boot_manager_set_prefix(m, PLAYGROUND_ROOT);
++        ensure_bootloader_is(m, "syslinux");
++
++        /* Construct /sys/firmware/efi. */
++        fail_if(!nc_mkdir_p(PLAYGROUND_ROOT "/sys/firmware/efi", 00755), "Failed to emulate EFI");
++        boot_manager_set_prefix(m, PLAYGROUND_ROOT);
++
++        /* We're in image mode, the firmware is not relevant */
++        ensure_bootloader_is(m, "syslinux");
++}
++END_TEST
++
+ static Suite *core_suite(void)
+ {
+         Suite *s = NULL;
+@@ -363,6 +418,12 @@ static Suite *core_suite(void)
+         tcase_add_test(tc, bootman_select_grub2_native_without_boot);
+         suite_add_tcase(s, tc);
+ 
++        /* edge cases */
++        tc = tcase_create("Bootman_select_edge_cases");
++        tcase_add_test(tc, bootman_select_edge_uefi_with_legacy_part_native);
++        tcase_add_test(tc, bootman_select_edge_uefi_with_legacy_part_image);
++        suite_add_tcase(s, tc);
++
+         return s;
+ }
+ 
+-- 
+2.12.2
+

@@ -1,0 +1,83 @@
+From 7399e96d69dbeb06d0df50efed1e95a115922665 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <michael.i.doherty@intel.com>
+Date: Thu, 30 Mar 2017 15:40:39 +0100
+Subject: [PATCH 2/2] bootman: Allow native UEFI to "win" on GPT system
+ containing legacy boot
+
+Given the nature of a GPT system, it is permitted to have a legacy boot
+partition, *and* an EFI System Partition. Thus, prior to this commit, a
+chroot repair of a system would only ever find the legacy boot partition
+and not the UEFI partition.
+
+Likewise, in a booted system, we would run into the same problem, leading
+to bricked systems on update. Now, we'll only try to determine a legacy
+boot device if we're definitely not running in native UEFI mode, that is
+to say, !image_mode, and /sys/firmware/efi exists. This allows us to skip
+an unusable partition in favour of our ESP.
+
+This commit fixes #58.
+
+Signed-off-by: Ikey Doherty <michael.i.doherty@intel.com>
+---
+ src/bootman/sysconfig.c | 31 +++++++++++++++++++++----------
+ 1 file changed, 21 insertions(+), 10 deletions(-)
+
+diff --git a/src/bootman/sysconfig.c b/src/bootman/sysconfig.c
+index 8e644d5..7f3d6a6 100644
+--- a/src/bootman/sysconfig.c
++++ b/src/bootman/sysconfig.c
+@@ -44,6 +44,7 @@ SystemConfig *cbm_inspect_root(const char *path, bool image_mode)
+         char *realp = NULL;
+         char *boot = NULL;
+         char *rel = NULL;
++        bool native_uefi = false;
+ 
+         realp = realpath(path, NULL);
+         if (!realp) {
+@@ -60,8 +61,25 @@ SystemConfig *cbm_inspect_root(const char *path, bool image_mode)
+         c->prefix = realp;
+         c->wanted_boot_mask = 0;
+ 
+-        /* Find legacy relative to root, on GPT */
+-        boot = get_legacy_boot_device(realp);
++        /* Determine if this is a native UEFI system. This means we're in a full
++         * native mode and have /sys/firmware/efi available. This does not throw
++         * the image generation, and subsequent updates to the legacy image
++         * wouldn't have a UEFI vfs available.
++         */
++        if (!image_mode) {
++                /* typically /sys, but we forcibly fail this with our tests */
++                autofree(char) *fw_path =
++                    string_printf("%s/firmware/efi", cbm_system_get_sysfs_path());
++                native_uefi = nc_file_exists(fw_path);
++        }
++
++        /* Find legacy relative to root, on GPT, assuming we're not booted using
++         * UEFI. This is due to GPT being able to contain a legacy boot device
++         * *and* an ESP at the same time. Native UEFI takes precedence.
++         */
++        if (!native_uefi) {
++                boot = get_legacy_boot_device(realp);
++        }
+         if (boot) {
+                 c->boot_device = boot;
+                 c->wanted_boot_mask = BOOTLOADER_CAP_LEGACY | BOOTLOADER_CAP_GPT;
+@@ -82,14 +100,7 @@ SystemConfig *cbm_inspect_root(const char *path, bool image_mode)
+          * the root system if we're in image mode.
+          */
+         if (!image_mode) {
+-                /* typically /sys, but we forcibly fail this with our tests */
+-                autofree(char) *fw_path =
+-                    string_printf("%s/firmware/efi", cbm_system_get_sysfs_path());
+-                if (nc_file_exists(fw_path)) {
+-                        c->wanted_boot_mask = BOOTLOADER_CAP_UEFI;
+-                } else {
+-                        c->wanted_boot_mask = BOOTLOADER_CAP_LEGACY;
+-                }
++                c->wanted_boot_mask = native_uefi ? BOOTLOADER_CAP_UEFI : BOOTLOADER_CAP_LEGACY;
+         } else {
+                 /* At this point, just assume we have a plain UEFI system */
+                 c->wanted_boot_mask = BOOTLOADER_CAP_UEFI;
+-- 
+2.12.2
+
