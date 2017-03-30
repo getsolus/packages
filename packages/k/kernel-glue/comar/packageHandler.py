@@ -8,13 +8,22 @@ import glob
 def updateCBM(filepath):
     parse = piksemel.parse(filepath)
     updates = False
+    kversion = None
 
     for xmlfile in parse.tags("File"):
         path = xmlfile.getTagData("Path")
         if not path.startswith("/"):
             path = "/%s" % path # Just in case
+
         # Kernel update
         if path.startswith("/lib/modules") or path.startswith("/lib64/modules"):
+            # Skip crankiness
+            try:
+                kversion = path.split("/")[3]
+            except:
+                kversion = None
+                pass
+
             updates = True
             break
         # Goofiboot update
@@ -25,6 +34,14 @@ def updateCBM(filepath):
     if not updates:
         return
 
+    # Depmod the appropriate kernel if we can
+    if kversion is not None:
+        try:
+            os.system("/sbin/depmod %s" % kversion)
+        except Exception, e:
+            print("Failed to run clr-boot-manager: %s" % e)
+
+    # Always attempt to update CBM state
     try:
         os.system("clr-boot-manager update")
     except Exception, e:
