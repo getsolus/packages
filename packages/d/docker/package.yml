@@ -1,8 +1,9 @@
 name       : docker
-version    : 1.12.6
-release    : 8
+version    : 17.03.1
+release    : 9
 source     :
-    - https://github.com/docker/docker/archive/v1.12.6.tar.gz : 0413f3513c2a6842ed9cf837154c8a722e9b34cb36b33430348489baa183707e
+    - https://github.com/docker/docker/archive/v17.03.1-ce.tar.gz : a8f1eefadf3966885ad0579facfc2017cca7dd3a0b20d086dfd798168716cb83
+    - git|https://github.com/docker/libnetwork.git : ce28404512e8fac9b8103b9072e75cf8d4339302
 license    : Apache-2.0
 component  : virt
 summary    : Open source application container engine
@@ -12,33 +13,39 @@ description: |
 
     Docker containers are both hardware-agnostic and platform-agnostic. This means they can run anywhere, from your laptop to the largest cloud compute instance and everything in between - and they don't require you to use a particular language, framework or packaging system. That makes them great building blocks for deploying and scaling web apps, databases, and backend services without depending on a particular stack or provider.
 builddeps  :
+    - pkgconfig(devmapper)
     - btrfs-progs-devel
     - golang
-    - pkgconfig(devmapper)
 rundeps    :
     - btrfs-progs
     - containerd
     - dnsmasq
     - runc
 setup      : |
-    %patch -p1 < $pkgfiles/0001-Default-to-using-overlayfs.patch
+    rm -r vendor/github.com/docker/libnetwork
+    cp -R $sources/libnetwork.git vendor/github.com/docker/libnetwork
 build      : |
     export DOCKER_GITCOMMIT="78d18021ecba00c00730dec9d56de6896f9e708d78d18021ecba00c00730dec9d56de6896f9e708d"
     export AUTO_GOPATH=1
     ./hack/make.sh dynbinary
+    export GOPATH=$workdir/go
+    mkdir -p go/src
+    mv vendor go/src/
+    go build -o $workdir/docker-proxy vendor/github.com/docker/libnetwork/cmd/proxy
 install    : |
+    export CE=${version}-ce
     # Required directories
     install -D -d -m 00755 $installdir/usr/bin
     install -D -d -m 00755 $installdir/%libdir%/systemd/system
 
     # Install docker client
-    install -m 00755 bundles/${version}/dynbinary-client/docker-${version} $installdir/usr/bin/docker
+    install -m 00755 bundles/${CE}/dynbinary-client/docker-${CE} $installdir/usr/bin/docker
 
     # Now install proxy service
-    install -m 00755 bundles/${version}/dynbinary-daemon/docker-proxy-${version} $installdir/usr/bin/docker-proxy
+    install -m 00755 $workdir/docker-proxy $installdir/usr/bin/docker-proxy
 
     # Main docker daemon
-    install -m 00755 bundles/${version}/dynbinary-daemon/dockerd-${version} $installdir/usr/bin/dockerd
+    install -m 00755 bundles/${CE}/dynbinary-daemon/dockerd-${CE} $installdir/usr/bin/dockerd
 
     # Now install systemd units
     install -m 00644 contrib/init/systemd/docker.service $installdir/%libdir%/systemd/system/.
@@ -51,7 +58,7 @@ install    : |
     # Add the docker group
     install -D -m 00644 $pkgfiles/docker.sysusers $installdir/%libdir%/sysusers.d/docker.conf
 
-    # containerd integration:
+    # containerd integration
     ln -s containerd $installdir/usr/bin/docker-containerd
     ln -s containerd-shim $installdir/usr/bin/docker-containerd-shim
     ln -s ctr $installdir/usr/bin/docker-containerd-ctr
