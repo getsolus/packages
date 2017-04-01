@@ -7,7 +7,7 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -flto -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    opt = "-ffunction-sections -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
