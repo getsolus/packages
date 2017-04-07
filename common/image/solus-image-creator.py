@@ -232,7 +232,7 @@ def down_root():
 
 def create_image():
     ''' Construct main rootfs.img '''
-    size = 4096
+    size = 5120
     cmd = "dd if=/dev/zero of=\"%s\" bs=1 count=0 seek=%sM" % (get_image_path(), size)
     try:
         ret = check_call(cmd)
