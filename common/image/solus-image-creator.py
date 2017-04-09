@@ -382,6 +382,8 @@ def configure_live_account():
     default_desktop = "budgie-desktop"
     if os.path.exists(os.path.join(get_image_root(), "usr/bin/mate-panel")):
         default_desktop = "mate"
+    elif os.path.exists(os.path.join(get_image_root(), "usr/bin/gnome-shell")):
+        default_desktop = "gnome"
     with open(fname, "w") as fout:
         fout.write("""[User]
 Language=en_US.utf8
