@@ -1,0 +1,144 @@
+From ff98b2817014684ae1acec78ff06f0f461a56a9f Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Fri, 24 Mar 2017 23:40:07 -0400
+Subject: [PATCH 1/2] manager: if falling back to X11 retry autologin
+
+Right now, we get one shot to autologin. If it fails, we fall back to
+the greeter.  We should give it another go if the reason for the failure
+was wayland fallback to X.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=780520
+---
+ daemon/gdm-manager.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/gdm-manager.c b/daemon/gdm-manager.c
+index e78228b..d4843a6 100644
+--- a/daemon/gdm-manager.c
++++ b/daemon/gdm-manager.c
+@@ -1419,114 +1419,119 @@ set_up_session (GdmManager *manager,
+         user_manager = act_user_manager_get_default ();
+         user = act_user_manager_get_user (user_manager, username);
+         g_object_get (user_manager, "is-loaded", &loaded, NULL);
+ 
+         if (loaded) {
+                 set_up_automatic_login_session_if_user_exists (manager, display, user);
+         } else {
+                 UsernameLookupOperation *operation;
+ 
+                 operation = g_new (UsernameLookupOperation, 1);
+                 operation->manager = g_object_ref (manager);
+                 operation->display = g_object_ref (display);
+                 operation->username = username;
+ 
+                 g_signal_connect (user,
+                                   "notify::is-loaded",
+                                   G_CALLBACK (on_user_is_loaded_changed),
+                                   operation);
+         }
+ }
+ 
+ static void
+ greeter_display_started (GdmManager *manager,
+                          GdmDisplay *display)
+ {
+         if (manager->priv->ran_once) {
+                 return;
+         }
+ 
+         maybe_start_pending_initial_login (manager, display);
+-
+-        manager->priv->ran_once = TRUE;
+ }
+ 
+ static void
+ on_display_status_changed (GdmDisplay *display,
+                            GParamSpec *arg1,
+                            GdmManager *manager)
+ {
+         int         status;
+         int         display_number = -1;
++        char       *session_type = NULL;
+ #ifdef WITH_PLYMOUTH
+         gboolean    display_is_local = FALSE;
+         gboolean    quit_plymouth = FALSE;
+ 
+         g_object_get (display,
+                       "is-local", &display_is_local,
+                       NULL);
+         quit_plymouth = display_is_local && manager->priv->plymouth_is_running;
+ #endif
+ 
+-        g_object_get (display, "x11-display-number", &display_number, NULL);
++        g_object_get (display,
++                      "x11-display-number", &display_number,
++                      "session-type", &session_type,
++                      NULL);
+ 
+         status = gdm_display_get_status (display);
+ 
+         switch (status) {
+                 case GDM_DISPLAY_PREPARED:
+                 case GDM_DISPLAY_MANAGED:
+                         if ((display_number == -1 && status == GDM_DISPLAY_PREPARED) ||
+                             (display_number != -1 && status == GDM_DISPLAY_MANAGED)) {
+                                 char *session_class;
+ 
+                                 g_object_get (display,
+                                               "session-class", &session_class,
+                                               NULL);
+                                 if (g_strcmp0 (session_class, "greeter") == 0)
+                                         set_up_session (manager, display);
+                                 g_free (session_class);
+                         }
+ 
+                         if (status == GDM_DISPLAY_MANAGED) {
+                                 greeter_display_started (manager, display);
+                         }
+                         break;
+                 case GDM_DISPLAY_FAILED:
+                 case GDM_DISPLAY_UNMANAGED:
+                 case GDM_DISPLAY_FINISHED:
+ #ifdef WITH_PLYMOUTH
+                         if (quit_plymouth) {
+                                 plymouth_quit_without_transition ();
+                                 manager->priv->plymouth_is_running = FALSE;
+                         }
+ #endif
+ 
++                        if (status == GDM_DISPLAY_FINISHED || g_strcmp0 (session_type, "x11") == 0) {
++                                manager->priv->ran_once = TRUE;
++                        }
+                         maybe_start_pending_initial_login (manager, display);
+                         break;
+                 default:
+                         break;
+         }
+ 
+ }
+ 
+ static void
+ on_display_removed (GdmDisplayStore *display_store,
+                     const char      *id,
+                     GdmManager      *manager)
+ {
+         GdmDisplay *display;
+ 
+         display = gdm_display_store_lookup (display_store, id);
+         if (display != NULL) {
+                 g_dbus_object_manager_server_unexport (manager->priv->object_manager, id);
+ 
+                 g_signal_handlers_disconnect_by_func (display, G_CALLBACK (on_display_status_changed), manager);
+ 
+                 g_signal_emit (manager, signals[DISPLAY_REMOVED], 0, id);
+         }
+ }
+ 
+ static void
+ destroy_start_user_session_operation (StartUserSessionOperation *operation)
+ {
+         g_object_set_data (G_OBJECT (operation->session),
+                            "start-user-session-operation",
+-- 
+2.10.2
+
