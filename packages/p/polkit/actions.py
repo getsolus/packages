@@ -11,7 +11,7 @@ def setup():
                           --sysconfdir=/etc \
                           --localstatedir=/var \
                           --libexecdir=/usr/lib/polkit-1 \
-                          --with-os-type=SolusOS \
+                          --with-os-type=Solus \
                           --enable-libsystemd-login=yes \
                           --enable-introspection=yes \
                           --disable-gtk-doc \
