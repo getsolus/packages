@@ -16,6 +16,7 @@ def setup():
                          --without-plymouth \
                          --with-systemd \
                          --with-default-pam-config=lfs \
+                         --with-pam-mod-dir=/lib/security \
                          --enable-introspection \
                          --enable-console-helper \
                          --enable-gdm-xsession \
@@ -23,6 +24,8 @@ def setup():
                          --with-check-accelerated-directory=/usr/lib/gnome-session  \
                          --without-console-kit \
                          --with-initial-vt=7 \
+                         --with-dbus-sys=/usr/share/dbus-1/system.d \
+                         --enable-wayland-support \
                          --enable-systemd-journal")
 
 
