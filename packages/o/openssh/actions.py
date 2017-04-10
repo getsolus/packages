@@ -20,3 +20,4 @@ def install():
     autotools.rawInstall("DESTDIR=%s" % get.installDIR())
     pisitools.dodir("/var/lib/sshd")
     shelltools.chmod("%s/var/lib/sshd" % get.installDIR(), 0700)
+    pisitools.dobin("contrib/ssh-copy-id")
