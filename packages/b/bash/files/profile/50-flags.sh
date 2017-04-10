@@ -1,23 +1,23 @@
 # Begin /usr/share/defaults/etc/profile.d/50-flags.sh
 
 if [ -z "${CFLAGS}" ]; then
-    export CFLAGS="-mtune=generic -march=x86-64 -ftree-vectorize -g2 -O2 -pipe -fPIC -Wformat -Wformat-security -fno-omit-frame-pointer -fstack-protector-strong --param ssp-buffer-size=4 -fexceptions -D_FORTIFY_SOURCE=2 -feliminate-unused-debug-types -Wno-error -Wp,-D_REENTRANT"
+    export CFLAGS="-g -O3 -feliminate-unused-debug-types -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -Wformat -Wformat-security -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${CXXFLAGS}" ]; then
-    export CXXFLAGS="-mtune=generic -march=x86-64 -ftree-vectorize -g2 -O2 -pipe -fPIC -Wformat -Wformat-security -fno-omit-frame-pointer -fstack-protector-strong --param ssp-buffer-size=4 -fexceptions -D_FORTIFY_SOURCE=2 -feliminate-unused-debug-types -Wno-error -Wp,-D_REENTRANT"
+    export CXXFLAGS="-g -O3 -feliminate-unused-debug-types -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${LDFLAGS}" ]; then
-    export LDFLAGS="-Wl,--copy-dt-needed-entries -Wl,-O1 -Wl,-z,relro -Wl,-z,now"
+    export LDFLAGS="-Wl,-z -Wl,now -Wl,-z -Wl,relro"
 fi
 
 if [ -z "${FCFLAGS}" ]; then
-    export FCFLAGS="${CFLAGS}"
+    export FCFLAGS="-g -O3 -feliminate-unused-debug-types -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${FFLAGS}" ]; then
-    export FFLAGS="${CFLAGS}"
+    export FFLAGS="-g -O3 -feliminate-unused-debug-types -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
 fi
 
 # End /usr/share/defaults/etc/profile.d/50-flags.sh
