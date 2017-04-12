@@ -25,8 +25,8 @@ def setup():
     shelltools.cd (BuildDir)
 
     # Because GCC is a dope.
-    cflags = get.CFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "").replace("-O2", "-O3")
-    cxxflags = get.CXXFLAGS().replace("-D_FORTIFY_SOURCE=2", "").replace("-fexceptions", "").replace("-O2", "-O3")
+    cflags = "-march=x86-64 -mtune=generic -g1 -O3 -fstack-protector -Wl,-z -Wl,now -Wl,-z -Wl,relro -Wl,-z,max-page-size=0x1000"
+    cxxflags = "-march=x86-64 -mtune=generic -g1 -O3 -Wl,-z -Wl,now -Wl,-z -Wl,relro -Wl,-z,max-page-size=0x1000"
 
     shelltools.export("CFLAGS", cflags)
     shelltools.export("CXXFLAGS", cxxflags)
