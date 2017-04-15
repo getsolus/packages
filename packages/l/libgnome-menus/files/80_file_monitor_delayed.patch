@@ -1,0 +1,117 @@
+Index: gnome-menus-3.13.3/libmenu/menu-monitor.c
+===================================================================
+--- gnome-menus-3.13.3.orig/libmenu/menu-monitor.c	2017-02-10 20:11:52.023008999 +0000
++++ gnome-menus-3.13.3/libmenu/menu-monitor.c	2017-02-10 20:13:57.879008999 +0000
+@@ -52,6 +52,14 @@
+   guint                 refcount;
+ } MenuMonitorNotify;
+ 
++typedef struct
++{
++  MenuMonitor      *menu_monitor;
++  GFile            *child;
++  GFileMonitorEvent eflags;
++  gpointer          weak_ptr;
++} MonitorCallbackInfo;
++
+ static MenuMonitorNotify *menu_monitor_notify_ref   (MenuMonitorNotify *notify);
+ static void               menu_monitor_notify_unref (MenuMonitorNotify *notify);
+ 
+@@ -160,39 +168,73 @@
+ }
+ 
+ static gboolean
+-monitor_callback (GFileMonitor      *monitor,
+-                  GFile             *child,
+-                  GFile             *other_file,
+-                  GFileMonitorEvent eflags,
+-                  gpointer          user_data)
++monitor_callback_delayed (gpointer user_data)
+ {
++  MonitorCallbackInfo  *info;
+   MenuMonitorEventInfo *event_info;
+   MenuMonitorEvent      event;
+-  MenuMonitor          *menu_monitor = (MenuMonitor *) user_data;
++  MenuMonitor          *menu_monitor;
++
++  info = (MonitorCallbackInfo *) user_data;
++  menu_monitor = info->menu_monitor;
+ 
+-  event = MENU_MONITOR_EVENT_INVALID;
+-  switch (eflags)
++  if (info->weak_ptr)
+     {
+-    case G_FILE_MONITOR_EVENT_CHANGED:
+-      event = MENU_MONITOR_EVENT_CHANGED;
+-      break;
+-    case G_FILE_MONITOR_EVENT_CREATED:
+-      event = MENU_MONITOR_EVENT_CREATED;
+-      break;
+-    case G_FILE_MONITOR_EVENT_DELETED:
+-      event = MENU_MONITOR_EVENT_DELETED;
+-      break;
+-    default:
+-      return TRUE;
++      switch (info->eflags)
++        {
++        case G_FILE_MONITOR_EVENT_CHANGED:
++          event = MENU_MONITOR_EVENT_CHANGED;
++          break;
++        case G_FILE_MONITOR_EVENT_CREATED:
++          event = MENU_MONITOR_EVENT_CREATED;
++          break;
++        case G_FILE_MONITOR_EVENT_DELETED:
++          event = MENU_MONITOR_EVENT_DELETED;
++          break;
++        default:
++          event = MENU_MONITOR_EVENT_INVALID;
++        }
++
++      if (event != MENU_MONITOR_EVENT_INVALID)
++        {
++          event_info = g_new0 (MenuMonitorEventInfo, 1);
++
++          event_info->path    = g_file_get_path (info->child);
++          event_info->event   = event;
++          event_info->monitor = menu_monitor;
++
++          menu_monitor_queue_event (event_info);
++        }
++
++      g_object_remove_weak_pointer (G_OBJECT (menu_monitor->monitor), &(info->weak_ptr));
++
+     }
+ 
+-  event_info = g_new0 (MenuMonitorEventInfo, 1);
++  g_object_unref (info->child);
++  g_free (info);
++  return FALSE;
++}
++
++static gboolean
++monitor_callback (GFileMonitor      *monitor,
++                  GFile             *child,
++                  GFile             *other_file,
++                  GFileMonitorEvent eflags,
++                  gpointer          user_data)
++{
++  MenuMonitor         *menu_monitor;
++  MonitorCallbackInfo *info;
++
++  menu_monitor = (MenuMonitor *) user_data;
+ 
+-  event_info->path    = g_file_get_path (child);
+-  event_info->event   = event;
+-  event_info->monitor = menu_monitor;
++  info = g_new0 (MonitorCallbackInfo, 1);
++  info->menu_monitor = menu_monitor;
++  info->weak_ptr = G_OBJECT (menu_monitor->monitor);
++  g_object_add_weak_pointer (G_OBJECT (menu_monitor->monitor), &(info->weak_ptr));
++  info->child = g_object_ref (child);
++  info->eflags = eflags;
+ 
+-  menu_monitor_queue_event (event_info);
++  g_timeout_add_seconds_full (G_PRIORITY_DEFAULT, 2, monitor_callback_delayed, info, NULL);
+ 
+   return TRUE;
+ }
