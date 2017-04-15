@@ -17,7 +17,9 @@ import hashlib
 def download_file(url):
     file_name = url.split('/')[-1]
     output = file_name
-    u = urllib2.urlopen(url)
+    r = urllib2.Request(url)
+    r.add_header('User-Agent', 'yauto/0.0')
+    u = urllib2.urlopen(r)
     f = open(output, 'wb')
     meta = u.info()
 
