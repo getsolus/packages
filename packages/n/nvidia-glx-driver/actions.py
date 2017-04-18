@@ -9,7 +9,7 @@ import commands
 wdir = "NVIDIA-Linux-x86_64-%s" % get.srcVERSION()
 
 # Required... built in tandem with kernel update
-kversion = "4.9.22-17.lts"
+kversion = "4.9.23-19.lts"
 
 def setup():
     shelltools.system("sh NVIDIA-Linux-x86_64-%s.run --extract-only" % get.srcVERSION())
