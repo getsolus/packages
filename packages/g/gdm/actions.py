@@ -25,7 +25,7 @@ def setup():
                          --without-console-kit \
                          --with-initial-vt=7 \
                          --with-dbus-sys=/usr/share/dbus-1/system.d \
-                         --enable-wayland-support \
+                         --disable-wayland-support \
                          --enable-systemd-journal")
 
 
