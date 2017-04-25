@@ -21,7 +21,7 @@ import commands
 from configobj import ConfigObj
 
 ''' Example config file
-~/.evolveos/packager
+~/.solus/packager
 
 [Packager]
 Name=Your Name Goes Here
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     #    print "Not enough arguments - aborting"
     #    sys.exit(1)
     homeDir = os.environ ["HOME"]
-    config = ".evolveos/packager"
+    config = ".solus/packager"
     config_p = os.path.join(homeDir, config)
     if not os.path.exists(config_p):
         print "Config file not found at %s" % config_p
