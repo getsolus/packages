@@ -62,13 +62,14 @@ def setup():
                           --enable-gallium-gbm           \
                           --enable-gallium-llvm          \
                           --enable-glx-tls               \
+                          --enable-nine                  \
                           --enable-gallium-osmesa        \
                           --with-llvm-shared-libs        \
                           --libdir=/usr/%s               \
                           --enable-shared-glapi \
                           --with-vulkan-drivers=intel,radeon \
                           --with-egl-platforms=\"drm,x11,wayland\" \
-                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,virgl\"\
+                          --with-gallium-drivers=\"nouveau,r300,r600,radeonsi,svga,swrast,swr,virgl\"\
                           --enable-dri3 %s" % (prefix, libdir, mlib))
 
 def build():
