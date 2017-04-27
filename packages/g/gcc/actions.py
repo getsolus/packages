@@ -23,10 +23,9 @@ def setup():
     shelltools.makedirs (BuildDir)
 
     shelltools.cd (BuildDir)
-
-    # Because GCC is a dope.
-    cflags = "-march=x86-64 -mtune=generic -g1 -O3 -fstack-protector -Wl,-z -Wl,now -Wl,-z -Wl,relro -Wl,-z,max-page-size=0x1000"
-    cxxflags = "-march=x86-64 -mtune=generic -g1 -O3 -Wl,-z -Wl,now -Wl,-z -Wl,relro -Wl,-z,max-page-size=0x1000"
+    
+    cflags = "-mtune=generic -march=x86-64 -g1 -O3 -fstack-protector -pipe -fPIC -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=0x1000"
+    cxxflags = "-mtune=generic -march=x86-64 -g1 -O3 -pipe -fPIC -Wl,-z,max-page-size=0x1000"
 
     shelltools.export("CFLAGS", cflags)
     shelltools.export("CXXFLAGS", cxxflags)
@@ -43,6 +42,7 @@ def setup():
                         --with-system-zlib \
                         --enable-shared \
                         --enable-threads=posix \
+                        --enable-gnu-indirect-function \
                         --enable-__cxa_atexit \
                         --enable-plugin \
                         --enable-gold \
@@ -64,7 +64,7 @@ def setup():
 def build():
     noCcache()
     shelltools.cd (BuildDir)
-    autotools.make ( "profiledbootstrap" )
+    autotools.make("profiledbootstrap")
 
 def install():
     noCcache()
