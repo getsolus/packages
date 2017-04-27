@@ -7,7 +7,7 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -flto -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    opt = "-ffunction-sections -fasynchronous-unwind-tables -flto  -ftree-loop-distribute-patterns -ftree-vectorize -ftree-loop-vectorize -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
@@ -44,6 +44,7 @@ def setup():
                          --enable-dri \
                          --enable-dri2 \
                          --enable-dri3 \
+                         --enable-xcsecurity \
                          --enable-config-udev \
                          --enable-config-udev-kms \
                          --disable-selective-werror \
