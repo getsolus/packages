@@ -1,11 +1,11 @@
 # Begin /usr/share/defaults/etc/profile.d/50-flags.sh
 
 if [ -z "${CFLAGS}" ]; then
-    export CFLAGS="-g -O3 -feliminate-unused-debug-types -malign-data=abi -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -Wformat -Wformat-security -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
+    export CFLAGS="-g2 -O3 -pipe -fPIC -Wformat -Wformat-security -malign-data=abi -fno-omit-frame-pointer -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -fstack-protector --param ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${CXXFLAGS}" ]; then
-    export CXXFLAGS="-g -O3 -feliminate-unused-debug-types -malign-data=abi -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
+    export CXXFLAGS="-g2 -O3 -pipe -fPIC -malign-data=abi -fno-omit-frame-pointer -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -fstack-protector --param ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${LDFLAGS}" ]; then
@@ -13,11 +13,11 @@ if [ -z "${LDFLAGS}" ]; then
 fi
 
 if [ -z "${FCFLAGS}" ]; then
-    export FCFLAGS="-g -O3 -feliminate-unused-debug-types -malign-data=abi -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
+    export FCFLAGS="-g2 -O3 -pipe -fPIC -malign-data=abi -fno-omit-frame-pointer -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -fstack-protector --param ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
 fi
 
 if [ -z "${FFLAGS}" ]; then
-    export FFLAGS="-g -O3 -feliminate-unused-debug-types -malign-data=abi -pipe -Wall -Wp,-D_FORTIFY_SOURCE=2 -fexceptions -fstack-protector --param=ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -Wp,-D_REENTRANT"
+    export FFLAGS="-g2 -O3 -pipe -fPIC -malign-data=abi -fno-omit-frame-pointer -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -fstack-protector --param ssp-buffer-size=32 -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -fno-semantic-interposition -ftree-vectorize -ftree-loop-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
 fi
 
 # End /usr/share/defaults/etc/profile.d/50-flags.sh
