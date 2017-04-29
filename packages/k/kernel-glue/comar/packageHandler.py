@@ -10,6 +10,8 @@ def updateCBM(filepath):
     updates = False
     kversion = None
 
+    os.environ['PATH'] = "/sbin:/bin:/usr/sbin:/usr/bin"
+
     for xmlfile in parse.tags("File"):
         path = xmlfile.getTagData("Path")
         if not path.startswith("/"):
@@ -43,7 +45,7 @@ def updateCBM(filepath):
 
     # Always attempt to update CBM state
     try:
-        os.system("clr-boot-manager update")
+        os.system("/usr/bin/clr-update-wrapper")
     except Exception, e:
         print("Failed to run clr-boot-manager: %s" % e)
 
