@@ -3,9 +3,12 @@
 
 
 from pisi.actionsapi import shelltools, get, autotools, pisitools
+import os
 
 
 def setup():
+    if "LD_AS_NEEDED" in os.environ:
+        del os.environ["LD_AS_NEEDED"]
     libdir = "/usr/lib32" if get.buildTYPE() == "emul32" else "/usr/lib64"
 
     autotools.configure("--libdir=%s --enable-shared" % libdir)
