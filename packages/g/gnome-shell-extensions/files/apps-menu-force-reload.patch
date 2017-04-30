@@ -1,0 +1,60 @@
+From 8453cf05a7e74af7a47cb30c2e6e6ea73e2bbda0 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Sat, 22 Apr 2017 00:21:37 +0200
+Subject: apps-menu: 'Touch' copied .desktop file after updating attributes
+
+At least for now, nautilus' file monitor is blind to certain metadata
+updates:
+https://git.gnome.org/browse/nautilus/tree/src/nautilus-mime-actions.c#n1537
+
+So in order for the changes in the previous patch to take effect
+immediately, we need to force nautilus to reload the file info.
+Achieve this by updating the access time of the newly copied file
+after marking it as trusted.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=781596
+---
+ extensions/apps-menu/extension.js | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/extensions/apps-menu/extension.js b/extensions/apps-menu/extension.js
+index 23d12fc..5ef3709 100644
+--- a/extensions/apps-menu/extension.js
++++ b/extensions/apps-menu/extension.js
+@@ -331,6 +331,23 @@ const DesktopTarget = new Lang.Class({
+         return source._app.app_info;
+     },
+ 
++    _touchFile: function(file) {
++        let queryFlags = Gio.FileQueryInfoFlags.NONE;
++        let ioPriority = GLib.PRIORITY_DEFAULT;
++
++        let info = new Gio.FileInfo();
++        info.set_attribute_uint64(Gio.FILE_ATTRIBUTE_TIME_ACCESS,
++                                  GLib.get_real_time());
++        file.set_attributes_async (info, queryFlags, ioPriority, null,
++            (o, res) => {
++                try {
++                    o.set_attributes_finish(res);
++                } catch(e) {
++                    log('Failed to update access time: ' + e.message);
++                }
++            });
++    },
++
+     _markTrusted: function(file) {
+         let modeAttr = Gio.FILE_ATTRIBUTE_UNIX_MODE;
+         let trustedAttr = 'metadata::trusted';
+@@ -348,6 +365,9 @@ const DesktopTarget = new Lang.Class({
+                     file.set_attributes_async (info, queryFlags, ioPriority, null,
+                         (o, res) => {
+                             o.set_attributes_finish(res);
++
++                            // Hack: force nautilus to reload file info
++                            this._touchFile(file);
+                         });
+                 } catch(e) {
+                     log('Failed to mark file as trusted: ' + e.message);
+-- 
+cgit v0.12
+

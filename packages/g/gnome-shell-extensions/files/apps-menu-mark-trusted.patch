@@ -1,0 +1,61 @@
+From 5cb2657df78a3d848a4854aa1be82a1e278cc6e9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Fri, 21 Apr 2017 23:54:41 +0200
+Subject: apps-menu: Mark copied .desktop files as trusted
+
+The application can already be launched from the menu without further
+confirmation from the user, so there is no security gain in asking the
+user to trust it when launched from the desktop - just set the appropriate
+attributes of the newly copied file to mark it as trusted to nautilus.
+
+https://bugzilla.gnome.org/show_bug.cgi?id=781596
+---
+ extensions/apps-menu/extension.js | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/extensions/apps-menu/extension.js b/extensions/apps-menu/extension.js
+index a606652..23d12fc 100644
+--- a/extensions/apps-menu/extension.js
++++ b/extensions/apps-menu/extension.js
+@@ -331,6 +331,30 @@ const DesktopTarget = new Lang.Class({
+         return source._app.app_info;
+     },
+ 
++    _markTrusted: function(file) {
++        let modeAttr = Gio.FILE_ATTRIBUTE_UNIX_MODE;
++        let trustedAttr = 'metadata::trusted';
++        let queryFlags = Gio.FileQueryInfoFlags.NONE;
++        let ioPriority = GLib.PRIORITY_DEFAULT;
++
++        file.query_info_async(modeAttr, queryFlags, ioPriority, null,
++            (o, res) => {
++                try {
++                    let info = o.query_info_finish(res);
++                    let mode = info.get_attribute_uint32(modeAttr) | 0100;
++
++                    info.set_attribute_uint32(modeAttr, mode);
++                    info.set_attribute_string(trustedAttr, 'yes');
++                    file.set_attributes_async (info, queryFlags, ioPriority, null,
++                        (o, res) => {
++                            o.set_attributes_finish(res);
++                        });
++                } catch(e) {
++                    log('Failed to mark file as trusted: ' + e.message);
++                }
++            });
++    },
++
+     destroy: function() {
+         if (this._windowAddedId)
+             global.window_group.disconnect(this._windowAddedId);
+@@ -362,6 +386,7 @@ const DesktopTarget = new Lang.Class({
+         try {
+             // copy_async() isn't introspectable :-(
+             src.copy(dst, Gio.FileCopyFlags.OVERWRITE, null, null);
++            this._markTrusted(dst);
+         } catch(e) {
+             log('Failed to copy to desktop: ' + e.message);
+         }
+-- 
+cgit v0.12
+
