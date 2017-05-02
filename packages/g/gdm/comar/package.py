@@ -12,6 +12,7 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
         os.system ("groupadd -g %d %s" % (OUR_ID, OUR_NAME))
         os.system ("useradd -m -d /var/lib/gdm -r -s /bin/false -u %d -g %d %s -c %s" % (OUR_ID, OUR_ID, OUR_NAME, OUR_DESC))
         os.system ("dconf update")
+        os.system ("chown -R gdm:gdm /var/lib/gdm/.config")
     except:
         pass
 
