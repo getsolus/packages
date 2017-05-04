@@ -125,9 +125,9 @@ def install():
 
     # install modalias
     pisitools.dodir("/usr/share/doflicky/modaliases")
-    with open("%s/usr/share/doflicky/modaliases/%s.modaliases" % (get.installDIR(), get.srcNAME()), "w") as outp:
-        inp = commands.getoutput("../../nvidia_supported nvidia %s ../README.txt nvidia.ko" % get.srcNAME())
-        outp.write(inp)
+    modfile = "%s/usr/share/doflicky/modaliases/%s.modaliases" % (get.installDIR(), get.srcNAME())
+    shelltools.system("sh -e ../../nvidia_supported nvidia %s ../README.txt nvidia/nv-kernel.o_binary > %s" %
+                     (get.srcNAME(), modfile))
 
 
     # Blacklist nouveau
