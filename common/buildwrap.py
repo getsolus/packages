@@ -46,7 +46,7 @@ class Builder():
 
     def report_status(self, id, status):
         try:
-            os.system("ssh -4 build@%s status %s %s" % (SSH_HOST, id, status))
+            os.system("ssh -p 798 -4 build@%s status %s %s" % (SSH_HOST, id, status))
         except Exception, e:
             print e
             sys.exit(-1)
@@ -57,7 +57,7 @@ class Builder():
             os.chdir(self.wd)
             output = None
             try:
-                output = check_output("ssh -4 build@%s get" % SSH_HOST)
+                output = check_output("ssh -p 798 -4 build@%s get" % SSH_HOST)
             except Exception, e:
                 time.sleep(10)
                 continue
@@ -185,7 +185,7 @@ class Builder():
 def sync_logs(tag, skip=False):
     try:
         check_output("gzip \"%s.log\"" % tag)
-        check_output("scp -4 \"%s.log.gz\" logs@%s:logs/." % (tag, SSH_HOST))
+        check_output("scp -4 -P 798 \"%s.log.gz\" logs@%s:logs/." % (tag, SSH_HOST))
     except Exception, e:
         print e
         if not skip:
