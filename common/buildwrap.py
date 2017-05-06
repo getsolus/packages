@@ -27,7 +27,7 @@ import glob
 
 WorkDir = "/BUILDDIR"
 SSH_HOST = "solus-project.com"
-BASE_REPO = "git@solus-project.com:packages"
+BASE_REPO = "ssh://vcs@dev.solus-project.com/source"
 
 
 def check_output(cmd):
@@ -71,7 +71,7 @@ class Builder():
             tag = splits[2].replace("\n","")
             print "Taking: %s %s" % (pkg, tag)
 
-            clone_uri = "%s/%s" % (BASE_REPO, pkg)
+            clone_uri = "%s/%s.git" % (BASE_REPO, pkg)
 
             clone_dir = os.path.join(WorkDir, "CLONE", pkg)
             clone_base = os.path.join(WorkDir, "CLONE")
