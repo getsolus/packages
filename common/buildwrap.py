@@ -46,7 +46,7 @@ class Builder():
 
     def report_status(self, id, status):
         try:
-            os.system("ssh build@%s status %s %s" % (SSH_HOST, id, status))
+            os.system("ssh -4 build@%s status %s %s" % (SSH_HOST, id, status))
         except Exception, e:
             print e
             sys.exit(-1)
@@ -57,7 +57,7 @@ class Builder():
             os.chdir(self.wd)
             output = None
             try:
-                output = check_output("ssh build@%s get" % SSH_HOST)
+                output = check_output("ssh -4 build@%s get" % SSH_HOST)
             except Exception, e:
                 time.sleep(10)
                 continue
@@ -135,7 +135,7 @@ class Builder():
                 continue
 
             os.chdir(builddir)
-            cmd = "sudo evobuild build %s -p unstable-x86_64 > \"%s.log\" 2>&1" % (tgt, tag)
+            cmd = "sudo solbuild -d -n build %s -p unstable-x86_64 > \"%s.log\" 2>&1" % (tgt, tag)
             self.report_status(id, "BUILDING")
             r = 0
             try:
@@ -163,8 +163,13 @@ class Builder():
                 self.report_status(id, "FAILED")
                 time.sleep(10)
                 continue
+            if len(pkgs) < 1:
+                sync_logs(tag, True)
+                self.report_status(id, "FAILED")
+                time.sleep(10)
+                continue
             try:
-                check_output("scp %s packages@%s:base/incoming/unstable" % (" ".join(pkgs), SSH_HOST))
+                check_output("scp -4 -P 798 %s packages@%s:base/incoming/unstable" % (" ".join(pkgs), "archive.solus-project.com"))
             except Exception, e:
                 print e
                 self.report_status(id, "FAILED")
@@ -180,7 +185,7 @@ class Builder():
 def sync_logs(tag, skip=False):
     try:
         check_output("gzip \"%s.log\"" % tag)
-        check_output("scp \"%s.log.gz\" logs@%s:logs/." % (tag, SSH_HOST))
+        check_output("scp -4 \"%s.log.gz\" logs@%s:logs/." % (tag, SSH_HOST))
     except Exception, e:
         print e
         if not skip:
