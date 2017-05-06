@@ -1,7 +1,7 @@
 Getting setup
 ------------
 
-    git clone https://git.solus-project.com/common
+    git clone https://dev.solus-project.com/source/common.git
     ln -sv common/Makefile.common .
     ln -sv common/Makefile.toplevel Makefile
     ln -sv common/Makefile.iso .
