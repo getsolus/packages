@@ -92,7 +92,7 @@ class Builder():
                 time.sleep(10)
                 continue
 
-            clcmd = "git clone -b {} --depth 1 --single-branch {}"
+            clcmd = "git clone -b {} --depth 20 --single-branch {}"
             wd = os.getcwd()
             try:
                 os.chdir(clone_base)
