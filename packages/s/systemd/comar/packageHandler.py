@@ -21,14 +21,15 @@ def updateSystemConfig(filepath):
         if shouldUser and shouldTmp:
             break
 
-    if shouldTmp:
-        try:
-            os.system("/usr/bin/systemd-tmpfiles --create")
-        except Exception, e:
-            pass
     if shouldUser:
         try:
             os.system("/usr/bin/systemd-sysusers")
+        except Exception, e:
+            pass
+
+    if shouldTmp:
+        try:
+            os.system("/usr/bin/systemd-tmpfiles --create")
         except Exception, e:
             pass
 
