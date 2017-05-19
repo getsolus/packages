@@ -1,28 +1,31 @@
 name       : mariadb
-version    : 10.1.19
-release    : 2
+version    : 10.1.23
+release    : 3
 source     :
-    - https://github.com/MariaDB/server/archive/mariadb-10.1.19.tar.gz : 8b545cb455c639cac62994e8864ef933c39bea8c65ff745c2a82a7395d208868
+    - https://github.com/MariaDB/server/archive/mariadb-10.1.23.tar.gz : 246e8072f728331eb89a759a52410239684d2206c1979244ce7b2a212e2f517d
 license    :
     - GPL-2.0
     - LGPL-2.1
 component  :
     - database
     - bench : database
-    - embedded: database
-    - server: database
-    - test: database
+    - embedded : database
+    - libs: programming.library
+    - server : database
+    - test : database
 summary    :
     - MariaDB server is a community developed fork of MySQL server.
-    - bench: |
+    - bench : |
         This package provides MariaDB benchmark data
-    - embedded: |
+    - embedded : |
         This package provides an embeddable MariaDB server.
-    - server: |
+    - libs: |
+        This package provides the MariaDB client libraries
+    - server : |
         This package provides the MariaDB server component
-    - test: |
+    - test : |
         This package provides the test components for MariaDB
-    - docs: |
+    - docs : |
         This package provides MariaDB documentation
 description: |
     MariaDB server is a community developed fork of MySQL server. Started by
@@ -31,27 +34,38 @@ description: |
     licensed open SQL server in the industry.
 builddeps  :
     - pkgconfig(jemalloc)
+    - pkgconfig(libarchive)
     - pkgconfig(libevent)
+    - pkgconfig(liblz4)
     - pkgconfig(libpcre)
     - libaio-devel
-patterns:
-    - bench:
+    - ninja
+patterns   :
+    - bench :
         - /usr/share/sql-bench
-    - devel:
+    - devel :
         - /usr/share/pkgconfig
-    - docs:
+    - docs :
         - /usr/share/man
         - /usr/share/doc
-    - server:
+    - libs :
+        - /usr/lib64/lib*.so.*
+        - /usr/lib64/mysql/plugin/dialog.so
+        - /usr/lib64/mysql/plugin/mysql_clear_password.so
+    - server :
+        - /etc/mysql/my.cnf.d/enable_encryption.preset
+        - /etc/mysql/my.cnf.d/server.cnf
+        - /etc/mysql/my.cnf.d/tokudb.cnf
+        - /usr/bin/mariabackup
         - /usr/sbin/mysqld
         - /usr/bin/aria*
         - /usr/bin/inno*
+        - /usr/bin/mysql_install_db
         - /usr/bin/myisam*
         - /usr/bin/mysqld*
         - /usr/bin/mysql_*
         - /usr/bin/mysqlhotcopy
         - /usr/bin/perror
-        - /usr/bin/replace
         - /usr/bin/resolve*
         - /usr/bin/tokuft*
         - /usr/lib64/systemd
@@ -63,32 +77,34 @@ patterns:
         - /usr/share/mysql/my-*.cnf
         - /usr/share/mysql/mroonga
         - /usr/share/mysql/systemd
-    - test:
+    - test :
         - /usr/bin/mysqltest
         - /usr/share/mysql/test
-    - embedded:
+    - embedded :
         - /usr/bin/*embedded*
     - /usr/bin/mysqldump
     - /usr/bin/mysql_find_rows
     - /usr/bin/mysql_plugin
     - /usr/bin/mysql_waitpid
 rundeps    :
-    - server: mariadb
+    - server : mariadb
 setup      : |
-    # TODO: Forward port the CLR stateless patches
-    %cmake . \
+    %patch -p1 < $pkgfiles/0001-support-files-Add-Solus-integration.patch
+    mkdir ninja_build && cd ninja_build
+    %cmake .. -G Ninja \
     -DPLUGIN_AUTH_GSSAPI:STRING=NO  \
     -WITH_SYSTEMD=yes \
     -DSECURITY_HARDENED=ON \
     -DBUILD_CONFIG=mysql_release \
     -DWITH_JEMALLOC=yes \
     -DWITH_PCRE=system \
-    -DWITH_READLINE=OFF \
+    -DWITH_READLINE=ON \
     -DWITH_SSL=system \
     -DWITH_ZLIB=system \
     -DENABLED_LOCAL_INFILE=ON \
     -DWITH_EMBEDDED_SERVER=ON \
     -DINSTALL_LIBDIR="lib%LIBSUFFIX%" \
+    -DINSTALL_SYSTEMD_UNITDIR="%libdir%/systemd/system" \
     -DINSTALL_MANDIR=share/man \
     -DINSTALL_DOCDIR=share/doc/mariadb-${version} \
     -DINSTALL_DOCREADMEDIR=share/doc/mariadb-${version} \
@@ -97,26 +113,27 @@ setup      : |
     -DINSTALL_PLUGINDIR=lib%LIBSUFFIX%/mysql/plugin \
     -DINSTALL_SQLBENCHDIR=share \
     -DINSTALL_SUPPORTFILESDIR=share/mysql \
-    -DINSTALL_SYSCONF2DIR="/etc/mysql/my.cnf.d" \
     -DINSTALL_SYSCONFDIR="/etc/mysql" \
+    -DINSTALL_SYSCONF2DIR="/etc/mysql/my.cnf.d" \
     -DINSTALL_SCRIPTDIR=bin \
     -DINSTALL_SBINDIR=sbin \
+    -DWITH_LIBARCHIVE=ON \
     -DMYSQL_DATADIR=/var/db/mysql \
     -DMYSQL_UNIX_ADDR=/run/mysqld/mysqld.sock
 build      : |
-    %make
+    ninja %JOBS% -C ninja_build
 install    : |
-    %make_install
-    %patch $workdir/support-files/mariadb.service $pkgfiles/001-fix-service-file.patch
+    DESTDIR="$installdir" ninja %JOBS% install -C ninja_build
     install -D -m 00644 $pkgfiles/mysql.sysusers $installdir/%libdir%/sysusers.d/mysql.conf
     install -D -m 00644 $pkgfiles/mysql.tmpfiles $installdir/%libdir%/tmpfiles.d/mysql.conf
-    install -D -m 00644 $workdir/support-files/mariadb.service  $installdir/%libdir%/systemd/system/mariadb.service
+    install -m 00755 $pkgfiles/mariadb_first_install $installdir/usr/bin/mariadb_first_install
     # Nuke static
     rm -v $installdir/%libdir%/*.a
     # Solus doesn't use selinux or apparmor currently.
     rm -rf $installdir/usr/share/mysql/policy
     # Dopey artifacts we don't support...
     rm -rfv $installdir/etc/mysql/init.d
+    rm -v $installdir/usr/sbin/rcmysql
     rm -rfv $installdir/etc/mysql/logrotate.d
     rm -rfv $installdir/usr/data/
     rm -v $installdir/usr/share/mysql/*.server
