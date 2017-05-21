@@ -9,7 +9,7 @@ import commands
 wdir = "NVIDIA-Linux-x86_64-%s" % get.srcVERSION()
 
 # Required... built in tandem with kernel update
-kversion = "4.9.27-27.lts"
+kversion = "4.9.29-28.lts"
 
 def setup():
     shelltools.system("sh NVIDIA-Linux-x86_64-%s.run --extract-only" % get.srcVERSION())
@@ -59,8 +59,6 @@ def install():
         "libcuda",
         "libEGL_nvidia",
         "libGLESv1_CM_nvidia",
-        "libGLESv2_nvidia",
-        "libGLX_nvidia",
         "libnvcuvid",
         "libnvidia-compiler",
         "libnvidia-eglcore",
@@ -81,6 +79,14 @@ def install():
                    "libnvidia-gtk2",
                    "libnvidia-gtk3",
                    "libnvidia-wfb"]
+
+    # libGLX_nvidia.so.0
+    link_install("libGLX_nvidia", abi='0')
+    link_install("libGLX_nvidia", libdir='/usr/lib32', cdir='32', abi='0')
+
+    # libGLESv2_nvidia.so.2
+    link_install("libGLESv2_nvidia", abi='2')
+    link_install("libGLESv2_nvidia", libdir='/usr/lib32', cdir='32', abi='2')
 
     for lib in libs:
         link_install(lib)
