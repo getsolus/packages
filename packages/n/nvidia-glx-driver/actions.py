@@ -75,7 +75,6 @@ def install():
 
     # native only
     native_libs = ["libnvidia-cfg",
-                   "libnvidia-egl-wayland",
                    "libnvidia-gtk2",
                    "libnvidia-gtk3",
                    "libnvidia-wfb"]
@@ -93,6 +92,9 @@ def install():
         link_install(lib, libdir='/usr/lib32', cdir='32')
     for lib in native_libs:
         link_install(lib)
+
+    # nvidia wayland is a special case..
+    pisitools.dolib("libnvidia-egl-wayland.so.1.0.1", "/usr/lib")
 
     # vdpau provider
     link_install("libvdpau_nvidia", "/usr/lib/vdpau")
