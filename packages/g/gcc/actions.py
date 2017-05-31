@@ -83,3 +83,6 @@ def install():
     # Ensure LTO will work properly.
     pisitools.dodir("/usr/lib64/bfd-plugins")
     pisitools.dosym("/usr/lib64/gcc/%s/%s/liblto_plugin.so" % (Triplet, get.srcVERSION()), "/usr/lib64/bfd-plugins/liblto_plugin.so")
+
+    # eopkg built-in dbginfo is janky
+    pisitools.remove("/usr/bin/gcov-dump")
