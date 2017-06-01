@@ -39,14 +39,6 @@ def setup():
     shelltools.export("LD_LIBRARY_PATH", "%s/Release/lib/" % os.getcwd())
 
     host = get.HOST()
-    version = "6.3.0" # GCC version
-
-    paths = ["/usr/include/",
-             "/usr/include/c++/%s" % version,
-             "/usr/include/c++/%s/%s" % (version,host),
-             "/usr/include/c++/%s/backward" % (version),
-             "/usr/lib64/gcc/%s/%s/include" % (host,version),
-             "/usr/local/include" ]
 
     if get.buildTYPE() == "emul32":
         shelltools.export("CC", "gcc -m32")
