@@ -1,0 +1,214 @@
+name        : llvm
+version     : 4.0.0
+release     : 46
+source      :
+    - http://releases.llvm.org/4.0.0/llvm-4.0.0.src.tar.xz : 8d10511df96e73b8ff9e7abbfb4d4d432edbdbe965f1f4f07afaf370b8a533be
+    - http://releases.llvm.org/4.0.0/cfe-4.0.0.src.tar.xz : cea5f88ebddb30e296ca89130c83b9d46c2d833685e2912303c828054c4dc98a
+    - http://releases.llvm.org/4.0.0/compiler-rt-4.0.0.src.tar.xz : d3f25b23bef24c305137e6b44f7e81c51bbec764c119e01512a9bd2330be3115
+homepage    : http://llvm.org/
+license     :
+    - NCSA
+summary     :
+    - Low Level Virtual Machine (Reusable compiler and toolchains)
+    - clang: Clang Compiler frontend to LLVM
+    - clang-devel: Development files for building clang plugins
+    - clang-32bit: 32bit libraries for clang
+component   :
+    - programming
+    - clang: programming
+debug       : false
+libsplit    : false
+builddeps   :
+    - pkgconfig32(libffi)
+    - pkgconfig32(libxml-2.0)
+    - glibc-32bit-devel
+    - libgcc-32bit
+    - libstdc++-32bit
+rundeps    :
+    - clang:
+        - llvm-devel
+    - clang-devel:
+        - clang
+    - clang-32bit-devel:
+        - clang-32bit
+        - clang-devel
+description : |
+    The LLVM package contains a collection of modular and reusable compiler and toolchain technologies. The Low Level Virtual Machine (LLVM) Core libraries provide a modern source and target-independent optimizer, along with code generation support for many popular CPUs (as well as some less common ones!). These libraries are built around a well specified code representation known as the LLVM intermediate representation ("LLVM IR").
+patterns   :
+    - clang-devel:
+        - /usr/include/clang*
+    - clang-32bit:
+        - /usr/lib32/libclang*
+    - clang-32bit-devel:
+        - /usr/lib32/clang
+        - /usr/lib32/cmake/
+    - clang:
+        - /usr/bin
+        - /usr/libexec
+        - /usr/lib64/clang
+        - /usr/lib64/libclang*
+        - /usr/share/man/*/*clang*
+        - /usr/share/man/*/*scan-build*
+        - /usr/share/llvm/cmake
+        - /usr/share/clang
+        - /usr/share/scan-build
+        - /usr/share/scan-view
+    - devel:
+        - /usr/bin/bugpoint
+        - /usr/bin/c-index-test
+        - /usr/bin/ll*
+        - /usr/bin/macho-dump
+        - /usr/bin/opt
+replaces   :
+    - clang : clang
+    - clang-devel : clang-devel
+setup      : |
+    # llvm patches
+    %patch -p1 < $pkgfiles/0001-llvm-Let-the-linker-find-the-correct-ffi-as-cmake-br.patch
+
+    mkdir -p tools
+    # Set up our tools (cfe)
+    tar xf $sources/cfe-${version}.src.tar.xz -C tools
+    mv tools/cfe-${version}.src tools/clang
+
+    # Now set up all of the projects (compiler-rt, FUTURE: libcxx, libcxxabi, openmp)
+    mkdir -p projects
+    for project in compiler-rt ; do
+        tar xf $sources/${project}-${version}.src.tar.xz -C projects
+        mv projects/${project}-${version}.src projects/${project}
+    done
+
+    # Patch cfe for Solus specific options
+    pushd tools/clang
+    %patch -p1 < $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
+    %patch -p1 < $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
+    %patch -p1 < $pkgfiles/0003-cfe-Link-properly-to-multilib-xml2-library.patch
+    popd
+
+    # Override compilers for this first run
+    export CC=gcc
+    export CXX=g++
+
+    # Configure
+    mkdir sol-stage1
+    mkdir sol-stage2
+
+    export _LLVM_TRIPLE="%HOST%"
+    export _LLVM_ARCH="x86_64"
+    export _LLVM_FLAGS_BOOTSTRAP="-march=x86-64 -mtune=generic -O3 -fstack-protector -pipe"
+    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+
+    # Decontaminate environment for stage1 compilation
+    export CFLAGS="$_LLVM_FLAGS_BOOTSTRAP"
+    export CXXFLAGS="$_LLVM_FLAGS_BOOTSTRAP"
+    unset LDFLAGS
+    unset LD_AS_NEEDED
+
+    # Start stage1 bootstrap
+    pushd sol-stage1
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
+        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
+        -DLLVM_BINUTILS_INCDIR=/usr/include \
+        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
+        -DLLVM_ENABLE_RTTI=OFF \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
+        -DLLVM_ENABLE_CXX1Y=ON \
+        -DLLVM_BUILD_LLVM_DYLIB=ON \
+        -DLLVM_LINK_LLVM_DYLIB=ON
+    %make V=1 VERBOSE=1
+    popd
+
+    # Use our stage1 compiler
+    STAGE1DIR=$(realpath ./sol-stage1/bin)
+    # We need to preserve the symlink in the name during invocation
+    export CC="${STAGE1DIR}/clang"
+    export CXX="${STAGE1DIR}/clang++"
+
+    # Set up stage2 final flags
+    export CFLAGS="$_LLVM_FLAGS_FINAL"
+    export CXXFLAGS="$_LLVM_FLAGS_FINAL"
+
+    # Stage2 compile now
+    pushd sol-stage2
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DLLVM_INSTALL_UTILS=ON \
+        -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
+        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
+        -DLLVM_BINUTILS_INCDIR=/usr/include \
+        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
+        -DLLVM_ENABLE_FFI=ON \
+        -DLLVM_ENABLE_ZLIB=ON \
+        -DLLVM_BUILD_DOCS=OFF \
+        -DLLVM_ENABLE_RTTI=OFF \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_ENABLE_CXX1Y=ON \
+        -DENABLE_LINKER_BUILD_ID=ON \
+        -DLLVM_INCLUDEDIR=/usr/include \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
+        -DLLVM_BUILD_LLVM_DYLIB=ON \
+        -DLLVM_LINK_LLVM_DYLIB=ON
+build      : |
+    # Build it
+    unset LD_AS_NEEDED
+    %make -C sol-stage2 V=1 VERBOSE=1
+
+    # Now build 32-bit llvm bits
+    mkdir sol-stage2-emul32
+    export _LLVM_TRIPLE="i686-pc-linux-gnu"
+    export _LLVM_ARCH="i686"
+    export _LLVM_FLAGS_FINAL="-march=i686 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+
+    STAGE2DIR=$(realpath ./sol-stage2/bin)
+    pushd sol-stage2-emul32
+    # We need to preserve the symlink in the name during invocation
+    export CC="${STAGE2DIR}/clang -m32"
+    export CXX="${STAGE2DIR}/clang++ -m32"
+
+    export CFLAGS="$_LLVM_FLAGS_FINAL"
+    export CXXFLAGS="$_LLVM_FLAGS_FINAL"
+    unset LDFLAGS
+    unset LD_AS_NEEDED
+
+    # Even though we want to disable stuff, the libLLVM-$VERSION.so won't be installed..
+    cmake .. \
+        -DLLVM_BUILD_DOCS=OFF \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DLLVM_LIBDIR_SUFFIX=32 \
+        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
+        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
+        -DLLVM_ENABLE_FFI=ON \
+        -DLLVM_ENABLE_ZLIB=ON \
+        -DLLVM_ENABLE_RTTI=OFF \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_ENABLE_CXX1Y=ON \
+        -DENABLE_LINKER_BUILD_ID=ON \
+        -DLLVM_INCLUDEDIR=/usr/include \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
+        -DLLVM_BUILD_LLVM_DYLIB=ON \
+        -DLLVM_LINK_LLVM_DYLIB=ON
+    %make V=1 VERBOSE=1
+install    : |
+    # Install 32-bit
+    %make_install -C sol-stage2-emul32 V=1 VERBOSE=1
+    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-32.h
+
+    # Allow stage2 native to overwrite any stage2-emul32 files
+    %make_install -C sol-stage2 V=1 VERBOSE=1
+    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-64.h
+
+    # Finally add our compatibility header
+    install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
