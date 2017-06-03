@@ -1,10 +1,12 @@
 name        : llvm
 version     : 4.0.0
-release     : 49
+release     : 50
 source      :
     - http://releases.llvm.org/4.0.0/llvm-4.0.0.src.tar.xz : 8d10511df96e73b8ff9e7abbfb4d4d432edbdbe965f1f4f07afaf370b8a533be
     - http://releases.llvm.org/4.0.0/cfe-4.0.0.src.tar.xz : cea5f88ebddb30e296ca89130c83b9d46c2d833685e2912303c828054c4dc98a
     - http://releases.llvm.org/4.0.0/compiler-rt-4.0.0.src.tar.xz : d3f25b23bef24c305137e6b44f7e81c51bbec764c119e01512a9bd2330be3115
+    - http://releases.llvm.org/4.0.0/lldb-4.0.0.src.tar.xz : 2dbd8f05c662c1c9f11270fc9d0c63b419ddc988095e0ad107ed911cf882033d
+    - http://releases.llvm.org/4.0.0/clang-tools-extra-4.0.0.src.tar.xz : 41b7d37eb128fd362ab3431be5244cf50325bb3bb153895735c5bacede647c99
 homepage    : http://llvm.org/
 license     :
     - NCSA
@@ -21,9 +23,12 @@ libsplit    : false
 builddeps   :
     - pkgconfig32(libffi)
     - pkgconfig32(libxml-2.0)
+    - pkgconfig(libedit)
     - glibc-32bit-devel
     - libgcc-32bit
     - libstdc++-32bit
+    - doxygen
+    - swig
 rundeps    :
     - clang:
         - llvm-devel
@@ -37,16 +42,23 @@ description : |
 patterns   :
     - clang-devel:
         - /usr/include/clang*
+        - /usr/include/lldb*
+        - /usr/lib64/libclang*.a
+        - /usr/lib64/liblldb*.a
     - clang-32bit:
-        - /usr/lib32/libclang*
+        - /usr/lib32/liblldb*.so*
+        - /usr/lib32/libclang*.so*
     - clang-32bit-devel:
+        - /usr/lib32/libclang*.a
+        - /usr/lib32/liblldb*.a
         - /usr/lib32/clang
         - /usr/lib32/cmake/
     - clang:
         - /usr/bin
         - /usr/libexec
         - /usr/lib64/clang
-        - /usr/lib64/libclang*
+        - /usr/lib64/liblldb*.so*
+        - /usr/lib64/libclang*.so*
         - /usr/share/man/*/*clang*
         - /usr/share/man/*/*scan-build*
         - /usr/share/llvm/cmake
@@ -55,7 +67,9 @@ patterns   :
         - /usr/share/scan-view
     - devel:
         - /usr/bin/bugpoint
-        - /usr/bin/ll*
+        - /usr/bin/lli*
+        - /usr/bin/llc*
+        - /usr/bin/llv*
         - /usr/bin/macho-dump
         - /usr/bin/opt
 replaces   :
@@ -65,10 +79,26 @@ setup      : |
     # llvm patches
     %patch -p1 < $pkgfiles/0001-llvm-Let-the-linker-find-the-correct-ffi-as-cmake-br.patch
 
+    mkdir DISABLED_AREA
     mkdir -p tools
     # Set up our tools (cfe)
     tar xf $sources/cfe-${version}.src.tar.xz -C tools
     mv tools/cfe-${version}.src tools/clang
+
+    # Set up lldb (in future add lld and override LD
+    for tool in lldb ; do
+        tar xf $sources/${tool}-${version}.src.tar.xz -C tools
+        mv tools/${tool}-${version}.src tools/${tool}
+    done
+
+    # patch lldb with libstdc++ from gcc7
+    pushd tools/lldb
+    %patch -p1 < $pkgfiles/lldb-libstdcxx7.patch
+    popd
+
+    # Set up clang-tools-extra
+    tar xf $sources/clang-tools-extra-${version}.src.tar.xz -C tools/clang/tools
+    mv tools/clang/tools/clang-tools-extra-${version}.src tools/clang/tools/extra
 
     # Now set up all of the projects (compiler-rt, FUTURE: libcxx, libcxxabi, openmp)
     mkdir -p projects
@@ -103,6 +133,9 @@ setup      : |
     unset LDFLAGS
     unset LD_AS_NEEDED
 
+    # Before we start, disable lldb/lld
+    mv tools/lldb DISABLED_AREA/lldb
+
     # Start stage1 bootstrap
     pushd sol-stage1
     cmake .. \
@@ -132,6 +165,9 @@ setup      : |
     export CFLAGS="$_LLVM_FLAGS_FINAL"
     export CXXFLAGS="$_LLVM_FLAGS_FINAL"
 
+    # For stage2 2, re-enable them
+    mv DISABLED_AREA/lldb tools/.
+
     # Stage2 compile now
     pushd sol-stage2
     cmake .. \
@@ -150,6 +186,7 @@ setup      : |
         -DLLVM_ENABLE_RTTI=OFF \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
         -DLLVM_ENABLE_CXX1Y=ON \
+        -DLLDB_DISABLE_PYTHON=ON \
         -DENABLE_LINKER_BUILD_ID=ON \
         -DLLVM_INCLUDEDIR=/usr/include \
         -DLLVM_ENABLE_PIC=ON \
@@ -166,6 +203,9 @@ build      : |
     export _LLVM_TRIPLE="i686-pc-linux-gnu"
     export _LLVM_ARCH="i686"
     export _LLVM_FLAGS_FINAL="-march=i686 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+
+    # Before we start emul32, disable lldb/lld
+    mv tools/lldb DISABLED_AREA/lldb
 
     STAGE2DIR=$(realpath ./sol-stage2/bin)
     pushd sol-stage2-emul32
@@ -204,6 +244,9 @@ install    : |
     # Install 32-bit
     %make_install -C sol-stage2-emul32 V=1 VERBOSE=1
     mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-32.h
+
+    # Restore directories for stage2 emul32
+    mv DISABLED_AREA/lldb tools/.
 
     # Allow stage2 native to overwrite any stage2-emul32 files
     %make_install -C sol-stage2 V=1 VERBOSE=1
