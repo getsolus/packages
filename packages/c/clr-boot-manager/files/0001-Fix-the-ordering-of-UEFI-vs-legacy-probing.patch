@@ -1,0 +1,119 @@
+From c44abcba985fad44d53e3ab84b3bedfc094fc0b8 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <michael.i.doherty@intel.com>
+Date: Fri, 16 Jun 2017 15:04:18 +0100
+Subject: [PATCH 1/3] Fix the ordering of UEFI vs legacy probing
+
+The first and most important change is to ensure that we never try to
+grab the host ESP when we're operating in image mode. This alone causes
+issues when producing images using "--path", i.e. VHD imagery.
+
+Secondly, we ensure that we *always* set image mode *before* we set the
+prefix, as this prefix is only ever set once. This is the part where we
+inspect the root of the system we're looking at, and determine whether
+we're dealing with legacy or UEFI, or legacy+gpt (i.e. Azure images).
+
+Lastly, we make sure that update_image follows the lead of update_native
+by re-initialising the bootloader prior to using it, with the current
+root + boot directory settings, ensuring we're always using fresh
+values and world view.
+
+Signed-off-by: Ikey Doherty <michael.i.doherty@intel.com>
+---
+ src/bootman/sysconfig.c |  7 +++++--
+ src/bootman/update.c    |  8 ++++++++
+ src/cli/ops/update.c    | 13 ++++---------
+ 3 files changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/src/bootman/sysconfig.c b/src/bootman/sysconfig.c
+index 7f3d6a6..ecb0f3b 100644
+--- a/src/bootman/sysconfig.c
++++ b/src/bootman/sysconfig.c
+@@ -77,9 +77,10 @@ SystemConfig *cbm_inspect_root(const char *path, bool image_mode)
+          * UEFI. This is due to GPT being able to contain a legacy boot device
+          * *and* an ESP at the same time. Native UEFI takes precedence.
+          */
+-        if (!native_uefi) {
++        if (!native_uefi || image_mode) {
+                 boot = get_legacy_boot_device(realp);
+         }
++
+         if (boot) {
+                 c->boot_device = boot;
+                 c->wanted_boot_mask = BOOTLOADER_CAP_LEGACY | BOOTLOADER_CAP_GPT;
+@@ -88,7 +89,9 @@ SystemConfig *cbm_inspect_root(const char *path, bool image_mode)
+         }
+ 
+         /* Now try to find the system ESP */
+-        boot = get_boot_device();
++        if (!image_mode) {
++                boot = get_boot_device();
++        }
+         if (boot) {
+                 c->boot_device = boot;
+                 c->wanted_boot_mask = BOOTLOADER_CAP_UEFI | BOOTLOADER_CAP_GPT;
+diff --git a/src/bootman/update.c b/src/bootman/update.c
+index 0a28326..0fb0ff3 100644
+--- a/src/bootman/update.c
++++ b/src/bootman/update.c
+@@ -184,6 +184,14 @@ static bool boot_manager_update_image(BootManager *self)
+                 return false;
+         }
+ 
++        /* Reinit bootloader for image mode to ensure the bootloader is then
++         * re-initialised for the current settings and environment.
++         */
++        if (!boot_manager_set_boot_dir(self, boot_dir)) {
++                LOG_FATAL("Cannot re-initialise bootloader for image mode");
++                return false;
++        }
++
+         /* Sort them to find the newest kernel */
+         nc_array_qsort(kernels, kernel_compare_reverse);
+ 
+diff --git a/src/cli/ops/update.c b/src/cli/ops/update.c
+index 2061b2c..edc4fe2 100644
+--- a/src/cli/ops/update.c
++++ b/src/cli/ops/update.c
+@@ -24,7 +24,6 @@ bool cbm_command_update(int argc, char **argv)
+ {
+         autofree(char) *root = NULL;
+         autofree(BootManager) *manager = NULL;
+-        bool image_mode = false;
+         bool forced_image = false;
+ 
+         if (!cli_default_args_init(&argc, &argv, &root, &forced_image)) {
+@@ -47,7 +46,9 @@ bool cbm_command_update(int argc, char **argv)
+                 }
+                 /* Anything not / is image mode */
+                 if (!streq(realp, "/")) {
+-                        image_mode = true;
++                        boot_manager_set_image_mode(manager, true);
++                } else {
++                        boot_manager_set_image_mode(manager, forced_image);
+                 }
+ 
+                 /* CBM will check this again, we just needed to check for
+@@ -56,19 +57,13 @@ bool cbm_command_update(int argc, char **argv)
+                         return false;
+                 }
+         } else {
++                boot_manager_set_image_mode(manager, forced_image);
+                 /* Default to "/", bail if it doesn't work. */
+                 if (!boot_manager_set_prefix(manager, "/")) {
+                         return false;
+                 }
+         }
+ 
+-        if (forced_image) {
+-                boot_manager_set_image_mode(manager, true);
+-        } else {
+-                /* Set the image mode */
+-                boot_manager_set_image_mode(manager, image_mode);
+-        }
+-
+         /* Let CBM take care of the rest */
+         return boot_manager_update(manager);
+ }
+-- 
+2.13.1
+
