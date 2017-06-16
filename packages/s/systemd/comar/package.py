@@ -2,5 +2,9 @@
 import os
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
-    os.system("/usr/bin/systemd-sysusers")
-    os.system("/usr/bin/systemd-tmpfiles --create")
+    try:
+        os.system("/usr/bin/systemd-sysusers")
+        os.system("/usr/bin/systemd-tmpfiles --create")
+        os.system("/usr/bin/udevadm hwdb --update")
+    except Exception, e:
+        pass

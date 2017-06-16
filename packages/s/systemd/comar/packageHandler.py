@@ -9,6 +9,7 @@ def updateSystemConfig(filepath):
 
     shouldUser = False
     shouldTmp = False
+    shouldHwdb = False
 
     for xmlfile in parse.tags("File"):
         path = xmlfile.getTagData("Path")
@@ -18,7 +19,9 @@ def updateSystemConfig(filepath):
             shouldTmp = True
         if "lib/sysusers.d" in path or "lib64/sysusers.d" in path:
             shouldUser = True
-        if shouldUser and shouldTmp:
+        if path.startswith("/etc/udev/hwdb.d") or path.startswith("/usr/lib/udev/hwdb.d") or path.startswith("/usr/lib64/udev/hwdb.d"):
+            shouldHwdb = True
+        if shouldUser and shouldTmp and shouldHwdb:
             break
 
     if shouldUser:
@@ -30,6 +33,12 @@ def updateSystemConfig(filepath):
     if shouldTmp:
         try:
             os.system("/usr/bin/systemd-tmpfiles --create")
+        except Exception, e:
+            pass
+
+    if shouldHwdb:
+        try:
+            os.system("/usr/bin/udevadm hwdb --update")
         except Exception, e:
             pass
 
