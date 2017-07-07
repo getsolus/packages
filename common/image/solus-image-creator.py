@@ -400,18 +400,16 @@ SystemAccount=false
 
     try:
         ddir = os.path.join(get_image_root(), "home/live/Desktop")
-        spath = os.path.join(get_image_root(), "usr/share/applications/os-installer-gtk.desktop")
-        if os.path.exists(spath):
-            dpath = os.path.join(ddir, "os-installer-gtk.desktop")
-            if not os.path.exists(ddir):
-                print("Warning: Manually constructing home dirs")
-                os.makedirs(ddir, mode=00755)
-            shutil.copy(spath, dpath)
-            os.chmod(dpath, 00755)
-            # Restore permissions
-            run_chroot("chown -R live:live /home/live")
+        spath = "/usr/share/applications/os-installer-gtk.desktop"
+        dpath = os.path.join(ddir, "os-installer-gtk.desktop")
+        if not os.path.exists(ddir):
+            print("Warning: Manually constructing home dirs")
+            os.makedirs(ddir, mode=00755)
+        os.symlink(spath, dpath)
+        # Restore permissions
+        run_chroot("chown -R live:live /home/live")
     except Exception as e:
-        print("Unable to copy os-installer.desktop to new live user")
+        print("Unable to link os-installer.desktop to new live user")
 
 
 
