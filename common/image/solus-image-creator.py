@@ -438,8 +438,8 @@ def configure_boot():
         clean_exit(1)
 
     try:
-        # For now limit to the default-lts kernel
-        ksrc = os.path.realpath(os.path.join(get_image_root(), "usr", "lib", "kernel", "default-lts"))
+        # For now limit to the default-current kernel
+        ksrc = os.path.realpath(os.path.join(get_image_root(), "usr", "lib", "kernel", "default-current"))
         kdst = os.path.join(get_boot_dir(), "kernel")
         shutil.copy(ksrc, kdst)
     except Exception, ex:
