@@ -10,7 +10,7 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -ftree-vectorize -fdata-sections -O3".split(" ")
+    opt = "-ffunction-sections -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -ftree-vectorize -ftree-loop-vectorize -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
@@ -34,13 +34,12 @@ def setup():
         libdir = "lib32"
         mlib = "--build=i686-pc-linux-gnu --host=i686-pc-linux-gnu --with-clang-libdir=/usr/lib32"
         prefix = "/emul32"
-        shelltools.export("CC", "clang -m32")
-        shelltools.export("CXX", "clang++ -m32")
+        shelltools.export("CC", "gcc -m32")
+        shelltools.export("CXX", "g++ -m32")
         cflags = cflags.replace("-march=x86-64", "-march=i686")
-        shelltools.export("CFLAGS", cflags + " -m32")
+        shelltools.export("CFLAGS", cflags)
         cxxflags = cxxflags.replace("-march=x86-64", "-march=i686")
-        shelltools.export("CXXFLAGS", cxxflags + " -m32")
-        shelltools.export("LDFLAGS", get.LDFLAGS() + " -Wl,--as-needed -latomic -Wl,--no-as-needed")
+        shelltools.export("CXXFLAGS", cxxflags)
     else:
         libdir = "lib64"
         mlib = ""
