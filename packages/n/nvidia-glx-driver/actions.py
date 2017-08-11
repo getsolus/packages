@@ -9,7 +9,7 @@ import commands
 # Required... built in tandem with kernel update
 kernel_trees = {
     "linux-lts": "4.9.41-37.lts",
-    "linux-current": "4.12.5-8.current"
+    "linux-current": "4.12.5-9.current"
 }
 
 def setup():
