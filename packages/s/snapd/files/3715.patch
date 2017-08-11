@@ -1,0 +1,262 @@
+From f7c4cdeb8dc50264809ef88ff1f611f41d47254a Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 11:22:05 +0000
+Subject: [PATCH 1/7] interfaces/unity7,x11: update for NETLINK_KOBJECT_UEVENT
+ (LP: #1663221)
+
+---
+ interfaces/builtin/unity7.go |  9 +++++++++
+ interfaces/builtin/x11.go    | 14 +++++++++++---
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/interfaces/builtin/unity7.go b/interfaces/builtin/unity7.go
+index 76d2c58b5b..34d74b80aa 100644
+--- a/interfaces/builtin/unity7.go
++++ b/interfaces/builtin/unity7.go
+@@ -193,6 +193,12 @@ dbus send
+     member=GetAll
+     peer=(label=unconfined),
+ 
++# Needed by QtSystems on X to detect mouse and keyboard. Note, the 'netlink
++# raw' rule is not finely mediated by apparmor so we mediate with seccomp arg
++# filtering, below.
++network netlink raw,
++/run/udev/data/c13:[0-9]* r,
++/run/udev/data/+input:* r,
+ 
+ # subset of freedesktop.org
+ /usr/share/mime/**                   r,
+@@ -534,6 +540,9 @@ const unity7ConnectedPlugSeccomp = `
+ 
+ # X
+ shutdown
++
++# Needed by QtSystems on X to detect mouse and keyboard
++socket AF_NETLINK - NETLINK_KOBJECT_UEVENT
+ `
+ 
+ type unity7Interface struct{}
+diff --git a/interfaces/builtin/x11.go b/interfaces/builtin/x11.go
+index 8002d5ec89..9871fbaab9 100644
+--- a/interfaces/builtin/x11.go
++++ b/interfaces/builtin/x11.go
+@@ -1,7 +1,7 @@
+ // -*- Mode: Go; indent-tabs-mode: t -*-
+ 
+ /*
+- * Copyright (C) 2016 Canonical Ltd
++ * Copyright (C) 2016-2017 Canonical Ltd
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 3 as
+@@ -28,7 +28,6 @@ const x11BaseDeclarationSlots = `
+         - core
+ `
+ 
+-// http://bazaar.launchpad.net/~ubuntu-security/ubuntu-core-security/trunk/view/head:/data/apparmor/policygroups/ubuntu-core/16.04/x
+ const x11ConnectedPlugAppArmor = `
+ # Description: Can access the X server. Restricted because X does not prevent
+ # eavesdropping or apps interfering with one another.
+@@ -43,14 +42,23 @@ const x11ConnectedPlugAppArmor = `
+ # in the XAUTHORITY environment variable, that "snap run" creates on
+ # startup.
+ owner /run/user/[0-9]*/.Xauthority r,
++
++# Needed by QtSystems on X to detect mouse and keyboard. Note, the 'netlink
++# raw' rule is not finely mediated by apparmor so we mediate with seccomp arg
++# filtering, below.
++network netlink raw,
++/run/udev/data/c13:[0-9]* r,
++/run/udev/data/+input:* r,
+ `
+ 
+-// http://bazaar.launchpad.net/~ubuntu-security/ubuntu-core-security/trunk/view/head:/data/seccomp/policygroups/ubuntu-core/16.04/x
+ const x11ConnectedPlugSecComp = `
+ # Description: Can access the X server. Restricted because X does not prevent
+ # eavesdropping or apps interfering with one another.
+ 
+ shutdown
++
++# Needed by QtSystems on X to detect mouse and keyboard
++socket AF_NETLINK - NETLINK_KOBJECT_UEVENT
+ `
+ 
+ func init() {
+
+From b11db2be8323b07635eb2013e439b0701789126a Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 11:35:55 +0000
+Subject: [PATCH 2/7] QtSystems also needs 'bind' with NETLINK_KOBJECT_UEVENT
+
+---
+ interfaces/builtin/unity7.go | 1 +
+ interfaces/builtin/x11.go    | 1 +
+ 2 files changed, 2 insertions(+)
+
+diff --git a/interfaces/builtin/unity7.go b/interfaces/builtin/unity7.go
+index 34d74b80aa..99d65aa6cd 100644
+--- a/interfaces/builtin/unity7.go
++++ b/interfaces/builtin/unity7.go
+@@ -543,6 +543,7 @@ shutdown
+ 
+ # Needed by QtSystems on X to detect mouse and keyboard
+ socket AF_NETLINK - NETLINK_KOBJECT_UEVENT
++bind
+ `
+ 
+ type unity7Interface struct{}
+diff --git a/interfaces/builtin/x11.go b/interfaces/builtin/x11.go
+index 9871fbaab9..d282057a6b 100644
+--- a/interfaces/builtin/x11.go
++++ b/interfaces/builtin/x11.go
+@@ -59,6 +59,7 @@ shutdown
+ 
+ # Needed by QtSystems on X to detect mouse and keyboard
+ socket AF_NETLINK - NETLINK_KOBJECT_UEVENT
++bind
+ `
+ 
+ func init() {
+
+From 14910d02c8e8f04b7e0db239981ba4d89d75afe8 Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 11:44:03 +0000
+Subject: [PATCH 3/7] interfaces/browser-support: update sysfs reads for newer
+ browser versions
+
+---
+ interfaces/builtin/browser_support.go | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/interfaces/builtin/browser_support.go b/interfaces/builtin/browser_support.go
+index 9c4c711753..029dccbf5c 100644
+--- a/interfaces/builtin/browser_support.go
++++ b/interfaces/builtin/browser_support.go
+@@ -134,7 +134,9 @@ owner @{PROC}/@{pid}/fd/[0-9]* w,
+ /sys/devices/**/descriptors r,
+ /sys/devices/**/manufacturer r,
+ /sys/devices/**/product r,
++/sys/devices/**/revision r,
+ /sys/devices/**/serial r,
++/sys/devices/system/node/node[0-9]*/meminfo r,
+ 
+ # Chromium content api tries to read these. It is an information disclosure
+ # since these contain the names of snaps. Chromium operates fine without the
+
+From 13a24efd0625be38eb35a9404ebeb5e6fb87d41c Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 12:05:25 +0000
+Subject: [PATCH 4/7] interfaces/network-control: rw for ieee80211 advanced
+ wireless (LP: #1679295)
+
+---
+ interfaces/builtin/network_control.go | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/interfaces/builtin/network_control.go b/interfaces/builtin/network_control.go
+index 892f0f6001..465dbca03b 100644
+--- a/interfaces/builtin/network_control.go
++++ b/interfaces/builtin/network_control.go
+@@ -87,6 +87,10 @@ network sna,
+ @{PROC}/sys/net/netfilter/** rw,
+ @{PROC}/sys/net/nf_conntrack_max rw,
+ 
++# For advanced wireless configuration
++/sys/kernel/debug/ieee80211/ r,
++/sys/kernel/debug/ieee80211/** r,
++
+ # read netfilter module parameters
+ /sys/module/nf_*/                r,
+ /sys/module/nf_*/parameters/{,*} r,
+
+From a9d33d4a64b6755143cd6fefd133ea372c2ca272 Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 12:05:52 +0000
+Subject: [PATCH 5/7] interfaces/mount-observe: allow read on sysfs entries for
+ block devices
+
+---
+ interfaces/builtin/mount_observe.go | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/interfaces/builtin/mount_observe.go b/interfaces/builtin/mount_observe.go
+index 93cb04a9db..e7ae4bc4f6 100644
+--- a/interfaces/builtin/mount_observe.go
++++ b/interfaces/builtin/mount_observe.go
+@@ -42,6 +42,7 @@ const mountObserveConnectedPlugAppArmor = `
+ owner @{PROC}/@{pid}/mounts r,
+ owner @{PROC}/@{pid}/mountinfo r,
+ owner @{PROC}/@{pid}/mountstats r,
++/sys/devices/*/block/{,**} r,
+ 
+ @{PROC}/swaps r,
+ 
+
+From 3937459412760caa9434ee5f499f43c69a2cfd10 Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 12:09:47 +0000
+Subject: [PATCH 6/7] fix comment in unity7 and x11
+
+---
+ interfaces/builtin/unity7.go | 2 +-
+ interfaces/builtin/x11.go    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/interfaces/builtin/unity7.go b/interfaces/builtin/unity7.go
+index 99d65aa6cd..11408aec45 100644
+--- a/interfaces/builtin/unity7.go
++++ b/interfaces/builtin/unity7.go
+@@ -195,7 +195,7 @@ dbus send
+ 
+ # Needed by QtSystems on X to detect mouse and keyboard. Note, the 'netlink
+ # raw' rule is not finely mediated by apparmor so we mediate with seccomp arg
+-# filtering, below.
++# filtering.
+ network netlink raw,
+ /run/udev/data/c13:[0-9]* r,
+ /run/udev/data/+input:* r,
+diff --git a/interfaces/builtin/x11.go b/interfaces/builtin/x11.go
+index d282057a6b..882a6697b5 100644
+--- a/interfaces/builtin/x11.go
++++ b/interfaces/builtin/x11.go
+@@ -45,7 +45,7 @@ owner /run/user/[0-9]*/.Xauthority r,
+ 
+ # Needed by QtSystems on X to detect mouse and keyboard. Note, the 'netlink
+ # raw' rule is not finely mediated by apparmor so we mediate with seccomp arg
+-# filtering, below.
++# filtering.
+ network netlink raw,
+ /run/udev/data/c13:[0-9]* r,
+ /run/udev/data/+input:* r,
+
+From 3948b14c51f62f5c806a0b2ede6a50e94ecd01e7 Mon Sep 17 00:00:00 2001
+From: Jamie Strandboge <jamie@ubuntu.com>
+Date: Fri, 11 Aug 2017 12:22:29 +0000
+Subject: [PATCH 7/7] actually provide rw on ieee80211
+
+---
+ interfaces/builtin/network_control.go | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/interfaces/builtin/network_control.go b/interfaces/builtin/network_control.go
+index 465dbca03b..a930820985 100644
+--- a/interfaces/builtin/network_control.go
++++ b/interfaces/builtin/network_control.go
+@@ -1,7 +1,7 @@
+ // -*- Mode: Go; indent-tabs-mode: t -*-
+ 
+ /*
+- * Copyright (C) 2016 Canonical Ltd
++ * Copyright (C) 2016-2017 Canonical Ltd
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 3 as
+@@ -89,7 +89,7 @@ network sna,
+ 
+ # For advanced wireless configuration
+ /sys/kernel/debug/ieee80211/ r,
+-/sys/kernel/debug/ieee80211/** r,
++/sys/kernel/debug/ieee80211/** rw,
+ 
+ # read netfilter module parameters
+ /sys/module/nf_*/                r,

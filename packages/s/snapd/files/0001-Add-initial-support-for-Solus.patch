@@ -1,0 +1,195 @@
+From f7559c9a7da14001a5909e317eab4282b701d1c9 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Thu, 10 Aug 2017 10:21:47 +0100
+Subject: [PATCH] Add initial support for Solus
+
+ - Do not use re-exec on Solus
+ - Allow autogen to take "$version" parameter from environment
+ - Allow autogen to pass `$@` arguments to `configure` script
+ - Recognise Solus as a "classic" distribution
+ - Support usr-merge/bi-arch confinement library paths
+ - Fix confinement support for "nvidia-arch" GL functionality
+ - Support Solus's GL "linux-driver-management" layout
+ - Fix bind-mount confinement issues for snapd directory
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ cmd/autogen.sh                            |  3 +++
+ cmd/cmd.go                                |  2 +-
+ cmd/libsnap-confine-private/classic.c     |  1 +
+ cmd/snap-confine/snap-confine.apparmor.in | 36 +++++++++++++++++++++++++++++++
+ dirs/dirs.go                              |  2 ++
+ interfaces/builtin/opengl.go              |  6 ++++++
+ mkversion.sh                              |  6 ++++++
+ 7 files changed, 55 insertions(+), 1 deletion(-)
+
+diff --git a/cmd/autogen.sh b/cmd/autogen.sh
+index d3703ef0f..1bddae07a 100755
+--- a/cmd/autogen.sh
++++ b/cmd/autogen.sh
+@@ -45,6 +45,9 @@ case "$ID" in
+ 		# patches find their way into the distribution.
+ 		extra_opts="--libexecdir=/usr/lib/snapd --disable-apparmor"
+ 		;;
++	solus)
++		extra_opts="--with-snap-mount-dir=/snap --enable-merged-usr --enable-nvidia-arch $@"
++		;;
+ esac
+ 
+ echo "Configuring with: $extra_opts"
+diff --git a/cmd/cmd.go b/cmd/cmd.go
+index b7528d3e2..8801ffeeb 100644
+--- a/cmd/cmd.go
++++ b/cmd/cmd.go
+@@ -67,7 +67,7 @@ func distroSupportsReExec() bool {
+ 		return false
+ 	}
+ 	switch release.ReleaseInfo.ID {
+-	case "fedora", "centos", "rhel", "opensuse", "suse", "poky", "arch":
++	case "fedora", "centos", "rhel", "opensuse", "suse", "poky", "arch", "solus":
+ 		logger.Debugf("re-exec not supported on distro %q yet", release.ReleaseInfo.ID)
+ 		return false
+ 	}
+diff --git a/cmd/libsnap-confine-private/classic.c b/cmd/libsnap-confine-private/classic.c
+index 2a3196c3f..2b9adeda5 100644
+--- a/cmd/libsnap-confine-private/classic.c
++++ b/cmd/libsnap-confine-private/classic.c
+@@ -11,5 +11,6 @@ bool is_running_on_classic_distribution()
+ 	    || access("/var/lib/pacman", F_OK) == 0
+ 	    || access("/var/lib/portage", F_OK) == 0
+ 	    || access("/var/lib/rpm", F_OK) == 0
++	    || access("/var/lib/eopkg", F_OK) == 0
+ 	    || access("/sbin/procd", F_OK) == 0;
+ }
+diff --git a/cmd/snap-confine/snap-confine.apparmor.in b/cmd/snap-confine/snap-confine.apparmor.in
+index 5c93982b6..158123ebf 100644
+--- a/cmd/snap-confine/snap-confine.apparmor.in
++++ b/cmd/snap-confine/snap-confine.apparmor.in
+@@ -11,6 +11,12 @@
+     /lib/@{multiarch}/libpthread{,-[0-9]*}.so* mr,
+     /lib/@{multiarch}/librt{,-[0-9]*}.so* mr,
+     /lib/@{multiarch}/libgcc_s.so* mr,
++    # biarch + usr-merged
++    /lib64/ld-*.so mr,
++    /usr/lib64/libc{,-[0-9]*}.so* mr,
++    /usr/lib64/libpthread{,-[0-9]*}.so* mr,
++    /usr/lib64/librt{,-[0-9]*}.so* mr,
++    /usr/lib64/libgcc_s.so* mr,
+     # normal libs in order
+     /lib/@{multiarch}/libapparmor.so* mr,
+     /lib/@{multiarch}/libcgmanager.so* mr,
+@@ -22,6 +28,15 @@
+     /usr/lib/@{multiarch}/libseccomp.so* mr,
+     /lib/@{multiarch}/libseccomp.so* mr,
+ 
++    # normal libs in order biarch + usr-merged
++    /usr/lib64/libapparmor.so* mr,
++    /usr/lib64/libcap.so* mr,
++    /usr/lib64/libdl-[0-9]*.so* mr,
++    /usr/lib64/libdbus-1.so* mr,
++    /usr/lib64/libudev.so* mr,
++    /usr/lib64/libseccomp.so* mr,
++    /usr/lib64/libseccomp.so* mr,
++
+     @LIBEXECDIR@/snap-confine mr,
+ 
+     /dev/null rw,
+@@ -154,6 +169,7 @@
+     mount options=(rw rslave) -> /tmp/snap.rootfs_*/run/,
+ 
+     mount options=(rw rbind) {/usr,}/lib/modules/ -> /tmp/snap.rootfs_*/lib/modules/,
++    mount options=(rw rbind) {/usr,}/lib64/modules/ -> /tmp/snap.rootfs_*/lib/modules/,
+     mount options=(rw rslave) -> /tmp/snap.rootfs_*/lib/modules/,
+ 
+     mount options=(rw rbind) /var/log/ -> /tmp/snap.rootfs_*/var/log/,
+@@ -161,6 +177,7 @@
+ 
+     mount options=(rw rbind) /usr/src/ -> /tmp/snap.rootfs_*/usr/src/,
+     mount options=(rw rslave) -> /tmp/snap.rootfs_*/usr/src/,
++
+     # /etc/alternatives (classic)
+     mount options=(rw bind) @SNAP_MOUNT_DIR@/{,ubuntu-}core/*/etc/alternatives/ -> /tmp/snap.rootfs_*/etc/alternatives/,
+     mount options=(rw bind) @SNAP_MOUNT_DIR@/{,ubuntu-}core/*/etc/ssl/ -> /tmp/snap.rootfs_*/etc/ssl/,
+@@ -235,6 +252,9 @@
+     /sys/module/nvidia/version r,
+     /usr/** r,
+     mount options=(rw bind) /usr/lib/nvidia-*/ -> /{tmp/snap.rootfs_*/,}var/lib/snapd/lib/gl/,
++    /tmp/snap.rootfs_*/var/lib/snapd/lib/gl/* w,
++    mount fstype=tmpfs none -> /tmp/snap.rootfs_*/var/lib/snapd/lib/gl/,
++    mount options=(remount,ro) -> /tmp/snap.rootfs_*/var/lib/snapd/lib/gl/,
+ 
+     # for chroot on steroids, we use pivot_root as a better chroot that makes
+     # apparmor rules behave the same on classic and outside of classic.
+@@ -347,6 +367,22 @@
+         /usr/lib/@{multiarch}/libseccomp.so* mr,
+         /lib/@{multiarch}/libseccomp.so* mr,
+ 
++        # biarch + usr-merged
++        /lib64/ld-*.so mr,
++        /usr/lib64/libc{,-[0-9]*}.so* mr,
++        /usr/lib64/libpthread{,-[0-9]*}.so* mr,
++        /usr/lib64/librt{,-[0-9]*}.so* mr,
++        /usr/lib64/libgcc_s.so* mr,
++
++        # normal libs in order biarch + usr-merged
++        /usr/lib64/libapparmor.so* mr,
++        /usr/lib64/libcap* mr,
++        /usr/lib64/libdl-[0-9]*.so* mr,
++        /usr/lib64/libdbus-1.so* mr,
++        /usr/lib64/libudev.so* mr,
++        /usr/lib64/libseccomp.so* mr,
++        /usr/lib64/libseccomp.so* mr,
++
+         @LIBEXECDIR@/snap-confine mr,
+ 
+         /dev/null rw,
+diff --git a/dirs/dirs.go b/dirs/dirs.go
+index dd996d09a..e2cd2324e 100644
+--- a/dirs/dirs.go
++++ b/dirs/dirs.go
+@@ -185,6 +185,8 @@ func SetRootDir(rootdir string) {
+ 	switch release.ReleaseInfo.ID {
+ 	case "fedora", "centos", "rhel":
+ 		DistroLibExecDir = filepath.Join(rootdir, "/usr/libexec/snapd")
++	case "solus":
++		DistroLibExecDir = filepath.Join(rootdir, "/usr/lib64/snapd")
+ 	default:
+ 		DistroLibExecDir = filepath.Join(rootdir, "/usr/lib/snapd")
+ 	}
+diff --git a/interfaces/builtin/opengl.go b/interfaces/builtin/opengl.go
+index 03a1297b6..d01f8f61b 100644
+--- a/interfaces/builtin/opengl.go
++++ b/interfaces/builtin/opengl.go
+@@ -35,6 +35,12 @@ const openglConnectedPlugAppArmor = `
+   /var/lib/snapd/lib/gl/ r,
+   /var/lib/snapd/lib/gl/** rm,
+ 
++  # Solus LDM locations
++  /var/lib/snapd/hostfs/usr/lib*/glx-provider/** rm,
++  /var/lib/snapd/hostfs/usr/lib*/libcuda* rm,
++  /var/lib/snapd/hostfs/usr/lib*/libn* rm,
++  /var/lib/snapd/hostfs/usr/lib*/lib{GL,EGL}* rm,
++
+   /dev/dri/ r,
+   /dev/dri/card0 rw,
+   # nvidia
+diff --git a/mkversion.sh b/mkversion.sh
+index 823eebad1..3c3842ba8 100755
+--- a/mkversion.sh
++++ b/mkversion.sh
+@@ -32,6 +32,12 @@ if [ ! -z "$1" ]; then
+     o=shell
+ fi
+ 
++# If the version is passed in the environment during build, let's use that
++if [ ! -z "$version" ]; then
++    v="$version"
++    o=shell
++fi
++
+ if [ -z "$v" ]; then
+     # Let's try to derive the version from git..
+     if which git >/dev/null; then
+-- 
+2.14.1
+

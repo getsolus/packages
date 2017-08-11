@@ -1,0 +1,74 @@
+name       : snapd
+version    : 2.27
+homepage   : https://snapcraft.io/
+release    : 1
+source     :
+    - https://github.com/snapcore/snapd/releases/download/2.27/snapd_2.27.vendor.tar.xz : d61ade8303e5eb091ae9aa84a099dbb130e6035a6a4f333f5b57907960729ad2
+license    : GPL-3.0
+component  : desktop.util
+summary    : The snapd and snap tools enable systems to work with .snap files
+description: |
+    Universal applications support - .snap files allow you to run Snap packages
+    on any Linux distribution, with full sandboxing and additional security.
+builddeps  :
+    - pkgconfig(glib-2.0)
+    - pkgconfig(libapparmor)
+    - pkgconfig(libseccomp)
+    - pkgconfig(libudev)
+    - pkgconfig(libcap)
+    - golang
+    - python-docutils
+    - xfsprogs-devel
+setup      : |
+    %patch -p1 < $pkgfiles/0001-Add-initial-support-for-Solus.patch
+    %patch -p1 < $pkgfiles/3715.patch
+    mkdir -p src/github.com/snapcore
+    ln -s `pwd` src/github.com/snapcore/snapd
+    pushd cmd
+    %autogen --enable-nvidia-arch
+build      : |
+    commands=(snap snapctl snapd snap-exec snap-update-ns snap-seccomp)
+    for snapcracklepop in ${commands[@]}; do
+        GOPATH="`pwd`" go install -v github.com/snapcore/snapd/cmd/$snapcracklepop
+    done
+    %make -C cmd
+install    : |
+    %make_install -C cmd
+    bincommands=(snap snapctl)
+    dcommands=(snapd snap-exec snap-update-ns snap-seccomp)
+    for tgtbin in ${bincommands[@]} ; do
+        install -m 00755 bin/$tgtbin $installdir/usr/bin/.
+    done
+    for tgtbin in ${dcommands[@]} ; do
+        install -m 00755 bin/$tgtbin $installdir/%libdir%/$package/.
+    done
+
+    # Completion
+    install -m 00644 data/info $installdir/%libdir%/$package/info
+    rm -vf $installdir/usr/bin/ubuntu-core-launcher
+
+    # systemd
+    %make_install -C data/systemd \
+        LIBEXECDIR="%libdir%" \
+        SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system"
+
+    # need tmpfiles to construct the void dir, the package is not allowed to
+    # ship with it in Solus
+    install -D -m 00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
+    rm -rf $installdir/var
+
+    # You have snapd installed, so you wanna use it. Vendor-enable the .socket
+    install -d -m 00755 $installdir/%libdir%/systemd/system/sockets.target.wants
+    ln -sv ../snapd.socket $installdir/%libdir%/systemd/system/sockets.target.wants/snapd.socket
+
+    # empty usr/src directory (i.e. linux-lts-headers linux-current-headers) to
+    # satisfy bindmounts in confinement
+    install -D -d -m 00755 $installdir/usr/src
+
+    # Ensure we can integrate snapd in the environment
+    install -D -m 0644 $pkgfiles/70-snapd.sh $installdir/usr/share/defaults/etc/profile.d/70-snapd.sh
+
+    # bash completion
+    install -D -m 00644 data/completion/snap $installdir/usr/share/bash-completion/completions/snap
+    install -m 00644 data/completion/complete.sh $installdir/%libdir%/snapd/complete.sh
+    install -m 00644 data/completion/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
