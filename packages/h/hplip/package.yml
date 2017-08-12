@@ -1,54 +1,85 @@
 name       : hplip
-version    : 3.16.11
-release    : 17
+version    : 3.17.7
+release    : 18
 source     :
-    - http://internode.dl.sourceforge.net/project/hplip/hplip/3.16.11/hplip-3.16.11.tar.gz : f6e20cacb4891e4e60fc5de2213a10f8d0c68840f9b511aa38cfca0cb29f9b24
+    - https://netcologne.dl.sourceforge.net/project/hplip/hplip/3.17.7/hplip-3.17.7.tar.gz : 3577bd5afd40b73fd754664ad69f0187dde2e64879e7446309f2ed9fd7dc400d
 license    :
     - GPL-2.0
     - MIT
     - BSD-3-Clause
-summary    : HP Linux Imaging & Printing
+summary    : HP Linux Imaging & Printing - Print, scan, fax drivers and service tools
 component  : desktop.core
 description: |
-    Hewlett-Packard's Linux imaging and printing software
+    The Hewlett-Packard Linux Imaging and Printing Project provides
+    drivers for HP printers and multi-function peripherals.
 libsplit   : no
 builddeps  :
-    - cups-devel
-    - libjpeg-turbo-devel
-    - net-snmp-devel
-    - python-pillow
-    - python-reportlab
-    - python-dbus
-    - python3-qt4
     - pkgconfig(avahi-client)
     - pkgconfig(libusb-1.0)
     - pkgconfig(polkit-agent-1)
     - pkgconfig(pygobject-3.0)
     - pkgconfig(python-3.5)
     - pkgconfig(sane-backends)
-rundeps    :
-    - lsb-release
-    - python3-qt4
-    - python3-dbus
+    - cups-devel
+    - libjpeg-turbo-devel
+    - net-snmp-devel
+    - python3-qt5
+    - python-dbus
     - python-pillow
     - python-reportlab
-    - python-gobject2
+rundeps    :
+    - lsb-release
+    - python3-dbus
+    - python3-qt5
+    - python3-gobject
+    - python-pillow
+    - python-reportlab
 setup      : |
     %patch -p1 < $pkgfiles/0001-Ensure-sudo-use-on-Solus.patch
-    %configure --enable-qt4 \
-               --enable-foomatic-rip-hplip-install \
-               --enable-foomatic-ppd-install \
-               --enable-hpcups-install \
-               --enable-new-hpcups \
-               --enable-cups-ppd-install \
-               --enable-cups-drv-install \
-               --enable-hpijs-install \
-               --enable-foomatic-drv-install \
-               --enable-pp-build
+    %patch -p1 < $pkgfiles/disable-upgrade.patch
+    %patch -p1 < $pkgfiles/add_missing_includes_and_define_GNU_SOURCE.patch
+    %patch -p1 < $pkgfiles/add-include-cups-ppd.h-in-various-places-as-CUPS-2.2.patch
+
+    # move udev rules in /usr/lib64
+    export udevdir=%libdir%/udev
+    sed -i -e "s|/etc/udev|${udevdir}|g" $(find . -type f -exec grep -l /etc/udev {} +)
+
+    # Force recognition of Solus distro by hp-check
+    sed -i -e "s|open('/etc/issue', 'r').read().lower().strip()|'Solus'|" installer/core_install.py
+
+    # Because foomatic-rip-hplip has CVE-2011-2697 plus a leftover in CVE-2004-0801
+    # foomatic-rip-hplip should not be installed and foomatic-rip should be used instead
+    for p in ppd/hpijs/*.ppd.gz ; do
+        rm -f $p.temp
+        gunzip -c $p | sed 's/foomatic-rip-hplip/foomatic-rip/g' | \
+            gzip > $p.temp || return 1
+        mv $p.temp $p
+    done
+
+    # If AUTOMAKE='automake --foreign' is not set, autoreconf complains about missing files
+    # like NEWS, README, AUTHORS, ChangeLog in each directory where a Makefile.am exists
+    export AUTOMAKE='automake --foreign'
+
+    %reconfigure --enable-qt5 --disable-qt4 \
+                 --disable-foomatic-rip-hplip-install \
+                 --enable-foomatic-drv-install \
+                 --enable-foomatic-ppd-install \
+                 --enable-hpcups-install \
+                 --enable-hpijs-install \
+                 --enable-new-hpcups \
+                 --enable-cups-ppd-install \
+                 --enable-cups-drv-install \
+                 --enable-pp-build
 build      : |
     %make
 install    : |
-    %make_install rulesdir=/usr/lib/udev/rules.d -j1
-    rm -rf $installdir/etc/sane.d
-    # Kill XDG autostart
-    rm -rf $installdir/etc/xdg
+    %make_install rulesdir=%libdir%/udev/rules.d -j1
+
+    # remove config provided by sane and XDG autostart
+    rm -rfv $installdir/etc/{sane.d,xdg}
+
+    # remove HAL .fdi file because HAL is no longer used
+    rm -vrf $installdir/usr/share/hal
+ 
+    # remove rc script
+    rm -vrf $installdir/etc/init.d
