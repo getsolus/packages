@@ -18,7 +18,7 @@ def setup():
                 --sysconfdir=/etc \
                 --docdir=/usr/share/doc \
                 --datarootdir=/usr/share \
-                --with-default-trust-store-file=/etc/ssl/ca-certificates.crt \
+                --with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt \
                 --disable-static" % libdir
 
     if get.buildTYPE() == "emul32":
