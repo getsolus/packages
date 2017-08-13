@@ -39,3 +39,4 @@ def install():
     # Remove as its provided by GTK2 for now.
     # We may drop the --enable-gtk2-dependency and move tool to gtk-update-icon-cache-3.0
     pisitools.remove ("/usr/share/man/man1/gtk-update-icon-cache.1")
+    pisitools.dosym("gtk-update-icon-cache", "/usr/bin/gtk-update-icon-cache-3.0")
