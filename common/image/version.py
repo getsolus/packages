@@ -15,18 +15,18 @@ import os
 from datetime import date
 import time
 
+MAJOR = "3"
 
 def get_image_version():
-    today = date.fromtimestamp(time.time())
-    year = today.year
-    month = today.month
-    day = today.day
     build_id = 0
 
     version = None
 
     while (True):
-        version = "{}.{:02d}.{:02d}.{}".format(year, month, day, build_id)
+        if build_id == 0:
+            version = "{}".format(MAJOR)
+        else:
+            version = "{}.{}".format(MAJOR, build_id - 1)
         rel_path = os.path.join("./releases", version)
         if not os.path.exists(rel_path):
             break
