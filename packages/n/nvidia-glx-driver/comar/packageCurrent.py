@@ -2,7 +2,7 @@
 import os
 import os.path
 
-kver = "4.12.7-12.current"
+kver = "4.12.8-13.current"
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
     try:
