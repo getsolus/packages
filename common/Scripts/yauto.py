@@ -230,8 +230,8 @@ description: |
             elif self.compile_type == CMAKE:
                 setup = "%cmake ."
             elif self.compile_type == PYTHON_MODULES:
-                setup = "%python_setup"
-                build = ""
+                setup = ""
+                build = "%python_setup"
                 install = "%python_install"
             elif self.compile_type == PERL_MODULES:
                 setup = "%perl_setup"
