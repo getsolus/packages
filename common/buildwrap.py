@@ -163,13 +163,32 @@ class Builder():
                 self.report_status(id, "FAILED")
                 time.sleep(10)
                 continue
+
+            trams = None
+            try:
+                f = glob.glob("*.tram")
+                trams = [os.path.basename(x) for x in f]
+            except Exception, e:
+                print e
+                self.report_status(id, "FAILED")
+                time.sleep(10)
+                continue
+
             if len(pkgs) < 1:
                 sync_logs(tag, True)
                 self.report_status(id, "FAILED")
                 time.sleep(10)
                 continue
+
+            # Should only ever have *1* .tram file
+            if len(trams) != 1:
+                sync_logs(tag, True)
+                self.report_status(id, "FAILED")
+                time.sleep(10)
+                continue
+
             try:
-                check_output("scp -4 -P 798 %s packages@%s:base/incoming/unstable" % (" ".join(pkgs), "archive.solus-project.com"))
+                check_output("scp -4 -P 798 %s %s packages@%s:base/incoming/unstable" % (" ".join(pkgs), trams[0], "archive.solus-project.com"))
             except Exception, e:
                 print e
                 self.report_status(id, "FAILED")
