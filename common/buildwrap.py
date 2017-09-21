@@ -29,6 +29,8 @@ WorkDir = "/BUILDDIR"
 SSH_HOST = "solus-project.com"
 BASE_REPO = "ssh://vcs@dev.solus-project.com/source"
 
+targetRepo = "unstable"
+
 
 def check_output(cmd):
     return subprocess.check_output(shlex.split(cmd))
@@ -135,7 +137,7 @@ class Builder():
                 continue
 
             os.chdir(builddir)
-            cmd = "sudo solbuild -d -n build %s -p unstable-x86_64 > \"%s.log\" 2>&1" % (tgt, tag)
+            cmd = "sudo solbuild -d --transit-manifest %s -n build %s -p unstable-x86_64 > \"%s.log\" 2>&1" % (targetRepo, tgt, tag)
             self.report_status(id, "BUILDING")
             r = 0
             try:
