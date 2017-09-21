@@ -190,7 +190,7 @@ class Builder():
                 continue
 
             try:
-                check_output("scp -4 -P 798 %s %s packages@%s:base/incoming/unstable" % (" ".join(pkgs), trams[0], "archive.solus-project.com"))
+                check_output("scp -4 -P 798 %s %s ferryd@%s:root/incoming" % (" ".join(pkgs), trams[0], "ring0.solus-project.com"))
             except Exception, e:
                 print e
                 self.report_status(id, "FAILED")
