@@ -286,7 +286,7 @@ def create_squash(compression):
     try:
         os.chdir(get_live_dir())
         # ensures correct structure, and stops squashfs reading itself
-        check_call("mksquashfs \"%s\" \"%s\" -keep-as-directory -comp %s -processors 4" % (".", "../squashfs.img", compression))
+        check_call("mksquashfs \"%s\" \"%s\" -keep-as-directory -comp %s" % (".", "../squashfs.img", compression))
         shutil.move("../squashfs.img", "squashfs.img")
         os.unlink("rootfs.img")
     except Exception, ex:
