@@ -63,7 +63,7 @@ def get_efi_root():
     return os.path.join(get_work_dir(), "efi")
 
 def get_cache_source():
-    return "/var/lib/evobuild/packages"
+    return "/var/lib/solbuild/packages"
 
 def get_cache_target():
     return os.path.join(get_image_root(), "var/cache/eopkg/packages")
