@@ -167,7 +167,7 @@ def install():
     pisitools.insinto("/usr/share/OpenCL/vendors", "nvidia.icd")
     # Vulkan
     pisitools.insinto("/usr/share/vulkan/icd.d", "10_nvidia*.json")
-
+    pisitools.insinto("/usr/share/nvidia", "nvidia-application-profiles-%s-key-documentation" % get.srcVERSION())
     # Blacklist nouveau
     pisitools.dodir("/usr/lib/modprobe.d")
     shelltools.echo("%s/usr/lib/modprobe.d/nvidia.conf" % get.installDIR(),
