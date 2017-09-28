@@ -1,0 +1,275 @@
+From 9451f9ce04765617b31a0506d19c8c6b023b15d6 Mon Sep 17 00:00:00 2001
+From: David Edmundson <kde@davidedmundson.co.uk>
+Date: Thu, 30 Mar 2017 00:30:04 +0100
+Subject: [PATCH 13/15] Load config from /usr/lib/sddm/sddm.conf.d before
+ /etc/sddm/sddm.conf.d
+
+---
+ CMakeLists.txt              |  1 +
+ data/man/sddm.conf.rst.in   | 11 ++++++++++-
+ data/man/sddm.rst.in        |  3 +++
+ src/common/ConfigReader.cpp | 19 +++++++++++++++----
+ src/common/ConfigReader.h   |  8 +++++---
+ src/common/Configuration.h  |  4 ++--
+ src/common/Constants.h.in   |  3 ++-
+ test/ConfigurationTest.cpp  | 26 +++++++++++++++++++-------
+ test/ConfigurationTest.h    |  3 ++-
+ 9 files changed, 59 insertions(+), 19 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 881bea1..5db1218 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -161,6 +161,7 @@ set(WAYLAND_SESSION_COMMAND     "${DATA_INSTALL_DIR}/scripts/wayland-session"
+ 
+ set(CONFIG_FILE                 "${CMAKE_INSTALL_FULL_SYSCONFDIR}/sddm.conf"        CACHE PATH      "Path of the sddm config file")
+ set(CONFIG_DIR                  "${CMAKE_INSTALL_FULL_SYSCONFDIR}/sddm.conf.d"      CACHE PATH      "Path of the sddm config directory")
++set(SYSTEM_CONFIG_DIR           "${CMAKE_INSTALL_PREFIX}/lib/sddm/sddm.conf.d"      CACHE PATH      "Path of the system sddm config directory")
+ set(LOG_FILE                    "${CMAKE_INSTALL_FULL_LOCALSTATEDIR}/log/sddm.log"  CACHE PATH      "Path of the sddm log file")
+ set(DBUS_CONFIG_FILENAME        "org.freedesktop.DisplayManager.conf"               CACHE STRING    "Name of the sddm config file")
+ set(COMPONENTS_TRANSLATION_DIR  "${DATA_INSTALL_DIR}/translations"                  CACHE PATH      "Components translations directory")
+diff --git a/data/man/sddm.conf.rst.in b/data/man/sddm.conf.rst.in
+index 6f34e3c..ee07d61 100644
+--- a/data/man/sddm.conf.rst.in
++++ b/data/man/sddm.conf.rst.in
+@@ -14,7 +14,16 @@ sddm display manager configuration
+ SYNOPSIS
+ ========
+ 
+-  @CONFIG_FILE@
++Configuration loads all files in the configuration directories followed by the configuration file in the order listed below with the latter having the most precedent. Changes should be made to the local configurations.
++
++**@SYSTEM_CONFIG_DIR@*
++    System configuration directory
++
++**@CONFIG_DIR@**
++	Local configuration directory
++
++**@CONFIG_FILE@**
++	Local configuration file for compatibility
+ 
+ DESCRIPTION
+ ===========
+diff --git a/data/man/sddm.rst.in b/data/man/sddm.rst.in
+index 82d35c2..83fdfd7 100644
+--- a/data/man/sddm.rst.in
++++ b/data/man/sddm.rst.in
+@@ -46,6 +46,9 @@ OPTIONS
+ FILES
+ =====
+ 
++**@CONFIG_DIR@**
++	System configuration directory
++
+ **@CONFIG_FILE@**
+ 	System configuration file
+ 
+diff --git a/src/common/ConfigReader.cpp b/src/common/ConfigReader.cpp
+index 7f1d315..7f524c2 100644
+--- a/src/common/ConfigReader.cpp
++++ b/src/common/ConfigReader.cpp
+@@ -113,9 +113,10 @@ namespace SDDM {
+ 
+ 
+ 
+-    ConfigBase::ConfigBase(const QString &configPath, const QString &configDir) :
++    ConfigBase::ConfigBase(const QString &configPath, const QString &configDir, const QString &sysConfigDir) :
+         m_path(configPath),
+-        m_configDir(configDir)
++        m_configDir(configDir),
++        m_sysConfigDir(sysConfigDir)
+     {
+     }
+ 
+@@ -135,17 +136,27 @@ namespace SDDM {
+     void ConfigBase::load()
+     {
+         //order of priority from least influence to most influence, is
+-        //m_configDir in alphabetical order then m_path
++        //m_sysConfigDir in alphabetical order then m_configDir then m_path
+ 
+         QStringList files;
+         QDateTime latestModificationTime = QFileInfo(m_path).lastModified();
+ 
++        if (!m_sysConfigDir.isEmpty()) {
++            //include the configDir in modification time so we also reload on any files added/removed
++            QDir dir(m_sysConfigDir);
++            if (dir.exists()) {
++                latestModificationTime = std::max(latestModificationTime,  QFileInfo(m_sysConfigDir).lastModified());
++                foreach (const QFileInfo &file, dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::LocaleAware)) {
++                    files << (file.absoluteFilePath());
++                    latestModificationTime = std::max(latestModificationTime, file.lastModified());
++                }
++            }
++        }
+         if (!m_configDir.isEmpty()) {
+             //include the configDir in modification time so we also reload on any files added/removed
+             QDir dir(m_configDir);
+             if (dir.exists()) {
+                 latestModificationTime = std::max(latestModificationTime,  QFileInfo(m_configDir).lastModified());
+-
+                 foreach (const QFileInfo &file, dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::LocaleAware)) {
+                     files << (file.absoluteFilePath());
+                     latestModificationTime = std::max(latestModificationTime, file.lastModified());
+diff --git a/src/common/ConfigReader.h b/src/common/ConfigReader.h
+index 03a6a00..95b1b74 100644
+--- a/src/common/ConfigReader.h
++++ b/src/common/ConfigReader.h
+@@ -37,10 +37,10 @@
+ #define _S(x) QStringLiteral(x)
+ 
+ // config wrapper
+-#define Config(name, file, dir, ...) \
++#define Config(name, file, dir, sysDir, ...) \
+     class name : public SDDM::ConfigBase, public SDDM::ConfigSection { \
+     public: \
+-        name() : SDDM::ConfigBase(file, dir), SDDM::ConfigSection(this, QStringLiteral(IMPLICIT_SECTION)) { \
++        name() : SDDM::ConfigBase(file, dir, sysDir), SDDM::ConfigSection(this, QStringLiteral(IMPLICIT_SECTION)) { \
+             load(); \
+         } \
+         void save() { SDDM::ConfigBase::save(nullptr, nullptr); } \
+@@ -184,7 +184,7 @@ namespace SDDM {
+     // Base has to be separate from the Config itself - order of initialization
+     class ConfigBase {
+     public:
+-        ConfigBase(const QString &configPath, const QString &configDir=QString());
++        ConfigBase(const QString &configPath, const QString &configDir=QString(), const QString &sysConfigDir=QString());
+ 
+         void load();
+         void save(const ConfigSection *section = nullptr, const ConfigEntryBase *entry = nullptr);
+@@ -196,9 +196,11 @@ namespace SDDM {
+ 
+         QString m_path {};
+         QString m_configDir;
++        QString m_sysConfigDir;
+         QMap<QString, ConfigSection*> m_sections;
+         friend class ConfigSection;
+     private:
++        QDateTime dirLatestModifiedTime(const QString &directory);
+         void loadInternal(const QString &filepath);
+         QDateTime m_fileModificationTime;
+     };
+diff --git a/src/common/Configuration.h b/src/common/Configuration.h
+index 6664eb5..3787d90 100644
+--- a/src/common/Configuration.h
++++ b/src/common/Configuration.h
+@@ -33,7 +33,7 @@
+ 
+ namespace SDDM {
+     //     Name        File         Sections and/or Entries (but anything else too, it's a class) - Entries in a Config are assumed to be in the General section
+-    Config(MainConfig, QStringLiteral(CONFIG_FILE), QStringLiteral(CONFIG_DIR),
++    Config(MainConfig, QStringLiteral(CONFIG_FILE), QStringLiteral(CONFIG_DIR), QStringLiteral(SYSTEM_CONFIG_DIR),
+         enum NumState { NUM_NONE, NUM_SET_ON, NUM_SET_OFF };
+ 
+         //  Name                   Type         Default value                                   Description
+@@ -96,7 +96,7 @@ namespace SDDM {
+         );
+     );
+ 
+-    Config(StateConfig, []()->QString{auto tmp = getpwnam("sddm"); return tmp ? QString::fromLocal8Bit(tmp->pw_dir) : QStringLiteral(STATE_DIR);}().append(QStringLiteral("/state.conf")), QString(),
++    Config(StateConfig, []()->QString{auto tmp = getpwnam("sddm"); return tmp ? QString::fromLocal8Bit(tmp->pw_dir) : QStringLiteral(STATE_DIR);}().append(QStringLiteral("/state.conf")), QString(), QString(),
+         Section(Last,
+             Entry(Session,         QString,     QString(),                                      _S("Name of the session for the last logged-in user.\n"
+                                                                                                    "This session will be preselected when the login screen appears."));
+diff --git a/src/common/Constants.h.in b/src/common/Constants.h.in
+index 2bcca05..7500a49 100644
+--- a/src/common/Constants.h.in
++++ b/src/common/Constants.h.in
+@@ -33,7 +33,8 @@
+ #define WAYLAND_SESSION_COMMAND     "@WAYLAND_SESSION_COMMAND@"
+ 
+ #define CONFIG_FILE                 "@CONFIG_FILE@"
+-#define CONFIG_DIR                 "@CONFIG_DIR@"
++#define CONFIG_DIR                  "@CONFIG_DIR@"
++#define SYSTEM_CONFIG_DIR           "@SYSTEM_CONFIG_DIR@"
+ 
+ #define LOG_FILE                    "@LOG_FILE@"
+ #define MINIMUM_VT                  @MINIMUM_VT@
+diff --git a/test/ConfigurationTest.cpp b/test/ConfigurationTest.cpp
+index 3a5f5e0..17c9f74 100644
+--- a/test/ConfigurationTest.cpp
++++ b/test/ConfigurationTest.cpp
+@@ -35,6 +35,8 @@ void ConfigurationTest::init() {
+     QFile::remove(CONF_FILE);
+     QDir(CONF_DIR).removeRecursively();
+     QDir().mkdir(CONF_DIR);
++    QDir(SYS_CONF_DIR).removeRecursively();
++    QDir().mkdir(SYS_CONF_DIR);
+     QFile::remove(CONF_FILE_COPY);
+     config = new TestConfig;
+ }
+@@ -42,6 +44,7 @@ void ConfigurationTest::init() {
+ void ConfigurationTest::cleanup() {
+     QFile::remove(CONF_FILE);
+     QDir(CONF_DIR).removeRecursively();
++    QDir(SYS_CONF_DIR).removeRecursively();
+     QFile::remove(CONF_FILE_COPY);
+     if (config)
+         delete config;
+@@ -161,19 +164,26 @@ void ConfigurationTest::RightOnInit() {
+ void ConfigurationTest::RightOnInitDir() {
+     delete config;
+ 
+-    QFile confFileA(CONF_DIR+QStringLiteral("/0001A"));
++    QFile confFileA(SYS_CONF_DIR+QStringLiteral("/0001A"));
+     confFileA.open(QIODevice::WriteOnly | QIODevice::Truncate);
+-    confFileA.write("String=a\n"); //overriden by B
+-    confFileA.write("StringList=a,b,c\n");
+-    confFileA.write("Int=1111111\n"); //this is set in this config file but overriden in CONF_FILE
++    confFileA.write("Custom=Foo\n"); //overriden by B
++    confFileA.write("Boolean=false\n");
+     confFileA.close();
+ 
+-    QFile confFileB(CONF_DIR+QStringLiteral("/0001B"));
++    QFile confFileB(CONF_DIR+QStringLiteral("/0001A"));
+     confFileB.open(QIODevice::WriteOnly | QIODevice::Truncate);
+-    confFileB.write("String=b\n");
+-    confFileB.write("Int=1111111\n"); //overriden in CONF_FILE
++    confFileB.write("String=a\n"); //overriden by C
++    confFileB.write("Custom=Bar\n");
++    confFileB.write("StringList=a,b,c\n");
++    confFileB.write("Int=1111111\n"); //this is set in this config file but overriden in CONF_FILE
+     confFileB.close();
+ 
++    QFile confFileC(CONF_DIR+QStringLiteral("/0001B"));
++    confFileC.open(QIODevice::WriteOnly | QIODevice::Truncate);
++    confFileC.write("String=b\n");
++    confFileC.write("Int=1111111\n"); //overriden in CONF_FILE
++    confFileC.close();
++
+     QFile confFileMain(CONF_FILE);
+     confFileMain.open(QIODevice::WriteOnly | QIODevice::Truncate);
+     confFileMain.write("Int=99999\n");
+@@ -184,6 +194,8 @@ void ConfigurationTest::RightOnInitDir() {
+     QVERIFY(config->StringList.get() == QStringList({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")}));
+     QVERIFY(config->String.get() == QStringLiteral("b"));
+     QVERIFY(config->Int.get() == 99999);
++    QVERIFY(config->Custom.get() == TestConfig::BAR);
++    QVERIFY(config->Boolean.get() == false);
+ }
+ 
+ void ConfigurationTest::FileChanged()
+diff --git a/test/ConfigurationTest.h b/test/ConfigurationTest.h
+index 147a891..6061533 100644
+--- a/test/ConfigurationTest.h
++++ b/test/ConfigurationTest.h
+@@ -28,6 +28,7 @@
+ 
+ #define CONF_FILE QStringLiteral("test.conf")
+ #define CONF_DIR QStringLiteral("testconfdir")
++#define SYS_CONF_DIR QStringLiteral("testconfdir2")
+ #define CONF_FILE_COPY QStringLiteral("test_copy.conf")
+ 
+ #define TEST_STRING_1_PLAIN "Test Variable Initial String"
+@@ -36,7 +37,7 @@
+ #define TEST_STRINGLIST_1 {QStringLiteral("String1"), QStringLiteral("String2")}
+ #define TEST_BOOL_1 true
+ 
+-Config (TestConfig, CONF_FILE, CONF_DIR,
++Config (TestConfig, CONF_FILE, CONF_DIR, SYS_CONF_DIR,
+     enum CustomType {
+         FOO,
+         BAR,
+-- 
+2.14.1
+
