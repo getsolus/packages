@@ -1,0 +1,80 @@
+From c6df0d03de22b57d5faa77b19ac1ec0311f4f3a5 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Sun, 28 May 2017 15:56:20 +0200
+Subject: [PATCH 27/47] xwayland: Lock the pointer if it is confined and has no
+ cursor
+
+In the typical pattern in games of "hide cursor, grab with a confineTo,
+warp constantly the pointer to the middle of the window" the last warping
+step is actually rather optional. Some games may choose to just set up a
+grab with confineTo argument, and trust that they'll get correct relative
+X/Y axis values despite the hidden cursor hitting the confinement window
+edge.
+
+To cater for these cases, lock the pointer whenever there is a pointer
+confinement and the cursor is hidden. This ensures the pointer position
+is in sync with the compositor's when it's next shown again, and more
+importantly resorts to the relative pointer for event delivery.
+
+Signed-off-by: Carlos Garnacho <carlosg@gnome.org>
+Reviewed-by: Peter Hutterer <peter.hutterer@who-t.net>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+(cherry picked from commit ca17f3e9fd3b59fdc5ffd0e5d78e4db6ddc87aa1)
+---
+ hw/xwayland/xwayland-input.c | 29 ++++++++++++++++++++++++++++-
+ 1 file changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index f06e88aa5..add76f547 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -1524,11 +1524,35 @@ xwl_seat_emulate_pointer_warp(struct xwl_seat *xwl_seat,
+                                    x, y);
+ }
+ 
++static Bool
++xwl_seat_maybe_lock_on_hidden_cursor(struct xwl_seat *xwl_seat)
++{
++    /* Some clients use hidden cursor+confineTo+relative motion
++     * to implement infinite panning (eg. 3D views), lock the
++     * pointer for so the relative pointer is used.
++     */
++    if (xwl_seat->x_cursor ||
++        !xwl_seat->cursor_confinement_window)
++        return FALSE;
++
++    if (xwl_seat->confined_pointer)
++        xwl_seat_destroy_confined_pointer(xwl_seat);
++
++    xwl_seat_create_pointer_warp_emulator(xwl_seat);
++    xwl_pointer_warp_emulator_lock(xwl_seat->pointer_warp_emulator);
++    return TRUE;
++}
++
+ void
+ xwl_seat_cursor_visibility_changed(struct xwl_seat *xwl_seat)
+ {
+-    if (xwl_seat->pointer_warp_emulator && xwl_seat->x_cursor != NULL)
++    if (xwl_seat->pointer_warp_emulator && xwl_seat->x_cursor != NULL) {
+         xwl_seat_destroy_pointer_warp_emulator(xwl_seat);
++    } else if (!xwl_seat->x_cursor && xwl_seat->cursor_confinement_window) {
++        /* If the cursor goes hidden as is confined, lock it for
++         * relative motion to work. */
++        xwl_seat_maybe_lock_on_hidden_cursor(xwl_seat);
++    }
+ }
+ 
+ void
+@@ -1567,6 +1591,9 @@ xwl_seat_confine_pointer(struct xwl_seat *xwl_seat,
+     if (xwl_seat->pointer_warp_emulator)
+         return;
+ 
++    if (xwl_seat_maybe_lock_on_hidden_cursor(xwl_seat))
++        return;
++
+     xwl_seat->confined_pointer =
+         zwp_pointer_constraints_v1_confine_pointer(pointer_constraints,
+                                                    xwl_window->surface,
+-- 
+2.14.2
+

@@ -1,0 +1,362 @@
+From 9db3361b29396684122b3db056368e927e8de6d6 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Tue, 14 Mar 2017 15:06:34 +0100
+Subject: [PATCH 04/47] glamor: Check glamor_set_destination_drawable() return
+ value
+
+Check the value returned by glamor_set_destination_drawable() and use
+the fallback code path where possible.
+
+Bugzilla: https://bugzilla.redhat.com/1417575
+Signed-off-by: Olivier Fourdan <ofourdan@redhat.com>
+(cherry picked from commit 455051a0f1d2bc84f605c325f647bd64d414c47d)
+---
+ glamor/glamor_copy.c     | 17 ++++++++++-------
+ glamor/glamor_glyphblt.c | 26 ++++++++++++++++----------
+ glamor/glamor_lines.c    | 13 ++++++++-----
+ glamor/glamor_points.c   | 14 ++++++++------
+ glamor/glamor_rects.c    | 13 ++++++++-----
+ glamor/glamor_segs.c     | 14 ++++++++------
+ glamor/glamor_spans.c    | 13 ++++++++-----
+ 7 files changed, 66 insertions(+), 44 deletions(-)
+
+diff --git a/glamor/glamor_copy.c b/glamor/glamor_copy.c
+index 3ca56fb09..ff8f44ef1 100644
+--- a/glamor/glamor_copy.c
++++ b/glamor/glamor_copy.c
+@@ -344,6 +344,7 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
+     glamor_program *prog;
+     const glamor_facet *copy_facet;
+     int n;
++    Bool ret = FALSE;
+ 
+     glamor_make_current(glamor_priv);
+ 
+@@ -410,9 +411,10 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
+             goto bail_ctx;
+ 
+         glamor_pixmap_loop(dst_priv, dst_box_index) {
+-            glamor_set_destination_drawable(dst, dst_box_index, FALSE, FALSE,
+-                                            prog->matrix_uniform,
+-                                            &dst_off_x, &dst_off_y);
++            if (!glamor_set_destination_drawable(dst, dst_box_index, FALSE, FALSE,
++                                                 prog->matrix_uniform,
++                                                 &dst_off_x, &dst_off_y))
++                goto bail_ctx;
+ 
+             glScissor(dst_off_x - args.dx,
+                       dst_off_y - args.dy,
+@@ -422,13 +424,14 @@ glamor_copy_fbo_fbo_draw(DrawablePtr src,
+             glamor_glDrawArrays_GL_QUADS(glamor_priv, nbox);
+         }
+     }
+-    glDisable(GL_SCISSOR_TEST);
+-    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
++    ret = TRUE;
+ 
+ bail_ctx:
+-    return FALSE;
++    glDisable(GL_SCISSOR_TEST);
++    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
++
++    return ret;
+ }
+ 
+ /**
+diff --git a/glamor/glamor_glyphblt.c b/glamor/glamor_glyphblt.c
+index b21aa068e..78315ea9b 100644
+--- a/glamor/glamor_glyphblt.c
++++ b/glamor/glamor_glyphblt.c
+@@ -49,6 +49,7 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
+     glamor_program *prog;
+     RegionPtr clip = gc->pCompositeClip;
+     int box_index;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -75,8 +76,9 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
+         int off_x, off_y;
+         char *vbo_offset;
+ 
+-        glamor_set_destination_drawable(drawable, box_index, FALSE, TRUE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, FALSE, TRUE,
++                                              prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         max_points = 500;
+         num_points = 0;
+@@ -138,11 +140,12 @@ glamor_poly_glyph_blt_gl(DrawablePtr drawable, GCPtr gc,
+         }
+     }
+ 
+-    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
++    ret = TRUE;
+ 
+-    return TRUE;
+ bail:
+-    return FALSE;
++    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
++
++    return ret;
+ }
+ 
+ void
+@@ -174,6 +177,7 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
+     int num_points;
+     INT16 *points = NULL;
+     char *vbo_offset;
++    Bool ret = FALSE;
+ 
+     if (w * h > MAXINT / (2 * sizeof(float)))
+         goto bail;
+@@ -221,17 +225,19 @@ glamor_push_pixels_gl(GCPtr gc, PixmapPtr bitmap,
+     glamor_put_vbo_space(screen);
+ 
+     glamor_pixmap_loop(pixmap_priv, box_index) {
+-        glamor_set_destination_drawable(drawable, box_index, FALSE, TRUE,
+-                                        prog->matrix_uniform, NULL, NULL);
++        if (!glamor_set_destination_drawable(drawable, box_index, FALSE, TRUE,
++                                             prog->matrix_uniform, NULL, NULL))
++            goto bail;
+ 
+         glDrawArrays(GL_POINTS, 0, num_points);
+     }
+ 
+-    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+-    return TRUE;
++    ret = TRUE;
+ 
+ bail:
+-    return FALSE;
++    glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
++
++    return ret;
+ }
+ 
+ void
+diff --git a/glamor/glamor_lines.c b/glamor/glamor_lines.c
+index a2c9b1fcc..5d95333fe 100644
+--- a/glamor/glamor_lines.c
++++ b/glamor/glamor_lines.c
+@@ -46,6 +46,7 @@ glamor_poly_lines_solid_gl(DrawablePtr drawable, GCPtr gc,
+     char *vbo_offset;
+     int box_index;
+     int add_last;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -103,8 +104,9 @@ glamor_poly_lines_solid_gl(DrawablePtr drawable, GCPtr gc,
+         int nbox = RegionNumRects(gc->pCompositeClip);
+         BoxPtr box = RegionRects(gc->pCompositeClip);
+ 
+-        glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
++                                             prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         while (nbox--) {
+             glScissor(box->x1 + off_x,
+@@ -116,12 +118,13 @@ glamor_poly_lines_solid_gl(DrawablePtr drawable, GCPtr gc,
+         }
+     }
+ 
++    ret = TRUE;
++
++bail:
+     glDisable(GL_SCISSOR_TEST);
+     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
+-bail:
+-    return FALSE;
++    return ret;
+ }
+ 
+ static Bool
+diff --git a/glamor/glamor_points.c b/glamor/glamor_points.c
+index facfe8240..faf6f433b 100644
+--- a/glamor/glamor_points.c
++++ b/glamor/glamor_points.c
+@@ -47,6 +47,7 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
+     GLshort *vbo_ppt;
+     char *vbo_offset;
+     int box_index;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -90,8 +91,9 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
+         int nbox = RegionNumRects(gc->pCompositeClip);
+         BoxPtr box = RegionRects(gc->pCompositeClip);
+ 
+-        glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
++                                             prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         while (nbox--) {
+             glScissor(box->x1 + off_x,
+@@ -103,13 +105,13 @@ glamor_poly_point_gl(DrawablePtr drawable, GCPtr gc, int mode, int npt, DDXPoint
+         }
+     }
+ 
++    ret = TRUE;
++
++bail:
+     glDisable(GL_SCISSOR_TEST);
+     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
+-
+-bail:
+-    return FALSE;
++    return ret;
+ }
+ 
+ void
+diff --git a/glamor/glamor_rects.c b/glamor/glamor_rects.c
+index e4473209d..cc029c8c0 100644
+--- a/glamor/glamor_rects.c
++++ b/glamor/glamor_rects.c
+@@ -52,6 +52,7 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
+     GLshort *v;
+     char *vbo_offset;
+     int box_index;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -115,8 +116,9 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
+         int nbox = RegionNumRects(gc->pCompositeClip);
+         BoxPtr box = RegionRects(gc->pCompositeClip);
+ 
+-        glamor_set_destination_drawable(drawable, box_index, TRUE, FALSE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, TRUE, FALSE,
++                                             prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         while (nbox--) {
+             glScissor(box->x1 + off_x,
+@@ -132,14 +134,15 @@ glamor_poly_fill_rect_gl(DrawablePtr drawable,
+         }
+     }
+ 
++    ret = TRUE;
++
++bail:
+     glDisable(GL_SCISSOR_TEST);
+     if (glamor_priv->glsl_version >= 130)
+         glVertexAttribDivisor(GLAMOR_VERTEX_POS, 0);
+     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
+-bail:
+-    return FALSE;
++    return ret;
+ }
+ 
+ static void
+diff --git a/glamor/glamor_segs.c b/glamor/glamor_segs.c
+index 5fffa3b0f..4dfa6553b 100644
+--- a/glamor/glamor_segs.c
++++ b/glamor/glamor_segs.c
+@@ -46,6 +46,7 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
+     char *vbo_offset;
+     int box_index;
+     int add_last;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -62,7 +63,7 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
+                                    &glamor_facet_poly_segment);
+ 
+     if (!prog)
+-        goto bail_ctx;
++        goto bail;
+ 
+     /* Set up the vertex buffers for the points */
+ 
+@@ -95,8 +96,9 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
+         int nbox = RegionNumRects(gc->pCompositeClip);
+         BoxPtr box = RegionRects(gc->pCompositeClip);
+ 
+-        glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, TRUE, TRUE,
++                                             prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         while (nbox--) {
+             glScissor(box->x1 + off_x,
+@@ -108,13 +110,13 @@ glamor_poly_segment_solid_gl(DrawablePtr drawable, GCPtr gc,
+         }
+     }
+ 
++    ret = TRUE;
++
+     glDisable(GL_SCISSOR_TEST);
+     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
+-bail_ctx:
+ bail:
+-    return FALSE;
++    return ret;
+ }
+ 
+ static Bool
+diff --git a/glamor/glamor_spans.c b/glamor/glamor_spans.c
+index 9a2aecd9d..b3c028d67 100644
+--- a/glamor/glamor_spans.c
++++ b/glamor/glamor_spans.c
+@@ -56,6 +56,7 @@ glamor_fill_spans_gl(DrawablePtr drawable,
+     char *vbo_offset;
+     int c;
+     int box_index;
++    Bool ret = FALSE;
+ 
+     pixmap_priv = glamor_get_pixmap_private(pixmap);
+     if (!GLAMOR_PIXMAP_PRIV_HAS_FBO(pixmap_priv))
+@@ -123,8 +124,9 @@ glamor_fill_spans_gl(DrawablePtr drawable,
+         int nbox = RegionNumRects(gc->pCompositeClip);
+         BoxPtr box = RegionRects(gc->pCompositeClip);
+ 
+-        glamor_set_destination_drawable(drawable, box_index, FALSE, FALSE,
+-                                        prog->matrix_uniform, &off_x, &off_y);
++        if (!glamor_set_destination_drawable(drawable, box_index, FALSE, FALSE,
++                                             prog->matrix_uniform, &off_x, &off_y))
++            goto bail;
+ 
+         while (nbox--) {
+             glScissor(box->x1 + off_x,
+@@ -140,14 +142,15 @@ glamor_fill_spans_gl(DrawablePtr drawable,
+         }
+     }
+ 
++    ret = TRUE;
++
++bail:
+     glDisable(GL_SCISSOR_TEST);
+     if (glamor_priv->glsl_version >= 130)
+         glVertexAttribDivisor(GLAMOR_VERTEX_POS, 0);
+     glDisableVertexAttribArray(GLAMOR_VERTEX_POS);
+ 
+-    return TRUE;
+-bail:
+-    return FALSE;
++    return ret;
+ }
+ 
+ static void
+-- 
+2.14.2
+

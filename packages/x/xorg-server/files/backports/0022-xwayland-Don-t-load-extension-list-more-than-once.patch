@@ -1,0 +1,73 @@
+From 7c4f7b3a49a43984ab90788b85b35078feadf42a Mon Sep 17 00:00:00 2001
+From: Lyude <lyude@redhat.com>
+Date: Tue, 30 May 2017 16:39:49 -0400
+Subject: [PATCH 22/47] xwayland: Don't load extension list more than once
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+When running an Xwayland server from the command line, we end up
+resetting the server every time all of the clients connected to the
+server leave. This would be fine, except that xwayland makes the mistake
+of unconditionally calling LoadExtensionList(). This causes us to setup
+the glxExtension twice in a row which means that when we lose our last
+client on the second server generation, we end up trying to call the glx
+destructors twice in a row resulting in a segfault:
+
+(EE)
+(EE) Backtrace:
+(EE) 0: Xwayland (OsSigHandler+0x3b) [0x4982f9]
+(EE) 1: /lib64/libpthread.so.0 (__restore_rt+0x0) [0x70845bf]
+(EE) 2: /usr/lib64/dri/swrast_dri.so (__driDriverGetExtensions_virtio_gpu+0x32897d) [0x1196e5bd]
+(EE) 3: /usr/lib64/dri/swrast_dri.so (__driDriverGetExtensions_virtio_gpu+0x328a45) [0x1196e745]
+(EE) 4: /usr/lib64/dri/swrast_dri.so (__driDriverGetExtensions_virtio_gpu+0x32665f) [0x11969f7f]
+(EE) 5: Xwayland (__glXDRIscreenDestroy+0x30) [0x54686e]
+(EE) 6: Xwayland (glxCloseScreen+0x3f) [0x5473db]
+(EE) 7: Xwayland (glxCloseScreen+0x53) [0x5473ef]
+(EE) 8: Xwayland (dix_main+0x7b6) [0x44c8c9]
+(EE) 9: Xwayland (main+0x28) [0x61c503]
+(EE) 10: /lib64/libc.so.6 (__libc_start_main+0xf1) [0x72b1401]
+(EE) 11: Xwayland (_start+0x2a) [0x4208fa]
+(EE) 12: ? (?+0x2a) [0x2a]
+(EE)
+(EE) Segmentation fault at address 0x18
+(EE)
+Fatal server error:
+(EE) Caught signal 11 (Segmentation fault). Server aborting
+(EE)
+
+Easy reproduction recipe:
+- Start an Xwayland session with the default settings
+- Open a window
+- Close that window
+- Open another window
+- Close that window
+- Total annihilation occurs
+
+Signed-off-by: Lyude <lyude@redhat.com>
+Reviewed-by: Michel Dänzer <michel.daenzer@amd.com>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+(cherry picked from commit 4f29366f1e5678505fb882143c9b4a892d5b8273)
+---
+ hw/xwayland/xwayland.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/hw/xwayland/xwayland.c b/hw/xwayland/xwayland.c
+index c27787018..97b5b58d7 100644
+--- a/hw/xwayland/xwayland.c
++++ b/hw/xwayland/xwayland.c
+@@ -880,8 +880,9 @@ InitOutput(ScreenInfo * screen_info, int argc, char **argv)
+     screen_info->bitmapBitOrder = BITMAP_BIT_ORDER;
+     screen_info->numPixmapFormats = ARRAY_SIZE(depths);
+ 
+-    LoadExtensionList(xwayland_extensions,
+-                      ARRAY_SIZE(xwayland_extensions), FALSE);
++    if (serverGeneration == 1)
++        LoadExtensionList(xwayland_extensions,
++                          ARRAY_SIZE(xwayland_extensions), FALSE);
+ 
+     /* Cast away warning from missing printf annotation for
+      * wl_log_func_t.  Wayland 1.5 will have the annotation, so we can
+-- 
+2.14.2
+

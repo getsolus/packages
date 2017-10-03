@@ -1,0 +1,62 @@
+From baa25315014af350c9c04c2c83beeee36aead042 Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Thu, 31 Aug 2017 10:23:00 +0200
+Subject: [PATCH 40/47] xwayland: Fix a segfault with pointer locking
+
+Xwayland would crash in some circumstances while trying to issue a
+pointer locking when the cursor is hidden when there is no seat focus
+window set.
+
+The crash signature looks like:
+
+ #0  zwp_pointer_constraints_v1_lock_pointer ()
+ #1  xwl_pointer_warp_emulator_lock () at xwayland-input.c:2584
+ #2  xwl_seat_maybe_lock_on_hidden_cursor () at xwayland-input.c:2756
+ #3  xwl_seat_maybe_lock_on_hidden_cursor () at xwayland-input.c:2765
+ #4  xwl_seat_cursor_visibility_changed () at xwayland-input.c:2768
+ #5  xwl_set_cursor () at xwayland-cursor.c:245
+ #6  miPointerUpdateSprite () at mipointer.c:468
+ #7  miPointerDisplayCursor () at mipointer.c:206
+ #8  CursorDisplayCursor () at cursor.c:150
+ #9  AnimCurDisplayCursor () at animcur.c:220
+ #10 ChangeToCursor () at events.c:936
+ #11 ActivatePointerGrab () at events.c:1542
+ #12 GrabDevice () at events.c:5120
+ #13 ProcGrabPointer () at events.c:4908
+ #14 Dispatch () at dispatch.c:478
+ #15 dix_main () at main.c:276
+
+xwl_pointer_warp_emulator_lock() tries to use the surface from the
+xwl_seat->focus_window leading to a NULL pointer dereference when that
+value is NULL.
+
+Check that xwl_seat->focus_window is not NULL earlier in the stack in
+xwl_seat_maybe_lock_on_hidden_cursor() and return early if not the case
+to avoid the crash.
+
+Fixes: https://bugs.freedesktop.org/show_bug.cgi?id=102474
+Signed-off-by: Olivier Fourdan <ofourdan@redhat.com>
+Acked-by: Peter Hutterer <peter.hutterer@who-t.net>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+(cherry picked from commit cdd0352ba05d4d8482aaca41797e05d40e58da36)
+---
+ hw/xwayland/xwayland-input.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index add76f547..f2564d5d3 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -1535,6 +1535,9 @@ xwl_seat_maybe_lock_on_hidden_cursor(struct xwl_seat *xwl_seat)
+         !xwl_seat->cursor_confinement_window)
+         return FALSE;
+ 
++    if (!xwl_seat->focus_window)
++        return FALSE;
++
+     if (xwl_seat->confined_pointer)
+         xwl_seat_destroy_confined_pointer(xwl_seat);
+ 
+-- 
+2.14.2
+

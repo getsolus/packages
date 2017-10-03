@@ -1,0 +1,58 @@
+From 2191f9b49e5e542e39f451d1819de00043a90e8f Mon Sep 17 00:00:00 2001
+From: Olivier Fourdan <ofourdan@redhat.com>
+Date: Fri, 17 Mar 2017 15:58:26 +0100
+Subject: [PATCH 09/47] glamor: avoid a crash if texture allocation failed
+
+Texture creation in _glamor_create_tex() can fail if a GL_OUT_OF_MEMORY
+is raised, in which case the texture returned is zero.
+
+But the texture value is not checked in glamor_create_fbo() and glamor
+will abort in glamor_pixmap_ensure_fb() because the fbo->tex is 0:
+
+  Truncated backtrace:
+  Thread no. 1 (10 frames)
+   #4 glamor_pixmap_ensure_fb at glamor_fbo.c:57
+   #5 glamor_create_fbo_from_tex at glamor_fbo.c:112
+   #6 glamor_create_fbo at glamor_fbo.c:159
+   #7 glamor_create_fbo_array at glamor_fbo.c:210
+   #8 glamor_create_pixmap at glamor.c:226
+   #9 compNewPixmap at compalloc.c:536
+   #10 compAllocPixmap at compalloc.c:605
+   #11 compCheckRedirect at compwindow.c:167
+   #12 compRealizeWindow at compwindow.c:267
+   #13 RealizeTree at window.c:2617
+
+Check the value returned by _glamor_create_tex() in glamor_create_fbo()
+and return NULL in the texture is zero.
+
+All callers of glamor_create_fbo() actually check the returned value and
+will use a fallback code path if it's NULL.
+
+Please cherry-pick this to active stable branches.
+
+Bugzilla: https://bugzilla.redhat.com/1433305
+Signed-off-by: Olivier Fourdan <ofourdan@redhat.com>
+Reviewed-by: Eric Anholt <eric@anholt.net>
+(cherry picked from commit 8805a48ed35afb2ca66315656c1575ae5a01c639)
+---
+ glamor/glamor_fbo.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/glamor/glamor_fbo.c b/glamor/glamor_fbo.c
+index 988bb585b..9f1288c60 100644
+--- a/glamor/glamor_fbo.c
++++ b/glamor/glamor_fbo.c
+@@ -156,6 +156,10 @@ glamor_create_fbo(glamor_screen_private *glamor_priv,
+                   int w, int h, GLenum format, int flag)
+ {
+     GLint tex = _glamor_create_tex(glamor_priv, w, h, format);
++
++    if (!tex) /* Texture creation failed due to GL_OUT_OF_MEMORY */
++        return NULL;
++
+     return glamor_create_fbo_from_tex(glamor_priv, w, h, format, tex, flag);
+ }
+ 
+-- 
+2.14.2
+
