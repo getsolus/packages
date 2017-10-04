@@ -3,6 +3,12 @@
 VERSION="56.0"
 ARCH="x86_64"
 URL="http://ftp.mozilla.org/pub/firefox/releases/${VERSION}/linux-${ARCH}/xpi/"
+
+# Ensure we don't have a previous run living here
+if [[ -e lang_pack ]]; then
+    rm -rvf lang_pack
+fi
+
 mkdir lang_pack
 
 pushd lang_pack
