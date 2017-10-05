@@ -1,0 +1,81 @@
+Description: Fall back to autoconfiguration for graphics drivers in some cases instead of letting X fail when configuration files are available.
+Author: Alberto Milone <alberto.milone@canonical.com>
+
+--- a/hw/xfree86/common/xf86Globals.c
++++ b/hw/xfree86/common/xf86Globals.c
+@@ -161,6 +161,7 @@ InputDriverPtr *xf86InputDriverList = NU
+ int xf86NumInputDrivers = 0;
+ int xf86NumScreens = 0;
+ int xf86NumGPUScreens = 0;
++Bool xf86AttemptedFallback = FALSE;
+ 
+ const char *xf86VisualNames[] = {
+     "StaticGray",
+--- a/hw/xfree86/common/xf86Init.c
++++ b/hw/xfree86/common/xf86Init.c
+@@ -469,20 +469,34 @@ InitOutput(ScreenInfo * pScreenInfo, int
+             free(optionlist);
+         }
+ 
++ Fallback:
+         /* Load all driver modules specified in the config file */
+         /* If there aren't any specified in the config file, autoconfig them */
+         /* FIXME: Does not handle multiple active screen sections, but I'm not
+          * sure if we really want to handle that case*/
+         configured_device = xf86ConfigLayout.screens->screen->device;
+-        if ((!configured_device) || (!configured_device->driver)) {
++        if (xf86AttemptedFallback) {
++            configured_device->driver = NULL;
++            if (!autoConfigDevice(configured_device)) {
++                xf86Msg(X_ERROR, "Auto configuration on fallback failed\n");
++                return;
++            }
++        }
++        else if ((!configured_device) || (!configured_device->driver)) {
+             if (!autoConfigDevice(configured_device)) {
+                 xf86Msg(X_ERROR, "Automatic driver configuration failed\n");
+                 return;
+             }
+         }
+         if ((modulelist = xf86DriverlistFromConfig())) {
+-            xf86LoadModules(modulelist, NULL);
+-            free(modulelist);
++            if (!xf86LoadModules(modulelist, NULL) && !xf86AttemptedFallback) {
++                free(modulelist);
++                xf86AttemptedFallback = TRUE;
++                goto Fallback;
++            }
++            else {
++                free(modulelist);
++            }
+         }
+ 
+         /* Load all input driver modules specified in the config file. */
+@@ -545,8 +559,15 @@ InitOutput(ScreenInfo * pScreenInfo, int
+ 	if (want_hw_access)
+ 	    xorgHWAccess = xf86EnableIO();
+ 
+-        if (xf86BusConfig() == FALSE)
+-            return;
++        if (xf86BusConfig() == FALSE) {
++            if (!xf86AttemptedFallback) {
++                xf86AttemptedFallback = TRUE;
++                goto Fallback;
++            }
++            else {
++                return;
++            }
++        }
+ 
+         xf86PostProbe();
+ 
+--- a/hw/xfree86/common/xf86Priv.h
++++ b/hw/xfree86/common/xf86Priv.h
+@@ -89,6 +89,7 @@ extern _X_EXPORT int xf86NumDrivers;
+ extern _X_EXPORT Bool xf86Resetting;
+ extern Bool xf86Initialising;
+ extern _X_EXPORT int xf86NumScreens;
++extern _X_EXPORT Bool xf86AttemptedFallback;
+ extern _X_EXPORT const char *xf86VisualNames[];
+ extern _X_EXPORT int xf86Verbose;       /* verbosity level */
+ extern _X_EXPORT int xf86LogVerbose;    /* log file verbosity level */
