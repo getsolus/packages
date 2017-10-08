@@ -1,0 +1,116 @@
+name       : systemd
+version    : '235'
+release    : 54
+source     :
+    - https://github.com/systemd/systemd/archive/v235.tar.gz : 25811f96f5a027bf2a4c9383495cf5b623e385d84da31e473cf375932b3e9c52
+license    :
+    - LGPL-2.1
+    - GPL-2.0
+summary    : System and Service Manager
+component  : system.base
+builddeps  :
+    - pkgconfig(libcryptsetup)
+    - pkgconfig(libkmod)
+    - pkgconfig32(blkid)
+    - pkgconfig32(dbus-1)
+    - pkgconfig32(libcap)
+    - pkgconfig32(libcurl)
+    - pkgconfig32(zlib)
+    - pkgconfig32(liblzma)
+    - pkgconfig32(mount)
+    - pkgconfig32(glib-2.0)
+    - libgcrypt-devel
+    - attr-devel
+    - acl-devel
+    - attr-32bit-devel
+    - acl-32bit-devel
+    - bzip2-devel
+    - bzip2-32bit-devel
+    - docbook-xml
+    - gperf
+    - gnu-efi-devel
+    - libgcrypt-32bit-devel
+    - libgpg-error-32bit-devel
+    - pam-32bit-devel
+rundeps    :
+    - kernel-glue
+patterns   :
+    - devel:
+        - /usr/share/man/man3
+emul32     : yes
+libsplit   : no
+optimize   : size
+description: |
+    systemd is a system and service manager for Linux, compatible with SysV and LSB init scripts. systemd provides aggressive parallelization capabilities, uses socket and D-Bus activation for starting services, offers on-demand starting of daemons, keeps track of processes using Linux control groups, supports snapshotting and restoring of the system state, maintains mount and automount points and implements an elaborate transactional dependency-based service control logic. It can work as a drop-in replacement for sysvinit.
+setup      : |
+    %apply_patches
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        depends_emul32=false
+    else
+        depends_emul32=true
+    fi
+    %meson_configure --prefix=/usr \
+                     --bindir=/usr/bin \
+                     --sbindir=/usr/sbin \
+                     -Drpmmacrosdir=no \
+                     -Dpamlibdir=/lib/security \
+                     -Dsplit-usr=true \
+                     -Drootprefix=/usr \
+                     -Dselinux=false \
+                     -Dapparmor=false \
+                     -Dpolkit=true \
+                     -Dacl=true \
+                     -Dblkid=true \
+                     -Dkmod=$depends_emul32 \
+                     -Dpam=true \
+                     -Dlibcurl=true \
+                     -Dresolve=true \
+                     -Dlibcryptsetup=$depends_emul32 \
+                     -Dgnu-efi=$depends_emul32 \
+                     -Dnetworkd=false \
+                     -Dhostnamed=$depends_emul32 \
+                     -Dlocaled=$depends_emul32 \
+                     -Dmachined=$depends_emul32 \
+                     -Dtimesyncd=$depends_emul32 \
+                     -Dsysvinit-path=/etc/init.d \
+                     -Dlink-udev-shared=false \
+                     -Drootlibdir=%libdir% \
+                     -Ddefault-hierarchy=legacy
+    # Default hierarchy remains legacy to support Docker
+build      : |
+    %meson_build
+install    : |
+    %meson_install
+
+    # Solus is responsible for its own glibc + PAM configuration, *not* systemd..
+    rm -vrf $installdir/usr/share/factory/*
+
+    # Provide compatibility for Chrome, etc
+    ln -sv libudev.so.1 $installdir/%libdir%/libudev.so.0
+
+    # Only need to do the rest of the stuff on 64-bit build
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        exit 0
+    fi
+
+    # Install comapt dirs
+    install -D -d -m 00755 $installdir/{sbin,bin,lib/udev}
+
+    # Compat for old tools
+    ln -sv ../usr/bin/udevadm $installdir/sbin/udevadm
+    ln -sv ../usr/lib/systemd/systemd-udevd $installdir/lib/udev/udevd
+
+    # Make sure systemd + init can be found
+    ln -sv ../usr/lib/systemd/systemd $installdir/bin/systemd
+    ln -sv ../usr/lib/systemd/systemd $installdir/sbin/init
+
+    # Ensure sbin links exist too
+    for control in reboot shutdown poweroff halt ; do
+        ln -sv ../usr/bin/systemctl $installdir/sbin/$control
+    done
+
+    # These are unsupported by Solus, we use clr-boot-manager
+    rm -rvf $installdir/etc/kernel
+    rm -v $installdir/usr/bin/kernel-install
+    rm -v $installdir/usr/share/bash-completion/completions/kernel-install
+    rm -v $installdir/usr/share/man/man8/kernel-install.8
