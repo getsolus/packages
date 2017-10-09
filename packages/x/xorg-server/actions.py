@@ -1,14 +1,13 @@
 #!/usr/bin/python
 
 from pisi.actionsapi import shelltools, get, autotools, pisitools
-import os
 
 def speed_opt(name, cflags):
     """ this package cannot yet be converted to ypkg, so emulates:
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -ftree-vectorize -ftree-loop-vectorize -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    opt = "-ffunction-sections -fasynchronous-unwind-tables -flto  -ftree-loop-distribute-patterns -ftree-vectorize -ftree-loop-vectorize -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
@@ -18,8 +17,6 @@ def speed_opt(name, cflags):
     return " ".join(fl)
 
 def setup():
-    if "LD_AS_NEEDED" in os.environ:
-        del os.environ["LD_AS_NEEDED"]
     cflags = speed_opt("CFLAGS", get.CFLAGS()).replace("-Wl,-z,now", "")
     cxxflags = speed_opt("CXXFLAGS", get.CXXFLAGS()).replace("-Wl,-z,now", "")
     shelltools.export("LDFLAGS", get.LDFLAGS().replace("-Wl,-z,now", ""))
