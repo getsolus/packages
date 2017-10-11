@@ -165,8 +165,16 @@ def install():
     pisitools.insinto("/usr/share/applications", "nvidia-settings.desktop")
     pisitools.insinto("/usr/share/pixmaps", "nvidia-settings.png")
     pisitools.insinto("/usr/share/OpenCL/vendors", "nvidia.icd")
+
     # Vulkan
-    pisitools.insinto("/usr/share/vulkan/icd.d", "10_nvidia*.json")
+    pisitools.insinto("/usr/share/vulkan/icd.d", "nvidia_icd.json.template", destinationFile="10_nvidia.json")
+    pisitools.insinto("/usr/share/vulkan/icd.d", "nvidia_icd.json.template", destinationFile="10_nvidia_wayland.json")
+    pisitools.dosed("%s/usr/share/vulkan/icd.d/10_nvidia.json" % get.installDIR(),
+                    "__NV_VK_ICD__", "libGL.so.1")
+    pisitools.dosed("%s/usr/share/vulkan/icd.d/10_nvidia_wayland.json" % get.installDIR(),
+                    "__NV_VK_ICD__", "libnvidia-egl-wayland.so.1.0.1")
+
+
     pisitools.insinto("/usr/share/nvidia", "nvidia-application-profiles-%s-key-documentation" % get.srcVERSION())
     # Blacklist nouveau
     pisitools.dodir("/usr/lib/modprobe.d")
