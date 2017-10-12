@@ -1,0 +1,77 @@
+From libc-alpha-return-39749-listarch-libc-alpha=sources dot redhat dot com at sourceware dot org Sat May 25 00:26:20 2013
+Return-Path: <libc-alpha-return-39749-listarch-libc-alpha=sources dot redhat dot com at sourceware dot org>
+Delivered-To: listarch-libc-alpha at sources dot redhat dot com
+Received: (qmail 4931 invoked by alias); 25 May 2013 00:26:20 -0000
+Mailing-List: contact libc-alpha-help at sourceware dot org; run by ezmlm
+Precedence: bulk
+List-Id: <libc-alpha.sourceware.org>
+List-Subscribe: <mailto:libc-alpha-subscribe at sourceware dot org>
+List-Archive: <http://sourceware.org/ml/libc-alpha/>
+List-Post: <mailto:libc-alpha at sourceware dot org>
+List-Help: <mailto:libc-alpha-help at sourceware dot org>, <http://sourceware dot org/ml/#faqs>
+Sender: libc-alpha-owner at sourceware dot org
+Delivered-To: mailing list libc-alpha at sourceware dot org
+Received: (qmail 4901 invoked by uid 89); 25 May 2013 00:26:13 -0000
+X-Spam-SWARE-Status: No, score=-2.5 required=5.0 tests=AWL,BAYES_00,RP_MATCHES_RCVD autolearn=ham version=3.3.1
+Date: Sat, 25 May 2013 04:22:28 +0400 (MSK)
+From: Alexander Monakov <amonakov at ispras dot ru>
+To: GNU C Library <libc-alpha at sourceware dot org>
+Subject: [PATCH][BZ #15533] Avoid unnecessary slowdown from profiling with
+ audit
+Message-ID: <alpine.LNX.2.00.1305250406320.23866@monopod.intra.ispras.ru>
+User-Agent: Alpine 2.00 (LNX 1167 2008-08-23)
+MIME-Version: 1.0
+Content-Type: TEXT/PLAIN; charset=US-ASCII
+
+Hello,
+
+Presently, using the rtld-audit interfaces introduces a slowdown due to
+enabling profiling instrumentation (as if LD_AUDIT implied LD_PROFILE).
+However, instrumenting is only necessary if one of audit libraries provides
+PLT hooks (la_plt{enter,exit} symbols).  Otherwise, the slowdown can be
+avoided.
+
+In the synthetic test attached to the bugzilla issue, the slowdown is 19x.  On
+another application I tested, the slowdown from profiling was 10%.  The
+current behavior strongly discourages using the audit interface when
+compromising performance is not desired.
+
+The following patch adjusts the logic that enables profiling to iterate over
+all audit modules and check if any of those provides a PLT hook.
+
+I have an FSF copyright assignment as a GCC contributor (but I do not have
+commit access in glibc).
+
+Thanks.
+
+
+2013-05-25  Alexander Monakov  <amonakov@ispras.ru>
+
+	* elf/dl-reloc.c (_dl_relocate_object): Enable profiling only if one
+	of audit libraries provides PLT hooks.
+
+diff --git a/elf/dl-reloc.c b/elf/dl-reloc.c
+index 73d98f8..675e15b 100644
+--- a/elf/dl-reloc.c
++++ b/elf/dl-reloc.c
+@@ -167,7 +167,16 @@ _dl_relocate_object (struct link_map *l, struct r_scope_elem *scope[],
+ #ifdef SHARED
+   /* If we are auditing, install the same handlers we need for profiling.  */
+   if ((reloc_mode & __RTLD_AUDIT) == 0)
+-    consider_profiling |= GLRO(dl_audit) != NULL;
++    {
++      struct audit_ifaces *afct = GLRO(dl_audit);
++      for (unsigned int cnt = 0; cnt < GLRO(dl_naudit); ++cnt)
++	{
++	  /* Profiling is needed only if PLT hooks are provided.  */
++	  if (afct->ARCH_LA_PLTENTER != NULL || afct->ARCH_LA_PLTEXIT != NULL)
++	    consider_profiling = 1;
++	  afct = afct->next;
++	}
++    }
+ #elif defined PROF
+   /* Never use dynamic linker profiling for gprof profiling code.  */
+ # define consider_profiling 0
+-- 
+1.8.2.1
+
