@@ -8,8 +8,8 @@ import commands
 
 # Required... built in tandem with kernel update
 kernel_trees = {
-    "linux-lts": "4.9.53-51.lts",
-    "linux-current": "4.13.5-24.current"
+    "linux-lts": "4.9.56-52.lts",
+    "linux-current": "4.13.6-25.current"
 }
 
 def setup():
@@ -180,3 +180,11 @@ def install():
     pisitools.dodir("/usr/lib/modprobe.d")
     shelltools.echo("%s/usr/lib/modprobe.d/nvidia.conf" % get.installDIR(),
         "blacklist nouveau")
+
+    # systemd/persistencd
+    shelltools.system("tar xf nvidia-persistenced-init.tar.bz2")
+    pisitools.insinto("/usr/lib/systemd/system",
+                      "nvidia-persistenced-init/systemd/nvidia-persistenced.service.template",
+                      destinationFile="nvidia-persistenced.service")
+    pisitools.dosed("%s/usr/lib/systemd/system/nvidia-persistenced.service" % get.installDIR(),
+                    "__USER__", "nvidia-persistenced")
