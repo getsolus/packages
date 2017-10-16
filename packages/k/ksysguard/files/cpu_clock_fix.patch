@@ -1,0 +1,71 @@
+From cbaaf5f4ff54e20cb8ec782737e04d540085e6af Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Thu, 5 Oct 2017 19:11:05 +0200
+Subject: [PATCH] Try to read CPU clock from cpufreq/scaling_cur_freq instead
+ of /proc/cpuinfo
+
+Summary:
+From kernel 4.13 on, /proc/cpuinfo always reports the static normative
+CPU clock and not the current one. So try to read the frequency from
+cpufreq and only fall back to cpuinfo it that fails.
+
+BUG: 382561
+
+Test Plan:
+Started ksysguard, frequency now changes. If the file is not
+readable, the frequency is read from cpuinfo as expected.
+
+Reviewers: #plasma, sebas
+
+Reviewed By: #plasma, sebas
+
+Subscribers: plasma-devel
+
+Tags: #plasma
+
+Differential Revision: https://phabricator.kde.org/D8153
+---
+ ksysguardd/Linux/cpuinfo.c | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/ksysguardd/Linux/cpuinfo.c b/ksysguardd/Linux/cpuinfo.c
+index 9427ec03..149a3429 100644
+--- a/ksysguardd/Linux/cpuinfo.c
++++ b/ksysguardd/Linux/cpuinfo.c
+@@ -56,6 +56,10 @@ static void processCpuInfo( void )
+      * by the parse thus far */
+     int coreUniqueId = 0;
+ 
++    /* Indicates whether the "cpu MHz" value of the processor in /proc/cpuinfo should be used.
++     * This is not done if parsing the frequency from cpufreq worked. */
++    int useCpuInfoFreq = 1;
++
+     /* Reset global variables */
+     numCores = 0;
+     numProcessors = 0;
+@@ -94,8 +98,24 @@ static void processCpuInfo( void )
+                     registerMonitor( cmdName, "float", printCPUxClock, printCPUxClockInfo,
+                             CpuInfoSM );
+                 }
++
++                useCpuInfoFreq = 1;
++
++                const char freqTemplate[] = "/sys/bus/cpu/devices/cpu%d/cpufreq/scaling_cur_freq";
++                char freqName[sizeof(freqTemplate) + 3];
++                snprintf(freqName, sizeof(freqName) - 1, freqTemplate, coreUniqueId);
++                FILE *freqFd = fopen(freqName, "r");
++                if (freqFd) {
++                    unsigned long khz;
++                    if(fscanf(freqFd, "%lu\n", &khz) == 1) {
++                        Clocks[coreUniqueId] = khz / 1000.0f;
++                        useCpuInfoFreq = 0;
++                    }
++
++                    fclose(freqFd);
++                }
+             }
+-        } else if ( strcmp( tag, "cpu MHz" ) == 0 ) {
++        } else if ( useCpuInfoFreq && strcmp( tag, "cpu MHz" ) == 0 ) {
+             if (HighNumCores > coreUniqueId) {
+                 /* The if statement above *should* always be true, but there's no harm in being safe. */
+                 sscanf( value, "%f", &Clocks[ coreUniqueId ] );
