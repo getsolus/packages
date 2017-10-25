@@ -13,6 +13,7 @@ def updateSystemd(filepath):
     shouldHwdb = False
     shouldReload = False
     shouldRexec = False
+    shouldMime = False
 
     chrooted = False
     testPaths = [
@@ -45,8 +46,8 @@ def updateSystemd(filepath):
             shouldReload = True
         if path.startswith("/etc/udev/hwdb.d") or path.startswith("/usr/lib/udev/hwdb.d") or path.startswith("/usr/lib64/udev/hwdb.d"):
             shouldHwdb = True
-        if shouldUser and shouldTmp and shouldHwdb:
-            break
+        if path.startswith("/usr/share/mime"):
+            shouldMime = True
 
     if shouldUser:
         try:
@@ -63,6 +64,12 @@ def updateSystemd(filepath):
     if shouldHwdb:
         try:
             os.system("/usr/bin/udevadm hwdb --update")
+        except Exception, e:
+            pass
+
+    if shouldMime:
+        try:
+            os.system("/usr/bin/update-mime-database /usr/share/mime")
         except Exception, e:
             pass
 
