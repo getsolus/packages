@@ -1,0 +1,151 @@
+name       : virtualbox
+version    : 5.2.0
+release    : 1
+source     :
+    - http://download.virtualbox.org/virtualbox/5.2.0/VirtualBox-5.2.0.tar.bz2 : 26fc73aee2df18142e4129beed1175fbd7eed69a9b6b150bcff7d9b92f4ade54
+license    : GPL-2.0
+component  : virt
+summary    : 
+    - VirtualBox modules for the linux-lts kernel
+    - common  : Common components for VirtualBox
+    - current : VirtualBox modules for the linux-current kernel
+    - devel   : Development components for VirtualBox
+description: |
+    VirtualBox is a free powerful open source solution for running other x86 and AMD64/Intel64 operating systems virtually on your computer.
+builddeps  :
+    - pkgconfig(alsa)
+    - pkgconfig(devmapper)
+    - pkgconfig(glu)
+    - pkgconfig(libcap)
+    - pkgconfig(libcurl)
+    - pkgconfig(libIDL-2.0)
+    - pkgconfig(libpng)
+    - pkgconfig(libpulse)
+    - pkgconfig(libxslt)
+    - pkgconfig(Qt5UiTools)
+    - pkgconfig(Qt5X11Extras)
+    - pkgconfig(SDL_ttf)
+    - pkgconfig(vpx)
+    - pkgconfig(xcomposite)
+    - pkgconfig(xcursor)
+    - pkgconfig(xinerama)
+    - pkgconfig(xmu)
+    - pkgconfig(xorg-server)
+    - pkgconfig(xrandr)
+    - acpica-unix
+    - cdrtools
+    - docbook-xml
+    - glibc-32bit-devel
+    - libgcc-32bit
+    - linux-current
+    - linux-current-headers
+    - linux-lts
+    - linux-lts-headers
+permanent  :
+    - /lib/modules
+rundeps    :
+    - linux-lts
+    - virtualbox-common
+    - current : 
+        - linux-current
+        - virtualbox-common
+    - devel   : virtualbox-common
+patterns   :
+    - common  : /usr
+    - devel   : 
+        - /usr/lib/python2.7
+        - /usr/lib64/virtualbox/sdk
+    - current : /lib/modules/*.current
+setup      : |
+    # Ensure we don't ever use bundled libraries
+    rm -rf src/libs/{libpng-*,libxml2-*,libxslt-*,zlib-*,boost-*}
+
+    cp $pkgfiles/LocalConfig.kmk .
+    echo "VBOX_GCC_OPT=$CXXFLAGS" >> LocalConfig.kmk
+
+    ./configure --disable-kmods \
+                --disable-docs \
+                --disable-java \
+                --with-makeself=/bin/true   # we don't need this guy; it's used by linux installer
+build      : |
+    source ./env.sh
+    kmk all
+
+    cd out/linux.amd64/release/bin
+
+    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
+        cp -a src ${kern}
+        pushd ${kern}
+            %make KERN_DIR=/usr/src/linux-headers-${kern}
+        popd
+    done
+install    : |
+    cd out/linux.amd64/release/bin
+
+    # binaries
+    install -d -m 00755 $installdir/usr/bin
+    install -m 00755 VBox.sh $installdir/usr/bin/VBox.sh
+
+    for i in VirtualBox VBoxManage VBoxSDL VBoxHeadless VBoxAutostart VBoxBalloonCtrl VBoxBugReport VBoxDTrace; do
+        ln -s VBox.sh $installdir/usr/bin/$i
+    done
+    install -m 00755 VBoxTunctl $installdir/usr/bin
+    install -m 00755 rdesktop-vrdp $installdir/usr/bin
+
+    # libraries
+    install -d -m 00755 $installdir/%libdir%/virtualbox
+    install -m 00755 *.so -t $installdir/%libdir%/virtualbox
+    install -m 00644 *.rc *.r0 VBoxEFI*.fd -t $installdir/%libdir%/virtualbox
+    install -m 00755 VBoxManage VBoxSVC VBoxExtPackHelperApp VBoxXPCOMIPCD VBoxTestOGL VBoxBalloonCtrl -t $installdir/%libdir%/virtualbox
+    install -m 00755 VBoxCreateUSBNode.sh VBoxSysInfo.sh -t $installdir/%libdir%/virtualbox
+    # setuid root binaries
+    install -m 04755 VBoxSDL VirtualBox VBoxHeadless VBoxNetDHCP VBoxNetAdpCtl VBoxNetNAT -t $installdir/%libdir%/virtualbox
+
+    # components
+    install -d -m 00755 $installdir/%libdir%/virtualbox/components
+    install -m 00755 components/* -t $installdir/%libdir%/virtualbox/components
+
+    # languages
+    install -d -m 00755 $installdir/usr/share/virtualbox/nls
+    install -m 00755 nls/*.qm -t $installdir/usr/share/virtualbox/nls
+
+    # rdesktop keymaps
+    install -d -m 00755 $installdir/usr/share/virtualbox/rdesktop-vrdp-keymaps
+    install -m 00644 rdesktop-vrdp-keymaps/* -t $installdir/usr/share/virtualbox/rdesktop-vrdp-keymaps
+
+    # icons
+    install -D -m 00644 VBox.png $installdir/usr/share/pixmaps/VBox.png
+    pushd icons
+        for i in *; do
+            install -d $installdir/usr/share/icons/hicolor/$i/mimetypes
+            cp $i/* $installdir/usr/share/icons/hicolor/$i/mimetypes
+        done
+    popd
+
+    # .desktop
+    install -D -m 00644 virtualbox.desktop $installdir/usr/share/applications/virtualbox.desktop
+    install -D -m 00644 virtualbox.xml $installdir/usr/share/mime/packages/virtualbox.xml
+
+    # kernel modules
+    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
+        pushd ${kern}
+            install -d -m 00755 $installdir/lib/modules/${kern}/extra
+            install -m 00644 *.ko $installdir/lib/modules/${kern}/extra
+        popd
+    done
+
+    # devel
+    install -D -m 00755 vboxshell.py $installdir/%libdir%/virtualbox/vboxshell.py
+    pushd sdk/installer
+        VBOX_INSTALL_PATH="%libdir%/virtualbox" python vboxapisetup.py install --root=$installdir
+    popd
+    install -d -m 00755 $installdir/%libdir%/virtualbox/sdk/bindings
+    cp -r sdk/bindings/{VirtualBox.xidl,auth,xpcom} $installdir/%libdir%/virtualbox/sdk/bindings
+
+    # systemd stuffs
+    install -D -m 00644 $pkgfiles/virtualbox.sysusers $installdir/%libdir%/sysusers.d/virtualbox.conf
+    install -D -m 00644 $pkgfiles/60-vboxdrv.rules $installdir/%libdir%/udev/rules.d/60-vboxdrv.rules
+    install -D -m 00755 $pkgfiles/vboxdrv.sh $installdir/%libdir%/virtualbox/vboxdrv.sh
+    install -D -m 00644 $pkgfiles/vboxdrv.service $installdir/%libdir%/systemd/system/vboxdrv.service
+    install -d -m 00755 $installdir/%libdir%/systemd/system/multi-user.target.wants
+    ln -sv ../vboxdrv.service $installdir/%libdir%/systemd/system/multi-user.target.wants/.
