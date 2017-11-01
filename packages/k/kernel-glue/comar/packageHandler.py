@@ -14,6 +14,7 @@ def updateSystemd(filepath):
     shouldReload = False
     shouldRexec = False
     shouldMime = False
+    shouldDconf = False
 
     chrooted = False
     testPaths = [
@@ -48,6 +49,8 @@ def updateSystemd(filepath):
             shouldHwdb = True
         if path.startswith("/usr/share/mime"):
             shouldMime = True
+        if path.startswith("/usr/share/dconf") or path.startswith("/etc/dconf"):
+            shouldDconf = True
 
     if shouldUser:
         try:
@@ -70,6 +73,12 @@ def updateSystemd(filepath):
     if shouldMime:
         try:
             os.system("/usr/bin/update-mime-database /usr/share/mime")
+        except Exception, e:
+            pass
+
+    if shouldDconf:
+        try:
+            os.system("/usr/bin/dconf update")
         except Exception, e:
             pass
 
