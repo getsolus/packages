@@ -15,6 +15,7 @@ def updateSystemd(filepath):
     shouldRexec = False
     shouldMime = False
     shouldDconf = False
+    shouldQol = False
 
     chrooted = False
     testPaths = [
@@ -51,6 +52,8 @@ def updateSystemd(filepath):
             shouldMime = True
         if path.startswith("/usr/share/dconf") or path.startswith("/etc/dconf"):
             shouldDconf = True
+        if path.startswith("/usr/sbin/qol-assist"):
+            shouldQol = True
 
     if shouldUser:
         try:
@@ -92,6 +95,13 @@ def updateSystemd(filepath):
     if shouldRexec and not chrooted:
         try:
             os.system("/usr/bin/systemctl daemon-rexec")
+        except Exception, e:
+            pass
+
+    # We don't do QoL migrations for chroot images.
+    if shouldQol and not chrooted:
+        try:
+            os.system("/usr/sbin/qol-assist trigger")
         except Exception, e:
             pass
 
