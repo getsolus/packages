@@ -12,7 +12,6 @@ def updateSystemd(filepath):
     shouldTmp = False
     shouldHwdb = False
     shouldReload = False
-    shouldRexec = False
     shouldMime = False
     shouldDconf = False
     shouldQol = False
@@ -89,12 +88,6 @@ def updateSystemd(filepath):
     if shouldReload and not chrooted:
         try:
             os.system("/usr/bin/systemctl daemon-reload")
-        except Exception, e:
-            pass
-
-    if shouldRexec and not chrooted:
-        try:
-            os.system("/usr/bin/systemctl daemon-rexec")
         except Exception, e:
             pass
 
