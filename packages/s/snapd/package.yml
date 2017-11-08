@@ -1,9 +1,9 @@
 name       : snapd
-version    : 2.27
+version    : 2.29.2
 homepage   : https://snapcraft.io/
-release    : 4
+release    : 5
 source     :
-    - https://github.com/snapcore/snapd/releases/download/2.27/snapd_2.27.vendor.tar.xz : d61ade8303e5eb091ae9aa84a099dbb130e6035a6a4f333f5b57907960729ad2
+    - https://solus-project.com/sources/golang-revendor/snapd-2.29.2.tar.xz : 839c20f01db787e40bd51ce9cbbafd8b9af8c7b80154856a1db303a8d07ae02a
 license    : GPL-3.0
 component  : desktop.util
 summary    : The snapd and snap tools enable systems to work with .snap files
@@ -23,21 +23,34 @@ rundeps    :
     - libselinux
     - squashfs-tools
 setup      : |
-    %patch -p1 < $pkgfiles/0001-Add-initial-support-for-Solus.patch
-    %patch -p1 < $pkgfiles/0002-snap-confine-Only-attempt-to-copy-mount-NVIDIA-libs-.patch
-    %patch -p1 < $pkgfiles/3715.patch
-    mkdir -p src/github.com/snapcore
-    ln -s `pwd` src/github.com/snapcore/snapd
+    # Set up the version from packaging
+    pushd src/github.com/snapcore/snapd
+    ./mkversion.sh "$version"
+
+    # Backport fixes from master (minimal, but needed)
+    %patch -p1 < $pkgfiles/fix-apparmor-confinement.patch
+
+    # Apply our patches
+    %patch -p1 < $pkgfiles/0001-cmd-snap-confine-Ensure-snap-confine-is-allowed-to-a.patch
+    %patch -p1 < $pkgfiles/0001-cmd-snap-confine-Respect-biarch-nature-of-libdirs.patch
+
+    # Now configure C portion
     pushd cmd
-    %autogen --enable-nvidia-arch
+    %autogen
+    %configure --enable-nvidia-biarch
 build      : |
-    commands=(snap snapctl snapd snap-exec snap-update-ns snap-seccomp)
+    commands=(snap snapctl snapd snap-exec snap-seccomp)
     for snapcracklepop in ${commands[@]}; do
         GOPATH="`pwd`" go install -v github.com/snapcore/snapd/cmd/$snapcracklepop
     done
-    %make -C cmd
+    # snap-update-ns needs to be static.
+    GOPATH="`pwd`" go build -o bin/snap-update-ns --ldflags '-extldflags "-static"' -v github.com/snapcore/snapd/cmd/snap-update-ns
+    %make -C src/github.com/snapcore/snapd/cmd
 install    : |
-    %make_install -C cmd
+    # C portions
+    %make_install -C src/github.com/snapcore/snapd/cmd
+
+    # Golang binaries
     bincommands=(snap snapctl)
     dcommands=(snapd snap-exec snap-update-ns snap-seccomp)
     for tgtbin in ${bincommands[@]} ; do
@@ -47,9 +60,15 @@ install    : |
         install -m 00755 bin/$tgtbin $installdir/%libdir%/$package/.
     done
 
+    # Move into the base dir so we can install stuff
+    pushd src/github.com/snapcore/snapd
+
     # Completion
     install -m 00644 data/info $installdir/%libdir%/$package/info
     rm -vf $installdir/usr/bin/ubuntu-core-launcher
+
+    # Polkit
+    install -m 00644 -D data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
 
     # systemd
     %make_install -C data/systemd \
