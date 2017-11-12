@@ -1,8 +1,8 @@
 name       : vulkan
-version    : 1.0.42
-release    : 5
+version    : 1.0.65
+release    : 7
 source     :
-    - https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers/archive/sdk-1.0.42.0.tar.gz : 305d3070f559a3f5ad332aff285a3ea0618f9d0696cde81a58765fcb5c7c4e42
+    - git|https://github.com/KhronosGroup/Vulkan-LoaderAndValidationLayers.git : 4c613340912a1afc0b41ce91442d1c829181063b
 license    : Apache-2.0
 component  : xorg.graphics
 summary    : Khronos Vulkan ICD loader
@@ -10,47 +10,46 @@ description: |
     Vulkan is an Explicit API, enabling direct control over how GPUs actually work. No (or very little) validation or error checking is done inside a Vulkan driver. Applications have full control and responsibility. Any errors in how Vulkan is used often result in a crash. This project provides standard validation layers that can be enabled to ease development by helping developers verify their applications correctly use the Vulkan API.
     Vulkan supports multiple GPUs and multiple global contexts (VkInstance). The ICD loader is necessary to support multiple GPUs and the VkInstance level Vulkan commands. Additionally, the loader manages inserting Vulkan layer libraries, including validation layers between the application and the ICD.
 builddeps  :
-    - pkgconfig(gl)
-    - pkgconfig(x11)
-    - pkgconfig(xcb)
-    - pkgconfig(xrandr)
-    - pkgconfig(wayland-client)
-    - chrpath
+    - pkgconfig32(gl)
+    - pkgconfig32(x11)
+    - pkgconfig32(xcb)
+    - pkgconfig32(xrandr)
+    - pkgconfig32(wayland-client)
     - glslang-devel
+    - glslang-32bit-devel
     - spirv-tools-devel
+    - spirv-tools-32bit-devel
     - spirv-headers
 libsplit   : no
+emul32     : yes
 setup      : |
+    mkdir build && pushd build
+    # assembler gets awfully unhappy.
+    EXTRA32=""
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        export ASFLAGS=--32
+        export EXTRA32="-DCMAKE_INSTALL_LIBDIR=lib32"
+    fi
     %cmake -DBUILD_WSI_MIR_SUPPORT=OFF \
-           -DBUILD_WSI_WAYLAND_SUPPORT=ON . \
+           -DBUILD_WSI_WAYLAND_SUPPORT=ON \
+           -DBUILD_WSI_XCB_SUPPORT=ON \
+           -DBUILD_WSI_XLIB_SUPPORT=ON \
            -DGLSLANG_SPIRV_INCLUDE_DIR=/usr/include/spirv-tools \
            -DBUILD_TESTS=OFF \
-           -DBUILD_LAYERS=ON
+           $EXTRA32 \
+           -DBUILD_LAYERS=ON \
+           -DCMAKE_SKIP_RPATH=True \
+           -DCUSTOM_GLSLANG_BIN_ROOT=/usr/bin \
+           -DCUSTOM_SPIRV_TOOLS_BIN_ROOT=/usr/bin \
+           -DCMAKE_INSTALL_DATADIR=/share \
+           ..
 build      : |
-    %make
+    %make -C build
 install    : |
-    # ICD Loader
-    install -D -d -m 00755 $installdir/%libdir%
-    install -m 00755 loader/libvulkan.so* $installdir/%libdir%/.
+    %make_install -C build
 
-    # Binaries
-    install -D -m 00755 demos/vulkaninfo $installdir/usr/bin/vulkaninfo
-    install -m 00755 demos/smoketest $installdir/usr/bin/smoketest
+    # vulkan packaging is cranky to say the least.
+    mv $installdir/usr/etc $installdir/usr/share
 
-    # Layers
-    install -D -d -m 00755 $installdir/usr/share/vulkan/explicit_layer.d
-    install -D -d -m 00755 $installdir/usr/share/vulkan/implicit_layer.d
-
-    # Layer .so's
-    install -D -d -m 00755 $installdir/%libdir%/vulkan
-    install -m 00755 layers/*.so $installdir/%libdir%/vulkan/.
-
-    # Fix the jsons
-    install -m 00644 layers/linux/*.json $installdir/usr/share/vulkan/explicit_layer.d
-    sed 's@./@%libdir%/vulkan/@' -i $installdir/usr/share/vulkan/explicit_layer.d/*.json
-
-    # Utils is needed globally
-    mv $installdir/%libdir%/vulkan/libVkLayer_utils.so $installdir/%libdir%/libVkLayer_utils.so
-
-    # nuke rpath - we don't like these.
-    chrpath -d $installdir/%libdir%/vulkan/*.so
+    # Nuke dummy icd loader
+    rm -rf $installdir/usr/share/vulkan/icd.d
