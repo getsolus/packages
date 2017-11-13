@@ -28,6 +28,8 @@ CMAKE = 3
 PYTHON_MODULES = 4
 PERL_MODULES = 5
 CABAL = 6
+RUBY = 7
+RUBY_GEMS = 8
 
 class DepObject:
 
@@ -136,6 +138,10 @@ class AutoPackage:
                     self.buildpl = True
                 if ".cabal" in file:
                     known_types.append(CABAL)
+                if ".gemspec" in file:
+                    known_types.append(RUBY)
+        if ".gem" in self.file_name:
+            known_types.append(RUBY_GEMS)
 
         # We may have hit several systems..
         if CMAKE in known_types:
@@ -156,6 +162,12 @@ class AutoPackage:
         elif CABAL in known_types:
             print "cabal"
             self.compile_type = CABAL
+        elif RUBY in known_types:
+            print "ruby"
+            self.compile_type = RUBY
+        elif RUBY_GEMS in known_types:
+            print "ruby-gem"
+            self.compile_type = RUBY_GEMS
         else:
             print "unknown"
 
@@ -242,6 +254,14 @@ description: |
                 setup = "%cabal_configure"
                 build = "%cabal_build"
                 install = "%cabal_install"
+            elif self.compile_type == RUBY:
+                setup = ""
+                build = "%gem_build"
+                install = "%gem_install"
+            elif self.compile_type == RUBY_GEMS:
+                setup = ""
+                build = ""
+                install = "%gem_install"
 
             if setup is None:
                 setup = "%configure"
