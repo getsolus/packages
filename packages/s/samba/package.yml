@@ -1,8 +1,8 @@
 name       : samba
-version    : 4.7.0
-release    : 24
+version    : 4.7.2
+release    : 25
 source     :
-    - https://download.samba.org/pub/samba/stable/samba-4.7.0.tar.gz : bd16d169988eb513e685a87e9964a5210482498fa9b3a22aaa8287a061e3c936
+    - https://download.samba.org/pub/samba/stable/samba-4.7.2.tar.gz : fd32512289dfb276be2218377c6136b2e12a05826f8bee9d0dac4ad626decf92
 license    : GPL-2.0
 summary    : Provides file and print services to SMB/CIFS clients and Windows networking to Linux clients
 component  : desktop.core
@@ -13,6 +13,7 @@ builddeps  :
     - pkgconfig(com_err)
     - pkgconfig(gnutls)
     - pkgconfig(krb5)
+    - pkgconfig(ldb)
     - pkgconfig(libarchive)
     - pkgconfig(libcap)
     - pkgconfig(libtirpc)
@@ -20,8 +21,7 @@ builddeps  :
     - pkgconfig(nss)
     - pkgconfig(openssl)
     - pkgconfig(popt)
-    - pkgconfig(talloc)
-    - pkgconfig(tdb)
+    - pkgconfig(tevent)
     - acl-devel
     - attr-devel
     - docbook-xml
@@ -33,25 +33,32 @@ setup      : |
     # TODO: Enable ldap, etc..
     %configure --with-piddir=/run/samba \
                --with-sockets-dir=/run/samba \
+               --with-lockdir=/run/lock \
                --with-pammodulesdir=/lib/security \
                --with-systemd \
                --enable-fhs \
                --with-ads \
                --with-configdir=/etc/samba \
-               --bundled-libraries=!tdb,!tirpc
+               --bundled-libraries=cmocka
 build      : |
-    %make
+    # parallel builds don't work with the macro
+    WAF_MAKE=1 python ./buildtools/bin/waf -j%YJOBS% build
 install    : |
     %make_install
-    install -m0644 -D $pkgfiles/smb.conf $installdir/etc/samba/smb.conf
-    install -m00644 -D $pkgfiles/samba.tmpfiles $installdir/%libdir%/tmpfiles.d/samba.conf
+
+    install -D -m00644 $pkgfiles/smb.conf $installdir/etc/samba/smb.conf
     # cups
-    install -D -d -m 00755 $installdir/%libdir%/cups/backend
+    install -d -m00755 $installdir/%libdir%/cups/backend
     ln -sv /usr/bin/smbspool $installdir/%libdir%/cups/backend/smb
     # pam
-    install -D -m 00644 $pkgfiles/samba.pam $installdir/etc/pam.d/samba
-
+    install -D -m00644 $pkgfiles/samba.pam $installdir/etc/pam.d/samba
     # systemd
-    install -D -d -m 00755 $installdir/usr/lib/systemd/system
-    install -m 0644 $pkgfiles/systemd/*.service $installdir/usr/lib/systemd/system/.
-    rm -rfv $installdir/var/{run,lock,log}
+    install -D -m00644 $pkgfiles/samba.tmpfiles $installdir/%libdir%/tmpfiles.d/samba.conf
+    install -D -m00644 packaging/systemd/samba.sysconfig $installdir/etc/sysconfig/samba
+    install -d -m00755 $installdir/usr/lib/systemd/system
+    install -m00644 packaging/systemd/*.service $installdir/usr/lib/systemd/system/.
+    # networkmanager online/offline script
+    install -D -m00755 packaging/NetworkManager/30-winbind-systemd $installdir/etc/NetworkManager/dispatcher.d/30-winbind
+
+    rm -rfv $installdir/var/log
+    rm -rfv $installdir/run
