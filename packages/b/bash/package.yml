@@ -1,19 +1,27 @@
 name       : bash
 version    : 4.4.012
-release    : 43
+release    : 44
 source     :
     - https://ftp.gnu.org/gnu/bash/bash-4.4.tar.gz : d86b3392c1202e8ff5a423b302e6284db7f8f435ea9f39b5b1b20fd3ac36dfcb
 license    :
     - GPL-3.0
-component  : system.base
-summary    : bash (sh-compatible shell)
+component  :
+    - system.base
+    - recovery: system.boot
+summary    :
+    - bash (sh-compatible shell)
+    - recovery: Specialised bash build for the initramfs
 description: |
     bash (sh-compatible shell) The GNU Bourne-Again SHell.  Bash is a sh-compatible command interpreter that executes commands read from the standard input or from a file.  Bash also incorporates useful features from the Korn and C shells (ksh and csh).  Bash is ultimately intended to be a conformant implementation of the IEEE Posix Shell and Tools specification (IEEE Working Group 1003.2). Bash must be present for the system to boot properly.
 optimize   :
     - size
     - lto
+builddeps  :
+    - musl-devel
+patterns   :
+    - recovery: /bin/bash.recovery
 rundeps    :
-    - readline
+    - recovery: bash  # We want the main bash files.
 setup      : |
     PATCH_START=001
     PATCH_END=012
@@ -24,17 +32,59 @@ setup      : |
 
     # stateless
     %patch -p1 < $pkgfiles/0001-Use-a-stateless-profile-by-default.patch
-    %configure --with-curses \
-               --enable-history \
-               --enable-static-link \
-               --disable-rpath \
-               --without-bash-malloc \
-               --docdir=/usr/share/doc/bash
+
+    mkdir glibc-build && mkdir musl-build
+
+    # Configure the musl build
+    pushd musl-build
+
+    # Just make the .a files neatly accessible to musl
+    mkdir farm
+    ln -sv %libdir%/libncursesw.a farm/.
+    ln -sv libncursesw.a farm/libncurses.a
+    ln -sv libncursesw.a farm/libcurses.a
+
+    OLDCC="$CC"
+    export CC="musl-gcc"
+    ../configure %CONFOPTS% \
+                 --with-curses \
+                 --enable-history \
+                 --enable-static-link \
+                 --disable-rpath \
+                 --without-bash-malloc \
+                 --disable-nls \
+                 --docdir=/usr/share/doc/bash \
+                 CFLAGS="$CFLAGS -static -L`pwd`/farm"
+    popd
+    export CC="$OLDCC"
+
+    pushd glibc-build
+    ../configure %CONFOPTS% \
+                 --with-curses \
+                 --enable-history \
+                 --enable-static-link \
+                 --disable-rpath \
+                 --without-bash-malloc \
+                 --docdir=/usr/share/doc/bash
 build      : |
-    %make
+    OLDCC="$CC"
+    export CC="musl-gcc"
+    %make -C musl-build
+    export CC="$OLDCC"
+    %make -C glibc-build
 install    : |
-    %make_install
     install -d $installdir/bin
+
+    # musl install, rename binary
+    OLDCC="$CC"
+    export CC="musl-gcc"
+    %make_install -C musl-build
+    mv $installdir/usr/bin/bash $installdir/bin/bash.recovery
+
+    # Standard glibc build, preserve binary name
+    export CC="$OLDCC"
+    %make_install -C glibc-build
+
     mv $installdir/usr/bin/bash $installdir/bin/bash
     # bash as system shell
     ln -sfv /bin/bash $installdir/bin/sh
