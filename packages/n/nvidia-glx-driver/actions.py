@@ -8,8 +8,8 @@ import commands
 
 # Required... built in tandem with kernel update
 kernel_trees = {
-    "linux-lts": "4.9.64-59.lts",
-    "linux-current": "4.13.15-34.current"
+    "linux-lts": "4.9.65-60.lts",
+    "linux-current": "4.13.16-35.current"
 }
 
 def setup():
