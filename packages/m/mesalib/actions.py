@@ -10,12 +10,15 @@ def speed_opt(name, cflags):
         https://github.com/solus-project/ypkg/blob/master/ypkg2/ypkgcontext.py#L53
     """
     fl = list(cflags.split(" "))
-    opt = "-ffunction-sections -fasynchronous-unwind-tables -ftree-loop-distribute-patterns -ftree-vectorize -ftree-loop-vectorize -fno-semantic-interposition -O3 -falign-functions=32".split(" ")
+    opt = "-fno-semantic-interposition -O3 -falign-functions=32".split(" ")
     optimisations = ["-O%s" % x for x in range(0, 4)]
     optimisations.extend("-Os")
 
     fl = filter(lambda x: x not in optimisations, fl)
     fl.extend(opt)
+    # actionsapi is dumb and returns -j$jobs. need ypkg.
+    # fl.extend(["-flto=".format(get.JOBS())])
+    fl.extend(["-flto=4"])
     shelltools.export(name, " ".join(fl))
     return " ".join(fl)
 
