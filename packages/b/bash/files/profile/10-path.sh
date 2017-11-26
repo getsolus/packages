@@ -1,12 +1,8 @@
 # Begin /usr/share/defaults/etc/profile.d/10-path.sh
 
-if [ "$EUID" -eq 0 ]; then
-  export PATH="/sbin:/bin:/usr/sbin:/usr/bin"
-  if [ -d "/usr/local/sbin" ]; then
-    export PATH="$PATH:/usr/local/sbin"
-  fi
-else
-  export PATH="/bin:/usr/bin"
+export PATH="/sbin:/bin:/usr/sbin:/usr/bin"
+if [ -d "/usr/local/sbin" ]; then
+  export PATH="$PATH:/usr/local/sbin"
 fi
 
 if [ -d "/usr/local/bin" ]; then
