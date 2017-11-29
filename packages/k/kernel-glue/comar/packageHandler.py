@@ -143,10 +143,9 @@ def updateCBM(filepath):
         print("Failed to run clr-boot-manager: %s" % e)
 
 def setupPackage(metapath, filepath):
-    if not os.path.exists("/usr/sbin/usysconf"):
-        updateSystemd(filepath)
-        updateCBM(filepath)
-    else:
+    updateSystemd(filepath)
+    updateCBM(filepath)
+    if os.path.exists("/usr/sbin/usysconf"):
         try:
             os.system("/usr/sbin/usysconf run")
         except:

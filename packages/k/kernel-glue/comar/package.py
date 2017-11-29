@@ -3,13 +3,6 @@ import os
 import os.path
 
 def postInstall(fromVersion, fromRelease, toVersion, toRelease):
-    if os.path.exists("/usr/sbin/usysconf"):
-        try:
-            os.system("/usr/sbin/usysconf run")
-        except:
-            pass
-        return
-
     chrooted = False
     testPaths = [
         "/proc/1",
@@ -42,3 +35,9 @@ def postInstall(fromVersion, fromRelease, toVersion, toRelease):
                 os.system("/usr/sbin/qol-assist trigger")
             except Exception, e:
                 pass
+
+    if os.path.exists("/usr/sbin/usysconf"):
+        try:
+            os.system("/usr/sbin/usysconf run")
+        except:
+            pass
