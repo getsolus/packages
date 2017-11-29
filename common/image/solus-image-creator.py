@@ -736,7 +736,9 @@ def main():
     if not os.path.exists(devnull):
         run_chroot("mknod -m 644 /dev/null c 1 3")
     configure_root()
-    # Shit ton of postinstalls. Can't wait till we're stateless.
+    # Configure the system
+    run_chroot("usysconf run")
+    # Clear the pending state
     run_chroot("eopkg configure-pending")
     configure_live_account()
 
