@@ -140,6 +140,7 @@ def create_support_dirs():
 # Spot the C coder.
 did_mount = False
 root_mounted = False
+proc_mounted = False
 efi_mounted = False
 
 def clean_exit(code):
@@ -151,6 +152,7 @@ def clean_exit(code):
 def do_mount(source,target,type=None,opts=None,bind=False):
     ''' Mount source over target, using optional type and options '''
     global did_mount
+    global proc_mounted
 
     try:
         if type:
@@ -172,7 +174,10 @@ def do_mount(source,target,type=None,opts=None,bind=False):
     except Exception, e:
         print "Execution of mount failed: %s" % e
         return False
-    did_mount = True
+    if source == "/proc":
+        proc_mounted = True
+    else:
+        did_mount = True
     return True
 
 
@@ -193,20 +198,7 @@ def down_root():
     ''' Down le roots '''
     global did_mount
     global root_mounted
-
-    # Tear down dbus
-    if root_mounted:
-        if os.path.exists(os.path.join(get_image_root(), "var/run/dbus/pid")):
-            with open(os.path.join(get_image_root(), "var/run/dbus/pid"), "r") as pid:
-                p = pid.read().strip()
-                print "Killing d-bus pid: %s" % p
-                os.system("kill %s" % p)
-                time.sleep(0.5)
-                if os.path.exists(os.path.join("/proc", p)):
-                    print "Force-killing d-bus pid: %s" % p
-                    os.system("kill -9 %s" % p)
-        else:
-            print "%s does not exist.. ?" % os.path.join(get_image_root(), "var/run/dbus/pid")
+    global proc_mounted
 
     dev = False
     with open("/etc/mtab", "r") as mounts:
@@ -223,6 +215,9 @@ def down_root():
         print "Umounting bind-mount /dev"
         do_umount(os.path.join(get_image_root(), "dev"))
 
+    if proc_mounted:
+        do_umount(os.path.join(get_image_root(), "proc"))
+        proc_mounted = False
     if root_mounted:
         do_umount(get_image_root())
     if efi_mounted:
@@ -265,6 +260,7 @@ def init_root():
         os.makedirs("%s/var" % get_image_root())
         os.symlink("../run/lock", "%s/var/lock" % get_image_root())
         os.symlink("../run", "%s/var/run" % get_image_root())
+        os.makedirs("{}/proc".format(get_image_root()))
     except Exception, ex:
         print("Unable to set up links for bootstrap: %s" % ex)
         clean_exit(1)
@@ -295,8 +291,8 @@ def create_squash(compression):
     os.chdir(wdir)
 
 def configure_root():
-    ''' Initialise new system, with dbus configuration to configure pending.
-        This bollocks is only needed because Solus isn't stateless yet.
+    ''' Initialise new system with the baselayout.
+        TODO: Nuke requirement to even do this!
     '''
     baselayout = os.path.join(get_image_root(), "usr/share/baselayout")
     target = os.path.join(get_image_root(), "etc")
@@ -311,22 +307,6 @@ def configure_root():
     except Exception, e:
         print("Fatal error in configure_root: %s" % ex)
         clean_exit(1)
-
-    # set up dbus account
-    dbus_id = 18
-    dbus_name = "messagebus"
-    dbus_desc = "D-Bus Message Daemon"
-
-    run_chroot("groupadd -g %d %s" % (dbus_id, dbus_name))
-    run_chroot("useradd -m -d /var/run/dbus -r -s /bin/false -u %d -g %d %s -c \"%s\"" % (dbus_id, dbus_id, dbus_name, dbus_desc))
-    run_chroot("/sbin/ldconfig -X")
-    
-    # ensure hwdb is generated, otherwise slow-ass boot times.
-    run_chroot("/usr/bin/udevadm hwdb --update")
-    
-    # lastly, update mtimes to stop systemd running units it doesn't need to
-    run_chroot("touch /etc")
-
 
 def configure_live_account():
     ''' Configure the live user account, i.e. passwordless, sudo fun '''
@@ -628,6 +608,7 @@ def spin_iso(filename, label):
 def main():
     ''' Main entry '''
     global root_mounted
+    global proc_mounted
     global release
     targetDirectory = get_image_root()
 
@@ -700,6 +681,10 @@ def main():
     root_mounted = True
 
     init_root()
+    if not do_mount("/proc", os.path.join(get_image_root(), "proc", bind=True):
+        print("Unable to mount /proc")
+        clean_exit(1)
+    proc_mounted = True
 
     if not os.path.exists(get_cache_target()):
         try:
@@ -751,7 +736,6 @@ def main():
     if not os.path.exists(devnull):
         run_chroot("mknod -m 644 /dev/null c 1 3")
     configure_root()
-    run_chroot("dbus-daemon --system")
     # Shit ton of postinstalls. Can't wait till we're stateless.
     run_chroot("eopkg configure-pending")
     configure_live_account()
