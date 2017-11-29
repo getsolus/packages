@@ -143,8 +143,14 @@ def updateCBM(filepath):
         print("Failed to run clr-boot-manager: %s" % e)
 
 def setupPackage(metapath, filepath):
-    updateSystemd(filepath)
-    updateCBM(filepath)
+    if not os.path.exists("/usr/sbin/usysconf"):
+        updateSystemd(filepath)
+        updateCBM(filepath)
+    else:
+        try:
+            os.system("/usr/sbin/usysconf run")
+        except:
+            pass
 
 def postCleanupPackage(metapath, filepath):
     # TODO: Remove old initramfs!
