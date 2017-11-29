@@ -681,7 +681,7 @@ def main():
     root_mounted = True
 
     init_root()
-    if not do_mount("/proc", os.path.join(get_image_root(), "proc", bind=True):
+    if not do_mount("/proc", os.path.join(get_image_root(), "proc"), bind=True):
         print("Unable to mount /proc")
         clean_exit(1)
     proc_mounted = True
