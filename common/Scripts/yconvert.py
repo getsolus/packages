@@ -51,7 +51,8 @@ if __name__ == "__main__":
 
     depsi = root.findall("Source/BuildDependencies/Dependency")
     pcdeps = ["pkgconfig(%s)" % (x.text) for x in depsi if "type" in x.attrib and x.attrib['type'] == "pkgconfig"]
-    deps = [x.text for x in depsi if "pkgconfig(%s)" % x.text not in pcdeps]
+    pcdep32 = ["pkgconfig32(%s)" % (x.text) for x in depsi if "type" in x.attrib and x.attrib['type'] == "pkgconfig32"]
+    deps = [x.text for x in depsi if "pkgconfig(%s)" % x.text not in pcdeps and "pkgconfig32(%s)" % x.text not in pcdep32]
 
     url = archive.text
     file = url.split("/")[-1]
@@ -84,6 +85,8 @@ source      :
     if len(pcdeps) > 0 or len(deps) > 0:
         d += "builddeps   :\n"
         for dep in pcdeps:
+            d += "    - %s\n" % dep
+        for dep in pcdep32:
             d += "    - %s\n" % dep
         for dep in deps:
             d += "    - %s\n" % dep
