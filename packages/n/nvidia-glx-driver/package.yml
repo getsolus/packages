@@ -1,0 +1,137 @@
+name        : nvidia-glx-driver
+version     : 384.98
+release     : 190
+source      :
+    - http://cn.download.nvidia.com/XFree86/Linux-x86_64/384.98/NVIDIA-Linux-x86_64-384.98.run : fb10b66d9a835c8a5fca9bf2aeb2a240732108b1d6fd11dea19c326463c6b6bb
+extract     : no
+homepage    : https://nvidia.com
+license     :
+    - EULA
+summary     :
+    - NVIDIA Binary Driver (LTS Kernel)
+    - common: Shared assets for the NVIDIA GLX Driver
+    - current: NVIDIA Binary Driver (Current Kernel)
+    - modaliases: Files to help with DoFlicky driver detection
+component   :
+    - kernel.drivers
+    - common: xorg.driver
+    - current: kernel.drivers
+    - modaliases: kernel.drivers
+    - 32bit: xorg.driver
+description : |
+    NVIDIA Binary Driver
+rundeps     :
+    - common:
+        - linux-driver-management
+        - libva-vdpau-driver
+    - 32bit:
+        - nvidia-glx-driver-common
+        - libva-vdpau-driver-32bit
+    - main: nvidia-glx-driver-common
+    - current: nvidia-glx-driver-common
+conflicts   :
+    - common:
+        - nvidia-304-glx-driver-common
+        - nvidia-340-glx-driver-common
+patterns    :
+    - common: /*
+    - modaliases: /usr/share/doflicky/modaliases
+    - 32bit: /usr/lib32
+    - main: /lib/modules/*.lts
+    - current: /lib/modules/*.current
+strip       : no
+builddeps   :
+    - pkgconfig(xorg-server)
+    - pkgconfig(gtk+-2.0)
+    - pkgconfig(gtk+-3.0)
+    - linux-lts
+    - linux-lts-headers
+    - linux-current
+    - linux-current-headers
+setup      : |
+    sh $sources/NVIDIA-Linux-x86_64-$version.run --extract-only
+    pushd NVIDIA*
+
+    # Prepare kernel trees
+    cp -a kernel lts_kernel
+    cp -a kernel current_kernel
+
+    # We need systemd units.
+    tar xf nvidia-persistenced-init.tar.bz2
+build      : |
+    # Build kernel modules
+    %make -C lts_kernel SYSSRC="/lib/modules/%kernel_version_lts%/build"
+    %make -C current_kernel SYSSRC="/lib/modules/%kernel_version_current%/build"
+install    : |
+    # Install LTS kernel drivers
+    install -D -d -m 00755 $installdir/lib/modules/%kernel_version_lts%/kernel/drivers/video
+    install -m 00644 lts_kernel/*.ko $installdir/lib/modules/%kernel_version_lts%/kernel/drivers/video/.
+
+    # Install current kernel drivers
+    install -D -d -m 00755 $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video
+    install -m 00644 current_kernel/*.ko $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video/.
+
+    # Prepare doflicky modaliases from the LTS kernel
+    sh -e $pkgfiles/nvidia_supported nvidia ${package} README.txt lts_kernel/nvidia/nv-kernel.o_binary > modalias
+    install -D -m 00644 modalias $installdir/usr/share/doflicky/modaliases/${package}.modaliases
+
+    # Install nvidia driver for xorg
+    install -D -m 00755 nvidia_drv.so $installdir/%libdir%/xorg/modules/drivers/nvidia_drv.so
+
+    # Install all binaries
+    install -D -d -m 00755 $installdir/usr/bin
+    install -m 00755 `find . -maxdepth 1 -type f -name "nvidia-*" -executable` $installdir/usr/bin/.
+
+    # Install all libraries
+    install -D -d -m 00755 $installdir/usr/lib{32,64}/tls
+    install -m 00755 lib*.so* $installdir/%libdir%/.
+    install -m 00755 tls/lib*.so* $installdir/%libdir%/tls/.
+    install -m 00755 32/lib*.so* $installdir/usr/lib32/.
+    install -m 00755 32/tls/lib*.so* $installdir/usr/lib32/tls/.
+
+    # Strip glvnd bits and OpenCL
+    rm -v $installdir/usr/lib{32,64}/{libGLX.so.0,libGL.so.1.0.0,libOpenGL.so.0,libOpenCL.so.1.0.0}
+
+    # Now move the GL providers out into glx-provider tree
+    install -d -D -m 00755 $installdir/usr/lib{32,64}/glx-provider/nvidia
+    mv -v $installdir/%libdir%/lib{EGL,GL,GLESv1_CM,GLESv2,glx}.so* $installdir/%libdir%/glx-provider/nvidia/.
+    mv -v $installdir/usr/lib32/lib{EGL,GL,GLESv1_CM,GLESv2}.so* $installdir/usr/lib32/glx-provider/nvidia/.
+
+    # Move vdpau into the final position
+    install -D -d -m 00755 $installdir/usr/lib{32,64}/vdpau
+    mv -v $installdir/%libdir%/libvdpau* $installdir/%libdir%/vdpau/.
+    mv -v $installdir/usr/lib32/libvdpau* $installdir/usr/lib32/vdpau/.
+
+    # Keep LDM happy with the missing libGL.so.1 link
+    ln -sv libGL.so.${version} $installdir/%libdir%/glx-provider/nvidia/libGL.so.1
+    ln -sv libGL.so.${version} $installdir/usr/lib32/glx-provider/nvidia/libGL.so.1
+
+    # Data files
+    install -D -m 00644 nvidia-settings.desktop $installdir/usr/share/applications/nvidia-settings.desktop
+    sed -e 's@__UTILS_PATH__@/usr/bin@' -e 's@__PIXMAP_PATH__@/usr/share/pixmaps@' -i $installdir/usr/share/applications/nvidia-settings.desktop
+    install -D -m 00644 nvidia-settings.png $installdir/usr/share/pixmaps/nvidia-settings.png
+    install -D -m 00644 nvidia.icd $installdir/usr/share/OpenCL/vendors/nvidia.icd
+
+    # Vulkan
+    install -D -m 00644 nvidia_icd.json.template $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    sed -e 's@__NV_VK_ICD__@libGL.so.1@' -i $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    # Future: Enable egl-platforms nvidia_wayland icd
+
+    # Keep settings UI happy
+    install -D -d -m 00755 $installdir/usr/share/nvidia
+    install -m 00644 nvidia-application-profiles-${version}-key-documentation $installdir/usr/share/nvidia/.
+    
+    # Blacklist nouveau
+    install -D -d -m 00755 $installdir/usr/lib/modprobe.d
+    echo "blacklist nouveau" > $installdir/usr/lib/modprobe.d/nvidia.conf
+
+    # Init
+    install -D -m 00644 nvidia-persistenced-init/systemd/nvidia-persistenced.service.template \
+                           $installdir/usr/lib/systemd/system/nvidia-persistenced.service
+    sed -e 's@__USER__@nvidia-persistenced@' -i $installdir/usr/lib/systemd/system/nvidia-persistenced.service
+
+    # Additional files
+    install -D -m 00644 $pkgfiles/71-nvidia.rules $installdir/%libdir%/udev/rules.d/71-nvidia.rules
+    install -D -m 00644 $pkgfiles/nvidia-glx-driver.tmpfiles $installdir/%libdir%/tmpfiles.d/nvidia-glx-driver.conf
+    install -D -m 00644 $pkgfiles/nvidia-glx-driver.sysusers $installdir/%libdir%/sysusers.d/nvidia-glx-driver.conf
+    install -D -m 00755 $pkgfiles/create-uvm-dev-node $installdir/sbin/create-uvm-dev-node
