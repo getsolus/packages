@@ -1,6 +1,6 @@
 name        : nvidia-glx-driver
 version     : 384.98
-release     : 193
+release     : 195
 source      :
     - http://cn.download.nvidia.com/XFree86/Linux-x86_64/384.98/NVIDIA-Linux-x86_64-384.98.run : fb10b66d9a835c8a5fca9bf2aeb2a240732108b1d6fd11dea19c326463c6b6bb
 extract     : no
@@ -40,6 +40,7 @@ patterns    :
     - main: /lib/modules/*.lts
     - current: /lib/modules/*.current
 strip       : no
+debug       : no
 builddeps   :
     - pkgconfig(xorg-server)
     - pkgconfig(gtk+-2.0)
@@ -81,16 +82,41 @@ install    : |
     # Install all binaries
     install -D -d -m 00755 $installdir/usr/bin
     install -m 00755 `find . -maxdepth 1 -type f -name "nvidia-*" -executable` $installdir/usr/bin/.
+    rm -v $installdir/usr/bin/nvidia-installer
 
     # Install all libraries
-    install -D -d -m 00755 $installdir/usr/lib{32,64}/tls
+    install -D -d -m 00755 $installdir/usr/lib{32,64}
     install -m 00755 lib*.so* $installdir/%libdir%/.
-    install -m 00755 tls/lib*.so* $installdir/%libdir%/tls/.
+    install -m 00755 tls/lib*.so* $installdir/%libdir%/.
     install -m 00755 32/lib*.so* $installdir/usr/lib32/.
-    install -m 00755 32/tls/lib*.so* $installdir/usr/lib32/tls/.
+    install -m 00755 32/tls/lib*.so* $installdir/usr/lib32/.
 
     # Strip glvnd bits and OpenCL
     rm -v $installdir/usr/lib{32,64}/{libGLX.so.0,libGL.so.1.0.0,libOpenGL.so.0,libOpenCL.so.1.0.0}
+
+    # Get weird guys in order first
+    ln -sv libGLESv2_nvidia.so.${version} $installdir/%libdir%/libGLESv2_nvidia.so.2
+    ln -sv libGLESv2_nvidia.so.${version} $installdir/usr/lib32/libGLESv2_nvidia.so.2
+    ln -sv libGLX_nvidia.so.${version} $installdir/%libdir%/libGLX_nvidia.so.0
+    ln -sv libGLX_nvidia.so.${version} $installdir/usr/lib32/libGLX_nvidia.so.0
+
+    function redo_libs() {
+        for gl in $* ; do
+            i=`dirname ${gl}`
+            clean=`echo $(basename ${gl})|sed -e 's@\.so\.%version%@@g'`
+            if [[ ! -e $i/${clean}.so.2 ]] ; then
+                if [[ ! -e $i/${clean}.so.1 ]] && [[ ! -e $i/${clean}.so.0 ]] ; then
+                    ln -sv `basename ${gl}` $i/${clean}.so.1
+                fi
+            fi
+            if [[ ! -e $i/{clean}.so ]]; then
+                ln -sv `basename ${gl}` $i/${clean}.so
+            fi
+        done
+    }
+
+    redo_libs $installdir/usr/lib64/lib*.so.%version%
+    redo_libs $installdir/usr/lib32/lib*.so.%version%
 
     # Now move the GL providers out into glx-provider tree
     install -d -D -m 00755 $installdir/usr/lib{32,64}/glx-provider/nvidia
@@ -101,13 +127,6 @@ install    : |
     install -D -d -m 00755 $installdir/usr/lib{32,64}/vdpau
     mv -v $installdir/%libdir%/libvdpau* $installdir/%libdir%/vdpau/.
     mv -v $installdir/usr/lib32/libvdpau* $installdir/usr/lib32/vdpau/.
-
-    # Keep LDM happy with the missing libGL.so.1 link
-    ln -sv libGL.so.${version} $installdir/%libdir%/glx-provider/nvidia/libGL.so.1
-    ln -sv libGL.so.${version} $installdir/usr/lib32/glx-provider/nvidia/libGL.so.1
-
-    # And now do the same for the libglx.so.1
-    ln -sv libglx.so.${version} $installdir/%libdir%/glx-provider/nvidia/libglx.so.1
 
     # Data files
     install -D -m 00644 nvidia-settings.desktop $installdir/usr/share/applications/nvidia-settings.desktop
@@ -138,7 +157,3 @@ install    : |
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.tmpfiles $installdir/%libdir%/tmpfiles.d/nvidia-glx-driver.conf
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.sysusers $installdir/%libdir%/sysusers.d/nvidia-glx-driver.conf
     install -D -m 00755 $pkgfiles/create-uvm-dev-node $installdir/sbin/create-uvm-dev-node
-
-    # Make OpenCL work properly
-    ln -sv libnvidia-opencl.so.${version} $installdir/%libdir%/libnvidia-opencl.so.1
-    ln -sv libnvidia-opencl.so.${version} $installdir/usr/lib32/libnvidia-opencl.so.1
