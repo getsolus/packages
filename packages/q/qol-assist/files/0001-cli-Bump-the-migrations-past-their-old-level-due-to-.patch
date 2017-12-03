@@ -1,0 +1,62 @@
+From 7a93acc77d0f0387f363d2afd370ea47e7136bd3 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Sun, 3 Dec 2017 11:26:30 +0000
+Subject: [PATCH] cli: Bump the migrations past their old level due to a broken
+ musl
+
+This new mechanism allows us to revert a previously half-baked trigger
+that didn't work for all people, by pushing the migration level and
+revoking the old level.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/cli/migrate.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/src/cli/migrate.c b/src/cli/migrate.c
+index d6e4ca7..cda99c8 100644
+--- a/src/cli/migrate.c
++++ b/src/cli/migrate.c
+@@ -31,12 +31,19 @@
+                 x, qol_migration_##y                                                               \
+         }
+ 
++#define REVOKED_MIGRATION(x)                                                                       \
++        {                                                                                          \
++                x, NULL                                                                            \
++        }
++
+ /**
+  * Simple table describing all of our potential migrations
+  */
+ static QolMigration migration_table[] = {
+         MIGRATION("Add users to scanner group", 01_scanner_group),
+         MIGRATION("Add users to plugdev group", 02_plugdev_group),
++        REVOKED_MIGRATION("musl didn't understand stateless"),
++        REVOKED_MIGRATION("musl didn't understand stateless"),
+         MIGRATION("Set static gid for 'users' group", 03_users_group_gid),
+         MIGRATION("Add users to 'users' group", 04_users_group_join),
+ };
+@@ -178,6 +185,11 @@ bool qol_cli_migrate(__qol_unused__ int argc, __qol_unused__ char **argv)
+         /* Emulate migration steps */
+         for (size_t i = migration_level_start; i < n_migrations; i++) {
+                 QolMigration *m = &migration_table[i];
++                /* Empty function pointer means we had to remove an old migration
++                 * and retain the level structure */
++                if (!m->func) {
++                        goto record_level;
++                }
+ 
+                 fprintf(stdout, "Begin migration %lu: '%s'\n", i, m->name);
+                 if (!m->func(context)) {
+@@ -186,6 +198,7 @@ bool qol_cli_migrate(__qol_unused__ int argc, __qol_unused__ char **argv)
+                 }
+                 fprintf(stdout, "Successful migration %lu: '%s'\n", i, m->name);
+ 
++        record_level:
+                 /* Now update the migration level for each migration.. */
+                 if (!qol_set_migration_level((int)i)) {
+                         fprintf(stderr,
+-- 
+2.15.1
+
