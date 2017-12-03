@@ -438,7 +438,7 @@ def create_efi(title, name, label):
             clean_exit(1)
 
     # in future we **must** check kernel/initrd sizes..
-    size = 34
+    size = 40
     cmd = "dd if=/dev/zero of=\"%s\" bs=1 count=0 seek=%sM" % (get_efi_path(), size)
     try:
         ret = check_call(cmd)
