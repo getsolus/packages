@@ -1,50 +1,36 @@
-From d661deaccf64980c520db083e4c134fa04973081 Mon Sep 17 00:00:00 2001
+From 3ed4a997e8e5566c3c80efea2403a25a520d570a Mon Sep 17 00:00:00 2001
 From: Ikey Doherty <ikey@solus-project.com>
-Date: Mon, 4 Sep 2017 14:15:17 +0100
-Subject: [PATCH] Sync Ubuntu Artful jj's kernel's apparmor-4.13+outoftree
- branch
+Date: Sun, 3 Dec 2017 13:17:29 +0000
+Subject: [PATCH] apparmor: Merge items still missing from upstream
 
-Replace the apparmor implementation with John Johansen's latest 4.13
-branch work.
+Also do some backport/forward-port magic to actually get it to build
+with 4.14.
 
 Signed-off-by: Ikey Doherty <ikey@solus-project.com>
 ---
  security/apparmor/.gitignore          |   1 +
- security/apparmor/Makefile            |  44 ++-
- security/apparmor/af_unix.c           | 651 +++++++++++++++++++++++++++++++
- security/apparmor/apparmorfs.c        |  43 ++-
+ security/apparmor/Makefile            |  45 ++-
+ security/apparmor/af_unix.c           | 651 ++++++++++++++++++++++++++++++++++
+ security/apparmor/apparmorfs.c        |  15 +-
  security/apparmor/crypto.c            |  19 +
- security/apparmor/domain.c            |   4 +-
  security/apparmor/file.c              |  34 +-
  security/apparmor/include/af_unix.h   | 114 ++++++
- security/apparmor/include/apparmor.h  |   2 +
- security/apparmor/include/audit.h     |  39 +-
+ security/apparmor/include/audit.h     |  26 +-
  security/apparmor/include/crypto.h    |  11 +
- security/apparmor/include/domain.h    |   5 +
- security/apparmor/include/ipc.h       |   6 +
- security/apparmor/include/label.h     |   1 +
- security/apparmor/include/mount.h     |  54 +++
- security/apparmor/include/net.h       | 124 ++++++
+ security/apparmor/include/net.h       | 124 +++++++
  security/apparmor/include/path.h      |   1 +
  security/apparmor/include/perms.h     |   5 +-
  security/apparmor/include/policy.h    |  13 +
- security/apparmor/include/sig_names.h |  95 +++++
- security/apparmor/ipc.c               |  99 +++++
- security/apparmor/label.c             |  36 +-
+ security/apparmor/include/sig_names.h |   5 +-
+ security/apparmor/ipc.c               |   4 +-
  security/apparmor/lib.c               |   5 +-
- security/apparmor/lsm.c               | 519 +++++++++++++++++++++++++
- security/apparmor/mount.c             | 696 ++++++++++++++++++++++++++++++++++
- security/apparmor/net.c               | 356 +++++++++++++++++
- security/apparmor/policy.c            | 166 ++++----
- security/apparmor/policy_ns.c         |   2 +
- security/apparmor/policy_unpack.c     | 105 ++++-
- 29 files changed, 3116 insertions(+), 134 deletions(-)
+ security/apparmor/lsm.c               | 434 +++++++++++++++++++++++
+ security/apparmor/net.c               | 356 +++++++++++++++++++
+ security/apparmor/policy_unpack.c     |  47 ++-
+ 19 files changed, 1882 insertions(+), 28 deletions(-)
  create mode 100644 security/apparmor/af_unix.c
  create mode 100644 security/apparmor/include/af_unix.h
- create mode 100644 security/apparmor/include/mount.h
  create mode 100644 security/apparmor/include/net.h
- create mode 100644 security/apparmor/include/sig_names.h
- create mode 100644 security/apparmor/mount.c
  create mode 100644 security/apparmor/net.c
 
 diff --git a/security/apparmor/.gitignore b/security/apparmor/.gitignore
@@ -59,14 +45,18 @@ index 9cdec70..d5b291e 100644
  capability_names.h
  rlim_names.h
 diff --git a/security/apparmor/Makefile b/security/apparmor/Makefile
-index a16b195..ef39226 100644
+index 9a6b403..ef39226 100644
 --- a/security/apparmor/Makefile
 +++ b/security/apparmor/Makefile
-@@ -4,11 +4,45 @@ obj-$(CONFIG_SECURITY_APPARMOR) += apparmor.o
+@@ -1,15 +1,48 @@
+-# SPDX-License-Identifier: GPL-2.0
+ # Makefile for AppArmor Linux Security Module
+ #
+ obj-$(CONFIG_SECURITY_APPARMOR) += apparmor.o
  
  apparmor-y := apparmorfs.o audit.o capability.o context.o ipc.o lib.o match.o \
                path.o domain.o policy.o policy_unpack.o procattr.o lsm.o \
--              resource.o secid.o file.o policy_ns.o label.o
+-              resource.o secid.o file.o policy_ns.o label.o mount.o
 +              resource.o secid.o file.o policy_ns.o label.o mount.o net.o \
 +              af_unix.o
  apparmor-$(CONFIG_SECURITY_APPARMOR_HASH) += crypto.o
@@ -110,7 +100,7 @@ index a16b195..ef39226 100644
  
  # Build a lower case string table of capability names
  # Transforms lines from
-@@ -61,6 +95,7 @@ cmd_make-rlim = echo "static const char *const rlim_names[RLIM_NLIMITS] = {" \
+@@ -62,6 +95,7 @@ cmd_make-rlim = echo "static const char *const rlim_names[RLIM_NLIMITS] = {" \
  	    tr '\n' ' ' | sed -e 's/ $$/"\n/' >> $@
  
  $(obj)/capability.o : $(obj)/capability_names.h
@@ -118,7 +108,7 @@ index a16b195..ef39226 100644
  $(obj)/resource.o : $(obj)/rlim_names.h
  $(obj)/capability_names.h : $(srctree)/include/uapi/linux/capability.h \
  			    $(src)/Makefile
-@@ -68,3 +103,8 @@ $(obj)/capability_names.h : $(srctree)/include/uapi/linux/capability.h \
+@@ -69,3 +103,8 @@ $(obj)/capability_names.h : $(srctree)/include/uapi/linux/capability.h \
  $(obj)/rlim_names.h : $(srctree)/include/uapi/asm-generic/resource.h \
  		      $(src)/Makefile
  	$(call cmd,make-rlim)
@@ -785,135 +775,50 @@ index 0000000..c6876db
 +	return error;
 +}
 diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
-index 853c2ec..20cdb1c 100644
+index caaf51d..20cdb1c 100644
 --- a/security/apparmor/apparmorfs.c
 +++ b/security/apparmor/apparmorfs.c
-@@ -32,6 +32,7 @@
- #include "include/audit.h"
- #include "include/context.h"
- #include "include/crypto.h"
-+#include "include/ipc.h"
- #include "include/policy_ns.h"
- #include "include/label.h"
- #include "include/policy.h"
-@@ -248,8 +249,10 @@ static struct dentry *aafs_create(const char *name, umode_t mode,
- 
- 	inode_lock(dir);
- 	dentry = lookup_one_len(name, parent, strlen(name));
--	if (IS_ERR(dentry))
-+	if (IS_ERR(dentry)) {
-+		error = PTR_ERR(dentry);
- 		goto fail_lock;
-+	}
- 
- 	if (d_really_is_positive(dentry)) {
- 		error = -EEXIST;
-@@ -1443,6 +1446,10 @@ void __aafs_profile_migrate_dents(struct aa_profile *old,
- {
- 	int i;
- 
-+	AA_BUG(!old);
-+	AA_BUG(!new);
-+	AA_BUG(!mutex_is_locked(&profiles_ns(old)->lock));
-+
- 	for (i = 0; i < AAFS_PROF_SIZEOF; i++) {
- 		new->dents[i] = old->dents[i];
- 		if (new->dents[i])
-@@ -1506,6 +1513,9 @@ int __aafs_profile_mkdir(struct aa_profile *profile, struct dentry *parent)
- 	struct dentry *dent = NULL, *dir;
- 	int error;
- 
-+	AA_BUG(!profile);
-+	AA_BUG(!mutex_is_locked(&profiles_ns(profile)->lock));
-+
- 	if (!parent) {
- 		struct aa_profile *p;
- 		p = aa_deref_parent(profile);
-@@ -1731,6 +1741,7 @@ void __aafs_ns_rmdir(struct aa_ns *ns)
- 
- 	if (!ns)
- 		return;
-+	AA_BUG(!mutex_is_locked(&ns->lock));
- 
- 	list_for_each_entry(child, &ns->base.profiles, base.list)
- 		__aafs_profile_rmdir(child);
-@@ -1903,6 +1914,10 @@ static struct aa_ns *__next_ns(struct aa_ns *root, struct aa_ns *ns)
- {
- 	struct aa_ns *parent, *next;
- 
-+	AA_BUG(!root);
-+	AA_BUG(!ns);
-+	AA_BUG(ns != root && !mutex_is_locked(&ns->parent->lock));
-+
- 	/* is next namespace a child */
- 	if (!list_empty(&ns->sub_ns)) {
- 		next = list_first_entry(&ns->sub_ns, typeof(*ns), base.list);
-@@ -1937,6 +1952,9 @@ static struct aa_ns *__next_ns(struct aa_ns *root, struct aa_ns *ns)
- static struct aa_profile *__first_profile(struct aa_ns *root,
- 					  struct aa_ns *ns)
- {
-+	AA_BUG(!root);
-+	AA_BUG(ns && !mutex_is_locked(&ns->lock));
-+
- 	for (; ns; ns = __next_ns(root, ns)) {
- 		if (!list_empty(&ns->base.profiles))
- 			return list_first_entry(&ns->base.profiles,
-@@ -1959,6 +1977,8 @@ static struct aa_profile *__next_profile(struct aa_profile *p)
- 	struct aa_profile *parent;
- 	struct aa_ns *ns = p->ns;
- 
-+	AA_BUG(!mutex_is_locked(&profiles_ns(p)->lock));
-+
- 	/* is next profile a child */
- 	if (!list_empty(&p->base.profiles))
- 		return list_first_entry(&p->base.profiles, typeof(*p),
-@@ -2127,6 +2147,11 @@ static struct aa_sfs_entry aa_sfs_entry_ptrace[] = {
+@@ -2187,6 +2187,11 @@ static struct aa_sfs_entry aa_sfs_entry_ns[] = {
  	{ }
  };
  
-+static struct aa_sfs_entry aa_sfs_entry_signal[] = {
-+	AA_SFS_FILE_STRING("mask", AA_SFS_SIG_MASK),
-+	{ }
-+};
-+
- static struct aa_sfs_entry aa_sfs_entry_domain[] = {
- 	AA_SFS_FILE_BOOLEAN("change_hat",	1),
- 	AA_SFS_FILE_BOOLEAN("change_hatv",	1),
-@@ -2151,9 +2176,19 @@ static struct aa_sfs_entry aa_sfs_entry_policy[] = {
- 	{ }
- };
- 
-+static struct aa_sfs_entry aa_sfs_entry_mount[] = {
-+	AA_SFS_FILE_STRING("mask", "mount umount pivot_root"),
-+	{ }
-+};
-+
- static struct aa_sfs_entry aa_sfs_entry_ns[] = {
- 	AA_SFS_FILE_BOOLEAN("profile",		1),
--	AA_SFS_FILE_BOOLEAN("pivot_root",	1),
-+	AA_SFS_FILE_BOOLEAN("pivot_root",	0),
-+	{ }
-+};
-+
 +static struct aa_sfs_entry aa_sfs_entry_dbus[] = {
 +	AA_SFS_FILE_STRING("mask", "acquire send receive"),
- 	{ }
- };
- 
-@@ -2172,11 +2207,15 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
++	{ }
++};
++
+ static struct aa_sfs_entry aa_sfs_entry_query_label[] = {
+ 	AA_SFS_FILE_STRING("perms", "allow deny audit quiet"),
+ 	AA_SFS_FILE_BOOLEAN("data",		1),
+@@ -2202,6 +2207,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
  	AA_SFS_DIR("policy",			aa_sfs_entry_policy),
  	AA_SFS_DIR("domain",			aa_sfs_entry_domain),
  	AA_SFS_DIR("file",			aa_sfs_entry_file),
 +	AA_SFS_DIR("network",			aa_sfs_entry_network),
-+	AA_SFS_DIR("mount",			aa_sfs_entry_mount),
+ 	AA_SFS_DIR("mount",			aa_sfs_entry_mount),
  	AA_SFS_DIR("namespaces",		aa_sfs_entry_ns),
  	AA_SFS_FILE_U64("capability",		VFS_CAP_FLAGS_MASK),
- 	AA_SFS_DIR("rlimit",			aa_sfs_entry_rlimit),
+@@ -2209,17 +2215,18 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
  	AA_SFS_DIR("caps",			aa_sfs_entry_caps),
  	AA_SFS_DIR("ptrace",			aa_sfs_entry_ptrace),
-+	AA_SFS_DIR("signal",			aa_sfs_entry_signal),
+ 	AA_SFS_DIR("signal",			aa_sfs_entry_signal),
 +	AA_SFS_DIR("dbus",			aa_sfs_entry_dbus),
  	AA_SFS_DIR("query",			aa_sfs_entry_query),
+ 	{ }
+ };
+ 
+ static struct aa_sfs_entry aa_sfs_entry_apparmor[] = {
+-	AA_SFS_FILE_FOPS(".access", 0666, &aa_sfs_access),
++	AA_SFS_FILE_FOPS(".access", 0640, &aa_sfs_access),
+ 	AA_SFS_FILE_FOPS(".stacked", 0444, &seq_ns_stacked_fops),
+ 	AA_SFS_FILE_FOPS(".ns_stacked", 0444, &seq_ns_nsstacked_fops),
+-	AA_SFS_FILE_FOPS(".ns_level", 0444, &seq_ns_level_fops),
+-	AA_SFS_FILE_FOPS(".ns_name", 0444, &seq_ns_name_fops),
+-	AA_SFS_FILE_FOPS("profiles", 0444, &aa_sfs_profiles_fops),
++	AA_SFS_FILE_FOPS(".ns_level", 0666, &seq_ns_level_fops),
++	AA_SFS_FILE_FOPS(".ns_name", 0640, &seq_ns_name_fops),
++	AA_SFS_FILE_FOPS("profiles", 0440, &aa_sfs_profiles_fops),
+ 	AA_SFS_DIR("features", aa_sfs_entry_features),
  	{ }
  };
 diff --git a/security/apparmor/crypto.c b/security/apparmor/crypto.c
@@ -946,21 +851,6 @@ index 136f2a0..cfedacb 100644
  char *aa_calc_hash(void *data, size_t len)
  {
  	SHASH_DESC_ON_STACK(desc, apparmor_tfm);
-diff --git a/security/apparmor/domain.c b/security/apparmor/domain.c
-index d059444..ffc8c75 100644
---- a/security/apparmor/domain.c
-+++ b/security/apparmor/domain.c
-@@ -374,8 +374,8 @@ static const char *next_name(int xtype, const char *name)
-  *
-  * Returns: refcounted label, or NULL on failure (MAYBE NULL)
-  */
--static struct aa_label *x_table_lookup(struct aa_profile *profile, u32 xindex,
--				       const char **name)
-+struct aa_label *x_table_lookup(struct aa_profile *profile, u32 xindex,
-+				const char **name)
- {
- 	struct aa_label *label = NULL;
- 	u32 xtype = xindex & AA_X_TYPE_MASK;
 diff --git a/security/apparmor/file.c b/security/apparmor/file.c
 index 3382518..e627911 100644
 --- a/security/apparmor/file.c
@@ -1152,44 +1042,11 @@ index 0000000..d1b7f23
 +		      struct socket *sock);
 +
 +#endif /* __AA_AF_UNIX_H */
-diff --git a/security/apparmor/include/apparmor.h b/security/apparmor/include/apparmor.h
-index aaf893f..829082c 100644
---- a/security/apparmor/include/apparmor.h
-+++ b/security/apparmor/include/apparmor.h
-@@ -27,7 +27,9 @@
- #define AA_CLASS_NET		4
- #define AA_CLASS_RLIMITS	5
- #define AA_CLASS_DOMAIN		6
-+#define AA_CLASS_MOUNT		7
- #define AA_CLASS_PTRACE		9
-+#define AA_CLASS_SIGNAL		10
- #define AA_CLASS_LABEL		16
- 
- #define AA_CLASS_LAST		AA_CLASS_LABEL
 diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
-index c68839a..ff4316e 100644
+index 620e811..ff4316e 100644
 --- a/security/apparmor/include/audit.h
 +++ b/security/apparmor/include/audit.h
-@@ -71,6 +71,10 @@ enum audit_type {
- #define OP_FMPROT "file_mprotect"
- #define OP_INHERIT "file_inherit"
- 
-+#define OP_PIVOTROOT "pivotroot"
-+#define OP_MOUNT "mount"
-+#define OP_UMOUNT "umount"
-+
- #define OP_CREATE "create"
- #define OP_POST_CREATE "post_create"
- #define OP_BIND "bind"
-@@ -86,6 +90,7 @@ enum audit_type {
- #define OP_SHUTDOWN "socket_shutdown"
- 
- #define OP_PTRACE "ptrace"
-+#define OP_SIGNAL "signal"
- 
- #define OP_EXEC "exec"
- 
-@@ -116,20 +121,36 @@ struct apparmor_audit_data {
+@@ -121,21 +121,29 @@ struct apparmor_audit_data {
  		/* these entries require a custom callback fn */
  		struct {
  			struct aa_label *peer;
@@ -1216,25 +1073,18 @@ index c68839a..ff4316e 100644
 +			};
  		};
  		struct {
--			const char *name;
--			long pos;
-+			struct aa_profile *profile;
+ 			struct aa_profile *profile;
  			const char *ns;
-+			long pos;
+ 			long pos;
  		} iface;
- 		struct {
+-		int signal;
+-		struct {
 -			int rlim;
 -			unsigned long max;
 -		} rlim;
-+			const char *src_name;
-+			const char *type;
-+			const char *trans;
-+			const char *data;
-+			unsigned long flags;
-+		} mnt;
- 	};
- };
- 
+ 		struct {
+ 			const char *src_name;
+ 			const char *type;
 diff --git a/security/apparmor/include/crypto.h b/security/apparmor/include/crypto.h
 index c1469f8..4d927dc 100644
 --- a/security/apparmor/include/crypto.h
@@ -1264,120 +1114,6 @@ index c1469f8..4d927dc 100644
  #endif
  
  #endif /* __APPARMOR_CRYPTO_H */
-diff --git a/security/apparmor/include/domain.h b/security/apparmor/include/domain.h
-index bab5810..db27403 100644
---- a/security/apparmor/include/domain.h
-+++ b/security/apparmor/include/domain.h
-@@ -15,6 +15,8 @@
- #include <linux/binfmts.h>
- #include <linux/types.h>
- 
-+#include "label.h"
-+
- #ifndef __AA_DOMAIN_H
- #define __AA_DOMAIN_H
- 
-@@ -29,6 +31,9 @@ struct aa_domain {
- #define AA_CHANGE_ONEXEC  4
- #define AA_CHANGE_STACK 8
- 
-+struct aa_label *x_table_lookup(struct aa_profile *profile, u32 xindex,
-+				const char **name);
-+
- int apparmor_bprm_set_creds(struct linux_binprm *bprm);
- int apparmor_bprm_secureexec(struct linux_binprm *bprm);
- 
-diff --git a/security/apparmor/include/ipc.h b/security/apparmor/include/ipc.h
-index 656fdb8..5ffc218 100644
---- a/security/apparmor/include/ipc.h
-+++ b/security/apparmor/include/ipc.h
-@@ -27,8 +27,14 @@ struct aa_profile;
- 
- #define AA_PTRACE_PERM_MASK (AA_PTRACE_READ | AA_PTRACE_TRACE | \
- 			     AA_MAY_BE_READ | AA_MAY_BE_TRACED)
-+#define AA_SIGNAL_PERM_MASK (MAY_READ | MAY_WRITE)
-+
-+#define AA_SFS_SIG_MASK "hup int quit ill trap abrt bus fpe kill usr1 " \
-+	"segv usr2 pipe alrm term stkflt chld cont stop stp ttin ttou urg " \
-+	"xcpu xfsz vtalrm prof winch io pwr sys emt lost"
- 
- int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
- 		  u32 request);
-+int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig);
- 
- #endif /* __AA_IPC_H */
-diff --git a/security/apparmor/include/label.h b/security/apparmor/include/label.h
-index 9a283b7..af22dcb 100644
---- a/security/apparmor/include/label.h
-+++ b/security/apparmor/include/label.h
-@@ -310,6 +310,7 @@ bool aa_update_label_name(struct aa_ns *ns, struct aa_label *label, gfp_t gfp);
- #define FLAG_SHOW_MODE 1
- #define FLAG_VIEW_SUBNS 2
- #define FLAG_HIDDEN_UNCONFINED 4
-+#define FLAG_ABS_ROOT 8
- int aa_label_snxprint(char *str, size_t size, struct aa_ns *view,
- 		      struct aa_label *label, int flags);
- int aa_label_asxprint(char **strp, struct aa_ns *ns, struct aa_label *label,
-diff --git a/security/apparmor/include/mount.h b/security/apparmor/include/mount.h
-new file mode 100644
-index 0000000..25d6067
---- /dev/null
-+++ b/security/apparmor/include/mount.h
-@@ -0,0 +1,54 @@
-+/*
-+ * AppArmor security module
-+ *
-+ * This file contains AppArmor file mediation function definitions.
-+ *
-+ * Copyright 2017 Canonical Ltd.
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License as
-+ * published by the Free Software Foundation, version 2 of the
-+ * License.
-+ */
-+
-+#ifndef __AA_MOUNT_H
-+#define __AA_MOUNT_H
-+
-+#include <linux/fs.h>
-+#include <linux/path.h>
-+
-+#include "domain.h"
-+#include "policy.h"
-+
-+/* mount perms */
-+#define AA_MAY_PIVOTROOT	0x01
-+#define AA_MAY_MOUNT		0x02
-+#define AA_MAY_UMOUNT		0x04
-+#define AA_AUDIT_DATA		0x40
-+#define AA_MNT_CONT_MATCH	0x40
-+
-+#define AA_MS_IGNORE_MASK (MS_KERNMOUNT | MS_NOSEC | MS_ACTIVE | MS_BORN)
-+
-+int aa_remount(struct aa_label *label, const struct path *path,
-+	       unsigned long flags, void *data);
-+
-+int aa_bind_mount(struct aa_label *label, const struct path *path,
-+		  const char *old_name, unsigned long flags);
-+
-+
-+int aa_mount_change_type(struct aa_label *label, const struct path *path,
-+			 unsigned long flags);
-+
-+int aa_move_mount(struct aa_label *label, const struct path *path,
-+		  const char *old_name);
-+
-+int aa_new_mount(struct aa_label *label, const char *dev_name,
-+		 const struct path *path, const char *type, unsigned long flags,
-+		 void *data);
-+
-+int aa_umount(struct aa_label *label, struct vfsmount *mnt, int flags);
-+
-+int aa_pivotroot(struct aa_label *label, const struct path *old_path,
-+		 const struct path *new_path);
-+
-+#endif /* __AA_MOUNT_H */
 diff --git a/security/apparmor/include/net.h b/security/apparmor/include/net.h
 new file mode 100644
 index 0000000..0ae4524
@@ -1583,318 +1319,51 @@ index 17fe41a..26660a1 100644
   * aa_get_profile - increment refcount on profile @p
   * @p: profile  (MAYBE NULL)
 diff --git a/security/apparmor/include/sig_names.h b/security/apparmor/include/sig_names.h
-new file mode 100644
-index 0000000..0d4395f
---- /dev/null
+index 92e62fe..0d4395f 100644
+--- a/security/apparmor/include/sig_names.h
 +++ b/security/apparmor/include/sig_names.h
-@@ -0,0 +1,95 @@
-+#include <linux/signal.h>
-+
-+#define SIGUNKNOWN 0
-+#define MAXMAPPED_SIG 35
-+/* provide a mapping of arch signal to internal signal # for mediation
-+ * those that are always an alias SIGCLD for SIGCLHD and SIGPOLL for SIGIO
-+ * map to the same entry those that may/or may not get a separate entry
-+ */
-+static const int sig_map[MAXMAPPED_SIG] = {
-+	[0] = MAXMAPPED_SIG,	/* existence test */
-+	[SIGHUP] = 1,
-+	[SIGINT] = 2,
-+	[SIGQUIT] = 3,
-+	[SIGILL] = 4,
-+	[SIGTRAP] = 5,		/* -, 5, - */
-+	[SIGABRT] = 6,		/*  SIGIOT: -, 6, - */
-+	[SIGBUS] = 7,		/* 10, 7, 10 */
-+	[SIGFPE] = 8,
-+	[SIGKILL] = 9,
-+	[SIGUSR1] = 10,		/* 30, 10, 16 */
-+	[SIGSEGV] = 11,
-+	[SIGUSR2] = 12,		/* 31, 12, 17 */
-+	[SIGPIPE] = 13,
-+	[SIGALRM] = 14,
-+	[SIGTERM] = 15,
-+	[SIGSTKFLT] = 16,	/* -, 16, - */
-+	[SIGCHLD] = 17,		/* 20, 17, 18.  SIGCHLD -, -, 18 */
-+	[SIGCONT] = 18,		/* 19, 18, 25 */
-+	[SIGSTOP] = 19,		/* 17, 19, 23 */
-+	[SIGTSTP] = 20,		/* 18, 20, 24 */
-+	[SIGTTIN] = 21,		/* 21, 21, 26 */
-+	[SIGTTOU] = 22,		/* 22, 22, 27 */
-+	[SIGURG] = 23,		/* 16, 23, 21 */
-+	[SIGXCPU] = 24,		/* 24, 24, 30 */
-+	[SIGXFSZ] = 25,		/* 25, 25, 31 */
-+	[SIGVTALRM] = 26,	/* 26, 26, 28 */
-+	[SIGPROF] = 27,		/* 27, 27, 29 */
-+	[SIGWINCH] = 28,	/* 28, 28, 20 */
-+	[SIGIO] = 29,		/* SIGPOLL: 23, 29, 22 */
-+	[SIGPWR] = 30,		/* 29, 30, 19.  SIGINFO 29, -, - */
-+#ifdef SIGSYS
-+	[SIGSYS] = 31,		/* 12, 31, 12. often SIG LOST/UNUSED */
-+#endif
-+#ifdef SIGEMT
-+	[SIGEMT] = 32,		/* 7, - , 7 */
-+#endif
-+#if defined(SIGLOST) && SIGPWR != SIGLOST		/* sparc */
-+	[SIGLOST] = 33,		/* unused on Linux */
-+#endif
+@@ -23,9 +23,7 @@ static const int sig_map[MAXMAPPED_SIG] = {
+ 	[SIGPIPE] = 13,
+ 	[SIGALRM] = 14,
+ 	[SIGTERM] = 15,
+-#ifdef SIGSTKFLT
+ 	[SIGSTKFLT] = 16,	/* -, 16, - */
+-#endif
+ 	[SIGCHLD] = 17,		/* 20, 17, 18.  SIGCHLD -, -, 18 */
+ 	[SIGCONT] = 18,		/* 19, 18, 25 */
+ 	[SIGSTOP] = 19,		/* 17, 19, 23 */
+@@ -49,8 +47,7 @@ static const int sig_map[MAXMAPPED_SIG] = {
+ #if defined(SIGLOST) && SIGPWR != SIGLOST		/* sparc */
+ 	[SIGLOST] = 33,		/* unused on Linux */
+ #endif
+-#if defined(SIGUNUSED) && \
+-    defined(SIGLOST) && defined(SIGSYS) && SIGLOST != SIGSYS
 +#if defined(SIGLOST) && defined(SIGSYS) && SIGLOST != SIGSYS
-+	[SIGUNUSED] = 34,	/* -, 31, - */
-+#endif
-+};
-+
-+/* this table is ordered post sig_map[sig] mapping */
-+static const char *const sig_names[MAXMAPPED_SIG + 1] = {
-+	"unknown",
-+	"hup",
-+	"int",
-+	"quit",
-+	"ill",
-+	"trap",
-+	"abrt",
-+	"bus",
-+	"fpe",
-+	"kill",
-+	"usr1",
-+	"segv",
-+	"usr2",
-+	"pipe",
-+	"alrm",
-+	"term",
-+	"stkflt",
-+	"chld",
-+	"cont",
-+	"stop",
-+	"stp",
-+	"ttin",
-+	"ttou",
-+	"urg",
-+	"xcpu",
-+	"xfsz",
-+	"vtalrm",
-+	"prof",
-+	"winch",
-+	"io",
-+	"pwr",
-+	"sys",
-+	"emt",
-+	"lost",
-+	"unused",
-+
-+	"exists",	/* always last existence test mapped to MAXMAPPED_SIG */
-+};
-+
+ 	[SIGUNUSED] = 34,	/* -, 31, - */
+ #endif
+ };
 diff --git a/security/apparmor/ipc.c b/security/apparmor/ipc.c
-index 11e66b5..66fb9ed 100644
+index 7ca0032..66fb9ed 100644
 --- a/security/apparmor/ipc.c
 +++ b/security/apparmor/ipc.c
-@@ -20,6 +20,7 @@
- #include "include/context.h"
- #include "include/policy.h"
- #include "include/ipc.h"
-+#include "include/sig_names.h"
- 
- /**
-  * audit_ptrace_mask - convert mask to permission string
-@@ -121,3 +122,101 @@ int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
- }
- 
- 
-+static inline int map_signal_num(int sig)
-+{
-+	if (sig > SIGRTMAX)
-+		return SIGUNKNOWN;
-+	else if (sig >= SIGRTMIN)
-+		return sig - SIGRTMIN + 128;	/* rt sigs mapped to 128 */
+@@ -128,7 +128,7 @@ static inline int map_signal_num(int sig)
+ 		return SIGUNKNOWN;
+ 	else if (sig >= SIGRTMIN)
+ 		return sig - SIGRTMIN + 128;	/* rt sigs mapped to 128 */
+-	else if (sig < MAXMAPPED_SIG)
 +	else if (sig <= MAXMAPPED_SIG)
-+		return sig_map[sig];
-+	return SIGUNKNOWN;
-+}
-+
-+/**
-+ * audit_file_mask - convert mask to permission string
-+ * @buffer: buffer to write string to (NOT NULL)
-+ * @mask: permission mask to convert
-+ */
-+static void audit_signal_mask(struct audit_buffer *ab, u32 mask)
-+{
-+	if (mask & MAY_READ)
-+		audit_log_string(ab, "receive");
-+	if (mask & MAY_WRITE)
-+		audit_log_string(ab, "send");
-+}
-+
-+/**
-+ * audit_cb - call back for signal specific audit fields
-+ * @ab: audit_buffer  (NOT NULL)
-+ * @va: audit struct to audit values of  (NOT NULL)
-+ */
-+static void audit_signal_cb(struct audit_buffer *ab, void *va)
-+{
-+	struct common_audit_data *sa = va;
-+
-+	if (aad(sa)->request & AA_SIGNAL_PERM_MASK) {
-+		audit_log_format(ab, " requested_mask=");
-+		audit_signal_mask(ab, aad(sa)->request);
-+		if (aad(sa)->denied & AA_SIGNAL_PERM_MASK) {
-+			audit_log_format(ab, " denied_mask=");
-+			audit_signal_mask(ab, aad(sa)->denied);
-+		}
-+	}
-+	if (aad(sa)->signal <= MAXMAPPED_SIG)
-+		audit_log_format(ab, " signal=%s", sig_names[aad(sa)->signal]);
-+	else
-+		audit_log_format(ab, " signal=rtmin+%d",
-+				 aad(sa)->signal - 128);
-+	audit_log_format(ab, " peer=");
-+	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
-+			FLAGS_NONE, GFP_ATOMIC);
-+}
-+
-+/* TODO: update to handle compound name&name2, conditionals */
-+static void profile_match_signal(struct aa_profile *profile, const char *label,
-+				 int signal, struct aa_perms *perms)
-+{
-+	unsigned int state;
-+
-+	/* TODO: secondary cache check <profile, profile, perm> */
-+	state = aa_dfa_next(profile->policy.dfa,
-+			    profile->policy.start[AA_CLASS_SIGNAL],
-+			    signal);
-+	state = aa_dfa_match(profile->policy.dfa, state, label);
-+	aa_compute_perms(profile->policy.dfa, state, perms);
-+}
-+
-+static int profile_signal_perm(struct aa_profile *profile,
-+			       struct aa_profile *peer, u32 request,
-+			       struct common_audit_data *sa)
-+{
-+	struct aa_perms perms;
-+
-+	if (profile_unconfined(profile) ||
-+	    !PROFILE_MEDIATES(profile, AA_CLASS_SIGNAL))
-+		return 0;
-+
-+	aad(sa)->peer = &peer->label;
-+	profile_match_signal(profile, peer->base.hname, aad(sa)->signal,
-+			     &perms);
-+	aa_apply_modes_to_perms(profile, &perms);
-+	return aa_check_perms(profile, &perms, request, sa, audit_signal_cb);
-+}
-+
-+static int aa_signal_cross_perm(struct aa_profile *sender,
-+				struct aa_profile *target,
-+				struct common_audit_data *sa)
-+{
-+	return xcheck(profile_signal_perm(sender, target, MAY_WRITE, sa),
-+		      profile_signal_perm(target, sender, MAY_READ, sa));
-+}
-+
-+int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig)
-+{
-+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, OP_SIGNAL);
-+
-+	aad(&sa)->signal = map_signal_num(sig);
-+	return xcheck_labels_profiles(sender, target, aa_signal_cross_perm,
-+				      &sa);
-+}
-diff --git a/security/apparmor/label.c b/security/apparmor/label.c
-index e052eab..c5b99b9 100644
---- a/security/apparmor/label.c
-+++ b/security/apparmor/label.c
-@@ -49,7 +49,7 @@ static void free_proxy(struct aa_proxy *proxy)
- 		/* p->label will not updated any more as p is dead */
- 		aa_put_label(rcu_dereference_protected(proxy->label, true));
- 		memset(proxy, 0, sizeof(*proxy));
--		proxy->label = (struct aa_label *) PROXY_POISON;
-+		RCU_INIT_POINTER(proxy->label, (struct aa_label *)PROXY_POISON);
- 		kfree(proxy);
- 	}
+ 		return sig_map[sig];
+ 	return SIGUNKNOWN;
  }
-@@ -1450,9 +1450,11 @@ bool aa_update_label_name(struct aa_ns *ns, struct aa_label *label, gfp_t gfp)
-  * cached label name is present and visible
-  * @label->hname only exists if label is namespace hierachical
-  */
--static inline bool use_label_hname(struct aa_ns *ns, struct aa_label *label)
-+static inline bool use_label_hname(struct aa_ns *ns, struct aa_label *label,
-+				   int flags)
- {
--	if (label->hname && labels_ns(label) == ns)
-+	if (label->hname && (!ns || labels_ns(label) == ns) &&
-+	    !(flags & ~FLAG_SHOW_MODE))
- 		return true;
- 
- 	return false;
-@@ -1495,7 +1497,7 @@ static int aa_profile_snxprint(char *str, size_t size, struct aa_ns *view,
- 		view = profiles_ns(profile);
- 
- 	if (view != profile->ns &&
--	    (!prev_ns || (prev_ns && *prev_ns != profile->ns))) {
-+	    (!prev_ns || (*prev_ns != profile->ns))) {
- 		if (prev_ns)
- 			*prev_ns = profile->ns;
- 		ns_name = aa_ns_name(view, profile->ns,
-@@ -1605,8 +1607,13 @@ int aa_label_snxprint(char *str, size_t size, struct aa_ns *ns,
- 	AA_BUG(!str && size != 0);
- 	AA_BUG(!label);
- 
--	if (!ns)
-+	if (flags & FLAG_ABS_ROOT) {
-+		ns = root_ns;
-+		len = snprintf(str, size, "=");
-+		update_for_len(total, len, size, str);
-+	} else if (!ns) {
- 		ns = labels_ns(label);
-+	}
- 
- 	label_for_each(i, label, profile) {
- 		if (aa_ns_visible(ns, profile->ns, flags & FLAG_VIEW_SUBNS)) {
-@@ -1710,10 +1717,8 @@ void aa_label_xaudit(struct audit_buffer *ab, struct aa_ns *ns,
- 	AA_BUG(!ab);
- 	AA_BUG(!label);
- 
--	if (!ns)
--		ns = labels_ns(label);
--
--	if (!use_label_hname(ns, label) || display_mode(ns, label, flags)) {
-+	if (!use_label_hname(ns, label, flags) ||
-+	    display_mode(ns, label, flags)) {
- 		len  = aa_label_asxprint(&name, ns, label, flags, gfp);
- 		if (len == -1) {
- 			AA_DEBUG("label print error");
-@@ -1738,10 +1743,7 @@ void aa_label_seq_xprint(struct seq_file *f, struct aa_ns *ns,
- 	AA_BUG(!f);
- 	AA_BUG(!label);
- 
--	if (!ns)
--		ns = labels_ns(label);
--
--	if (!use_label_hname(ns, label)) {
-+	if (!use_label_hname(ns, label, flags)) {
- 		char *str;
- 		int len;
- 
-@@ -1764,10 +1766,7 @@ void aa_label_xprintk(struct aa_ns *ns, struct aa_label *label, int flags,
- {
- 	AA_BUG(!label);
- 
--	if (!ns)
--		ns = labels_ns(label);
--
--	if (!use_label_hname(ns, label)) {
-+	if (!use_label_hname(ns, label, flags)) {
- 		char *str;
- 		int len;
- 
-@@ -1874,6 +1873,9 @@ struct aa_label *aa_label_parse(struct aa_label *base, const char *str,
- 		if (*str == '&')
- 			str++;
+@@ -163,7 +163,7 @@ static void audit_signal_cb(struct audit_buffer *ab, void *va)
+ 			audit_signal_mask(ab, aad(sa)->denied);
+ 		}
  	}
-+	if (*str == '=')
-+		base = &root_ns->unconfined->label;
-+
- 	error = vec_setup(profile, vec, len, gfp);
- 	if (error)
- 		return ERR_PTR(error);
+-	if (aad(sa)->signal < MAXMAPPED_SIG)
++	if (aad(sa)->signal <= MAXMAPPED_SIG)
+ 		audit_log_format(ab, " signal=%s", sig_names[aad(sa)->signal]);
+ 	else
+ 		audit_log_format(ab, " signal=rtmin+%d",
 diff --git a/security/apparmor/lib.c b/security/apparmor/lib.c
 index 08ca26b..8818621 100644
 --- a/security/apparmor/lib.c
@@ -1919,7 +1388,7 @@ index 08ca26b..8818621 100644
  	char str[33];
  
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index 867bcd1..0ede66d 100644
+index 1346ee5..5533d2f 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
 @@ -26,6 +26,7 @@
@@ -1930,7 +1399,7 @@ index 867bcd1..0ede66d 100644
  #include "include/apparmor.h"
  #include "include/apparmorfs.h"
  #include "include/audit.h"
-@@ -33,11 +34,13 @@
+@@ -33,6 +34,7 @@
  #include "include/context.h"
  #include "include/file.h"
  #include "include/ipc.h"
@@ -1938,102 +1407,10 @@ index 867bcd1..0ede66d 100644
  #include "include/path.h"
  #include "include/label.h"
  #include "include/policy.h"
- #include "include/policy_ns.h"
- #include "include/procattr.h"
-+#include "include/mount.h"
- 
- /* Flag indicating whether initialization completed */
- int apparmor_initialized;
-@@ -511,6 +514,65 @@ static int apparmor_file_mprotect(struct vm_area_struct *vma,
- 			   !(vma->vm_flags & VM_SHARED) ? MAP_PRIVATE : 0);
- }
- 
-+static int apparmor_sb_mount(const char *dev_name, const struct path *path,
-+			     const char *type, unsigned long flags, void *data)
-+{
-+	struct aa_label *label;
-+	int error = 0;
-+
-+	/* Discard magic */
-+	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
-+		flags &= ~MS_MGC_MSK;
-+
-+	flags &= ~AA_MS_IGNORE_MASK;
-+
-+	label = __begin_current_label_crit_section();
-+	if (!unconfined(label)) {
-+		if (flags & MS_REMOUNT)
-+			error = aa_remount(label, path, flags, data);
-+		else if (flags & MS_BIND)
-+			error = aa_bind_mount(label, path, dev_name, flags);
-+		else if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE |
-+				  MS_UNBINDABLE))
-+			error = aa_mount_change_type(label, path, flags);
-+		else if (flags & MS_MOVE)
-+			error = aa_move_mount(label, path, dev_name);
-+		else
-+			error = aa_new_mount(label, dev_name, path, type,
-+					     flags, data);
-+	}
-+	__end_current_label_crit_section(label);
-+
-+	return error;
-+}
-+
-+static int apparmor_sb_umount(struct vfsmount *mnt, int flags)
-+{
-+	struct aa_label *label;
-+	int error = 0;
-+
-+	label = __begin_current_label_crit_section();
-+	if (!unconfined(label))
-+		error = aa_umount(label, mnt, flags);
-+	__end_current_label_crit_section(label);
-+
-+	return error;
-+}
-+
-+static int apparmor_sb_pivotroot(const struct path *old_path,
-+				 const struct path *new_path)
-+{
-+	struct aa_label *label;
-+	int error = 0;
-+
-+	label = aa_get_current_label();
-+	if (!unconfined(label))
-+		error = aa_pivotroot(label, old_path, new_path);
-+	aa_put_label(label);
-+
-+	return error;
-+}
-+
- static int apparmor_getprocattr(struct task_struct *task, char *name,
- 				char **value)
- {
-@@ -656,12 +718,441 @@ static int apparmor_task_setrlimit(struct task_struct *task,
+@@ -736,6 +738,411 @@ static int apparmor_task_kill(struct task_struct *target, struct siginfo *info,
  	return error;
  }
  
-+static int apparmor_task_kill(struct task_struct *target, struct siginfo *info,
-+			      int sig, u32 secid)
-+{
-+	struct aa_label *cl, *tl;
-+	int error;
-+
-+	if (secid)
-+		/* TODO: after secid to label mapping is done.
-+		 *  Dealing with USB IO specific behavior
-+		 */
-+		return 0;
-+	cl = __begin_current_label_crit_section();
-+	tl = aa_get_task_label(target);
-+	error = aa_may_signal(cl, tl, sig);
-+	aa_put_label(tl);
-+	__end_current_label_crit_section(cl);
-+
-+	return error;
-+}
-+
 +/**
 + * apparmor_sk_alloc_security - allocate and attach the sk_security field
 + */
@@ -2442,17 +1819,7 @@ index 867bcd1..0ede66d 100644
  static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
  	LSM_HOOK_INIT(ptrace_access_check, apparmor_ptrace_access_check),
  	LSM_HOOK_INIT(ptrace_traceme, apparmor_ptrace_traceme),
- 	LSM_HOOK_INIT(capget, apparmor_capget),
- 	LSM_HOOK_INIT(capable, apparmor_capable),
- 
-+	LSM_HOOK_INIT(sb_mount, apparmor_sb_mount),
-+	LSM_HOOK_INIT(sb_umount, apparmor_sb_umount),
-+	LSM_HOOK_INIT(sb_pivotroot, apparmor_sb_pivotroot),
-+
- 	LSM_HOOK_INIT(path_link, apparmor_path_link),
- 	LSM_HOOK_INIT(path_unlink, apparmor_path_unlink),
- 	LSM_HOOK_INIT(path_symlink, apparmor_path_symlink),
-@@ -686,6 +1177,33 @@ static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
+@@ -770,6 +1177,33 @@ static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
  	LSM_HOOK_INIT(getprocattr, apparmor_getprocattr),
  	LSM_HOOK_INIT(setprocattr, apparmor_setprocattr),
  
@@ -2486,716 +1853,6 @@ index 867bcd1..0ede66d 100644
  	LSM_HOOK_INIT(cred_alloc_blank, apparmor_cred_alloc_blank),
  	LSM_HOOK_INIT(cred_free, apparmor_cred_free),
  	LSM_HOOK_INIT(cred_prepare, apparmor_cred_prepare),
-@@ -697,6 +1215,7 @@ static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
- 	LSM_HOOK_INIT(bprm_secureexec, apparmor_bprm_secureexec),
- 
- 	LSM_HOOK_INIT(task_setrlimit, apparmor_task_setrlimit),
-+	LSM_HOOK_INIT(task_kill, apparmor_task_kill),
- };
- 
- /*
-diff --git a/security/apparmor/mount.c b/security/apparmor/mount.c
-new file mode 100644
-index 0000000..82a64b5
---- /dev/null
-+++ b/security/apparmor/mount.c
-@@ -0,0 +1,696 @@
-+/*
-+ * AppArmor security module
-+ *
-+ * This file contains AppArmor mediation of files
-+ *
-+ * Copyright (C) 1998-2008 Novell/SUSE
-+ * Copyright 2009-2017 Canonical Ltd.
-+ *
-+ * This program is free software; you can redistribute it and/or
-+ * modify it under the terms of the GNU General Public License as
-+ * published by the Free Software Foundation, version 2 of the
-+ * License.
-+ */
-+
-+#include <linux/fs.h>
-+#include <linux/mount.h>
-+#include <linux/namei.h>
-+
-+#include "include/apparmor.h"
-+#include "include/audit.h"
-+#include "include/context.h"
-+#include "include/domain.h"
-+#include "include/file.h"
-+#include "include/match.h"
-+#include "include/mount.h"
-+#include "include/path.h"
-+#include "include/policy.h"
-+
-+
-+static void audit_mnt_flags(struct audit_buffer *ab, unsigned long flags)
-+{
-+	if (flags & MS_RDONLY)
-+		audit_log_format(ab, "ro");
-+	else
-+		audit_log_format(ab, "rw");
-+	if (flags & MS_NOSUID)
-+		audit_log_format(ab, ", nosuid");
-+	if (flags & MS_NODEV)
-+		audit_log_format(ab, ", nodev");
-+	if (flags & MS_NOEXEC)
-+		audit_log_format(ab, ", noexec");
-+	if (flags & MS_SYNCHRONOUS)
-+		audit_log_format(ab, ", sync");
-+	if (flags & MS_REMOUNT)
-+		audit_log_format(ab, ", remount");
-+	if (flags & MS_MANDLOCK)
-+		audit_log_format(ab, ", mand");
-+	if (flags & MS_DIRSYNC)
-+		audit_log_format(ab, ", dirsync");
-+	if (flags & MS_NOATIME)
-+		audit_log_format(ab, ", noatime");
-+	if (flags & MS_NODIRATIME)
-+		audit_log_format(ab, ", nodiratime");
-+	if (flags & MS_BIND)
-+		audit_log_format(ab, flags & MS_REC ? ", rbind" : ", bind");
-+	if (flags & MS_MOVE)
-+		audit_log_format(ab, ", move");
-+	if (flags & MS_SILENT)
-+		audit_log_format(ab, ", silent");
-+	if (flags & MS_POSIXACL)
-+		audit_log_format(ab, ", acl");
-+	if (flags & MS_UNBINDABLE)
-+		audit_log_format(ab, flags & MS_REC ? ", runbindable" :
-+				 ", unbindable");
-+	if (flags & MS_PRIVATE)
-+		audit_log_format(ab, flags & MS_REC ? ", rprivate" :
-+				 ", private");
-+	if (flags & MS_SLAVE)
-+		audit_log_format(ab, flags & MS_REC ? ", rslave" :
-+				 ", slave");
-+	if (flags & MS_SHARED)
-+		audit_log_format(ab, flags & MS_REC ? ", rshared" :
-+				 ", shared");
-+	if (flags & MS_RELATIME)
-+		audit_log_format(ab, ", relatime");
-+	if (flags & MS_I_VERSION)
-+		audit_log_format(ab, ", iversion");
-+	if (flags & MS_STRICTATIME)
-+		audit_log_format(ab, ", strictatime");
-+	if (flags & MS_NOUSER)
-+		audit_log_format(ab, ", nouser");
-+}
-+
-+/**
-+ * audit_cb - call back for mount specific audit fields
-+ * @ab: audit_buffer  (NOT NULL)
-+ * @va: audit struct to audit values of  (NOT NULL)
-+ */
-+static void audit_cb(struct audit_buffer *ab, void *va)
-+{
-+	struct common_audit_data *sa = va;
-+
-+	if (aad(sa)->mnt.type) {
-+		audit_log_format(ab, " fstype=");
-+		audit_log_untrustedstring(ab, aad(sa)->mnt.type);
-+	}
-+	if (aad(sa)->mnt.src_name) {
-+		audit_log_format(ab, " srcname=");
-+		audit_log_untrustedstring(ab, aad(sa)->mnt.src_name);
-+	}
-+	if (aad(sa)->mnt.trans) {
-+		audit_log_format(ab, " trans=");
-+		audit_log_untrustedstring(ab, aad(sa)->mnt.trans);
-+	}
-+	if (aad(sa)->mnt.flags) {
-+		audit_log_format(ab, " flags=\"");
-+		audit_mnt_flags(ab, aad(sa)->mnt.flags);
-+		audit_log_format(ab, "\"");
-+	}
-+	if (aad(sa)->mnt.data) {
-+		audit_log_format(ab, " options=");
-+		audit_log_untrustedstring(ab, aad(sa)->mnt.data);
-+	}
-+}
-+
-+/**
-+ * audit_mount - handle the auditing of mount operations
-+ * @profile: the profile being enforced  (NOT NULL)
-+ * @op: operation being mediated (NOT NULL)
-+ * @name: name of object being mediated (MAYBE NULL)
-+ * @src_name: src_name of object being mediated (MAYBE_NULL)
-+ * @type: type of filesystem (MAYBE_NULL)
-+ * @trans: name of trans (MAYBE NULL)
-+ * @flags: filesystem idependent mount flags
-+ * @data: filesystem mount flags
-+ * @request: permissions requested
-+ * @perms: the permissions computed for the request (NOT NULL)
-+ * @info: extra information message (MAYBE NULL)
-+ * @error: 0 if operation allowed else failure error code
-+ *
-+ * Returns: %0 or error on failure
-+ */
-+static int audit_mount(struct aa_profile *profile, const char *op,
-+		       const char *name, const char *src_name,
-+		       const char *type, const char *trans,
-+		       unsigned long flags, const void *data, u32 request,
-+		       struct aa_perms *perms, const char *info, int error)
-+{
-+	int audit_type = AUDIT_APPARMOR_AUTO;
-+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, op);
-+
-+	if (likely(!error)) {
-+		u32 mask = perms->audit;
-+
-+		if (unlikely(AUDIT_MODE(profile) == AUDIT_ALL))
-+			mask = 0xffff;
-+
-+		/* mask off perms that are not being force audited */
-+		request &= mask;
-+
-+		if (likely(!request))
-+			return 0;
-+		audit_type = AUDIT_APPARMOR_AUDIT;
-+	} else {
-+		/* only report permissions that were denied */
-+		request = request & ~perms->allow;
-+
-+		if (request & perms->kill)
-+			audit_type = AUDIT_APPARMOR_KILL;
-+
-+		/* quiet known rejects, assumes quiet and kill do not overlap */
-+		if ((request & perms->quiet) &&
-+		    AUDIT_MODE(profile) != AUDIT_NOQUIET &&
-+		    AUDIT_MODE(profile) != AUDIT_ALL)
-+			request &= ~perms->quiet;
-+
-+		if (!request)
-+			return error;
-+	}
-+
-+	aad(&sa)->name = name;
-+	aad(&sa)->mnt.src_name = src_name;
-+	aad(&sa)->mnt.type = type;
-+	aad(&sa)->mnt.trans = trans;
-+	aad(&sa)->mnt.flags = flags;
-+	if (data && (perms->audit & AA_AUDIT_DATA))
-+		aad(&sa)->mnt.data = data;
-+	aad(&sa)->info = info;
-+	aad(&sa)->error = error;
-+
-+	return aa_audit(audit_type, profile, &sa, audit_cb);
-+}
-+
-+/**
-+ * match_mnt_flags - Do an ordered match on mount flags
-+ * @dfa: dfa to match against
-+ * @state: state to start in
-+ * @flags: mount flags to match against
-+ *
-+ * Mount flags are encoded as an ordered match. This is done instead of
-+ * checking against a simple bitmask, to allow for logical operations
-+ * on the flags.
-+ *
-+ * Returns: next state after flags match
-+ */
-+static unsigned int match_mnt_flags(struct aa_dfa *dfa, unsigned int state,
-+				    unsigned long flags)
-+{
-+	unsigned int i;
-+
-+	for (i = 0; i <= 31 ; ++i) {
-+		if ((1 << i) & flags)
-+			state = aa_dfa_next(dfa, state, i + 1);
-+	}
-+
-+	return state;
-+}
-+
-+/**
-+ * compute_mnt_perms - compute mount permission associated with @state
-+ * @dfa: dfa to match against (NOT NULL)
-+ * @state: state match finished in
-+ *
-+ * Returns: mount permissions
-+ */
-+static struct aa_perms compute_mnt_perms(struct aa_dfa *dfa,
-+					   unsigned int state)
-+{
-+	struct aa_perms perms;
-+
-+	perms.kill = 0;
-+	perms.allow = dfa_user_allow(dfa, state);
-+	perms.audit = dfa_user_audit(dfa, state);
-+	perms.quiet = dfa_user_quiet(dfa, state);
-+	perms.xindex = dfa_user_xindex(dfa, state);
-+
-+	return perms;
-+}
-+
-+static const char * const mnt_info_table[] = {
-+	"match succeeded",
-+	"failed mntpnt match",
-+	"failed srcname match",
-+	"failed type match",
-+	"failed flags match",
-+	"failed data match"
-+};
-+
-+/*
-+ * Returns 0 on success else element that match failed in, this is the
-+ * index into the mnt_info_table above
-+ */
-+static int do_match_mnt(struct aa_dfa *dfa, unsigned int start,
-+			const char *mntpnt, const char *devname,
-+			const char *type, unsigned long flags,
-+			void *data, bool binary, struct aa_perms *perms)
-+{
-+	unsigned int state;
-+
-+	AA_BUG(!dfa);
-+	AA_BUG(!perms);
-+
-+	state = aa_dfa_match(dfa, start, mntpnt);
-+	state = aa_dfa_null_transition(dfa, state);
-+	if (!state)
-+		return 1;
-+
-+	if (devname)
-+		state = aa_dfa_match(dfa, state, devname);
-+	state = aa_dfa_null_transition(dfa, state);
-+	if (!state)
-+		return 2;
-+
-+	if (type)
-+		state = aa_dfa_match(dfa, state, type);
-+	state = aa_dfa_null_transition(dfa, state);
-+	if (!state)
-+		return 3;
-+
-+	state = match_mnt_flags(dfa, state, flags);
-+	if (!state)
-+		return 4;
-+	*perms = compute_mnt_perms(dfa, state);
-+	if (perms->allow & AA_MAY_MOUNT)
-+		return 0;
-+
-+	/* only match data if not binary and the DFA flags data is expected */
-+	if (data && !binary && (perms->allow & AA_MNT_CONT_MATCH)) {
-+		state = aa_dfa_null_transition(dfa, state);
-+		if (!state)
-+			return 4;
-+
-+		state = aa_dfa_match(dfa, state, data);
-+		if (!state)
-+			return 5;
-+		*perms = compute_mnt_perms(dfa, state);
-+		if (perms->allow & AA_MAY_MOUNT)
-+			return 0;
-+	}
-+
-+	/* failed at end of flags match */
-+	return 4;
-+}
-+
-+
-+static int path_flags(struct aa_profile *profile, const struct path *path)
-+{
-+	AA_BUG(!profile);
-+	AA_BUG(!path);
-+
-+	return profile->path_flags |
-+		(S_ISDIR(path->dentry->d_inode->i_mode) ? PATH_IS_DIR : 0);
-+}
-+
-+/**
-+ * match_mnt_path_str - handle path matching for mount
-+ * @profile: the confining profile
-+ * @mntpath: for the mntpnt (NOT NULL)
-+ * @buffer: buffer to be used to lookup mntpath
-+ * @devnme: string for the devname/src_name (MAY BE NULL OR ERRPTR)
-+ * @type: string for the dev type (MAYBE NULL)
-+ * @flags: mount flags to match
-+ * @data: fs mount data (MAYBE NULL)
-+ * @binary: whether @data is binary
-+ * @devinfo: error str if (IS_ERR(@devname))
-+ *
-+ * Returns: 0 on success else error
-+ */
-+static int match_mnt_path_str(struct aa_profile *profile,
-+			      const struct path *mntpath, char *buffer,
-+			      const char *devname, const char *type,
-+			      unsigned long flags, void *data, bool binary,
-+			      const char *devinfo)
-+{
-+	struct aa_perms perms = { };
-+	const char *mntpnt = NULL, *info = NULL;
-+	int pos, error;
-+
-+	AA_BUG(!profile);
-+	AA_BUG(!mntpath);
-+	AA_BUG(!buffer);
-+
-+	error = aa_path_name(mntpath, path_flags(profile, mntpath), buffer,
-+			     &mntpnt, &info, profile->disconnected);
-+	if (error)
-+		goto audit;
-+	if (IS_ERR(devname)) {
-+		error = PTR_ERR(devname);
-+		devname = NULL;
-+		info = devinfo;
-+		goto audit;
-+	}
-+
-+	error = -EACCES;
-+	pos = do_match_mnt(profile->policy.dfa,
-+			   profile->policy.start[AA_CLASS_MOUNT],
-+			   mntpnt, devname, type, flags, data, binary, &perms);
-+	if (pos) {
-+		info = mnt_info_table[pos];
-+		goto audit;
-+	}
-+	error = 0;
-+
-+audit:
-+	return audit_mount(profile, OP_MOUNT, mntpnt, devname, type, NULL,
-+			   flags, data, AA_MAY_MOUNT, &perms, info, error);
-+}
-+
-+/**
-+ * match_mnt - handle path matching for mount
-+ * @profile: the confining profile
-+ * @mntpath: for the mntpnt (NOT NULL)
-+ * @buffer: buffer to be used to lookup mntpath
-+ * @devpath: path devname/src_name (MAYBE NULL)
-+ * @devbuffer: buffer to be used to lookup devname/src_name
-+ * @type: string for the dev type (MAYBE NULL)
-+ * @flags: mount flags to match
-+ * @data: fs mount data (MAYBE NULL)
-+ * @binary: whether @data is binary
-+ *
-+ * Returns: 0 on success else error
-+ */
-+static int match_mnt(struct aa_profile *profile, const struct path *path,
-+		     char *buffer, struct path *devpath, char *devbuffer,
-+		     const char *type, unsigned long flags, void *data,
-+		     bool binary)
-+{
-+	const char *devname = NULL, *info = NULL;
-+	int error = -EACCES;
-+
-+	AA_BUG(!profile);
-+	AA_BUG(devpath && !devbuffer);
-+
-+	if (devpath) {
-+		error = aa_path_name(devpath, path_flags(profile, devpath),
-+				     devbuffer, &devname, &info,
-+				     profile->disconnected);
-+		if (error)
-+			devname = ERR_PTR(error);
-+	}
-+
-+	return match_mnt_path_str(profile, path, buffer, devname, type, flags,
-+				  data, binary, info);
-+}
-+
-+int aa_remount(struct aa_label *label, const struct path *path,
-+	       unsigned long flags, void *data)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL;
-+	bool binary;
-+	int error;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!path);
-+
-+	binary = path->dentry->d_sb->s_type->fs_flags & FS_BINARY_MOUNTDATA;
-+
-+	get_buffers(buffer);
-+	error = fn_for_each_confined(label, profile,
-+			match_mnt(profile, path, buffer, NULL, NULL, NULL,
-+				  flags, data, binary));
-+	put_buffers(buffer);
-+
-+	return error;
-+}
-+
-+int aa_bind_mount(struct aa_label *label, const struct path *path,
-+		  const char *dev_name, unsigned long flags)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL, *old_buffer = NULL;
-+	struct path old_path;
-+	int error;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!path);
-+
-+	if (!dev_name || !*dev_name)
-+		return -EINVAL;
-+
-+	flags &= MS_REC | MS_BIND;
-+
-+	error = kern_path(dev_name, LOOKUP_FOLLOW|LOOKUP_AUTOMOUNT, &old_path);
-+	if (error)
-+		return error;
-+
-+	get_buffers(buffer, old_buffer);
-+	error = fn_for_each_confined(label, profile,
-+			match_mnt(profile, path, buffer, &old_path, old_buffer,
-+				  NULL, flags, NULL, false));
-+	put_buffers(buffer, old_buffer);
-+	path_put(&old_path);
-+
-+	return error;
-+}
-+
-+int aa_mount_change_type(struct aa_label *label, const struct path *path,
-+			 unsigned long flags)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL;
-+	int error;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!path);
-+
-+	/* These are the flags allowed by do_change_type() */
-+	flags &= (MS_REC | MS_SILENT | MS_SHARED | MS_PRIVATE | MS_SLAVE |
-+		  MS_UNBINDABLE);
-+
-+	get_buffers(buffer);
-+	error = fn_for_each_confined(label, profile,
-+			match_mnt(profile, path, buffer, NULL, NULL, NULL,
-+				  flags, NULL, false));
-+	put_buffers(buffer);
-+
-+	return error;
-+}
-+
-+int aa_move_mount(struct aa_label *label, const struct path *path,
-+		  const char *orig_name)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL, *old_buffer = NULL;
-+	struct path old_path;
-+	int error;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!path);
-+
-+	if (!orig_name || !*orig_name)
-+		return -EINVAL;
-+
-+	error = kern_path(orig_name, LOOKUP_FOLLOW, &old_path);
-+	if (error)
-+		return error;
-+
-+	get_buffers(buffer, old_buffer);
-+	error = fn_for_each_confined(label, profile,
-+			match_mnt(profile, path, buffer, &old_path, old_buffer,
-+				  NULL, MS_MOVE, NULL, false));
-+	put_buffers(buffer, old_buffer);
-+	path_put(&old_path);
-+
-+	return error;
-+}
-+
-+int aa_new_mount(struct aa_label *label, const char *dev_name,
-+		 const struct path *path, const char *type, unsigned long flags,
-+		 void *data)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL, *dev_buffer = NULL;
-+	bool binary = true;
-+	int error;
-+	int requires_dev = 0;
-+	struct path tmp_path, *dev_path = NULL;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!path);
-+
-+	if (type) {
-+		struct file_system_type *fstype;
-+
-+		fstype = get_fs_type(type);
-+		if (!fstype)
-+			return -ENODEV;
-+		binary = fstype->fs_flags & FS_BINARY_MOUNTDATA;
-+		requires_dev = fstype->fs_flags & FS_REQUIRES_DEV;
-+		put_filesystem(fstype);
-+
-+		if (requires_dev) {
-+			if (!dev_name || !*dev_name)
-+				return -ENOENT;
-+
-+			error = kern_path(dev_name, LOOKUP_FOLLOW, &tmp_path);
-+			if (error)
-+				return error;
-+			dev_path = &tmp_path;
-+		}
-+	}
-+
-+	get_buffers(buffer, dev_buffer);
-+	if (dev_path) {
-+		error = fn_for_each_confined(label, profile,
-+			match_mnt(profile, path, buffer, dev_path, dev_buffer,
-+				  type, flags, data, binary));
-+	} else {
-+		error = fn_for_each_confined(label, profile,
-+			match_mnt_path_str(profile, path, buffer, dev_name,
-+					   type, flags, data, binary, NULL));
-+	}
-+	put_buffers(buffer, dev_buffer);
-+	if (dev_path)
-+		path_put(dev_path);
-+
-+	return error;
-+}
-+
-+static int profile_umount(struct aa_profile *profile, struct path *path,
-+			  char *buffer)
-+{
-+	struct aa_perms perms = { };
-+	const char *name = NULL, *info = NULL;
-+	unsigned int state;
-+	int error;
-+
-+	AA_BUG(!profile);
-+	AA_BUG(!path);
-+
-+	error = aa_path_name(path, path_flags(profile, path), buffer, &name,
-+			     &info, profile->disconnected);
-+	if (error)
-+		goto audit;
-+
-+	state = aa_dfa_match(profile->policy.dfa,
-+			     profile->policy.start[AA_CLASS_MOUNT],
-+			     name);
-+	perms = compute_mnt_perms(profile->policy.dfa, state);
-+	if (AA_MAY_UMOUNT & ~perms.allow)
-+		error = -EACCES;
-+
-+audit:
-+	return audit_mount(profile, OP_UMOUNT, name, NULL, NULL, NULL, 0, NULL,
-+			   AA_MAY_UMOUNT, &perms, info, error);
-+}
-+
-+int aa_umount(struct aa_label *label, struct vfsmount *mnt, int flags)
-+{
-+	struct aa_profile *profile;
-+	char *buffer = NULL;
-+	int error;
-+	struct path path = { .mnt = mnt, .dentry = mnt->mnt_root };
-+
-+	AA_BUG(!label);
-+	AA_BUG(!mnt);
-+
-+	get_buffers(buffer);
-+	error = fn_for_each_confined(label, profile,
-+			profile_umount(profile, &path, buffer));
-+	put_buffers(buffer);
-+
-+	return error;
-+}
-+
-+/* helper fn for transition on pivotroot
-+ *
-+ * Returns: label for transition or ERR_PTR. Does not return NULL
-+ */
-+static struct aa_label *build_pivotroot(struct aa_profile *profile,
-+					const struct path *new_path,
-+					char *new_buffer,
-+					const struct path *old_path,
-+					char *old_buffer)
-+{
-+	const char *old_name, *new_name = NULL, *info = NULL;
-+	const char *trans_name = NULL;
-+	struct aa_perms perms = { };
-+	unsigned int state;
-+	int error;
-+
-+	AA_BUG(!profile);
-+	AA_BUG(!new_path);
-+	AA_BUG(!old_path);
-+
-+	if (profile_unconfined(profile))
-+		return aa_get_newest_label(&profile->label);
-+
-+	error = aa_path_name(old_path, path_flags(profile, old_path),
-+			     old_buffer, &old_name, &info,
-+			     profile->disconnected);
-+	if (error)
-+		goto audit;
-+	error = aa_path_name(new_path, path_flags(profile, new_path),
-+			     new_buffer, &new_name, &info,
-+			     profile->disconnected);
-+	if (error)
-+		goto audit;
-+
-+	error = -EACCES;
-+	state = aa_dfa_match(profile->policy.dfa,
-+			     profile->policy.start[AA_CLASS_MOUNT],
-+			     new_name);
-+	state = aa_dfa_null_transition(profile->policy.dfa, state);
-+	state = aa_dfa_match(profile->policy.dfa, state, old_name);
-+	perms = compute_mnt_perms(profile->policy.dfa, state);
-+
-+	if (AA_MAY_PIVOTROOT & perms.allow)
-+		error = 0;
-+
-+audit:
-+	error = audit_mount(profile, OP_PIVOTROOT, new_name, old_name,
-+			    NULL, trans_name, 0, NULL, AA_MAY_PIVOTROOT,
-+			    &perms, info, error);
-+	if (error)
-+		return ERR_PTR(error);
-+
-+	return aa_get_newest_label(&profile->label);
-+}
-+
-+int aa_pivotroot(struct aa_label *label, const struct path *old_path,
-+		 const struct path *new_path)
-+{
-+	struct aa_profile *profile;
-+	struct aa_label *target = NULL;
-+	char *old_buffer = NULL, *new_buffer = NULL, *info = NULL;
-+	int error;
-+
-+	AA_BUG(!label);
-+	AA_BUG(!old_path);
-+	AA_BUG(!new_path);
-+
-+	get_buffers(old_buffer, new_buffer);
-+	target = fn_label_build(label, profile, GFP_ATOMIC,
-+			build_pivotroot(profile, new_path, new_buffer,
-+					old_path, old_buffer));
-+	if (!target) {
-+		info = "label build failed";
-+		error = -ENOMEM;
-+		goto fail;
-+	} else if (!IS_ERR(target)) {
-+		error = aa_replace_current_label(target);
-+		if (error) {
-+			/* TODO: audit target */
-+			aa_put_label(target);
-+			goto out;
-+		}
-+	} else
-+		/* already audited error */
-+		error = PTR_ERR(target);
-+out:
-+	put_buffers(old_buffer, new_buffer);
-+
-+	return error;
-+
-+fail:
-+	/* TODO: add back in auditing of new_name and old_name */
-+	error = fn_for_each(label, profile,
-+			audit_mount(profile, OP_PIVOTROOT, NULL /*new_name */,
-+				    NULL /* old_name */,
-+				    NULL, NULL,
-+				    0, NULL, AA_MAY_PIVOTROOT, &nullperms, info,
-+				    error));
-+	goto out;
-+}
 diff --git a/security/apparmor/net.c b/security/apparmor/net.c
 new file mode 100644
 index 0000000..dd1953b
@@ -3558,232 +2215,11 @@ index 0000000..dd1953b
 +			 file_perm(label, op, request, sock),
 +			 aa_label_sk_perm(label, op, request, sock->sk));
 +}
-diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
-index 244ea4a..4243b0c 100644
---- a/security/apparmor/policy.c
-+++ b/security/apparmor/policy.c
-@@ -289,85 +289,6 @@ fail:
- 	return NULL;
- }
- 
--/**
-- * aa_new_null_profile - create or find a null-X learning profile
-- * @parent: profile that caused this profile to be created (NOT NULL)
-- * @hat: true if the null- learning profile is a hat
-- * @base: name to base the null profile off of
-- * @gfp: type of allocation
-- *
-- * Find/Create a null- complain mode profile used in learning mode.  The
-- * name of the profile is unique and follows the format of parent//null-XXX.
-- * where XXX is based on the @name or if that fails or is not supplied
-- * a unique number
-- *
-- * null profiles are added to the profile list but the list does not
-- * hold a count on them so that they are automatically released when
-- * not in use.
-- *
-- * Returns: new refcounted profile else NULL on failure
-- */
--struct aa_profile *aa_new_null_profile(struct aa_profile *parent, bool hat,
--				       const char *base, gfp_t gfp)
--{
--	struct aa_profile *profile;
--	char *name;
--
--	AA_BUG(!parent);
--
--	if (base) {
--		name = kmalloc(strlen(parent->base.hname) + 8 + strlen(base),
--			       gfp);
--		if (name) {
--			sprintf(name, "%s//null-%s", parent->base.hname, base);
--			goto name;
--		}
--		/* fall through to try shorter uniq */
--	}
--
--	name = kmalloc(strlen(parent->base.hname) + 2 + 7 + 8, gfp);
--	if (!name)
--		return NULL;
--	sprintf(name, "%s//null-%x", parent->base.hname,
--		atomic_inc_return(&parent->ns->uniq_null));
--
--name:
--	/* lookup to see if this is a dup creation */
--	profile = aa_find_child(parent, basename(name));
--	if (profile)
--		goto out;
--
--	profile = aa_alloc_profile(name, NULL, gfp);
--	if (!profile)
--		goto fail;
--
--	profile->mode = APPARMOR_COMPLAIN;
--	profile->label.flags |= FLAG_NULL;
--	if (hat)
--		profile->label.flags |= FLAG_HAT;
--	profile->path_flags = parent->path_flags;
--
--	/* released on free_profile */
--	rcu_assign_pointer(profile->parent, aa_get_profile(parent));
--	profile->ns = aa_get_ns(parent->ns);
--	profile->file.dfa = aa_get_dfa(nulldfa);
--	profile->policy.dfa = aa_get_dfa(nulldfa);
--
--	mutex_lock(&profile->ns->lock);
--	__add_profile(&parent->base.profiles, profile);
--	mutex_unlock(&profile->ns->lock);
--
--	/* refcount released by caller */
--out:
--	kfree(name);
--
--	return profile;
--
--fail:
--	aa_free_profile(profile);
--	return NULL;
--}
--
- /* TODO: profile accounting - setup in remove */
- 
- /**
-@@ -558,6 +479,93 @@ struct aa_profile *aa_fqlookupn_profile(struct aa_label *base,
- 	return profile;
- }
- 
-+/**
-+ * aa_new_null_profile - create or find a null-X learning profile
-+ * @parent: profile that caused this profile to be created (NOT NULL)
-+ * @hat: true if the null- learning profile is a hat
-+ * @base: name to base the null profile off of
-+ * @gfp: type of allocation
-+ *
-+ * Find/Create a null- complain mode profile used in learning mode.  The
-+ * name of the profile is unique and follows the format of parent//null-XXX.
-+ * where XXX is based on the @name or if that fails or is not supplied
-+ * a unique number
-+ *
-+ * null profiles are added to the profile list but the list does not
-+ * hold a count on them so that they are automatically released when
-+ * not in use.
-+ *
-+ * Returns: new refcounted profile else NULL on failure
-+ */
-+struct aa_profile *aa_new_null_profile(struct aa_profile *parent, bool hat,
-+				       const char *base, gfp_t gfp)
-+{
-+	struct aa_profile *p, *profile;
-+	const char *bname;
-+	char *name;
-+
-+	AA_BUG(!parent);
-+
-+	if (base) {
-+		name = kmalloc(strlen(parent->base.hname) + 8 + strlen(base),
-+			       gfp);
-+		if (name) {
-+			sprintf(name, "%s//null-%s", parent->base.hname, base);
-+			goto name;
-+		}
-+		/* fall through to try shorter uniq */
-+	}
-+
-+	name = kmalloc(strlen(parent->base.hname) + 2 + 7 + 8, gfp);
-+	if (!name)
-+		return NULL;
-+	sprintf(name, "%s//null-%x", parent->base.hname,
-+		atomic_inc_return(&parent->ns->uniq_null));
-+
-+name:
-+	/* lookup to see if this is a dup creation */
-+	bname = basename(name);
-+	profile = aa_find_child(parent, bname);
-+	if (profile)
-+		goto out;
-+
-+	profile = aa_alloc_profile(name, NULL, gfp);
-+	if (!profile)
-+		goto fail;
-+
-+	profile->mode = APPARMOR_COMPLAIN;
-+	profile->label.flags |= FLAG_NULL;
-+	if (hat)
-+		profile->label.flags |= FLAG_HAT;
-+	profile->path_flags = parent->path_flags;
-+
-+	/* released on free_profile */
-+	rcu_assign_pointer(profile->parent, aa_get_profile(parent));
-+	profile->ns = aa_get_ns(parent->ns);
-+	profile->file.dfa = aa_get_dfa(nulldfa);
-+	profile->policy.dfa = aa_get_dfa(nulldfa);
-+
-+	mutex_lock(&profile->ns->lock);
-+	p = __find_child(&parent->base.profiles, bname);
-+	if (p) {
-+		aa_free_profile(profile);
-+		profile = aa_get_profile(p);
-+	} else {
-+		__add_profile(&parent->base.profiles, profile);
-+	}
-+	mutex_unlock(&profile->ns->lock);
-+
-+	/* refcount released by caller */
-+out:
-+	kfree(name);
-+
-+	return profile;
-+
-+fail:
-+	aa_free_profile(profile);
-+	return NULL;
-+}
-+
- /**
-  * replacement_allowed - test to see if replacement is allowed
-  * @profile: profile to test if it can be replaced  (MAYBE NULL)
-diff --git a/security/apparmor/policy_ns.c b/security/apparmor/policy_ns.c
-index 351d3ba..62a3589 100644
---- a/security/apparmor/policy_ns.c
-+++ b/security/apparmor/policy_ns.c
-@@ -112,6 +112,8 @@ static struct aa_ns *alloc_ns(const char *prefix, const char *name)
- 	ns->unconfined->label.flags |= FLAG_IX_ON_NAME_ERROR |
- 		FLAG_IMMUTIBLE | FLAG_NS_COUNT | FLAG_UNCONFINED;
- 	ns->unconfined->mode = APPARMOR_UNCONFINED;
-+	ns->unconfined->file.dfa = aa_get_dfa(nulldfa);
-+	ns->unconfined->policy.dfa = aa_get_dfa(nulldfa);
- 
- 	/* ns and ns->unconfined share ns->unconfined refcount */
- 	ns->unconfined->ns = ns;
 diff --git a/security/apparmor/policy_unpack.c b/security/apparmor/policy_unpack.c
-index c600f4d..5a2aec3 100644
+index 4ede87c..5a2aec3 100644
 --- a/security/apparmor/policy_unpack.c
 +++ b/security/apparmor/policy_unpack.c
-@@ -85,9 +85,9 @@ static void audit_cb(struct audit_buffer *ab, void *va)
- 		audit_log_format(ab, " ns=");
- 		audit_log_untrustedstring(ab, aad(sa)->iface.ns);
- 	}
--	if (aad(sa)->iface.name) {
-+	if (aad(sa)->name) {
- 		audit_log_format(ab, " name=");
--		audit_log_untrustedstring(ab, aad(sa)->iface.name);
-+		audit_log_untrustedstring(ab, aad(sa)->name);
- 	}
- 	if (aad(sa)->iface.pos)
- 		audit_log_format(ab, " offset=%ld", aad(sa)->iface.pos);
-@@ -114,9 +114,9 @@ static int audit_iface(struct aa_profile *new, const char *ns_name,
- 		aad(&sa)->iface.pos = e->pos - e->start;
- 	aad(&sa)->iface.ns = ns_name;
- 	if (new)
--		aad(&sa)->iface.name = new->base.hname;
-+		aad(&sa)->name = new->base.hname;
- 	else
--		aad(&sa)->iface.name = name;
-+		aad(&sa)->name = name;
- 	aad(&sa)->info = info;
- 	aad(&sa)->error = error;
- 
-@@ -275,6 +275,19 @@ fail:
+@@ -275,6 +275,19 @@ static bool unpack_nameX(struct aa_ext *e, enum aa_code code, const char *name)
  	return 0;
  }
  
@@ -3803,110 +2239,19 @@ index c600f4d..5a2aec3 100644
  static bool unpack_u32(struct aa_ext *e, u32 *data, const char *name)
  {
  	if (unpack_nameX(e, AA_U32, name)) {
-@@ -448,7 +461,7 @@ fail:
-  */
- static bool unpack_trans_table(struct aa_ext *e, struct aa_profile *profile)
- {
--	void *pos = e->pos;
-+	void *saved_pos = e->pos;
- 
- 	/* exec table is optional */
- 	if (unpack_nameX(e, AA_STRUCT, "xtable")) {
-@@ -511,7 +524,7 @@ static bool unpack_trans_table(struct aa_ext *e, struct aa_profile *profile)
- 
- fail:
- 	aa_free_domain_entries(&profile->file.trans);
--	e->pos = pos;
-+	e->pos = saved_pos;
- 	return 0;
- }
- 
-@@ -583,7 +596,8 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- {
+@@ -584,7 +597,7 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
  	struct aa_profile *profile = NULL;
  	const char *tmpname, *tmpns = NULL, *name = NULL;
+ 	const char *info = "failed to unpack profile";
 -	size_t ns_len;
-+	const char *info = "failed to unpack profile";
 +	size_t size = 0, ns_len;
  	struct rhashtable_params params = { 0 };
  	char *key = NULL;
  	struct aa_data *data;
-@@ -604,8 +618,10 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	tmpname = aa_splitn_fqname(name, strlen(name), &tmpns, &ns_len);
- 	if (tmpns) {
- 		*ns_name = kstrndup(tmpns, ns_len, GFP_KERNEL);
--		if (!*ns_name)
-+		if (!*ns_name) {
-+			info = "out of memory";
- 			goto fail;
-+		}
- 		name = tmpname;
- 	}
- 
-@@ -624,12 +640,15 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	if (IS_ERR(profile->xmatch)) {
- 		error = PTR_ERR(profile->xmatch);
- 		profile->xmatch = NULL;
-+		info = "bad xmatch";
+@@ -717,6 +730,38 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
  		goto fail;
  	}
- 	/* xmatch_len is not optional if xmatch is set */
- 	if (profile->xmatch) {
--		if (!unpack_u32(e, &tmp, NULL))
-+		if (!unpack_u32(e, &tmp, NULL)) {
-+			info = "missing xmatch len";
- 			goto fail;
-+		}
- 		profile->xmatch_len = tmp;
- 	}
  
-@@ -637,8 +656,11 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	(void) unpack_str(e, &profile->disconnected, "disconnected");
- 
- 	/* per profile debug flags (complain, audit) */
--	if (!unpack_nameX(e, AA_STRUCT, "flags"))
-+	if (!unpack_nameX(e, AA_STRUCT, "flags")) {
-+		info = "profile missing flags";
- 		goto fail;
-+	}
-+	info = "failed to unpack profile flags";
- 	if (!unpack_u32(e, &tmp, NULL))
- 		goto fail;
- 	if (tmp & PACKED_FLAG_HAT)
-@@ -667,6 +689,7 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 		/* set a default value if path_flags field is not present */
- 		profile->path_flags = PATH_MEDIATE_DELETED;
- 
-+	info = "failed to unpack profile capabilities";
- 	if (!unpack_u32(e, &(profile->caps.allow.cap[0]), NULL))
- 		goto fail;
- 	if (!unpack_u32(e, &(profile->caps.audit.cap[0]), NULL))
-@@ -676,6 +699,7 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	if (!unpack_u32(e, &tmpcap.cap[0], NULL))
- 		goto fail;
- 
-+	info = "failed to unpack upper profile capabilities";
- 	if (unpack_nameX(e, AA_STRUCT, "caps64")) {
- 		/* optional upper half of 64 bit caps */
- 		if (!unpack_u32(e, &(profile->caps.allow.cap[1]), NULL))
-@@ -690,6 +714,7 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 			goto fail;
- 	}
- 
-+	info = "failed to unpack extended profile capabilities";
- 	if (unpack_nameX(e, AA_STRUCT, "capsx")) {
- 		/* optional extended caps mediation mask */
- 		if (!unpack_u32(e, &(profile->caps.extended.cap[0]), NULL))
-@@ -700,11 +725,46 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 			goto fail;
- 	}
- 
--	if (!unpack_rlimits(e, profile))
-+	if (!unpack_rlimits(e, profile)) {
-+		info = "failed to unpack profile rlimits";
- 		goto fail;
-+	}
-+
 +	size = unpack_array(e, "net_allowed_af");
 +	if (size) {
 +
@@ -3938,86 +2283,10 @@ index c600f4d..5a2aec3 100644
 +		profile->net.allow[AF_UNIX] = 0xffff;
 +		profile->net.allow[AF_NETLINK] = 0xffff;
 +	}
- 
++
  	if (unpack_nameX(e, AA_STRUCT, "policydb")) {
  		/* generic policy dfa - optional and may be NULL */
-+		info = "failed to unpack policydb";
- 		profile->policy.dfa = unpack_dfa(e);
- 		if (IS_ERR(profile->policy.dfa)) {
- 			error = PTR_ERR(profile->policy.dfa);
-@@ -734,6 +794,7 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	if (IS_ERR(profile->file.dfa)) {
- 		error = PTR_ERR(profile->file.dfa);
- 		profile->file.dfa = NULL;
-+		info = "failed to unpack profile file rules";
- 		goto fail;
- 	} else if (profile->file.dfa) {
- 		if (!unpack_u32(e, &profile->file.start, "dfa_start"))
-@@ -746,10 +807,13 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 	} else
- 		profile->file.dfa = aa_get_dfa(nulldfa);
- 
--	if (!unpack_trans_table(e, profile))
-+	if (!unpack_trans_table(e, profile)) {
-+		info = "failed to unpack profile transition table";
- 		goto fail;
-+	}
- 
- 	if (unpack_nameX(e, AA_STRUCT, "data")) {
-+		info = "out of memory";
- 		profile->data = kzalloc(sizeof(*profile->data), GFP_KERNEL);
- 		if (!profile->data)
- 			goto fail;
-@@ -761,8 +825,10 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 		params.hashfn = strhash;
- 		params.obj_cmpfn = datacmp;
- 
--		if (rhashtable_init(profile->data, &params))
-+		if (rhashtable_init(profile->data, &params)) {
-+			info = "failed to init key, value hash table";
- 			goto fail;
-+		}
- 
- 		while (unpack_strdup(e, &key, NULL)) {
- 			data = kzalloc(sizeof(*data), GFP_KERNEL);
-@@ -784,12 +850,16 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
- 					       profile->data->p);
- 		}
- 
--		if (!unpack_nameX(e, AA_STRUCTEND, NULL))
-+		if (!unpack_nameX(e, AA_STRUCTEND, NULL)) {
-+			info = "failed to unpack end of key, value data table";
- 			goto fail;
-+		}
- 	}
- 
--	if (!unpack_nameX(e, AA_STRUCTEND, NULL))
-+	if (!unpack_nameX(e, AA_STRUCTEND, NULL)) {
-+		info = "failed to unpack end of profile";
- 		goto fail;
-+	}
- 
- 	return profile;
- 
-@@ -798,8 +868,7 @@ fail:
- 		name = NULL;
- 	else if (!name)
- 		name = "unknown";
--	audit_iface(profile, NULL, name, "failed to unpack profile", e,
--		    error);
-+	audit_iface(profile, NULL, name, info, e, error);
- 	aa_free_profile(profile);
- 
- 	return ERR_PTR(error);
-@@ -832,7 +901,7 @@ static int verify_header(struct aa_ext *e, int required, const char **ns)
- 	 * if not specified use previous version
- 	 * Mask off everything that is not kernel abi version
- 	 */
--	if (VERSION_LT(e->version, v5) && VERSION_GT(e->version, v7)) {
-+	if (VERSION_LT(e->version, v5) || VERSION_GT(e->version, v7)) {
- 		audit_iface(NULL, NULL, NULL, "unsupported interface version",
- 			    e, error);
- 		return error;
+ 		info = "failed to unpack policydb";
 -- 
-2.14.1
+2.15.1
 
