@@ -227,7 +227,7 @@ def down_root():
 
 def create_image():
     ''' Construct main rootfs.img '''
-    size = 5120
+    size = 10240
     cmd = "dd if=/dev/zero of=\"%s\" bs=1 count=0 seek=%sM" % (get_image_path(), size)
     try:
         ret = check_call(cmd)
@@ -800,6 +800,7 @@ def main():
     try:
         check_call("e2fsck -y \"%s\"" % get_image_path())
         check_call("e2fsck -f \"%s\"" % get_image_path())
+        check_call("resize2fs -M \"%s\"" % get_image_path())
     except Exception, e:
         print("Failed e2fsck - aborting")
         clean_exit(1)
