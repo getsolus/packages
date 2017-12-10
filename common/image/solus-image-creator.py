@@ -467,9 +467,9 @@ def create_efi(title, name, label):
         d = os.path.dirname(target)
         if not os.path.exists(d):
             os.makedirs(d)
-        shutil.copy("/usr/lib/goofiboot/goofibootx64.efi", target)
+        shutil.copy("/usr/lib/systemd/boot/efi/systemd-bootx64.efi", target)
     except Exception, ex:
-        print("Failed to install goofiboot: %s" % ex)
+        print("Failed to install systemd-boot: %s" % ex)
         clean_exit(1)
 
     for i in ["kernel", "initrd.img"]:
@@ -498,7 +498,7 @@ linux /kernel
 initrd /initrd
 options root=live:CDLABEL=%(DESC)s ro rd.luks=0 rd.md=0 rd.live.overlay.overlayfs=1 quiet splash""" % { 'DESC' : label, 'TITLE': title})
     except Exception, ex:
-        print("Unable to write goofiboot config: %s" % ex)
+        print("Unable to write systemd-boot config: %s" % ex)
         clean_exit(1)
 
     try:
@@ -621,7 +621,7 @@ def main():
 
     files = dict()
     files["/usr/bin/isohybrid"] = "syslinux"
-    files["/usr/lib/goofiboot/goofibootx64.efi"] = "goofiboot"
+    files["/usr/lib/systemd/boot/efi/systemd-bootx64.efi"] = "systemd"
     files["/usr/lib/syslinux/vesamenu.c32"] = "syslinux"
     files["/usr/bin/mksquashfs"] = "squashfs-tools"
     files["/usr/bin/xorriso"] = "libisoburn"
