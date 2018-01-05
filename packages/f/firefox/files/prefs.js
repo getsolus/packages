@@ -21,3 +21,4 @@ pref("app.update.autoInstallEnabled",       false);
 pref("layers.acceleration.force-enabled",   false);
 pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
 pref("browser.tabs.remote.autostart",       true);
+pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
