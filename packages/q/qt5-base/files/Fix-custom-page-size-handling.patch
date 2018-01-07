@@ -1,0 +1,126 @@
+From 49c7939b6b3472af756412324442170d0af5d08f Mon Sep 17 00:00:00 2001
+From: Albert Astals Cid <albert.astals.cid@kdab.com>
+Date: Wed, 20 Dec 2017 10:41:33 +0100
+Subject: [PATCH] Fix custom page size handling in the Unix print dialog
+
+There were several problems that i've fixed in a single commit since they are very interwinded
+
+ * The dialog used QPageSize::Custom for two things, the custom sizes coming from
+   the printer and the "user can write whatever size they want" size. Now only
+   the printer custom sizes use QPageSize::Custom and we use m_realCustomPageSizeIndex
+   for the "user can write whatever size they want" one.
+
+ * The dialog stored the QPageSize id as the combo userData, that doesn't work
+   when the printer has multiple custom sizes since they all share QPageSize::Custom
+   so now it stores the QPageSize itself
+
+Task-number: QTBUG-58733
+Change-Id: Ie640a07bb5e24b753db83c091c836e8af4ff126c
+---
+ src/printsupport/dialogs/qpagesetupdialog_unix.cpp | 30 ++++++++++++++--------
+ src/printsupport/dialogs/qpagesetupdialog_unix_p.h |  1 +
+ 2 files changed, 20 insertions(+), 11 deletions(-)
+
+diff --git a/src/printsupport/dialogs/qpagesetupdialog_unix.cpp b/src/printsupport/dialogs/qpagesetupdialog_unix.cpp
+index 6f3bb0dd55..55ac913df8 100644
+--- a/src/printsupport/dialogs/qpagesetupdialog_unix.cpp
++++ b/src/printsupport/dialogs/qpagesetupdialog_unix.cpp
+@@ -234,10 +234,14 @@ QPageSetupWidget::QPageSetupWidget(QWidget *parent)
+       m_printer(0),
+       m_outputFormat(QPrinter::PdfFormat),
+       m_units(QPageLayout::Point),
+-      m_blockSignals(false)
++      m_blockSignals(false),
++      m_realCustomPageSizeIndex(-1)
+ {
+     m_ui.setupUi(this);
+ 
++    if (!QMetaType::hasRegisteredComparators<QPageSize>())
++        QMetaType::registerEqualsComparator<QPageSize>();
++
+     QVBoxLayout *lay = new QVBoxLayout(m_ui.preview);
+     m_pagePreview = new QPagePreview(m_ui.preview);
+     m_pagePreview->setPagePreviewLayout(1, 1);
+@@ -341,15 +345,18 @@ void QPageSetupWidget::initPageSizes()
+ 
+     m_ui.pageSizeCombo->clear();
+ 
++    m_realCustomPageSizeIndex = -1;
++
+     if (m_outputFormat == QPrinter::NativeFormat && !m_printerName.isEmpty()) {
+         QPlatformPrinterSupport *ps = QPlatformPrinterSupportPlugin::get();
+         if (ps) {
+             QPrintDevice printDevice = ps->createPrintDevice(m_printerName);
+             const auto pageSizes = printDevice.supportedPageSizes();
+             for (const QPageSize &pageSize : pageSizes)
+-                m_ui.pageSizeCombo->addItem(pageSize.name(), QVariant::fromValue(pageSize.id()));
++                m_ui.pageSizeCombo->addItem(pageSize.name(), QVariant::fromValue(pageSize));
+             if (m_ui.pageSizeCombo->count() > 0 && printDevice.supportsCustomPageSizes()) {
+-                m_ui.pageSizeCombo->addItem(tr("Custom"), QVariant::fromValue(QPageSize::Custom));
++                m_ui.pageSizeCombo->addItem(tr("Custom"));
++                m_realCustomPageSizeIndex = m_ui.pageSizeCombo->count() - 1;
+                 m_blockSignals = false;
+                 return;
+             }
+@@ -359,10 +366,11 @@ void QPageSetupWidget::initPageSizes()
+     // If PdfFormat or no available printer page sizes, populate with all page sizes
+     for (int id = 0; id < QPageSize::LastPageSize; ++id) {
+         if (QPageSize::PageSizeId(id) == QPageSize::Custom) {
+-            m_ui.pageSizeCombo->addItem(tr("Custom"), QVariant::fromValue(QPageSize::Custom));
++            m_ui.pageSizeCombo->addItem(tr("Custom"));
++            m_realCustomPageSizeIndex = m_ui.pageSizeCombo->count() - 1;
+         } else {
+             QPageSize pageSize = QPageSize(QPageSize::PageSizeId(id));
+-            m_ui.pageSizeCombo->addItem(pageSize.name(), QVariant::fromValue(pageSize.id()));
++            m_ui.pageSizeCombo->addItem(pageSize.name(), QVariant::fromValue(pageSize));
+         }
+     }
+ 
+@@ -434,7 +442,9 @@ void QPageSetupWidget::updateWidget()
+ 
+     m_ui.unitCombo->setCurrentIndex(m_ui.unitCombo->findData(QVariant::fromValue(m_units)));
+ 
+-    m_ui.pageSizeCombo->setCurrentIndex(m_ui.pageSizeCombo->findData(QVariant::fromValue(m_pageLayout.pageSize().id())));
++    const bool isCustom = m_ui.pageSizeCombo->currentIndex() == m_realCustomPageSizeIndex && m_realCustomPageSizeIndex != -1;
++    if (!isCustom)
++        m_ui.pageSizeCombo->setCurrentIndex(m_ui.pageSizeCombo->findData(QVariant::fromValue(m_pageLayout.pageSize())));
+ 
+     QMarginsF min;
+     QMarginsF max;
+@@ -467,8 +477,6 @@ void QPageSetupWidget::updateWidget()
+     m_ui.bottomMargin->setMaximum(max.bottom());
+     m_ui.bottomMargin->setValue(m_pageLayout.margins().bottom());
+ 
+-    bool isCustom = m_ui.pageSizeCombo->currentData().value<QPageSize::PageSizeId>() == QPageSize::Custom;
+-
+     m_ui.pageWidth->setSuffix(suffix);
+     m_ui.pageWidth->setValue(m_pageLayout.fullRect(m_units).width());
+     m_ui.pageWidth->setEnabled(isCustom);
+@@ -513,10 +521,10 @@ void QPageSetupWidget::pageSizeChanged()
+     if (m_blockSignals)
+         return;
+ 
+-    QPageSize::PageSizeId id = m_ui.pageSizeCombo->currentData().value<QPageSize::PageSizeId>();
+-    if (id != QPageSize::Custom) {
++    if (m_ui.pageSizeCombo->currentIndex() != m_realCustomPageSizeIndex) {
++        const QPageSize pageSize = m_ui.pageSizeCombo->currentData().value<QPageSize>();
+         // TODO Set layout margin min/max to printer custom min/max
+-        m_pageLayout.setPageSize(QPageSize(id));
++        m_pageLayout.setPageSize(pageSize);
+     } else {
+         QSizeF customSize;
+         if (m_pageLayout.orientation() == QPageLayout::Landscape)
+diff --git a/src/printsupport/dialogs/qpagesetupdialog_unix_p.h b/src/printsupport/dialogs/qpagesetupdialog_unix_p.h
+index 574569de29..292cccd7ea 100644
+--- a/src/printsupport/dialogs/qpagesetupdialog_unix_p.h
++++ b/src/printsupport/dialogs/qpagesetupdialog_unix_p.h
+@@ -102,6 +102,7 @@ private:
+     QPageLayout m_pageLayout;
+     QPageLayout::Unit m_units;
+     bool m_blockSignals;
++    int m_realCustomPageSizeIndex;
+ };
+ 
+ QT_END_NAMESPACE
+--
+2.15.1
