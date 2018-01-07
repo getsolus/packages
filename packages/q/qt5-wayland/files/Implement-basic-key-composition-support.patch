@@ -1,0 +1,176 @@
+From 57c4af2b18c0fb1d266b245a107fa6cb876b9d9e Mon Sep 17 00:00:00 2001
+From: Giulio Camuffo <giulio.camuffo@jollamobile.com>
+Date: Fri, 1 May 2015 17:12:22 +0300
+Subject: [PATCH] Implement basic key composition support
+
+Use xkbcommon-compose to handle basic compose key support. We should expand on
+it in the future to handle things like resetting the compose state on text
+field switching.
+
+Task-number: QTBUG-54792
+Task-number: QTBUG-64572
+Change-Id: I9d1d5ca4c9991928e12979f69eaa477e0cb28ada
+Reviewed-by: Paul Olav Tvete <paul.tvete@qt.io>
+---
+ src/client/qwaylandinputdevice.cpp | 65 +++++++++++++++++++++++++++++++++++++-
+ src/client/qwaylandinputdevice_p.h |  9 ++++++
+ 2 files changed, 73 insertions(+), 1 deletion(-)
+
+diff --git a/src/client/qwaylandinputdevice.cpp b/src/client/qwaylandinputdevice.cpp
+index f6287ba8..115d6dbc 100644
+--- a/src/client/qwaylandinputdevice.cpp
++++ b/src/client/qwaylandinputdevice.cpp
+@@ -70,6 +70,10 @@
+ 
+ #include <QtGui/QGuiApplication>
+ 
++#if QT_CONFIG(xkbcommon_evdev)
++#include <xkbcommon/xkbcommon-compose.h>
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ namespace QtWaylandClient {
+@@ -113,6 +117,7 @@ bool QWaylandInputDevice::Keyboard::createDefaultKeyMap()
+         qWarning() << "xkb_map_new_from_names failed, no key input";
+         return false;
+     }
++    createComposeState();
+     return true;
+ }
+ 
+@@ -125,11 +130,41 @@ void QWaylandInputDevice::Keyboard::releaseKeyMap()
+     if (mXkbContext)
+         xkb_context_unref(mXkbContext);
+ }
++
++void QWaylandInputDevice::Keyboard::createComposeState()
++{
++    static const char *locale = nullptr;
++    if (!locale) {
++        locale = getenv("LC_ALL");
++        if (!locale)
++            locale = getenv("LC_CTYPE");
++        if (!locale)
++            locale = getenv("LANG");
++        if (!locale)
++            locale = "C";
++    }
++
++    mXkbComposeTable = xkb_compose_table_new_from_locale(mXkbContext, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
++    if (mXkbComposeTable)
++        mXkbComposeState = xkb_compose_state_new(mXkbComposeTable, XKB_COMPOSE_STATE_NO_FLAGS);
++}
++
++void QWaylandInputDevice::Keyboard::releaseComposeState()
++{
++    if (mXkbComposeState)
++        xkb_compose_state_unref(mXkbComposeState);
++    if (mXkbComposeTable)
++        xkb_compose_table_unref(mXkbComposeTable);
++    mXkbComposeState = nullptr;
++    mXkbComposeTable = nullptr;
++}
++
+ #endif
+ 
+ QWaylandInputDevice::Keyboard::~Keyboard()
+ {
+ #if QT_CONFIG(xkbcommon_evdev)
++    releaseComposeState();
+     releaseKeyMap();
+ #endif
+     if (mFocus)
+@@ -626,6 +661,7 @@ void QWaylandInputDevice::Keyboard::keyboard_keymap(uint32_t format, int32_t fd,
+ 
+     // Release the old keymap resources in the case they were already created in
+     // the key event or when the compositor issues a new map
++    releaseComposeState();
+     releaseKeyMap();
+ 
+     mXkbContext = xkb_context_new(xkb_context_flags(0));
+@@ -634,6 +670,8 @@ void QWaylandInputDevice::Keyboard::keyboard_keymap(uint32_t format, int32_t fd,
+     close(fd);
+ 
+     mXkbState = xkb_state_new(mXkbMap);
++    createComposeState();
++
+ #else
+     Q_UNUSED(format);
+     Q_UNUSED(fd);
+@@ -717,12 +755,37 @@ void QWaylandInputDevice::Keyboard::keyboard_key(uint32_t serial, uint32_t time,
+         return;
+     }
+ 
+-    const xkb_keysym_t sym = xkb_state_key_get_one_sym(mXkbState, code);
++    QString composedText;
++    xkb_keysym_t sym = xkb_state_key_get_one_sym(mXkbState, code);
++    if (mXkbComposeState) {
++        if (isDown)
++            xkb_compose_state_feed(mXkbComposeState, sym);
++        xkb_compose_status status = xkb_compose_state_get_status(mXkbComposeState);
++
++        switch (status) {
++            case XKB_COMPOSE_COMPOSED: {
++                int size = xkb_compose_state_get_utf8(mXkbComposeState, nullptr, 0);
++                QVarLengthArray<char, 32> buffer(size + 1);
++                xkb_compose_state_get_utf8(mXkbComposeState, buffer.data(), buffer.size());
++                composedText = QString::fromUtf8(buffer.constData());
++                sym = xkb_compose_state_get_one_sym(mXkbComposeState);
++                xkb_compose_state_reset(mXkbComposeState);
++            } break;
++            case XKB_COMPOSE_COMPOSING:
++            case XKB_COMPOSE_CANCELLED:
++                return;
++            case XKB_COMPOSE_NOTHING:
++                break;
++        }
++    }
+ 
+     Qt::KeyboardModifiers modifiers = mParent->modifiers();
+ 
+     std::tie(qtkey, text) = QWaylandXkb::keysymToQtKey(sym, modifiers);
+ 
++    if (!composedText.isNull())
++        text = composedText;
++
+     sendKey(window->window(), time, type, qtkey, modifiers, code, sym, mNativeModifiers, text);
+ #else
+     // Generic fallback for single hard keys: Assume 'key' is a Qt key code.
+diff --git a/src/client/qwaylandinputdevice_p.h b/src/client/qwaylandinputdevice_p.h
+index adff3f11..07d261f3 100644
+--- a/src/client/qwaylandinputdevice_p.h
++++ b/src/client/qwaylandinputdevice_p.h
+@@ -77,6 +77,11 @@
+ struct wl_cursor_image;
+ #endif
+ 
++#if QT_CONFIG(xkbcommon_evdev)
++struct xkb_compose_state;
++struct xkb_compose_table;
++#endif
++
+ QT_BEGIN_NAMESPACE
+ 
+ namespace QtWaylandClient {
+@@ -208,6 +213,8 @@ public:
+     xkb_context *mXkbContext;
+     xkb_keymap *mXkbMap;
+     xkb_state *mXkbState;
++    xkb_compose_table *mXkbComposeTable = nullptr;
++    xkb_compose_state *mXkbComposeState = nullptr;
+ #endif
+     uint32_t mNativeModifiers;
+ 
+@@ -229,6 +236,8 @@ private:
+ #if QT_CONFIG(xkbcommon_evdev)
+     bool createDefaultKeyMap();
+     void releaseKeyMap();
++    void createComposeState();
++    void releaseComposeState();
+ #endif
+ 
+ };
+-- 
+2.15.1
+

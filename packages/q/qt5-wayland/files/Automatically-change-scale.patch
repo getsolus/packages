@@ -1,0 +1,136 @@
+From 595e46e03cda85fc8a552bf593f72c996410c711 Mon Sep 17 00:00:00 2001
+From: Johan Klokkhammer Helsing <johan.helsing@qt.io>
+Date: Fri, 18 Aug 2017 13:08:50 +0200
+Subject: [PATCH] Automatically change scale when entering a new output
+
+Change-Id: I99198d47eac5b2091fe2bfd8fc24646be9c9890a
+Reviewed-by: Pier Luigi Fiorini <pierluigi.fiorini@liri.io>
+Reviewed-by: David Edmundson <davidedmundson@kde.org>
+---
+ src/client/qwaylandwindow.cpp                      | 27 ++++++++++++++++++----
+ src/client/qwaylandwindow_p.h                      |  2 ++
+ .../client/wayland-egl/qwaylandeglwindow.cpp       |  5 ++++
+ .../client/wayland-egl/qwaylandeglwindow.h         |  1 +
+ 4 files changed, 31 insertions(+), 4 deletions(-)
+
+diff --git a/src/client/qwaylandwindow.cpp b/src/client/qwaylandwindow.cpp
+index 48f0d213..2d7a0c3b 100644
+--- a/src/client/qwaylandwindow.cpp
++++ b/src/client/qwaylandwindow.cpp
+@@ -128,6 +128,12 @@ QWaylandWindow::~QWaylandWindow()
+     }
+ }
+ 
++void QWaylandWindow::ensureSize()
++{
++    if (mBackingStore)
++        mBackingStore->ensureSize();
++}
++
+ void QWaylandWindow::initWindow()
+ {
+     if (window()->type() == Qt::Desktop)
+@@ -199,7 +205,6 @@ void QWaylandWindow::initWindow()
+     // Enable high-dpi rendering. Scale() returns the screen scale factor and will
+     // typically be integer 1 (normal-dpi) or 2 (high-dpi). Call set_buffer_scale()
+     // to inform the compositor that high-resolution buffers will be provided.
+-    //FIXME this needs to be changed when the screen changes along with a resized backing store
+     if (mDisplay->compositorVersion() >= 3)
+         set_buffer_scale(scale());
+ 
+@@ -523,7 +528,7 @@ void QWaylandWindow::surface_enter(wl_output *output)
+ 
+     QWaylandScreen *newScreen = calculateScreenFromSurfaceEvents();
+     if (oldScreen != newScreen) //currently this will only happen if the first wl_surface.enter is for a non-primary screen
+-        QWindowSystemInterface::handleWindowScreenChanged(window(), newScreen->QPlatformScreen::screen());
++        handleScreenChanged();
+ }
+ 
+ void QWaylandWindow::surface_leave(wl_output *output)
+@@ -540,7 +545,7 @@ void QWaylandWindow::surface_leave(wl_output *output)
+ 
+     QWaylandScreen *newScreen = calculateScreenFromSurfaceEvents();
+     if (oldScreen != newScreen)
+-        QWindowSystemInterface::handleWindowScreenChanged(window(), newScreen->QPlatformScreen::screen());
++        handleScreenChanged();
+ }
+ 
+ void QWaylandWindow::handleScreenRemoved(QScreen *qScreen)
+@@ -550,7 +555,7 @@ void QWaylandWindow::handleScreenRemoved(QScreen *qScreen)
+     if (wasRemoved) {
+         QWaylandScreen *newScreen = calculateScreenFromSurfaceEvents();
+         if (oldScreen != newScreen)
+-            QWindowSystemInterface::handleWindowScreenChanged(window(), newScreen->QPlatformScreen::screen());
++            handleScreenChanged();
+     }
+ }
+ 
+@@ -914,6 +919,20 @@ void QWaylandWindow::handleMouseEventWithDecoration(QWaylandInputDevice *inputDe
+     }
+ }
+ 
++void QWaylandWindow::handleScreenChanged()
++{
++    QWaylandScreen *newScreen = calculateScreenFromSurfaceEvents();
++    QWindowSystemInterface::handleWindowScreenChanged(window(), newScreen->QPlatformScreen::screen());
++
++    int scale = newScreen->scale();
++    if (scale != mScale) {
++        mScale = scale;
++        if (isInitialized() && mDisplay->compositorVersion() >= 3)
++            set_buffer_scale(mScale);
++        ensureSize();
++    }
++}
++
+ #if QT_CONFIG(cursor)
+ void QWaylandWindow::setMouseCursor(QWaylandInputDevice *device, const QCursor &cursor)
+ {
+diff --git a/src/client/qwaylandwindow_p.h b/src/client/qwaylandwindow_p.h
+index 4cebcd7a..c9593441 100644
+--- a/src/client/qwaylandwindow_p.h
++++ b/src/client/qwaylandwindow_p.h
+@@ -110,6 +110,7 @@ class Q_WAYLAND_CLIENT_EXPORT QWaylandWindow : public QObject, public QPlatformW
+     ~QWaylandWindow();
+ 
+     virtual WindowType windowType() const = 0;
++    virtual void ensureSize();
+     WId winId() const override;
+     void setVisible(bool visible) override;
+     void setParent(const QPlatformWindow *parent) override;
+@@ -263,6 +264,7 @@ private slots:
+     QWaylandScreen *calculateScreenFromSurfaceEvents() const;
+ 
+     void handleMouseEventWithDecoration(QWaylandInputDevice *inputDevice, const QWaylandPointerEvent &e);
++    void handleScreenChanged();
+ 
+     bool mUpdateRequested;
+ 
+diff --git a/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.cpp b/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.cpp
+index 6b5c5326..87f3e2d4 100644
+--- a/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.cpp
++++ b/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.cpp
+@@ -92,6 +92,11 @@ QWaylandWindow::WindowType QWaylandEglWindow::windowType() const
+     return QWaylandWindow::Egl;
+ }
+ 
++void QWaylandEglWindow::ensureSize()
++{
++    updateSurface(false);
++}
++
+ void QWaylandEglWindow::setGeometry(const QRect &rect)
+ {
+     QWaylandWindow::setGeometry(rect);
+diff --git a/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.h b/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.h
+index e471a8f7..77aee56d 100644
+--- a/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.h
++++ b/src/hardwareintegration/client/wayland-egl/qwaylandeglwindow.h
+@@ -59,6 +59,7 @@ class QWaylandEglWindow : public QWaylandWindow
+     QWaylandEglWindow(QWindow *window);
+     ~QWaylandEglWindow();
+     WindowType windowType() const override;
++    void ensureSize() override;
+ 
+     void updateSurface(bool create);
+     virtual void setGeometry(const QRect &rect) override;
