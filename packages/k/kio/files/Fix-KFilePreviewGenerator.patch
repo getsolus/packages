@@ -1,0 +1,63 @@
+From 248941a0f4b4792b6935546da1c1e6bdda61846e Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Thu, 11 Jan 2018 22:07:45 +0100
+Subject: [PATCH] Fix KFilePreviewGenerator::LayoutBlocker
+
+Summary:
+QAbstractItemViews does layout in a timer event handler to avoid unnecessary
+layout calculations. Changes which cause a relayout only start the timer.
+LayoutBlocker has the restriction that it only works if the event loop is not
+entered during its lifetime. Without an event loop there's no expensive
+relayout anyway, making the LayoutBlocker pointless in such cases.
+LayoutBlocker works by changing the uniformItemSizes property of the QListView
+to true and in the destructor back to the original value again. Those changes
+do not trigger a relayout in QListView, so if the QListView did a layout with
+uniformItemSizes set to true, it stays that way.
+Fix it by triggering a relayout in ~LayoutBlocker.
+
+This got exposed by a change in Qt, which results in QListView doing a relayout
+while the LayoutBlocker is active.
+
+BUG: 352776
+
+Test Plan: kfilewidgettest_gui has proper item sizes now.
+
+Reviewers: #frameworks, dfaure
+
+Reviewed By: dfaure
+
+Tags: #frameworks
+
+Differential Revision: https://phabricator.kde.org/D9830
+---
+ src/filewidgets/kfilepreviewgenerator.cpp | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/filewidgets/kfilepreviewgenerator.cpp b/src/filewidgets/kfilepreviewgenerator.cpp
+index 7965ab84..15b8ab84 100644
+--- a/src/filewidgets/kfilepreviewgenerator.cpp
++++ b/src/filewidgets/kfilepreviewgenerator.cpp
+@@ -70,10 +70,7 @@
+  *
+  * QListView does not invoke QItemDelegate::sizeHint() when the
+  * uniformItemSize property has been set to true, so this property is
+- * set before exchanging a block of icons. It is important to reset
+- * it again before the event loop is entered, otherwise QListView
+- * would not get the correct size hints after dispatching the layoutChanged()
+- * signal.
++ * set before exchanging a block of icons.
+  */
+ class KFilePreviewGenerator::LayoutBlocker
+ {
+@@ -92,6 +89,11 @@ class KFilePreviewGenerator::LayoutBlocker
+     {
+         if (m_view != nullptr) {
+             m_view->setUniformItemSizes(m_uniformSizes);
++            /* The QListView did the layout with uniform item
++             * sizes, so trigger a relayout with the expected sizes. */
++            if (!m_uniformSizes) {
++                m_view->setGridSize(m_view->gridSize());
++            }
+         }
+     }
+ 
