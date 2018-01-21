@@ -1,6 +1,6 @@
 name       : nvidia-glx-driver
 version    : '384.111'
-release    : 210
+release    : 211
 source     :
     - http://cn.download.nvidia.com/XFree86/Linux-x86_64/384.111/NVIDIA-Linux-x86_64-384.111.run : 85886d52d37ff03ba84946a407638f43171e409a50aed52149e1b67b92e017b1
 extract    : no
@@ -25,9 +25,11 @@ rundeps    :
         - linux-driver-management
         - libva-vdpau-driver
         - egl-wayland
+        - libglvnd
     - 32bit :
         - nvidia-glx-driver-common
         - libva-vdpau-driver-32bit
+        - libglvnd-32bit
     - main : nvidia-glx-driver-common
     - current : nvidia-glx-driver-common
 conflicts  :
@@ -36,7 +38,9 @@ conflicts  :
         - nvidia-340-glx-driver-common
 patterns   :
     - common : /*
-    - modaliases : /usr/share/doflicky/modaliases
+    - modaliases :
+        - /usr/share/doflicky/modaliases
+        - /usr/share/linux-driver-management/modaliases
     - 32bit : /usr/lib32
     - main : /lib/modules/*.lts
     - current : /lib/modules/*.current
@@ -50,6 +54,7 @@ builddeps  :
     - linux-lts-headers
     - linux-current
     - linux-current-headers
+    - libglvnd-32bit
 permanent  :
     - /lib/modules
 setup      : |
@@ -80,9 +85,12 @@ install    : |
     install -D -d -m 00755 $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video
     install -m 00644 current_kernel/*.ko $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video/.
 
-    # Prepare doflicky modaliases from the LTS kernel
+    # Prepare modaliases from the LTS kernel
     sh -e $pkgfiles/nvidia_supported nvidia ${package} README.txt lts_kernel/nvidia/nv-kernel.o_binary > modalias
     install -D -m 00644 modalias $installdir/usr/share/doflicky/modaliases/${package}.modaliases
+
+    # New location, keep the old one around for a short while
+    install -D -m 00644 modalias $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
 
     # Install nvidia driver for xorg
     install -D -m 00755 nvidia_drv.so $installdir/%libdir%/xorg/modules/drivers/nvidia_drv.so
@@ -99,8 +107,8 @@ install    : |
     install -m 00755 32/lib*.so* $installdir/usr/lib32/.
     install -m 00755 32/tls/lib*.so* $installdir/usr/lib32/.
 
-    # Strip glvnd bits and OpenCL
-    rm -v $installdir/usr/lib{32,64}/{libGLX.so.0,libGL.so.1.0.0,libOpenGL.so.0,libOpenCL.so.1.0.0}
+    # Strip glvnd bits and OpenCL, we have those elsewhere
+    rm -v $installdir/usr/lib{32,64}/{libGLX.so.0,libGL.so.1.0.0,libOpenGL.so.0,libOpenCL.so.1.0.0,libGLdispatch.so*}
 
     # Get weird guys in order first
     ln -sv libGLESv2_nvidia.so.${version} $installdir/%libdir%/libGLESv2_nvidia.so.2
@@ -126,10 +134,9 @@ install    : |
     redo_libs $installdir/usr/lib64/lib*.so.%version%
     redo_libs $installdir/usr/lib32/lib*.so.%version%
 
-    # Now move the GL providers out into glx-provider tree
-    install -d -D -m 00755 $installdir/usr/lib{32,64}/glx-provider/nvidia
-    mv -v $installdir/%libdir%/lib{EGL,GL,GLESv1_CM,GLESv2,glx}.so* $installdir/%libdir%/glx-provider/nvidia/.
-    mv -v $installdir/usr/lib32/lib{EGL,GL,GLESv1_CM,GLESv2}.so* $installdir/usr/lib32/glx-provider/nvidia/.
+    # Remove the non glvnd portions
+    rm -v $installdir/{%libdir%,/usr/lib32}/lib{EGL,GL,GLESv1_CM,GLESv2}.so*
+    rm -v $installdir/%libdir%/libglx.so*
 
     # Move vdpau into the final position
     install -D -d -m 00755 $installdir/usr/lib{32,64}/vdpau
@@ -144,13 +151,13 @@ install    : |
 
     # Vulkan
     install -D -m 00644 nvidia_icd.json.template $installdir/usr/share/vulkan/icd.d/10_nvidia.json
-    sed -e 's@__NV_VK_ICD__@libGL.so.1@' -i $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    sed -e 's@__NV_VK_ICD__@libGLX_nvidia.so.0@' -i $installdir/usr/share/vulkan/icd.d/10_nvidia.json
 
     # EGL
     install -D -m 00644 10_nvidia_wayland.json $installdir/usr/share/egl/egl_external_platform.d/10_nvidia_wayland.json
     install -D -m 00644 10_nvidia.json $installdir/usr/share/egl/egl_external_platform.d/10_nvidia.json
 
-    # Despite not (yet) using glvnd we still need the compatibility path for now
+    # Make sure glvnd knows where to be
     install -D -d -m 00755 $installdir/usr/share/glvnd/egl_vendor.d
     install -m 00644 10_nvidia_wayland.json $installdir/usr/share/glvnd/egl_vendor.d/10_nvidia_wayland.json
     install -m 00644 10_nvidia.json $installdir/usr/share/glvnd/egl_vendor.d/10_nvidia.json
@@ -173,3 +180,8 @@ install    : |
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.tmpfiles $installdir/%libdir%/tmpfiles.d/nvidia-glx-driver.conf
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.sysusers $installdir/%libdir%/sysusers.d/nvidia-glx-driver.conf
     install -D -m 00755 $pkgfiles/create-uvm-dev-node $installdir/sbin/create-uvm-dev-node
+
+    # Make sure our glx is found, LDM will handle the main config file
+    install -D -m 00644 $pkgfiles/xorg.conf $installdir/usr/share/X11/xorg.conf.d/10-nvidia.conf
+    install -D -m 00644 libglx.so.${version} $installdir/%libdir%/nvidia/libglx.so
+    ln -sv libglx.so $installdir/%libdir%/nvidia/libglx.so.1
