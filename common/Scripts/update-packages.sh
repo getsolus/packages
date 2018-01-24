@@ -123,7 +123,6 @@ notify-osd
 nxcomp
 nxproxy
 peerunity
-perl-config-general
 plexhometheater
 python3-colorama
 python3-xlib
