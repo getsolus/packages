@@ -92,6 +92,7 @@ font-sun-misc
 font-winitzki-cyrillic
 font-xfree86-type1
 foomatic-filters
+fs-uae-arcade
 geeqie
 gl-driver-switch
 glamor-egl
@@ -125,6 +126,7 @@ nxproxy
 peerunity
 plexhometheater
 python3-colorama
+python3-decorator
 python3-xlib
 python-django
 python-polkit
@@ -134,6 +136,7 @@ qt5-x11patterns
 qtcreator
 quirky
 rethinkdb
+sane
 sessreg
 setuptools_scm
 smproxy
