@@ -1,4 +1,4 @@
-From 40ad210e1e2302c226076c42baed3c4918f3c921 Mon Sep 17 00:00:00 2001
+From e50cfa0f533943668539901833896fb211371d2e Mon Sep 17 00:00:00 2001
 From: Ikey Doherty <ikey@solus-project.com>
 Date: Thu, 21 Dec 2017 01:05:06 +0000
 Subject: [PATCH] interfaces/builtin: Add new steam-support interface
@@ -19,20 +19,23 @@ completely seize up when using a multiprocess architecture.
 
 Signed-off-by: Ikey Doherty <ikey@solus-project.com>
 ---
- interfaces/builtin/steam_support.go | 202 ++++++++++++++++++++++++++++++++++++
- 1 file changed, 202 insertions(+)
+ interfaces/builtin/steam_support.go                | 202 +++++++++++++++++++++
+ interfaces/builtin/steam_support_test.go           | 109 +++++++++++
+ .../test-snapd-policy-app-consumer/meta/snap.yaml  |   3 +
+ 3 files changed, 314 insertions(+)
  create mode 100644 interfaces/builtin/steam_support.go
+ create mode 100644 interfaces/builtin/steam_support_test.go
 
 diff --git a/interfaces/builtin/steam_support.go b/interfaces/builtin/steam_support.go
 new file mode 100644
-index 000000000..1921bf1e9
+index 000000000..5d8c75fd0
 --- /dev/null
 +++ b/interfaces/builtin/steam_support.go
 @@ -0,0 +1,202 @@
 +// -*- Mode: Go; indent-tabs-mode: t -*-
 +
 +/*
-+ * Copyright (C) 2016-2017 Canonical Ltd
++ * Copyright (C) 2016-2018 Canonical Ltd
 + *
 + * This program is free software: you can redistribute it and/or modify
 + * it under the terms of the GNU General Public License version 3 as
@@ -53,10 +56,10 @@ index 000000000..1921bf1e9
 +const steamSupportSummary = `allows access to various permissions required to use Steam`
 +
 +const steamSupportBaseDeclarationSlots = `
-+  steam:
-+    allow-installation:
-+      slot-snap-type:
-+        - core
++  steam-support:
++    allow-installation: false
++    deny-connection: true
++    deny-auto-connection: true
 +`
 +
 +const steamSupportConnectedPlugSecComp = `
@@ -226,11 +229,140 @@ index 000000000..1921bf1e9
 +		implicitOnCore:        true,
 +		implicitOnClassic:     true,
 +		baseDeclarationSlots:  steamSupportBaseDeclarationSlots,
-+		connectedPlugAppArmor: browserSupportConnectedPlugAppArmor +  steamSupportConnectedPlugAppArmor,
++		connectedPlugAppArmor: browserSupportConnectedPlugAppArmor + steamSupportConnectedPlugAppArmor,
 +		connectedPlugSecComp:  browserSupportConnectedPlugSecComp + steamSupportConnectedPlugSecComp,
 +		reservedForOS:         true,
 +	})
 +}
+diff --git a/interfaces/builtin/steam_support_test.go b/interfaces/builtin/steam_support_test.go
+new file mode 100644
+index 000000000..80ca7b514
+--- /dev/null
++++ b/interfaces/builtin/steam_support_test.go
+@@ -0,0 +1,109 @@
++// -*- Mode: Go; indent-tabs-mode: t -*-
++
++/*
++ * Copyright (C) 2016-2018 Canonical Ltd
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 3 as
++ * published by the Free Software Foundation.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ *
++ */
++
++package builtin_test
++
++import (
++	. "gopkg.in/check.v1"
++
++	"github.com/snapcore/snapd/interfaces"
++	"github.com/snapcore/snapd/interfaces/apparmor"
++	"github.com/snapcore/snapd/interfaces/builtin"
++	"github.com/snapcore/snapd/interfaces/seccomp"
++	"github.com/snapcore/snapd/snap"
++	"github.com/snapcore/snapd/testutil"
++)
++
++type SteamSupportInterfaceSuite struct {
++	iface    interfaces.Interface
++	slotInfo *snap.SlotInfo
++	slot     *interfaces.ConnectedSlot
++	plugInfo *snap.PlugInfo
++	plug     *interfaces.ConnectedPlug
++}
++
++var _ = Suite(&SteamSupportInterfaceSuite{
++	iface: builtin.MustInterface("steam-support"),
++})
++
++const steamSupportConsumerYaml = `name: consumer
++apps:
++ app:
++  plugs: [steam-support]
++`
++
++const steamSupportCoreYaml = `name: core
++type: os
++slots:
++  steam-support:
++`
++
++func (s *SteamSupportInterfaceSuite) SetUpTest(c *C) {
++	s.plug, s.plugInfo = MockConnectedPlug(c, steamSupportConsumerYaml, nil, "steam-support")
++	s.slot, s.slotInfo = MockConnectedSlot(c, steamSupportCoreYaml, nil, "steam-support")
++}
++
++func (s *SteamSupportInterfaceSuite) TestName(c *C) {
++	c.Assert(s.iface.Name(), Equals, "steam-support")
++}
++
++func (s *SteamSupportInterfaceSuite) TestSanitizeSlot(c *C) {
++	c.Assert(interfaces.BeforePrepareSlot(s.iface, s.slotInfo), IsNil)
++	slot := &snap.SlotInfo{
++		Snap:      &snap.Info{SuggestedName: "some-snap"},
++		Name:      "steam-support",
++		Interface: "steam-support",
++	}
++
++	c.Assert(interfaces.BeforePrepareSlot(s.iface, slot), IsNil)
++}
++
++func (s *SteamSupportInterfaceSuite) TestSanitizePlug(c *C) {
++	c.Assert(interfaces.BeforePreparePlug(s.iface, s.plugInfo), IsNil)
++}
++
++func (s *SteamSupportInterfaceSuite) TestAppArmorSpec(c *C) {
++	spec := &apparmor.Specification{}
++	c.Assert(spec.AddConnectedPlug(s.iface, s.plug, s.slot), IsNil)
++	c.Assert(spec.SecurityTags(), DeepEquals, []string{"snap.consumer.app"})
++	c.Assert(spec.SnippetForTag("snap.consumer.app"), testutil.Contains, "owner /{dev,run}/shm/{,.}org.chromium.Chromium.shmem.libcef_* mrwk,\n")
++}
++
++func (s *SteamSupportInterfaceSuite) TestSecCompSpec(c *C) {
++	spec := &seccomp.Specification{}
++	c.Assert(spec.AddConnectedPlug(s.iface, s.plug, s.slot), IsNil)
++	c.Assert(spec.SecurityTags(), DeepEquals, []string{"snap.consumer.app"})
++	c.Check(spec.SnippetForTag("snap.consumer.app"), testutil.Contains, "sched_setaffinity\n")
++}
++
++func (s *SteamSupportInterfaceSuite) TestStaticInfo(c *C) {
++	si := interfaces.StaticInfoOf(s.iface)
++	c.Assert(si.ImplicitOnCore, Equals, false)
++	c.Assert(si.ImplicitOnClassic, Equals, false)
++	c.Assert(si.Summary, Equals, `allows access to various permissions required to use Steam`)
++	c.Assert(si.BaseDeclarationSlots, testutil.Contains, "steam-support")
++}
++
++func (s *SteamSupportInterfaceSuite) TestAutoConnect(c *C) {
++	c.Check(s.iface.AutoConnect(nil, nil), Equals, true)
++}
++
++func (s *SteamSupportInterfaceSuite) TestInterfaces(c *C) {
++	c.Check(builtin.Interfaces(), testutil.DeepContains, s.iface)
++}
+diff --git a/tests/lib/snaps/test-snapd-policy-app-consumer/meta/snap.yaml b/tests/lib/snaps/test-snapd-policy-app-consumer/meta/snap.yaml
+index f31809454..b988d51a9 100644
+--- a/tests/lib/snaps/test-snapd-policy-app-consumer/meta/snap.yaml
++++ b/tests/lib/snaps/test-snapd-policy-app-consumer/meta/snap.yaml
+@@ -251,6 +251,9 @@ apps:
+   ssh-public-keys:
+     command: bin/run
+     plugs: [ ssh-public-keys ]
++  steam-support:
++    command: bin/run
++    plugs: [ steam-support ]
+   storage-framework-service:
+     command: bin/run
+     plugs: [ storage-framework-service ]
 -- 
-2.15.1
+2.16.1
 
