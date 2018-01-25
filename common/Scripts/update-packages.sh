@@ -135,6 +135,7 @@ qtcreator
 quirky
 rethinkdb
 sessreg
+setuptools_scm
 smproxy
 software-update-icon
 solus-migration
