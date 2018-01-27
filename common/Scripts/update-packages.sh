@@ -42,6 +42,7 @@ solus-image-plasma"
 ARCHIVEDPKGS="amdgpu-pro
 antiword
 arc-firefox-theme
+captiva-icon-theme
 catalyst
 catalyst-glx-driver
 ceti2-gtk-theme
@@ -56,6 +57,8 @@ encodings
 esetroot
 evoassist
 evolve-sc
+gtk3-engine-unico
+faac
 faenza-icon-theme
 fglrx
 font-adobe-utopia-100dpi
@@ -114,7 +117,9 @@ la
 lapack
 libgames-support
 libirclient
+libsdl
 libuuid
+libwnck-1
 libzeitgeist
 lightzone
 mate-notification-theme-solus
@@ -124,6 +129,7 @@ notification-daemon
 notify-osd
 nxcomp
 nxproxy
+pacifica-icon-theme
 perl-net-bdus
 plexhometheater
 python3-colorama
