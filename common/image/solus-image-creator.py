@@ -789,8 +789,6 @@ def main():
     if os.path.exists(autofile):
         print("Removing new autoinstalled state tracker")
         os.unlink(autofile)
-    # Trick systemd into not running units it does not need to...
-    run_chroot("/usr/bin/systemd-sysusers")
     run_chroot("touch /etc/.updated -r /etc")
     run_chroot("touch /var/.updated -r /usr")
     down_root()
