@@ -323,9 +323,8 @@ def configure_live_account():
     run_chroot(cmd)
 
     # Modify sudoers so that live user is not asked for a password
-    sudoers = os.path.join(get_image_root(), "etc/sudoers")
     line = "%live ALL=(ALL) NOPASSWD:ALL"
-    cmd = "echo \"%s\" >> /etc/sudoers" % line
+    cmd = "echo \"%s\" >> /etc/sudoers.d/os-installer" % line
     run_chroot("/bin/bash --login -c '%s'" % cmd)
 
     # skeleton files that /root/ is going to need.
