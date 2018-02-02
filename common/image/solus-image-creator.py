@@ -142,6 +142,8 @@ did_mount = False
 root_mounted = False
 proc_mounted = False
 efi_mounted = False
+sys_mounted = False
+kernel_mounted = False
 
 def clean_exit(code):
     ''' Try and ensure we cleanup... '''
@@ -153,6 +155,8 @@ def do_mount(source,target,type=None,opts=None,bind=False):
     ''' Mount source over target, using optional type and options '''
     global did_mount
     global proc_mounted
+    global sys_mounted
+    global kernel_mounted
 
     try:
         if type:
@@ -176,6 +180,10 @@ def do_mount(source,target,type=None,opts=None,bind=False):
         return False
     if source == "/proc":
         proc_mounted = True
+    elif source == "/sys":
+        sys_mounted = True
+    elif source == "/sys/kernel/security":
+        kernel_mounted = True
     else:
         did_mount = True
     return True
@@ -199,6 +207,8 @@ def down_root():
     global did_mount
     global root_mounted
     global proc_mounted
+    global sys_mounted
+    global kernel_mounted
 
     dev = False
     with open("/etc/mtab", "r") as mounts:
@@ -215,6 +225,12 @@ def down_root():
         print "Umounting bind-mount /dev"
         do_umount(os.path.join(get_image_root(), "dev"))
 
+    if kernel_mounted:
+        do_umount(os.path.join(get_image_root(), "sys/kernel/security"))
+        kernel_mounted = False
+    if sys_mounted:
+        do_umount(os.path.join(get_image_root(), "sys"))
+        sys_mounted = False
     if proc_mounted:
         do_umount(os.path.join(get_image_root(), "proc"))
         proc_mounted = False
@@ -608,6 +624,8 @@ def main():
     ''' Main entry '''
     global root_mounted
     global proc_mounted
+    global sys_mounted
+    global kernel_mounted
     global release
     targetDirectory = get_image_root()
 
@@ -788,6 +806,22 @@ def main():
     if os.path.exists(autofile):
         print("Removing new autoinstalled state tracker")
         os.unlink(autofile)
+
+
+    if not do_mount("/sys", os.path.join(get_image_root(), "sys"), bind=True):
+        print("Unable to mount /sys")
+        clean_exit(1)
+    sys_mounted = True
+
+    if not do_mount("/sys/kernel/security", os.path.join(get_image_root(), "sys/kernel/security"), bind=True):
+        print("Unable to mount /sys/kernel/security")
+        clean_exit(1)
+    kernel_mounted = True
+
+    # Perform AoT compilation of AppArmor
+    run_chroot("/usr/sbin/aa-lsm-hook-compile")
+
+
     run_chroot("touch /etc/.updated -r /etc")
     run_chroot("touch /var/.updated -r /usr")
     down_root()
