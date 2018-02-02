@@ -1,0 +1,79 @@
+diff -ur libopenshot-0.1.2.orig/include/TextReader.h libopenshot-0.1.2/include/TextReader.h
+--- libopenshot-0.1.2.orig/include/TextReader.h	2016-08-30 13:23:13.000000000 +0900
++++ libopenshot-0.1.2/include/TextReader.h	2017-01-01 02:41:47.536511096 +0900
+@@ -91,7 +91,7 @@ namespace openshot
+ 		string text_color;
+ 		string background_color;
+ 		std::shared_ptr<Magick::Image> image;
+-		list<Magick::Drawable> lines;
++		vector<Magick::Drawable> lines;
+ 		bool is_open;
+ 		GravityType gravity;
+ 
+diff -ur libopenshot-0.1.2.orig/src/Frame.cpp libopenshot-0.1.2/src/Frame.cpp
+--- libopenshot-0.1.2.orig/src/Frame.cpp	2016-08-30 13:23:13.000000000 +0900
++++ libopenshot-0.1.2/src/Frame.cpp	2017-01-01 02:45:51.545585405 +0900
+@@ -29,6 +29,9 @@
+ 
+ using namespace std;
+ using namespace openshot;
++#ifdef USE_IMAGEMAGICK
++using namespace Magick;
++#endif
+ 
+ // Constructor - blank frame (300x200 blank image, 48kHz audio silence)
+ Frame::Frame() : number(1), pixel_ratio(1,1), channels(2), width(1), height(1),
+@@ -835,7 +838,7 @@
+ 	// Give image a transparent background color
+ 	magick_image->backgroundColor(Magick::Color("none"));
+ 	magick_image->virtualPixelMethod(Magick::TransparentVirtualPixelMethod);
+-	magick_image->matte(true);
++	magick_image->alpha(true);
+ 
+ 	return magick_image;
+ }
+@@ -857,13 +860,14 @@
+     // Iterate through the pixel packets, and load our own buffer
+ 	// Each color needs to be scaled to 8 bit (using the ImageMagick built-in ScaleQuantumToChar function)
+ 	int numcopied = 0;
+-    Magick::PixelPacket *pixels = new_image->getPixels(0,0, new_image->columns(), new_image->rows());
++	const Quantum *pixels = new_image->getConstPixels(0,0, new_image->columns(), new_image->rows());
+     for (int n = 0, i = 0; n < new_image->columns() * new_image->rows(); n += 1, i += 4) {
+-    	buffer[i+0] = MagickCore::ScaleQuantumToChar((Magick::Quantum) pixels[n].red);
+-    	buffer[i+1] = MagickCore::ScaleQuantumToChar((Magick::Quantum) pixels[n].green);
+-    	buffer[i+2] = MagickCore::ScaleQuantumToChar((Magick::Quantum) pixels[n].blue);
+-    	buffer[i+3] = 255 - MagickCore::ScaleQuantumToChar((Magick::Quantum) pixels[n].opacity);
+-    	numcopied+=4;
++	buffer[i+0] = MagickCore::ScaleQuantumToChar(MagickCore::GetPixelRed(new_image->image(), pixels));
++	buffer[i+1] = MagickCore::ScaleQuantumToChar(MagickCore::GetPixelGreen(new_image->image(), pixels));
++	buffer[i+2] = MagickCore::ScaleQuantumToChar(MagickCore::GetPixelBlue(new_image->image(), pixels));
++	buffer[i+3] = MagickCore::ScaleQuantumToChar(MagickCore::GetPixelAlpha(new_image->image(), pixels));
++	numcopied+=4;
++	pixels += MagickCore::GetPixelChannels(new_image->image());
+     }
+ 
+     // Create QImage of frame data
+diff -ur libopenshot-0.1.2.orig/src/ImageReader.cpp libopenshot-0.1.2/src/ImageReader.cpp
+--- libopenshot-0.1.2.orig/src/ImageReader.cpp	2016-08-30 13:23:13.000000000 +0900
++++ libopenshot-0.1.2/src/ImageReader.cpp	2017-01-01 02:34:47.539360428 +0900
+@@ -50,7 +50,7 @@
+ 
+ 			// Give image a transparent background color
+ 			image->backgroundColor(Magick::Color("none"));
+-			image->matte(true);
++			image->alpha(true);
+ 		}
+ 		catch (Magick::Exception e) {
+ 			// raise exception
+diff -ur libopenshot-0.1.2.orig/src/ImageWriter.cpp libopenshot-0.1.2/src/ImageWriter.cpp
+--- libopenshot-0.1.2.orig/src/ImageWriter.cpp	2016-08-30 13:23:13.000000000 +0900
++++ libopenshot-0.1.2/src/ImageWriter.cpp	2017-01-01 02:35:05.279830304 +0900
+@@ -97,7 +97,7 @@
+ 	tr1::shared_ptr<Magick::Image> frame_image = frame->GetMagickImage();
+ 	frame_image->magick( info.vcodec );
+ 	frame_image->backgroundColor(Magick::Color("none"));
+-	frame_image->matte(true);
++	frame_image->alpha(true);
+ 	frame_image->quality(image_quality);
+ 	frame_image->animationDelay(info.video_timebase.ToFloat() * 100);
+ 	frame_image->animationIterations(number_of_loops);
