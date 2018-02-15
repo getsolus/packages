@@ -1,0 +1,78 @@
+From 3bb3ee936f27e9749bf1a2c4bd5ded2f5167663f Mon Sep 17 00:00:00 2001
+From: Max Staudt <mstaudt@suse.de>
+Date: Mon, 12 Feb 2018 15:07:29 +0100
+Subject: [PATCH] opengl: Bail if cached shader fails to load
+References: boo#1080578, boo#1079465
+Signed-off-by: Max Staudt <mstaudt@suse.de>
+
+QOpenGLProgramBinaryCache::setProgramBinary() should check
+GL_LINK_STATUS after glProgramBinary(), but doesn't.
+
+In practice, this means that SDDM is a white screen, and KDE is just
+a gray task bar.
+
+So far, Qt tries to check this using its internal ::link() function.
+But in case the cached binary fails to load, Qt currently attempts to
+link the inexistent program, resulting in a zero-length, fixed
+pipeline shader.
+
+Checking this already in ::setProgramBinary() makes the call to
+::link() superfluous, so we remove that as well.
+
+Many thanks to Michal Srb and Fabian Vogt for hunting this down.
+This was truly a joint effort.
+
+Cc: Michal Srb <msrb@suse.com>
+Cc: Fabian Vogt <fvogt@suse.de>
+Signed-off-by: Max Staudt <mstaudt@suse.de>
+---
+ src/gui/opengl/qopenglprogrambinarycache.cpp | 11 ++++++++++-
+ src/gui/opengl/qopenglshaderprogram.cpp      |  8 +-------
+ 2 files changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/src/gui/opengl/qopenglprogrambinarycache.cpp b/src/gui/opengl/qopenglprogrambinarycache.cpp
+index 06373e1113..f50878ab5c 100644
+--- a/src/gui/opengl/qopenglprogrambinarycache.cpp
++++ b/src/gui/opengl/qopenglprogrambinarycache.cpp
+@@ -161,10 +161,19 @@ bool QOpenGLProgramBinaryCache::setProgramBinary(uint programId, uint blobFormat
+     QOpenGLExtraFunctions *funcs = QOpenGLContext::currentContext()->extraFunctions();
+     while (funcs->glGetError() != GL_NO_ERROR) { }
+     funcs->glProgramBinary(programId, blobFormat, p, blobSize);
++
+     int err = funcs->glGetError();
++    GLint link_status = 0;
++    funcs->glGetProgramiv(programId, GL_LINK_STATUS, &link_status);
++    if (link_status != GL_TRUE || err != GL_NO_ERROR) {
++        qCDebug(DBG_SHADER_CACHE, "Program binary failed to load for program %u, size %d, format 0x%x, link_status = 0x%x, err = 0x%x",
++                programId, blobSize, blobFormat, link_status, err);
++        return false;
++    }
++
+     qCDebug(DBG_SHADER_CACHE, "Program binary set for program %u, size %d, format 0x%x, err = 0x%x",
+             programId, blobSize, blobFormat, err);
+-    return err == 0;
++    return true;
+ }
+ 
+ #ifdef Q_OS_UNIX
+diff --git a/src/gui/opengl/qopenglshaderprogram.cpp b/src/gui/opengl/qopenglshaderprogram.cpp
+index cc8af16bfe..3b82baccb3 100644
+--- a/src/gui/opengl/qopenglshaderprogram.cpp
++++ b/src/gui/opengl/qopenglshaderprogram.cpp
+@@ -3824,13 +3824,7 @@ bool QOpenGLShaderProgramPrivate::linkBinary()
+     bool needsCompile = true;
+     if (binCache.load(cacheKey, q->programId())) {
+         qCDebug(DBG_SHADER_CACHE, "Program binary received from cache");
+-        linkBinaryRecursion = true;
+-        bool ok = q->link();
+-        linkBinaryRecursion = false;
+-        if (ok)
+-            needsCompile = false;
+-        else
+-            qCDebug(DBG_SHADER_CACHE, "Link failed after glProgramBinary");
++        needsCompile = false;
+     }
+ 
+     bool needsSave = false;
+-- 
+2.13.6
