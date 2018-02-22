@@ -144,6 +144,7 @@ qt5-x11patterns
 qtcreator
 quirky
 rethinkdb
+roboto-ttf
 sane
 sessreg
 setuptools_scm
