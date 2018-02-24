@@ -1,0 +1,90 @@
+Description: Put common flags into CMAKE_CXX_FLAGS
+ Debhelper intentionally sets CMAKE_BUILD_TYPE to None so that optimization
+ flags are not added by cmake. Unfortunately musescore only enables --std=c++11
+ for the Debug and Release build types.
+ .
+ This patch moves the common flags (c++ standard, warnings, etc) to
+ CMAKE_CXX_FLAGS which gets used in all build types.
+ .
+ The PCH build was already not working, but after appplying this patch it fails
+ outright (the PCH code ignores CMAKE_CXX_FLAGS and all custom flags) so just
+ disable it.
+ However, with that, the all.h copying code is no longer run before AUTOMOC-
+ caused *_autogen targets, so we must run it earlier.
+ .
+ The flags in mtest are duplicated and inherited from the root CMakeLists.txt
+ anyway, so they can be removed.
+Author: James Cowgill <jcowgill@debian.org>
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -154,17 +154,20 @@ if ("${CMAKE_CXX_COMPILER_ID}" MATCHES "
+ endif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
+ 
+ if (APPLE)
+-   set(CMAKE_CXX_FLAGS_DEBUG   "-std=c++11 -fPIC -stdlib=libc++ -g -Wno-inconsistent-missing-override")
+-   set(CMAKE_CXX_FLAGS_RELEASE "-std=c++11 -fPIC -stdlib=libc++ -O2 -DNDEBUG -DQT_NO_DEBUG -Wno-inconsistent-missing-override")
++   set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -std=c++11 -fPIC -stdlib=libc++ -Wno-inconsistent-missing-override")
++   set(CMAKE_CXX_FLAGS_DEBUG   "-g")
++   set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -DQT_NO_DEBUG")
+ else (APPLE)
+    if (MINGW)
+       # -mno-ms-bitfields see #22048
+-      set(CMAKE_CXX_FLAGS_DEBUG   "-std=c++11 -mno-ms-bitfields -g")
+-      set(CMAKE_CXX_FLAGS_RELEASE "-std=c++11 -mno-ms-bitfields -O2 -DNDEBUG -DQT_NO_DEBUG")
++      set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -std=c++11 -mno-ms-bitfields")
++      set(CMAKE_CXX_FLAGS_DEBUG   "-g")
++      set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -DQT_NO_DEBUG")
+       set(CMAKE_EXE_LINKER_FLAGS "-Wl,--large-address-aware")
+    else (MINGW)
+-      set(CMAKE_CXX_FLAGS_DEBUG   "-std=c++11 -fPIC -g")
+-      set(CMAKE_CXX_FLAGS_RELEASE "-std=c++11 -fPIC -O2 -DNDEBUG -DQT_NO_DEBUG")
++      set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} -std=c++11 -fPIC")
++      set(CMAKE_CXX_FLAGS_DEBUG   "-g")
++      set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -DQT_NO_DEBUG")
+    endif (MINGW)
+ endif(APPLE)
+ 
+@@ -570,16 +573,11 @@ endif (NOT MINGW AND NOT APPLE)
+ #
+ 
+ # all.h is expected in PROJECT_BINARY_DIR by subdirs
+-add_custom_command(
+-    OUTPUT ${PROJECT_BINARY_DIR}/all.h
+-    COMMAND ${CMAKE_COMMAND}
+-    ARGS -E copy ${PROJECT_SOURCE_DIR}/all.h ${PROJECT_BINARY_DIR}/all.h
+-    DEPENDS ${PROJECT_SOURCE_DIR}/all.h
++execute_process(
++    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_SOURCE_DIR}/all.h ${PROJECT_BINARY_DIR}/all.h
+     WORKING_DIRECTORY ${PROJECT_BINARY_DIR}
+     )
+-if (NOT MINGW)
+-  set(BUILD_PCH true)
+-endif(NOT MINGW)
++set(BUILD_PCH false)
+ 
+ precompiled_header(QT_INCLUDES all ${BUILD_PCH})
+ 
+--- a/mtest/CMakeLists.txt
++++ b/mtest/CMakeLists.txt
+@@ -113,19 +113,6 @@ target_link_libraries(
+ 
+ set(CMAKE_CXX_FLAGS         "${CMAKE_CXX_FLAGS} ${Qt5Widgets_EXECUTABLE_COMPILE_FLAGS}")
+ 
+-if (APPLE)
+-   set(CMAKE_CXX_FLAGS_DEBUG   "-std=c++0x -fPIC -stdlib=libc++ -g -Wno-inconsistent-missing-override")
+-   set(CMAKE_CXX_FLAGS_RELEASE "-std=c++0x -fPIC -stdlib=libc++ -O2 -DNDEBUG -DQT_NO_DEBUG -Wno-inconsistent-missing-override")
+-else (APPLE)
+-   if (MINGW)
+-      # -mno-ms-bitfields see #22048
+-      set(CMAKE_CXX_FLAGS_DEBUG   "-std=gnu++0x -mno-ms-bitfields -g")
+-      set(CMAKE_CXX_FLAGS_RELEASE "-std=gnu++0x -mno-ms-bitfields -O2 -DNDEBUG -DQT_NO_DEBUG")
+-   else (MINGW)
+-      set(CMAKE_CXX_FLAGS_DEBUG   "-std=gnu++0x -fPIC -g")
+-      set(CMAKE_CXX_FLAGS_RELEASE "-std=gnu++0x -fPIC -O2 -DNDEBUG -DQT_NO_DEBUG")
+-   endif (MINGW)
+-endif(APPLE)
+ 
+ 
+ string(REPLACE ";" ";-I" INC "${QT_INCLUDES}")
