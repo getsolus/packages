@@ -1,0 +1,65 @@
+From 61594afd687bf5883cc39fa79c5fbdb0d4cc9eda Mon Sep 17 00:00:00 2001
+From: Florian Müllner <fmuellner@gnome.org>
+Date: Wed, 17 Jan 2018 21:57:49 +0100
+Subject: [PATCH] places-menu: Don't force dispose() of uninitialized proxies
+
+Trying to dispose a proxy object before it has been properly
+initialized triggers an "uncatchable exception", which gjs
+treats as a fatal error since commit c7bdcaab4. We only have
+anything to clean up once the proxy is initialized anyway, so
+don't force dispose() before that.
+
+https://gitlab.gnome.org/GNOME/gnome-shell-extensions/issues/44
+---
+ extensions/places-menu/placeDisplay.js | 28 ++++++++++++++++------------
+ 1 file changed, 16 insertions(+), 12 deletions(-)
+
+diff --git a/extensions/places-menu/placeDisplay.js b/extensions/places-menu/placeDisplay.js
+index ba316bf..9647d63 100644
+--- a/extensions/places-menu/placeDisplay.js
++++ b/extensions/places-menu/placeDisplay.js
+@@ -136,17 +136,18 @@ const RootInfo = new Lang.Class({
+     _init: function() {
+         this.parent('devices', Gio.File.new_for_path('/'), _("Computer"));
+ 
+-        this._proxy = new Hostname1(Gio.DBus.system,
+-                                    'org.freedesktop.hostname1',
+-                                    '/org/freedesktop/hostname1',
+-                                    Lang.bind(this, function(obj, error) {
+-                                        if (error)
+-                                            return;
+-
+-                                        this._proxy.connect('g-properties-changed',
+-                                                            Lang.bind(this, this._propertiesChanged));
+-                                        this._propertiesChanged(obj);
+-                                    }));
++        new Hostname1(Gio.DBus.system,
++                      'org.freedesktop.hostname1',
++                      '/org/freedesktop/hostname1',
++                      Lang.bind(this, function(obj, error) {
++                          if (error)
++                              return;
++
++                          this._proxy = obj;
++                          this._proxy.connect('g-properties-changed',
++                                              Lang.bind(this, this._propertiesChanged));
++                          this._propertiesChanged(obj);
++                      }));
+     },
+ 
+     getIcon: function() {
+@@ -163,7 +164,10 @@ const RootInfo = new Lang.Class({
+     },
+ 
+     destroy: function() {
+-        this._proxy.run_dispose();
++        if (this._proxy) {
++            this._proxy.run_dispose();
++            this._proxy = null;
++        }
+         this.parent();
+     }
+ });
+--
+libgit2 0.26.0
+
