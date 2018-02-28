@@ -1,0 +1,71 @@
+From 536f30bebcbaca8b391919afbda8dd67b360d45d Mon Sep 17 00:00:00 2001
+From: Michael Vogt <mvo@ubuntu.com>
+Date: Mon, 12 Feb 2018 10:54:04 +0100
+Subject: [PATCH] debian, snap: only static link libseccomp in snap-seccomp on
+ ubuntu
+
+Rework how we do static linking of libseccomp for the snap-seccomp
+helper. The most recent golang change for 1.9 added a whitelist
+of allowed things for #cgo LDFLAGS (and #cgo PKG_CONFIG) which
+broke out current approach. It seems the only way to get back the
+static libseccomp linking is via the CGO_LDFLAGS_ALLOW environment.
+So use that during the package build. For the other distros this
+is less of an issue, we need the static libseccomp on Ubuntu as
+snap-seccomp goes into the core snap and is called if snapd is
+re-execing. This means that we cannot have a dynamic libseccomp
+there or we might get into libseccomp library compatibility
+issues between the host and the core.
+---
+ cmd/snap-seccomp/main.go          | 4 ++--
+ packaging/ubuntu-16.04/rules      | 9 +++++++++
+ tests/main/snap-seccomp/task.yaml | 2 +-
+ 3 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/cmd/snap-seccomp/main.go b/cmd/snap-seccomp/main.go
+index 935b3098b4..a97ff34ac2 100644
+--- a/cmd/snap-seccomp/main.go
++++ b/cmd/snap-seccomp/main.go
+@@ -20,8 +20,8 @@
+ package main
+ 
+ //#cgo CFLAGS: -D_FILE_OFFSET_BITS=64
+-//#cgo pkg-config: --static --cflags libseccomp
+-//#cgo LDFLAGS: -Wl,-Bstatic -lseccomp -Wl,-Bdynamic
++//#cgo pkg-config: libseccomp
++//#cgo LDFLAGS:
+ //
+ //#include <asm/ioctls.h>
+ //#include <ctype.h>
+diff --git a/packaging/ubuntu-16.04/rules b/packaging/ubuntu-16.04/rules
+index 4098097138..eac9b40dc4 100755
+--- a/packaging/ubuntu-16.04/rules
++++ b/packaging/ubuntu-16.04/rules
+@@ -139,6 +139,15 @@ ifneq ($(shell dpkg-architecture -qDEB_HOST_ARCH),powerpc)
+ 	$(shell	if ldd _build/bin/snap-update-ns; then false "need static build"; fi)
+ endif
+ 
++	# ensure snap-seccomp is build with a static libseccomp on Ubuntu
++ifeq ($(shell dpkg-vendor --query Vendor),Ubuntu)
++	sed -i "s|#cgo LDFLAGS:|#cgo LDFLAGS: /usr/lib/$(shell dpkg-architecture -qDEB_TARGET_MULTIARCH)/libseccomp.a|" _build/src/$(DH_GOPKG)/cmd/snap-seccomp/main.go
++	(cd _build/bin && GOPATH=$$(pwd)/.. CGO_LDFLAGS_ALLOW="/.*/libseccomp.a" go build $(GCCGOFLAGS) $(DH_GOPKG)/cmd/snap-seccomp)
++	# ensure that libseccomp is not dynamically linked
++	ldd _build/bin/snap-seccomp
++	test "$$(ldd _build/bin/snap-seccomp | grep libseccomp)" = ""
++endif
++
+ 	# Build C bits, sadly manually
+ 	cd cmd && ( autoreconf -i -f )
+ 	cd cmd && ( ./configure --prefix=/usr --libexecdir=/usr/lib/snapd $(VENDOR_ARGS))
+diff --git a/tests/main/snap-seccomp/task.yaml b/tests/main/snap-seccomp/task.yaml
+index 990249a24d..48ddc12ebb 100644
+--- a/tests/main/snap-seccomp/task.yaml
++++ b/tests/main/snap-seccomp/task.yaml
+@@ -2,7 +2,7 @@ summary: Ensure that the snap-seccomp bpf handling works
+ 
+ # FIXME: once $(snap debug confinment) can be used (in 2.27+) remove
+ #        the systems line
+-systems: [ubuntu-*]
++systems: [ubuntu-16*, ubuntu-18*]
+ 
+ # Start early as it takes a long time.
+ priority: 100
