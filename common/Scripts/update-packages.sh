@@ -113,6 +113,7 @@ jmtpfs
 journal
 kdevplatform
 kernel
+kodi-addon-inputstream-adaptive
 la
 lapack
 libgames-support
