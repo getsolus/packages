@@ -1,6 +1,6 @@
 name       : kodi
 version    : '17.6'
-release    : 34
+release    : 35
 source     :
     - https://github.com/xbmc/xbmc/archive/17.6-Krypton.tar.gz : c8312fe92e5bab1cdac1da93d60baed88fa1574146c50c44e3c86d01671c2b1d
 license    : GPL-2.0
@@ -53,35 +53,64 @@ builddeps  :
     - openjdk-8-devel
     - shairplay-devel
     - swig
-rundeps    :
+replaces   :
     - kodi-addon-inputstream-adaptive
+rundeps    :
     - shairplay
 setup      : |
     # WARN: Do NOT enable binutils-gold, even if kodi prefers it
     #   --  binutils-gold makes ffmpeg barf on gnutls during ./configure
+    #
     mkdir kodi-build && cd kodi-build
-    %cmake ../project/cmake \
+    %cmake \
+      "$workdir/project/cmake" \
       -DBUILD_SHARED_LIBS=ON \
-      -DCMAKE_INSTALL_PREFIX=/usr \
-      -DCMAKE_INSTALL_LIBDIR=%libdir% \
       -DENABLE_EVENTCLIENTS=ON \
       -DLIRC_DEVICE=/var/run/lirc/lircd
 
     # INFO: To display available configuration variables and
     #       their detected values, uncomment the following:
-    #%cmake ../project/cmake -L | awk '{if(f)print} /-- Cache values/{f=1}'
-    #fail_for_inspection  # stop the build here for inspection
+    #
+    # cmake ../project/cmake -L | awk '{if(f)print} /-- Cache values/{f=1}'
+    # fail_for_inspection  # stop the build here to inspect config options
 
+    # INFO: The kodi binary addon build system doesn't behave like one would
+    #       expect and thus configuring the addons using PREFIX=/usr is
+    #       actually a deliberate choice:
+    #       By specifying a non-writeable prefix, we trick the build system into
+    #       installing everything under its own made-up .install/ PREFIX inside
+    #       the addon-build directory, from which we can then install the build
+    #       artifacts manually in the install section below.
+    #
+    cd .. && mkdir addon-build && cd addon-build
+    %cmake \
+    "$workdir/project/cmake/addons" \
+    -DCMAKE_PREFIX=/usr \
+    -DADDONS_TO_BUILD="inputstream.adaptive peripheral.joystick"
 build      : |
     cd kodi-build
-    # noiser cmake build for troubleshooting purposes
-    #cmake --build . -- VERBOSE=1
+    # noiser build for troubleshooting purposes
+    # make VERBOSE=1 -j1
     %make
 
+    # build binary addons
+    cd .. && cd addon-build
+    %make
 install    : |
+    # install kodi proper
     cd kodi-build
     %make_install
+
+    # INFO: This is *by far* the easiest way to install the binary addons
+    #       Note that the '-a' flag (for 'archive') preserves the permissions
+    #       as created by the kodi binary addons makefile install target.
+    # 
+    echo "Installing binary addons:"
+    cp -av $workdir/addon-build/.install/lib/* $installdir/%libdir%
+    cp -av $workdir/addon-build/.install/share/* $installdir/usr/share/
 check      : |
-    # Tests last forever. You can run them locally but please make sure it is commented before publishing
-    cd kodi-build
-    #make check
+    # INFO: Tests last forever. You can run them locally but please make sure
+    #       the commands are commented out before publishing
+    #
+    #cd kodi-build && make check
+
