@@ -50,6 +50,7 @@ cgames
 cgoban1
 colordiff
 cscope
+D1671
 dkms
 docbook-xsl
 dropbear
