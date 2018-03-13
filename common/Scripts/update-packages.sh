@@ -117,6 +117,7 @@ kernel
 kodi-addon-inputstream-adaptive
 la
 lapack
+libcutl
 libgames-support
 libirclient
 libsdl
