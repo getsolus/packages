@@ -132,6 +132,7 @@ notification-daemon
 notify-osd
 nxcomp
 nxproxy
+otclient
 pacifica-icon-theme
 perl-net-bdus
 plexhometheater
