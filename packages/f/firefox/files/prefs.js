@@ -1,5 +1,5 @@
 pref("general.smoothScroll",                true);
-pref("intl.locale.matchOS",                 true);
+pref("intl.locale.requested",               "");
 pref("toolkit.networkmanager.disable",      false);
 pref("toolkit.storage.synchronous",         0);
 pref("offline.autoDetect",                  true);
