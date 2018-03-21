@@ -78,6 +78,8 @@ class UI(pisi.ui.UI):
         elif event == pisi.ui.desktopfile:
             filepath = keywords["desktopfile"]
             notify("System.Manager", "status", ("desktopfile", filepath, "", ""))
+        elif event == pisi.ui.systemconf:
+            notify("System.Manager", "status", ("systemconf", "", "", ""))
         else:
             return
 
