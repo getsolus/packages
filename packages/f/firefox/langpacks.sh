@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="59.0"
+VERSION="59.0.2"
 ARCH="x86_64"
 URL="http://ftp.mozilla.org/pub/firefox/releases/${VERSION}/linux-${ARCH}/xpi/"
 
