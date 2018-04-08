@@ -1,18 +1,24 @@
 name       : virtualbox
 version    : 5.2.8
-release    : 36
+release    : 37
 source     :
-    - http://download.virtualbox.org/virtualbox/5.2.8/VirtualBox-5.2.8.tar.bz2 : ee2759d47b0b4ac81b8b671c9485c87fb2db12c097b3e7e69b94c1291a8084e8
-license    : GPL-2.0
+    - https://download.virtualbox.org/virtualbox/5.2.8/VirtualBox-5.2.8.tar.bz2 : ee2759d47b0b4ac81b8b671c9485c87fb2db12c097b3e7e69b94c1291a8084e8
+license    : GPL-2.0-only
 component  :
     - virt
     - common : virt
     - current : virt
+    - guest : virt
+    - guest-common : virt
+    - guest-current : virt
 summary    :
-    - VirtualBox modules for the linux-lts kernel
-    - common : Common components for VirtualBox
-    - current : VirtualBox modules for the linux-current kernel
+    - VirtualBox host modules for the linux-lts kernel
+    - common : Common components for VirtualBox host packages
+    - current : VirtualBox host modules for the linux-current kernel
     - devel : Development components for VirtualBox
+    - guest : VirtualBox guest additions for the linux-lts kernel
+    - guest-current : VirtualBox guest additions for the linux-current kernel
+    - guest-common : Common components for the VirtualBox guest packages
 description: |
     VirtualBox is a free powerful open source solution for running other x86 and AMD64/Intel64 operating systems virtually on your computer.
 builddeps  :
@@ -49,15 +55,32 @@ permanent  :
     - /lib/modules
 rundeps    :
     - virtualbox-common
-    - current :
-        - virtualbox-common
+    - current : virtualbox-common
     - devel : virtualbox-common
+    - guest : virtualbox-guest-common
+    - guest-current : virtualbox-guest-common
 patterns   :
     - common : /usr
     - devel :
         - /usr/lib/python2.7
         - /usr/lib64/virtualbox/sdk
-    - current : /lib/modules/*.current
+    - current : /lib/modules/*.current/extra
+    - guest : /lib/modules/*.lts/misc
+    - guest-current : /lib/modules/*.current/misc
+    - guest-common :
+        - /sbin
+        - /usr/sbin
+        - /usr/bin/VBoxClient
+        - /usr/bin/VBoxControl
+        - /usr/bin/VBoxClient-all
+        - /lib/security
+        - /usr/lib64/vboxguestadditions
+        - /usr/lib64/udev/rules.d/60-vboxguest.rules
+        - /usr/lib64/sysusers.d/vboxguest.conf
+        - /usr/lib64/systemd/system/vboxservice.service
+        - /usr/lib64/systemd/system/multi-user.target.wants/vboxservice.service
+        - /usr/share/xdg
+        - /usr/share/X11/xorg.conf.d
 setup      : |
     # Ensure we don't ever use bundled libraries
     rm -rf src/libs/{libpng-*,libxml2-*,libxslt-*,zlib-*,boost-*}
@@ -73,8 +96,17 @@ build      : |
     source ./env.sh
     kmk all
 
+    ##### hosts modules #####
     cd out/linux.amd64/release/bin
+    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
+        cp -a src ${kern}
+        pushd ${kern}
+            %make KERN_VER=${kern}
+        popd
+    done
 
+    ##### guest modules #####
+    cd additions
     for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
         cp -a src ${kern}
         pushd ${kern}
@@ -82,6 +114,7 @@ build      : |
         popd
     done
 install    : |
+    ##### Host #####
     cd out/linux.amd64/release/bin
 
     # binaries
@@ -151,3 +184,28 @@ install    : |
     install -D -m 00644 $pkgfiles/vboxdrv.service $installdir/%libdir%/systemd/system/vboxdrv.service
     install -d -m 00755 $installdir/%libdir%/systemd/system/multi-user.target.wants
     ln -sv ../vboxdrv.service $installdir/%libdir%/systemd/system/multi-user.target.wants/.
+
+    ##### Guest #####
+    cd additions
+    install -D -m 00755 mount.vboxsf -t $installdir/sbin
+    install -D -m 00755 VBoxService -t $installdir/usr/sbin
+    install -m 00755 VBoxClient VBoxControl -t $installdir/usr/bin
+    install -D -m 00755 $workdir/src/VBox/Additions/x11/Installer/98vboxadd-xclient $installdir/usr/bin/VBoxClient-all
+
+    install -D -m 00644 $workdir/src/VBox/Additions/x11/Installer/vboxclient.desktop $installdir/usr/share/xdg/autostart/vboxclient.desktop
+
+    install -D -m 00755 pam_vbox.so -t $installdir/lib/security
+    install -D -m 00755 VBoxOGL*.so -t $installdir/%libdir%/vboxguestadditions
+
+    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
+        pushd ${kern}
+            install -d -m 00755 $installdir/lib/modules/${kern}/misc
+            install -m 00644 *.ko $installdir/lib/modules/${kern}/misc
+        popd
+    done
+
+    install -D -m 00644 $pkgfiles/10-vboxvideo.conf $installdir/usr/share/X11/xorg.conf.d/10-vboxvideo.conf
+    install -D -m 00644 $pkgfiles/vboxguest.sysusers $installdir/%libdir%/sysusers.d/vboxguest.conf
+    install -D -m 00644 $pkgfiles/60-vboxguest.rules $installdir/%libdir%/udev/rules.d/60-vboxguest.rules
+    install -D -m 00644 $pkgfiles/vboxservice.service $installdir/%libdir%/systemd/system/vboxservice.service
+    ln -sv ../vboxservice.service $installdir/%libdir%/systemd/system/multi-user.target.wants/.
