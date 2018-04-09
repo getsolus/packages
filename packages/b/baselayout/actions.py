@@ -13,7 +13,7 @@ def install():
     # Install everything
     pisitools.insinto("/", "root/*")
 
-    for dire in ["/tmp", "/var/tmp", "/dev", "/usr/lib64", "/lib64", "/proc", "/sys", "/run/lock", "/root", "/home", "/run"]:
+    for dire in ["/tmp", "/var/tmp", "/dev", "/usr/lib64", "/lib64", "/proc", "/sys", "/run/lock", "/root", "/home", "/run", "/media"]:
         pisitools.dodir(dire)
 
     # Adjust permissions
@@ -26,6 +26,7 @@ def install():
     do_chmod("/sys", 0755)
     do_chmod("/home", 0755)
     do_chmod("/run", 0755)
+    do_chmod("/media", 0755)
     pisitools.dosym("../run", "/var/run")
     pisitools.dosym("../run/lock", "/var/lock")
     pisitools.dosym("lib64", "/lib")
