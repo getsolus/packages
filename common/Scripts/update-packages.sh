@@ -42,6 +42,7 @@ solus-image-plasma"
 ARCHIVEDPKGS="amdgpu-pro
 antiword
 arc-firefox-theme
+autotrace
 captiva-icon-theme
 catalyst
 catalyst-glx-driver
@@ -125,6 +126,7 @@ libuuid
 libwnck-1
 libzeitgeist
 lightzone
+lwqq
 mate-notification-theme-solus
 mlocate
 mozjs17
@@ -136,6 +138,8 @@ otclient
 pacifica-icon-theme
 perl-net-bdus
 plexhometheater
+pidgin-lwqq
+pycrypto
 python3-colorama
 python3-decorator
 python3-xlib
@@ -148,6 +152,7 @@ qt5-x11patterns
 qtcreator
 quirky
 rethinkdb
+rfkill
 roboto-ttf
 sane
 sessreg
@@ -172,7 +177,8 @@ xpr
 xrefresh
 xterm
 xvinfo
-xwud"
+xwud
+yubikey-neo-manager"
 
 # Can probably delete repos: libuuid qtcreator la libgames-support qt5-x11patterns
 
