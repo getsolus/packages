@@ -240,7 +240,9 @@ description: |
             if self.compile_type == GNOMEY:
                 setup = "%configure --disable-static"
             elif self.compile_type == CMAKE:
-                setup = "%cmake ."
+                setup = "%cmake_ninja"
+                build = "%ninja_build"
+                install = "%ninja_install"
             elif self.compile_type == PYTHON_MODULES:
                 setup = ""
                 build = "%python_setup"
