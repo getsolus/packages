@@ -819,7 +819,9 @@ def main():
     kernel_mounted = True
 
     # Perform AoT compilation of AppArmor
-    run_chroot("/usr/sbin/aa-lsm-hook-compile")
+    parser_path = os.path.join(get_image_root(), "sbin/apparmor_parser")
+    if os.path.exists(parser_path):
+        run_chroot("/usr/sbin/aa-lsm-hook-compile")
 
 
     run_chroot("touch /etc/.updated -r /etc")
