@@ -1,0 +1,59 @@
+From f1e57214bd404f2babe4a896079f2e58048073b3 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Wed, 18 Apr 2018 20:51:41 +0100
+Subject: [PATCH] handlers: Teach AppArmor handler to reload after compilation
+
+When not in a chroot (i.e. a native install) it isn't sufficient to just
+compile the AppArmor definitions, we also need to load them in to allow
+updates for the likes of snapd to work properly between major versions.
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ src/handlers/kernel/apparmor.c | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/handlers/kernel/apparmor.c b/src/handlers/kernel/apparmor.c
+index 5069b9d..0118127 100644
+--- a/src/handlers/kernel/apparmor.c
++++ b/src/handlers/kernel/apparmor.c
+@@ -31,9 +31,12 @@ static const char *apparmor_paths[] = {
+  */
+ static UscHandlerStatus usc_handler_apparmor_exec(UscContext *ctx, __usc_unused__ const char *path)
+ {
+-        char *command[] = {
++        char *compile_command[] = {
+                 "/usr/sbin/aa-lsm-hook-compile", NULL, /* Terminator */
+         };
++        char *load_command[] = {
++                "/usr/sbin/aa-lsm-hook-load", NULL, /* Terminator */
++        };
+ 
+         usc_context_emit_task_start(ctx, "Compiling AppArmor profiles");
+         if (usc_context_has_flag(ctx, USC_FLAGS_CHROOTED)) {
+@@ -41,13 +44,22 @@ static UscHandlerStatus usc_handler_apparmor_exec(UscContext *ctx, __usc_unused_
+                 return USC_HANDLER_SKIP | USC_HANDLER_BREAK;
+         }
+ 
+-        int ret = usc_exec_command(command);
++        /* Compile */
++        int ret = usc_exec_command(compile_command);
+         if (ret != 0) {
+                 usc_context_emit_task_finish(ctx, USC_HANDLER_FAIL);
+                 return USC_HANDLER_FAIL;
+         }
+         usc_context_emit_task_finish(ctx, USC_HANDLER_SUCCESS);
+ 
++        /* Load */
++        usc_context_emit_task_start(ctx, "Reloading AppArmor profiles");
++        ret = usc_exec_command(load_command);
++        if (ret != 0) {
++                usc_context_emit_task_finish(ctx, USC_HANDLER_FAIL);
++                return USC_HANDLER_FAIL;
++        }
++
+         /* Only run once */
+         return USC_HANDLER_SUCCESS | USC_HANDLER_BREAK;
+ }
+-- 
+2.16.3
+
