@@ -1,8 +1,25 @@
-From aafe8fd6b298cd4093f7c8ae174c06a988723472 Mon Sep 17 00:00:00 2001
+From e9e969553866b0dd29e78b41c0e372569405f46c Mon Sep 17 00:00:00 2001
 From: Georges Basile Stavracas Neto <georges.stavracas@gmail.com>
 Date: Wed, 28 Mar 2018 19:21:52 -0300
-Subject: [PATCH 2/2] object: Queue a forced GC when toggling down
+Subject: [PATCH 4/6] object: Queue a forced GC when toggling down
 
+During a GC, the collector asks each object which other
+objects that it wants to hold on to so if there's an entire
+section of the heap graph that's not connected to anything
+else, and not reachable from the root set, then it can be
+trashed all at once.
+
+GObjects, however, don't work like that, there's only a
+reference count but no notion of who owns the reference so,
+a JS object that's proxying a GObject is unconditionally held
+alive as long as the GObject has >1 references.
+
+Since we cannot know how many more wrapped GObjects are going
+be marked for garbage collection after the owner is destroyed,
+always queue a garbage collection when a toggle reference goes
+down.
+
+Issue: #140
 ---
  gi/object.cpp         | 22 ++++++++++++++++++++++
  gjs/context-private.h |  2 +-
@@ -10,16 +27,16 @@ Subject: [PATCH 2/2] object: Queue a forced GC when toggling down
  3 files changed, 31 insertions(+), 7 deletions(-)
 
 diff --git a/gi/object.cpp b/gi/object.cpp
-index c78a0a4..a5e0ac1 100644
+index 3fdfced..606a918 100644
 --- a/gi/object.cpp
 +++ b/gi/object.cpp
-@@ -988,8 +988,30 @@ handle_toggle_down(GObject *gobj)
+@@ -1001,8 +1001,30 @@ handle_toggle_down(GObject *gobj)
       * collected by the GC
       */
      if (priv->keep_alive.rooted()) {
 +        GjsContext *context;
 +
-         gjs_debug_lifecycle(GJS_DEBUG_GOBJECT, "Removing object from keep alive");
+         gjs_debug_lifecycle(GJS_DEBUG_GOBJECT, "Unrooting object");
          priv->keep_alive.switch_to_unrooted();
 +
 +        /* During a GC, the collector asks each object which other
@@ -102,5 +119,5 @@ index 77d7eaa..a2ce34a 100644
      _gjs_context_schedule_gc_internal(js_context, false);
  }
 -- 
-2.17.0
+2.16.3
 
