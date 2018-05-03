@@ -1,0 +1,118 @@
+From d735708ff11c40ee6b9bee64544250d55067403f Mon Sep 17 00:00:00 2001
+From: David Edmundson <kde@davidedmundson.co.uk>
+Date: Tue, 1 May 2018 22:16:28 +0100
+Subject: Update mount point after mount operations
+
+Summary:
+The order of udisks evaluation has changed from:
+
+call Mount
+propertiesChanged
+mount call returns
+
+call Mount
+mount call returns
+propertiesChanged
+
+The mount has finished, but the property is not yet updated.
+
+Solid caches properties, updating them when they change. This worked
+before but due to the re-ordering client code gets "setupDone" requests
+the mount point gets an outdated version from the cache and we get
+errors. Invalidating the cache causes us to round-trip to the udisks
+daemon meaning we'll have the correct values.
+
+BUG: 370975
+
+Test Plan:
+Diagnosed but with dbus-monitor trace
+Asked someone on the bug report to test this
+
+Reviewers: #plasma
+
+Subscribers: #frameworks
+
+Tags: #frameworks
+
+Differential Revision: https://phabricator.kde.org/D12648
+---
+ src/solid/devices/backends/udisks2/udisksdevice.cpp        | 7 +++++++
+ src/solid/devices/backends/udisks2/udisksdevice.h          | 1 +
+ src/solid/devices/backends/udisks2/udisksstorageaccess.cpp | 8 ++++----
+ 3 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/src/solid/devices/backends/udisks2/udisksdevice.cpp b/src/solid/devices/backends/udisks2/udisksdevice.cpp
+index f3fdfff..0df32be 100644
+--- a/src/solid/devices/backends/udisks2/udisksdevice.cpp
++++ b/src/solid/devices/backends/udisks2/udisksdevice.cpp
+@@ -157,6 +157,13 @@ QStringList Device::interfaces() const
+     return QStringList();
+ }
+ 
++void Device::invalidateCache()
++{
++    if (m_backend) {
++        return m_backend->invalidateProperties();
++    }
++}
++
+ QObject *Device::createDeviceInterface(const Solid::DeviceInterface::Type &type)
+ {
+     if (!queryDeviceInterface(type)) {
+diff --git a/src/solid/devices/backends/udisks2/udisksdevice.h b/src/solid/devices/backends/udisks2/udisksdevice.h
+index 147d554..1492564 100644
+--- a/src/solid/devices/backends/udisks2/udisksdevice.h
++++ b/src/solid/devices/backends/udisks2/udisksdevice.h
+@@ -61,6 +61,7 @@ public:
+     QVariant prop(const QString &key) const;
+     bool propertyExists(const QString &key) const;
+     QVariantMap allProperties() const;
++    void invalidateCache();
+ 
+     bool hasInterface(const QString &name) const;
+     QStringList interfaces() const;
+diff --git a/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp b/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
+index 7db2263..d08f35d 100644
+--- a/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
++++ b/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
+@@ -166,6 +166,7 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
+             mount();
+         } else { // Don't broadcast setupDone unless the setup is really done. (Fix kde#271156)
+             m_setupInProgress = false;
++            m_device->invalidateCache();
+             m_device->broadcastActionDone("setup");
+ 
+             checkAccessibility();
+@@ -191,6 +192,7 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
+             }
+ 
+             m_teardownInProgress = false;
++            m_device->invalidateCache();
+             m_device->broadcastActionDone("teardown");
+ 
+             checkAccessibility();
+@@ -227,9 +229,8 @@ void StorageAccess::slotSetupDone(int error, const QString &errorString)
+ {
+     m_setupInProgress = false;
+     //qDebug() << "SETUP DONE:" << m_device->udi();
+-    emit setupDone(static_cast<Solid::ErrorType>(error), errorString, m_device->udi());
+-
+     checkAccessibility();
++    emit setupDone(static_cast<Solid::ErrorType>(error), errorString, m_device->udi());
+ }
+ 
+ void StorageAccess::slotTeardownRequested()
+@@ -241,9 +242,8 @@ void StorageAccess::slotTeardownRequested()
+ void StorageAccess::slotTeardownDone(int error, const QString &errorString)
+ {
+     m_teardownInProgress = false;
+-    emit teardownDone(static_cast<Solid::ErrorType>(error), errorString, m_device->udi());
+-
+     checkAccessibility();
++    emit teardownDone(static_cast<Solid::ErrorType>(error), errorString, m_device->udi());
+ }
+ 
+ bool StorageAccess::mount()
+-- 
+cgit v0.11.2
+
