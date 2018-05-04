@@ -59,6 +59,7 @@ encodings
 esetroot
 evoassist
 evolve-sc
+gegl3
 gtk3-engine-unico
 faac
 faenza-icon-theme
