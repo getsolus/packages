@@ -127,6 +127,7 @@ libuuid
 libwnck-1
 libzeitgeist
 lightzone
+livestreamer
 lwqq
 mate-notification-theme-solus
 mlocate
