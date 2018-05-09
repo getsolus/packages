@@ -1,0 +1,180 @@
+From e38d60fb23f7894631fa1225101e6b26ebd19f0e Mon Sep 17 00:00:00 2001
+From: Lindsay Roberts <m@lindsayr.com>
+Date: Thu, 3 May 2018 21:29:42 +0300
+Subject: [PATCH] kcm_opengl: Fix retrieval of DRI information
+
+Summary:
+Currently DRI information retrieval is attempted via /proc/dri, which
+was removed from the linux kernel in v3.12 (2013). This information
+includes the kernel driver in use as well as card identification sourced
+from pci.ids database.
+
+This adds support for retrieving this information in the same vein via
+/dev and /sys for modern kernels.
+
+Test Plan: kcmshell5 opengl should correctly display kernel driver.
+
+Reviewers: #plasma, alexeymin
+
+Reviewed By: alexeymin
+
+Subscribers: alexeymin, wbauer, plasma-devel, #plasma
+
+Tags: #plasma
+
+Differential Revision: https://phabricator.kde.org/D12476
+---
+ Modules/opengl/opengl.cpp | 117 ++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 81 insertions(+), 36 deletions(-)
+
+diff --git a/Modules/opengl/opengl.cpp b/Modules/opengl/opengl.cpp
+index 90b7d5b..795636b 100644
+--- a/Modules/opengl/opengl.cpp
++++ b/Modules/opengl/opengl.cpp
+@@ -63,6 +63,12 @@
+ #include <GL/glx.h>
+ #endif
+ 
++#if defined(Q_OS_LINUX)
++#include <QFileInfo>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#endif
++
+ K_PLUGIN_FACTORY(KCMOpenGLFactory,
+     registerPlugin<KCMOpenGL>();
+ )
+@@ -178,51 +184,89 @@ static int ReadPipe(const QString &FileName, QStringList &list)
+ 
+ #if defined(Q_OS_LINUX)
+ 
++static QString get_sysfs_link_name(const QString& path)
++{
++    const QString target = QFileInfo(path).symLinkTarget();
++
++    const int index = target.lastIndexOf(QChar('/'));
++    if (index == -1)
++        return QString();
++
++    return target.mid(index + 1);
++}
++
++static bool get_drm_device_sysfs()
++{
++    struct stat fileInfo;
++    if (::stat("/dev/dri/card0", &fileInfo) != 0)
++        return false;
++    if ((fileInfo.st_mode & S_IFCHR) != S_IFCHR)
++        return false;
++
++    const uint16_t devMajor = major(fileInfo.st_rdev);
++    const uint16_t devMinor = minor(fileInfo.st_rdev);
++    QString sysPath = QStringLiteral("/sys/dev/char/%1:%2/device").arg(devMajor).arg(devMinor);
++
++    dri_info.pci = get_sysfs_link_name(sysPath);
++    dri_info.module = get_sysfs_link_name(sysPath + QStringLiteral("/driver"));
++
++    return (dri_info.pci.size() && dri_info.module.size());
++}
++
+ #define INFO_DRI QStringLiteral("/proc/dri/0/name")
+ 
+-static bool get_dri_device()
++static bool get_dri_device_proc()
+ {
+     QFile file;
+     file.setFileName(INFO_DRI);
+     if (!file.exists() || !file.open(QIODevice::ReadOnly))
+-	return false;
++        return false;
+ 
+     QTextStream stream(&file);
+     QString line = stream.readLine();
+-    if (!line.isEmpty()) {
+-	dri_info.module = line.mid(0, line.indexOf(0x20));
+-
+-	// possible formats, for regression testing
+-	// line = " PCI:01:00:0";
+-	// line = " pci:0000:01:00.0"
+-	QRegExp rx = QRegExp("\\b[Pp][Cc][Ii][:]([0-9a-fA-F]+[:])?([0-9a-fA-F]+[:][0-9a-fA-F]+[:.][0-9a-fA-F]+)\\b");
+-	if (rx.indexIn(line)>0)	 {
+-		dri_info.pci = rx.cap(2);
+-		int end = dri_info.pci.lastIndexOf(':');
+-		int end2 = dri_info.pci.lastIndexOf('.');
+-		if (end2>end) end=end2;
+-		dri_info.pci[end]='.';
+-
+-		QString cmd = QStringLiteral("lspci -m -v -s ") + dri_info.pci;
+-		QStringList pci_info;
+-		int num;
+-		if (((num = ReadPipe(cmd, pci_info)) ||
+-		(num = ReadPipe("/sbin/"+cmd, pci_info)) ||
+-		(num = ReadPipe("/usr/sbin/"+cmd, pci_info)) ||
+-		(num = ReadPipe("/usr/local/sbin/"+cmd, pci_info))) && num>=7) {
+-			for (int i=2; i<=6; i++) {
+-				line = pci_info[i];
+-				line.remove(QRegExp("[^:]*:[ ]*"));
+-				switch (i){
+-					case 2: dri_info.vendor = line;    break;
+-					case 3: dri_info.device = line;    break;
+-					case 4: dri_info.subvendor = line; break;
+-					case 6: dri_info.rev = line;       break;
+-				}
+-			}
+-			return true;
+-		}
+-	}
++    if (line.isEmpty())
++        return false;
++    dri_info.module = line.mid(0, line.indexOf(0x20));
++
++    // possible formats, for regression testing
++    // line = " PCI:01:00:0";
++    // line = " pci:0000:01:00.0"
++    QRegExp rx = QRegExp("\\b[Pp][Cc][Ii][:]([0-9a-fA-F]+[:])?([0-9a-fA-F]+[:][0-9a-fA-F]+[:.][0-9a-fA-F]+)\\b");
++    if (rx.indexIn(line)>0)	 {
++        dri_info.pci = rx.cap(2);
++        int end = dri_info.pci.lastIndexOf(':');
++        int end2 = dri_info.pci.lastIndexOf('.');
++        if (end2>end) end=end2;
++        dri_info.pci[end]='.';
++        return true;
++    }
++    return false;
++}
++
++static bool get_dri_device()
++{
++    if (!get_drm_device_sysfs() && !get_dri_device_proc())
++        return false;
++
++    QString cmd = QStringLiteral("lspci -m -v -s ") + dri_info.pci;
++    QStringList pci_info;
++    int num;
++    if (((num = ReadPipe(cmd, pci_info)) ||
++    (num = ReadPipe("/sbin/"+cmd, pci_info)) ||
++    (num = ReadPipe("/usr/sbin/"+cmd, pci_info)) ||
++    (num = ReadPipe("/usr/local/sbin/"+cmd, pci_info))) && num>=7) {
++        QString line;
++        for (int i=2; i<=6; i++) {
++            line = pci_info[i];
++            line.remove(QRegExp("[^:]*:[ ]*"));
++            switch (i){
++                case 2: dri_info.vendor = line;    break;
++                case 3: dri_info.device = line;    break;
++                case 4: dri_info.subvendor = line; break;
++                case 6: dri_info.rev = line;       break;
++            }
++        }
++        return true;
+     }
+ 
+     return false;
+@@ -958,6 +1002,7 @@ bool GetInfo_OpenGL(QTreeWidget *treeWidget)
+     }
+ 
+     if (isWayland) {
++        IsDirect = true;
+         l1->setText(0, i18n("Name of the Display"));
+         l1->setText(1, qgetenv("WAYLAND_DISPLAY"));
+         l1->setExpanded(true);
