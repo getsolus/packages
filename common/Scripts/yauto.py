@@ -83,7 +83,7 @@ class AutoPackage:
         self.version_string = version_string
 
         # Package name, including hyphens
-        self.package_name = "-".join(path.split("-")[:-1])
+        self.package_name = ("-".join(path.split("-")[:-1])).lower()
         self.compile_type = None
 
         print "Package: %s\nVersion: %s" % (self.package_name, self.version_string)
