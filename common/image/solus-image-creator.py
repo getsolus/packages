@@ -445,7 +445,7 @@ def configure_boot():
         "squashfs",
         "ext2",
         "vfat",
-        "msdos"
+        "msdos",
         "sr_mod",
         "sd_mod",
         "ehci_hcd",
