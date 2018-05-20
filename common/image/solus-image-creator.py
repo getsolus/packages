@@ -29,6 +29,15 @@ import version
 _target = os.path.abspath(os.getcwd())
 release = False
 
+# We rmf these packages if they exist just to clean out the ISO again.
+initrd_cleanups = {
+    '/lib/firmware/intel-ucode' : 'intel-microcode',
+    '/usr/bin/strip': 'binutils',
+    '/usr/bin/dracut': 'dracut',
+    '/usr/sbin/prelink': 'prelink',
+    '/bin/bash.recovery': 'bash-recovery',
+}
+
 def check_call(cmd):
     return subprocess.check_call(shlex.split(cmd))
 
@@ -422,7 +431,39 @@ def configure_boot():
             clean_exit(1)
 
     # If this looks evil, you're not wrong.
-    cmd = "dracut --lz4 --no-hostonly-cmdline -N --kver \"%s\" --force --add \"dmsquash-live systemd pollcdrom\" --add-drivers \"squashfs ext2 vfat msdos sr_mod sd_mod ehci_hcd uhci_hcd xhci_hcd xhci_pci ohci_hcd usb_storage usbhid device-mapper ata_generic libata\" /live.initrd" % kernel
+    cmd = "dracut --prelink --strip --hardlink --force "
+    cmd += "--no-hostonly-cmdline -N --nomdadmconf --early-microcode "
+    cmd += "--kver {} ".format(kernel)
+    modules = [
+        "bash",
+        "dmsquash-live",
+        "systemd",
+        "pollcdrom",
+        "rescue",
+    ]
+    drivers = [
+        "squashfs",
+        "ext2",
+        "vfat",
+        "msdos"
+        "sr_mod",
+        "sd_mod",
+        "ehci_hcd",
+        "uhci_hcd",
+        "xhci_hcd",
+        "xhci_pci",
+        "ohci_hcd",
+        "usb_storage",
+        "usbhid",
+        "device-mapper",
+        "ata_generic",
+        "libata",
+    ]
+
+    cmd += "--add \"{}\" ".format(" ".join(modules))
+    cmd += "--add-drivers \"{}\" ".format(" ".join(drivers))
+    cmd += " /live.initrd"
+
     run_chroot(cmd)
     try:
         dsrc = os.path.join(get_image_root(), "live.initrd")
@@ -620,6 +661,21 @@ def spin_iso(filename, label):
 
     os.chdir(wd)
 
+def clean_initrd():
+    """ Clean up the packages we needed to build our initrd """
+    removals = []
+    for path in initrd_cleanups:
+        origPath = path
+        package = initrd_cleanups[origPath]
+        if path.startswith("/"):
+            path = path[1:]
+        testPath = os.path.join(get_image_root(), path)
+        if os.path.exists(testPath):
+            removals.append(package)
+    if len(removals) < 1:
+        return
+    run_chroot("eopkg rmf -y {}".format(" ".join(removals)))
+
 def main():
     ''' Main entry '''
     global root_mounted
@@ -781,6 +837,7 @@ def main():
     kvers = get_kernel_version()
     # set up dracut, pull out the initrd and kernel
     configure_boot()
+    clean_initrd()
 
     with open(get_image_version_file(), "w") as outw:
         outw.write(get_image_version() + "\n")
