@@ -857,11 +857,6 @@ def main():
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
-    # Reset auto-installed state for the ISO
-    autofile = os.path.join(get_image_root(), "var/lib/eopkg/info/autoinstalled")
-    if os.path.exists(autofile):
-        print("Removing new autoinstalled state tracker")
-        os.unlink(autofile)
 
 
     if not do_mount("/sys", os.path.join(get_image_root(), "sys"), bind=True):
