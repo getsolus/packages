@@ -857,6 +857,12 @@ def main():
     # Now ensure we have a clean image
     do_umount(get_cache_target())
     run_chroot("eopkg delete-cache")
+    # Reset history for fresh installs
+    historydir = os.path.join(get_image_root(), "var/lib/eopkg/history")
+    if os.path.exists(historydir):
+        print("Removing ISO history")
+        run_chroot("rm -v /var/lib/eopkg/history/ -rf")
+        run_chroot("install -D -d -m 00755 /var/lib/eopkg/history")
 
 
     if not do_mount("/sys", os.path.join(get_image_root(), "sys"), bind=True):
