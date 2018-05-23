@@ -1,0 +1,85 @@
+diff -up libgcrypt-1.8.1/random/random-csprng.c.getrandom libgcrypt-1.8.1/random/random-csprng.c
+--- libgcrypt-1.8.1/random/random-csprng.c.getrandom	2017-08-27 09:05:36.000000000 +0200
++++ libgcrypt-1.8.1/random/random-csprng.c	2017-12-06 09:04:27.824175303 +0100
+@@ -55,6 +55,10 @@
+ #ifdef __MINGW32__
+ #include <process.h>
+ #endif
++#if defined(__linux__) && defined(HAVE_SYSCALL)
++# include <sys/syscall.h>
++# include <linux/random.h>
++#endif
+ #include "g10lib.h"
+ #include "random.h"
+ #include "rand-internal.h"
+@@ -1116,6 +1120,22 @@ getfnc_gather_random (void))(void (*)(co
+              enum random_origins, size_t, int);
+ 
+ #if USE_RNDLINUX
++#if defined(__linux__) && defined(HAVE_SYSCALL) && defined(__NR_getrandom)
++  long ret;
++  char buffer[1];
++
++  _gcry_pre_syscall ();
++  ret = syscall (__NR_getrandom,
++                 (void*)buffer, (size_t)1, (unsigned int)GRND_NONBLOCK);
++  _gcry_post_syscall ();
++  if (ret != -1 || errno != ENOSYS)
++    {
++      fnc = _gcry_rndlinux_gather_random;
++      return fnc;
++    }
++  else
++          /* The syscall is not supported - fallback to /dev/urandom. */
++#endif
+   if ( !access (NAME_OF_DEV_RANDOM, R_OK)
+        && !access (NAME_OF_DEV_URANDOM, R_OK))
+     {
+diff -up libgcrypt-1.8.1/random/rndlinux.c.getrandom libgcrypt-1.8.1/random/rndlinux.c
+--- libgcrypt-1.8.1/random/rndlinux.c.getrandom	2017-09-05 14:34:28.003872675 +0200
++++ libgcrypt-1.8.1/random/rndlinux.c	2018-02-06 16:31:56.047481806 +0100
+@@ -35,6 +35,7 @@
+ #include <poll.h>
+ #if defined(__linux__) && defined(HAVE_SYSCALL)
+ # include <sys/syscall.h>
++# include <linux/random.h>
+ #endif
+ 
+ #include "types.h"
+@@ -204,6 +205,16 @@ _gcry_rndlinux_gather_random (void (*add
+     {
+       if (fd_urandom == -1)
+         {
++#if defined(__linux__) && defined(HAVE_SYSCALL) && defined(__NR_getrandom)
++          long ret;
++
++          _gcry_pre_syscall ();
++          ret = syscall (__NR_getrandom,
++                         (void*)buffer, (size_t)1, (unsigned int)GRND_NONBLOCK);
++          _gcry_post_syscall ();
++        if (ret == -1 && errno == ENOSYS)
++          /* The syscall is not supported - fallback to /dev/urandom. */
++#endif
+           fd_urandom = open_device (NAME_OF_DEV_URANDOM, (ever_opened & 2));
+           ever_opened |= 2;
+         }
+@@ -230,7 +241,7 @@ _gcry_rndlinux_gather_random (void (*add
+        * syscall and not a new device and thus we are not able to use
+        * select(2) to have a timeout. */
+ #if defined(__linux__) && defined(HAVE_SYSCALL) && defined(__NR_getrandom)
+-      if (fd == fd_urandom)
++      if (fd == -1)
+         {
+           long ret;
+           size_t nbytes;
+@@ -246,9 +257,7 @@ _gcry_rndlinux_gather_random (void (*add
+               _gcry_post_syscall ();
+             }
+           while (ret == -1 && errno == EINTR);
+-          if (ret == -1 && errno == ENOSYS)
+-            ; /* The syscall is not supported - fallback to /dev/urandom.  */
+-          else
++          if (1)
+             { /* The syscall is supported.  Some sanity checks.  */
+               if (ret == -1)
+                 log_fatal ("unexpected error from getrandom: %s\n",
