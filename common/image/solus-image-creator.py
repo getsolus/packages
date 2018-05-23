@@ -455,7 +455,6 @@ def configure_boot():
         "ohci_hcd",
         "usb_storage",
         "usbhid",
-        "libata",
     ]
 
     cmd += "--add \"{}\" ".format(" ".join(modules))
