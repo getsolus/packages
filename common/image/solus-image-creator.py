@@ -390,7 +390,7 @@ def configure_live_account():
         default_desktop = "gnome"
     with open(fname, "w") as fout:
         fout.write("""[User]
-Language=en_US.utf8
+Language=en_US.UTF-8
 XSession={}
 SystemAccount=false
 """.format(default_desktop))
@@ -816,7 +816,7 @@ def main():
     localefile = os.path.join(get_image_root(), "etc", "locale.conf")
     try:
         with open(localefile, "w") as lfile:
-            lfile.write("LANG=en_US.utf8\n")
+            lfile.write("LANG=en_US.UTF-8\n")
     except Exception, ex:
         print("Failed to write locale: %s" % ex)
         clean_exit(1)
