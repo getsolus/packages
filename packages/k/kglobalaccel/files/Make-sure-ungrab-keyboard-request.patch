@@ -1,0 +1,48 @@
+From 8c2521374bea3c6476effb7b472ac5f8fc199956 Mon Sep 17 00:00:00 2001
+From: Sontol Bonggol <sonbonggol@gmail.com>
+Date: Wed, 30 May 2018 15:16:49 +0200
+Subject: [PATCH] Make sure ungrab keyboard request is processed before
+ emitting shortcut
+
+Summary:
+In some rare cases, the ungrab keyboard request is processed later than
+the action of the key shortcut. This can make the application that try
+to grab the keyboard (e.g. in kwin) fail to do so. The solution is to
+use ungrab_keyboard_checked() and xcb_request_check() before emitting
+the shortcut signal.
+
+BUG: 394689
+
+Reviewers: #frameworks, #plasma, mck182, davidedmundson
+
+Reviewed By: #plasma, davidedmundson
+
+Subscribers: davidedmundson, fvogt, kde-frameworks-devel
+
+Tags: #frameworks
+
+Differential Revision: https://phabricator.kde.org/D13128
+---
+ src/runtime/plugins/xcb/kglobalaccel_x11.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/runtime/plugins/xcb/kglobalaccel_x11.cpp b/src/runtime/plugins/xcb/kglobalaccel_x11.cpp
+index d76f1d5..9b75ec4 100644
+--- a/src/runtime/plugins/xcb/kglobalaccel_x11.cpp
++++ b/src/runtime/plugins/xcb/kglobalaccel_x11.cpp
+@@ -241,8 +241,12 @@ bool KGlobalAccelImpl::x11KeyPress(xcb_key_press_event_t *pEvent)
+ 	// Keyboard needs to be ungrabed after XGrabKey() activates the grab,
+ 	// otherwise it becomes frozen.
+     xcb_connection_t *c = QX11Info::connection();
+-    xcb_ungrab_keyboard(c, XCB_TIME_CURRENT_TIME);
++    xcb_void_cookie_t cookie = xcb_ungrab_keyboard_checked(c, XCB_TIME_CURRENT_TIME);
+     xcb_flush(c);
++    // xcb_flush() only makes sure that the ungrab keyboard request has been
++    // sent, but is not enough to make sure that request has been fulfilled. Use
++    // xcb_request_check() to make sure that the request has been processed.
++    xcb_request_check(c, cookie);
+
+     int keyQt;
+     if (!KKeyServer::xcbKeyPressEventToQt(pEvent, &keyQt)) {
+--
+2.17.0
