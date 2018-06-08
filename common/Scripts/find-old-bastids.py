@@ -24,7 +24,6 @@ class HistoryTeacher:
         """ Walk all known packages in repo """
         for key in self.pdb.list_packages(None):
             self.maybe_push(key)
-            # break
 
     def maybe_push(self, key):
         """ Maybe assign the package to the tipbucket """
