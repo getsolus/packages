@@ -98,6 +98,7 @@ font-sun-misc
 font-winitzki-cyrillic
 font-xfree86-type1
 foomatic-filters
+freeimge
 fs-uae-arcade
 geeqie
 gl-driver-switch
