@@ -219,7 +219,7 @@ version    : %(VERSION)s
 release    : 1
 source     :
     - %(SOURCE)s : %(SHA256SUM)s
-license    : GPL-2.0-only # CHECK ME
+license    : GPL-2.0-or-later # CHECK ME
 component  : PLEASE FILL ME IN
 summary    : PLEASE FILL ME IN
 
