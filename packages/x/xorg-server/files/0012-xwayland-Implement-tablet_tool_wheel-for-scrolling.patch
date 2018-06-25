@@ -1,0 +1,78 @@
+From d03bf0d1759d7d113216a0311e794b5adb0845de Mon Sep 17 00:00:00 2001
+From: Jason Gerecke <killertofu@gmail.com>
+Date: Fri, 9 Jun 2017 16:02:07 -0700
+Subject: [PATCH xserver 12/12] xwayland: Implement tablet_tool_wheel for
+ scrolling
+
+The 'tablet_tool_wheel' function for tablet scrolling was added back in
+8a1defcc634 but left unimplemented. This commit fills in the necessary
+details, using the "clicks" count as the number of discrete scroll up/down
+events to send.
+
+Signed-off-by: Jason Gerecke <jason.gerecke@wacom.com>
+Reviewed-by: Peter Hutterer <peter.hutterer@who-t.net>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+(cherry picked from commit 7c7a540f1e1d6b5466e1c9aa28476a2d7273d5ed)
+---
+ hw/xwayland/xwayland-input.c | 24 ++++++++++++++++++++++++
+ hw/xwayland/xwayland.h       |  2 ++
+ 2 files changed, 26 insertions(+)
+
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index a6d7d9356..0cf318623 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -1566,6 +1566,13 @@ static void
+ tablet_tool_wheel(void *data, struct zwp_tablet_tool_v2 *tool,
+                   wl_fixed_t degrees, int32_t clicks)
+ {
++    struct xwl_tablet_tool *xwl_tablet_tool = data;
++    struct xwl_seat *xwl_seat = xwl_tablet_tool->seat;
++
++    if (!xwl_seat->focus_window)
++        return;
++
++    xwl_tablet_tool->wheel_clicks = clicks;
+ }
+ 
+ static void
+@@ -1677,6 +1684,23 @@ tablet_tool_frame(void *data, struct zwp_tablet_tool_v2 *tool, uint32_t time)
+     }
+ 
+     xwl_tablet_tool->buttons_prev = xwl_tablet_tool->buttons_now;
++
++    while (xwl_tablet_tool->wheel_clicks) {
++            if (xwl_tablet_tool->wheel_clicks < 0) {
++                button = 4;
++                xwl_tablet_tool->wheel_clicks++;
++            }
++            else {
++                button = 5;
++                xwl_tablet_tool->wheel_clicks--;
++            }
++
++            QueuePointerEvents(xwl_tablet_tool->xdevice,
++                               ButtonPress, button, 0, &mask);
++            QueuePointerEvents(xwl_tablet_tool->xdevice,
++                               ButtonRelease, button, 0, &mask);
++
++    }
+ }
+ 
+ static const struct zwp_tablet_tool_v2_listener tablet_tool_listener = {
+diff --git a/hw/xwayland/xwayland.h b/hw/xwayland/xwayland.h
+index 250564f73..135aa8761 100644
+--- a/hw/xwayland/xwayland.h
++++ b/hw/xwayland/xwayland.h
+@@ -213,6 +213,8 @@ struct xwl_tablet_tool {
+     uint32_t buttons_now,
+              buttons_prev;
+ 
++    int32_t wheel_clicks;
++
+     struct xwl_cursor cursor;
+ };
+ 
+-- 
+2.13.5
+

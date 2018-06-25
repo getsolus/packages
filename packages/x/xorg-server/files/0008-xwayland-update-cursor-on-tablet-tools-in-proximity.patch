@@ -1,0 +1,208 @@
+From 78a4493bc8e60da7b97342660dd1ff6de844e951 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 4 Nov 2016 19:58:04 +0100
+Subject: [PATCH xserver 08/12] xwayland: update cursor on tablet tools in
+ proximity
+
+Each xwl_tablet_tool gets a xwl_cursor, as on wayland each of those
+will get an independent cursor that can be set through
+zwp_tablet_tool.set_cursor.
+
+However, all tools (and the pointer) share conceptually the same VCP
+on Xwayland, so have cursor changes trigger a xwl_cursor update on
+every tool (and the pointer, again). Maybe Xwayland could keep track
+of the most recent device and only update that cursor to get better
+visual results, but this is simpler, and it's going to be odd
+anyway...
+
+Signed-off-by: Carlos Garnacho <carlosg@gnome.org>
+Reviewed-by: Peter Hutterer <peter.hutterer@who-t.net>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+Acked-by: Ping Cheng <ping.cheng@wacom.com>
+(cherry picked from commit f471b5b8eb451b442554517c7cb6f0aa90d218c4)
+---
+ hw/xwayland/xwayland-cursor.c | 56 +++++++++++++++++++++++++++++++++++++++++++
+ hw/xwayland/xwayland-input.c  | 17 +++++++++++++
+ hw/xwayland/xwayland.h        |  5 ++++
+ 3 files changed, 78 insertions(+)
+
+diff --git a/hw/xwayland/xwayland-cursor.c b/hw/xwayland/xwayland-cursor.c
+index fdae3ce85..c95f4e830 100644
+--- a/hw/xwayland/xwayland-cursor.c
++++ b/hw/xwayland/xwayland-cursor.c
+@@ -175,11 +175,62 @@ xwl_seat_set_cursor(struct xwl_seat *xwl_seat)
+     wl_surface_commit(xwl_cursor->surface);
+ }
+ 
++void
++xwl_tablet_tool_set_cursor(struct xwl_tablet_tool *xwl_tablet_tool)
++{
++    struct xwl_seat *xwl_seat = xwl_tablet_tool->seat;
++    struct xwl_cursor *xwl_cursor = &xwl_tablet_tool->cursor;
++    PixmapPtr pixmap;
++    CursorPtr cursor;
++    int stride;
++
++    if (!xwl_seat->x_cursor) {
++        zwp_tablet_tool_v2_set_cursor(xwl_tablet_tool->tool,
++                                      xwl_tablet_tool->proximity_in_serial,
++                                      NULL, 0, 0);
++        return;
++    }
++
++    if (xwl_cursor->frame_cb) {
++        xwl_cursor->needs_update = TRUE;
++        return;
++    }
++
++    cursor = xwl_seat->x_cursor;
++    pixmap = dixGetPrivate(&cursor->devPrivates, &xwl_cursor_private_key);
++    if (!pixmap)
++        return;
++
++    stride = cursor->bits->width * 4;
++    if (cursor->bits->argb)
++        memcpy(pixmap->devPrivate.ptr,
++               cursor->bits->argb, cursor->bits->height * stride);
++    else
++        expand_source_and_mask(cursor, pixmap->devPrivate.ptr);
++
++    zwp_tablet_tool_v2_set_cursor(xwl_tablet_tool->tool,
++                                  xwl_tablet_tool->proximity_in_serial,
++                                  xwl_cursor->surface,
++                                  xwl_seat->x_cursor->bits->xhot,
++                                  xwl_seat->x_cursor->bits->yhot);
++    wl_surface_attach(xwl_cursor->surface,
++                      xwl_shm_pixmap_get_wl_buffer(pixmap), 0, 0);
++    wl_surface_damage(xwl_cursor->surface, 0, 0,
++                      xwl_seat->x_cursor->bits->width,
++                      xwl_seat->x_cursor->bits->height);
++
++    xwl_cursor->frame_cb = wl_surface_frame(xwl_cursor->surface);
++    wl_callback_add_listener(xwl_cursor->frame_cb, &frame_listener, xwl_cursor);
++
++    wl_surface_commit(xwl_cursor->surface);
++}
++
+ static void
+ xwl_set_cursor(DeviceIntPtr device,
+                ScreenPtr screen, CursorPtr cursor, int x, int y)
+ {
+     struct xwl_seat *xwl_seat;
++    struct xwl_tablet_tool *xwl_tablet_tool;
+     Bool cursor_visibility_changed;
+ 
+     xwl_seat = device->public.devicePrivate;
+@@ -194,6 +245,11 @@ xwl_set_cursor(DeviceIntPtr device,
+         xwl_seat_cursor_visibility_changed(xwl_seat);
+ 
+     xwl_seat_set_cursor(xwl_seat);
++
++    xorg_list_for_each_entry(xwl_tablet_tool, &xwl_seat->tablet_tools, link) {
++        if (xwl_tablet_tool->proximity_in_serial != 0)
++            xwl_tablet_tool_set_cursor(xwl_tablet_tool);
++    }
+ }
+ 
+ static void
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index bb520e891..77cd42789 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -1405,6 +1405,7 @@ tablet_tool_receive_removed(void *data, struct zwp_tablet_tool_v2 *tool)
+     struct xwl_tablet_tool *xwl_tablet_tool = data;
+ 
+     xorg_list_del(&xwl_tablet_tool->link);
++    xwl_cursor_release(&xwl_tablet_tool->cursor);
+     zwp_tablet_tool_v2_destroy(tool);
+     free(xwl_tablet_tool);
+ }
+@@ -1428,7 +1429,10 @@ tablet_tool_proximity_in(void *data, struct zwp_tablet_tool_v2 *tool,
+     if (wl_surface == NULL)
+         return;
+ 
++    xwl_tablet_tool->proximity_in_serial = serial;
+     xwl_seat->focus_window = wl_surface_get_user_data(wl_surface);
++
++    xwl_tablet_tool_set_cursor(xwl_tablet_tool);
+ }
+ 
+ static void
+@@ -1437,6 +1441,7 @@ tablet_tool_proximity_out(void *data, struct zwp_tablet_tool_v2 *tool)
+     struct xwl_tablet_tool *xwl_tablet_tool = data;
+     struct xwl_seat *xwl_seat = xwl_tablet_tool->seat;
+ 
++    xwl_tablet_tool->proximity_in_serial = 0;
+     xwl_seat->focus_window = NULL;
+ 
+     xwl_tablet_tool->pressure = 0;
+@@ -1717,10 +1722,20 @@ tablet_seat_handle_add_tablet(void *data, struct zwp_tablet_seat_v2 *tablet_seat
+ }
+ 
+ static void
++xwl_tablet_tool_update_cursor(struct xwl_cursor *xwl_cursor)
++{
++    struct xwl_tablet_tool *xwl_tablet_tool = wl_container_of(xwl_cursor,
++                                                              xwl_tablet_tool,
++                                                              cursor);
++    xwl_tablet_tool_set_cursor(xwl_tablet_tool);
++}
++
++static void
+ tablet_seat_handle_add_tool(void *data, struct zwp_tablet_seat_v2 *tablet_seat,
+                             struct zwp_tablet_tool_v2 *tool)
+ {
+     struct xwl_seat *xwl_seat = data;
++    struct xwl_screen *xwl_screen = xwl_seat->xwl_screen;
+     struct xwl_tablet_tool *xwl_tablet_tool;
+ 
+     xwl_tablet_tool = calloc(sizeof *xwl_tablet_tool, 1);
+@@ -1731,6 +1746,8 @@ tablet_seat_handle_add_tool(void *data, struct zwp_tablet_seat_v2 *tablet_seat,
+ 
+     xwl_tablet_tool->tool = tool;
+     xwl_tablet_tool->seat = xwl_seat;
++    xwl_cursor_init(&xwl_tablet_tool->cursor, xwl_screen,
++                    xwl_tablet_tool_update_cursor);
+ 
+     xorg_list_add(&xwl_tablet_tool->link, &xwl_seat->tablet_tools);
+ 
+diff --git a/hw/xwayland/xwayland.h b/hw/xwayland/xwayland.h
+index bfa5f47c7..02a218c43 100644
+--- a/hw/xwayland/xwayland.h
++++ b/hw/xwayland/xwayland.h
+@@ -44,6 +44,7 @@
+ 
+ #include "relative-pointer-unstable-v1-client-protocol.h"
+ #include "pointer-constraints-unstable-v1-client-protocol.h"
++#include "tablet-unstable-v2-client-protocol.h"
+ 
+ struct xwl_screen {
+     int width;
+@@ -200,6 +201,7 @@ struct xwl_tablet_tool {
+     struct xwl_seat *seat;
+ 
+     DeviceIntPtr xdevice;
++    uint32_t proximity_in_serial;
+     uint32_t x;
+     uint32_t y;
+     uint32_t pressure;
+@@ -210,6 +212,8 @@ struct xwl_tablet_tool {
+ 
+     uint32_t buttons_now,
+              buttons_prev;
++
++    struct xwl_cursor cursor;
+ };
+ 
+ struct xwl_tablet_pad {
+@@ -237,6 +241,7 @@ Bool xwl_screen_init_cursor(struct xwl_screen *xwl_screen);
+ 
+ struct xwl_screen *xwl_screen_get(ScreenPtr screen);
+ 
++void xwl_tablet_tool_set_cursor(struct xwl_tablet_tool *tool);
+ void xwl_seat_set_cursor(struct xwl_seat *xwl_seat);
+ 
+ void xwl_seat_destroy(struct xwl_seat *xwl_seat);
+-- 
+2.13.5
+

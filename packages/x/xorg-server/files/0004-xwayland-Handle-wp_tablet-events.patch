@@ -1,0 +1,211 @@
+From 591b08b3311c5217969a8ceb3ed58b58fabc4891 Mon Sep 17 00:00:00 2001
+From: Jason Gerecke <killertofu@gmail.com>
+Date: Fri, 15 Jan 2016 17:01:38 -0800
+Subject: [PATCH xserver 04/12] xwayland: Handle wp_tablet events
+
+Creates and maintains the canonical trio of X devices (stylus, eraser,
+and cursor) to be shared by all connected tablets. A per-tablet trio
+could be created instead, but there are very few benefits to such a
+configuration since all tablets still ultimately share control of a
+single master pointer.
+
+The three X devices are modeled after those created by xf86-input-wacom
+but use a generic maximum X and Y that should be large enough to
+accurately represent values from even the largest currently-available
+tablets.
+
+Signed-off-by: Jason Gerecke <jason.gerecke@wacom.com>
+Signed-off-by: Carlos Garnacho <carlosg@gnome.org>
+Reviewed-by: Peter Hutterer <peter.hutterer@who-t.net>
+Signed-off-by: Peter Hutterer <peter.hutterer@who-t.net>
+Acked-by: Ping Cheng <ping.cheng@wacom.com>
+(cherry picked from commit 5812d1c28f4fb7b7de8b96a81415a21425561fd4)
+---
+ hw/xwayland/xwayland-input.c | 142 +++++++++++++++++++++++++++++++++++++++++++
+ hw/xwayland/xwayland.h       |   3 +
+ 2 files changed, 145 insertions(+)
+
+diff --git a/hw/xwayland/xwayland-input.c b/hw/xwayland/xwayland-input.c
+index d5d12933c..64655de5f 100644
+--- a/hw/xwayland/xwayland-input.c
++++ b/hw/xwayland/xwayland-input.c
+@@ -294,6 +294,75 @@ xwl_touch_proc(DeviceIntPtr device, int what)
+ #undef NTOUCHPOINTS
+ }
+ 
++static int
++xwl_tablet_proc(DeviceIntPtr device, int what)
++{
++#define NBUTTONS 9
++#define NAXES 6
++    Atom btn_labels[NBUTTONS] = { 0 };
++    Atom axes_labels[NAXES] = { 0 };
++    BYTE map[NBUTTONS + 1] = { 0 };
++    int i;
++
++    switch (what) {
++    case DEVICE_INIT:
++        device->public.on = FALSE;
++
++        for (i = 1; i <= NBUTTONS; i++)
++            map[i] = i;
++
++        axes_labels[0] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_X);
++        axes_labels[1] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_Y);
++        axes_labels[2] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_PRESSURE);
++        axes_labels[3] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_TILT_X);
++        axes_labels[4] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_TILT_Y);
++        axes_labels[5] = XIGetKnownProperty(AXIS_LABEL_PROP_ABS_WHEEL);
++
++        if (!InitValuatorClassDeviceStruct(device, NAXES, axes_labels,
++                                           GetMotionHistorySize(), Absolute))
++            return BadValue;
++
++        /* Valuators - match the xf86-input-wacom ranges */
++        InitValuatorAxisStruct(device, 0, axes_labels[0],
++                               0, 262143, 10000, 0, 10000, Absolute);
++        InitValuatorAxisStruct(device, 1, axes_labels[1],
++                               0, 262143, 10000, 0, 10000, Absolute);
++        /* pressure */
++        InitValuatorAxisStruct(device, 2, axes_labels[2],
++                               0, 65535, 1, 0, 1, Absolute);
++        /* tilt x */
++        InitValuatorAxisStruct(device, 3, axes_labels[3],
++                               -64, 63, 57, 0, 57, Absolute);
++        /* tilt y */
++        InitValuatorAxisStruct(device, 4, axes_labels[4],
++                               -64, 63, 57, 0, 57, Absolute);
++        /* abs wheel (airbrush) or rotation (artpen) */
++        InitValuatorAxisStruct(device, 5, axes_labels[5],
++                               -900, 899, 1, 0, 1, Absolute);
++
++        if (!InitPtrFeedbackClassDeviceStruct(device, xwl_pointer_control))
++            return BadValue;
++
++        if (!InitButtonClassDeviceStruct(device, NBUTTONS, btn_labels, map))
++            return BadValue;
++
++        return Success;
++
++    case DEVICE_ON:
++        device->public.on = TRUE;
++        return Success;
++
++    case DEVICE_OFF:
++    case DEVICE_CLOSE:
++        device->public.on = FALSE;
++        return Success;
++    }
++
++    return BadMatch;
++#undef NAXES
++#undef NBUTTONS
++}
++
+ static void
+ pointer_handle_enter(void *data, struct wl_pointer *pointer,
+                      uint32_t serial, struct wl_surface *surface,
+@@ -1189,6 +1258,77 @@ xwl_seat_destroy(struct xwl_seat *xwl_seat)
+     free(xwl_seat);
+ }
+ 
++static void
++tablet_handle_name(void *data, struct zwp_tablet_v2 *tablet, const char *name)
++{
++}
++
++static void
++tablet_handle_id(void *data, struct zwp_tablet_v2 *tablet, uint32_t vid,
++                  uint32_t pid)
++{
++}
++
++static void
++tablet_handle_path(void *data, struct zwp_tablet_v2 *tablet, const char *path)
++{
++}
++
++static void
++tablet_handle_done(void *data, struct zwp_tablet_v2 *tablet)
++{
++    struct xwl_tablet *xwl_tablet = data;
++    struct xwl_seat *xwl_seat = xwl_tablet->seat;
++
++    if (xwl_seat->stylus == NULL) {
++        xwl_seat->stylus = add_device(xwl_seat, "xwayland-stylus", xwl_tablet_proc);
++        ActivateDevice(xwl_seat->stylus, TRUE);
++    }
++    EnableDevice(xwl_seat->stylus, TRUE);
++
++    if (xwl_seat->eraser == NULL) {
++        xwl_seat->eraser = add_device(xwl_seat, "xwayland-eraser", xwl_tablet_proc);
++        ActivateDevice(xwl_seat->eraser, TRUE);
++    }
++    EnableDevice(xwl_seat->eraser, TRUE);
++
++    if (xwl_seat->puck == NULL) {
++        xwl_seat->puck = add_device(xwl_seat, "xwayland-cursor", xwl_tablet_proc);
++        ActivateDevice(xwl_seat->puck, TRUE);
++    }
++    EnableDevice(xwl_seat->puck, TRUE);
++}
++
++static void
++tablet_handle_removed(void *data, struct zwp_tablet_v2 *tablet)
++{
++    struct xwl_tablet *xwl_tablet = data;
++    struct xwl_seat *xwl_seat = xwl_tablet->seat;
++
++    xorg_list_del(&xwl_tablet->link);
++
++    /* The tablet is merely disabled, not removed. The next tablet
++       will re-use the same X devices */
++    if (xorg_list_is_empty(&xwl_seat->tablets)) {
++        if (xwl_seat->stylus)
++            DisableDevice(xwl_seat->stylus, TRUE);
++        if (xwl_seat->eraser)
++            DisableDevice(xwl_seat->eraser, TRUE);
++        if (xwl_seat->puck)
++            DisableDevice(xwl_seat->puck, TRUE);
++    }
++
++    zwp_tablet_v2_destroy(tablet);
++    free(xwl_tablet);
++}
++
++static const struct zwp_tablet_v2_listener tablet_listener = {
++    tablet_handle_name,
++    tablet_handle_id,
++    tablet_handle_path,
++    tablet_handle_done,
++    tablet_handle_removed
++};
+ 
+ static void
+ tablet_seat_handle_add_tablet(void *data, struct zwp_tablet_seat_v2 *tablet_seat,
+@@ -1207,6 +1347,8 @@ tablet_seat_handle_add_tablet(void *data, struct zwp_tablet_seat_v2 *tablet_seat
+     xwl_tablet->seat = xwl_seat;
+ 
+     xorg_list_add(&xwl_tablet->link, &xwl_seat->tablets);
++
++    zwp_tablet_v2_add_listener(tablet, &tablet_listener, xwl_tablet);
+ }
+ 
+ static void
+diff --git a/hw/xwayland/xwayland.h b/hw/xwayland/xwayland.h
+index a7f30b3c8..e7e62882b 100644
+--- a/hw/xwayland/xwayland.h
++++ b/hw/xwayland/xwayland.h
+@@ -132,6 +132,9 @@ struct xwl_seat {
+     DeviceIntPtr relative_pointer;
+     DeviceIntPtr keyboard;
+     DeviceIntPtr touch;
++    DeviceIntPtr stylus;
++    DeviceIntPtr eraser;
++    DeviceIntPtr puck;
+     struct xwl_screen *xwl_screen;
+     struct wl_seat *seat;
+     struct wl_pointer *wl_pointer;
+-- 
+2.13.5
+
