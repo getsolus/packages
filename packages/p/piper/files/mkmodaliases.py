@@ -27,11 +27,11 @@ def push_sect(blob, aliases):
 def main():
     aliases = []
 
-    for item in sorted(os.listdir("/usr/share/libratbag")):
+    for item in sorted(os.listdir("/usr/share/libratbag/devices")):
         if not item.endswith(".device"):
             continue
         kfile = GLib.KeyFile()
-        fpath = os.path.join("/usr/share/libratbag", item)
+        fpath = os.path.join("/usr/share/libratbag/devices", item)
         kfile.load_from_file(fpath, 0)
         sects = kfile.get_string_list("Device", "DeviceMatch")
         for blob in sects:
