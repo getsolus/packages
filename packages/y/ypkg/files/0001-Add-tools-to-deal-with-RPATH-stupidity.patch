@@ -1,0 +1,143 @@
+From e8734624d9aa6f7f7aad387e8058837147081dd0 Mon Sep 17 00:00:00 2001
+From: Peter O'Connor <peter@solus-project.com>
+Date: Sun, 8 Jul 2018 17:07:38 +1000
+Subject: [PATCH] Add tools to deal with RPATH stupidity
+
+Currently many packages are building with RPATHing the libraries due to
+packages using libtool having an incorrect ld detection (cause proper detection
+was broken on other distros). The introduction of `LT_SYS_LIBRARY_PATH`
+overrides the detection to ensure it doesn't add RPATH for `/usr/lib64`
+thinking it won't be found. The norm appears to be searching for directories
+in `/etc/ld.so.conf` which doesn't exist in Solus.
+
+The second tool to combat RPATH issues is adding the `runpath` optimize key.
+`--enable-new-dtags` changes linking to use `DT_RUNPATH` instead of `DT_RPATH`,
+the difference being that `RUNPATH` dirs are searched *after* the default
+library locations. This will alleviate issues where `RPATH` is difficult to
+remove and not break expected library loading order.
+
+Signed-off-by: Peter O'Connor <peter@solus-project.com>
+---
+ man/package.yml.5      |  5 ++++-
+ man/package.yml.5.html |  3 ++-
+ man/package.yml.5.md   |  1 +
+ ypkg2/scripts.py       |  1 +
+ ypkg2/ypkgcontext.py   | 20 +++++++++++++-------
+ 5 files changed, 21 insertions(+), 9 deletions(-)
+
+diff --git a/man/package.yml.5 b/man/package.yml.5
+index 1a15ab2..5e12297 100644
+--- a/man/package.yml.5
++++ b/man/package.yml.5
+@@ -1,7 +1,7 @@
+ .\" generated with Ronn/v0.7.3
+ .\" http://github.com/rtomayko/ronn/tree/0.7.3
+ .
+-.TH "PACKAGE\.YML" "5" "March 2018" "" ""
++.TH "PACKAGE\.YML" "5" "July 2018" "" ""
+ .
+ .SH "NAME"
+ \fBpackage\.yml\fR \- Solus package build format
+@@ -321,6 +321,9 @@ Valid keys are restricted to:
+ \fBunroll\-loops\fR: Enable \fB\-funroll\-loops\fR\. Use this sparingly, only when it provides benefit\.
+ .
+ .IP "\(bu" 4
++\fBrunpath\fR: Enable \fB\-Wl,\-\-enable\-new\-dtags\fR to make linker use RUNPATH\'s instead of RPATH\'s\.
++.
++.IP "\(bu" 4
+ \fBthin\-lto\fR: Enable Thin Link Time Optimization
+ .
+ .IP "\(bu" 4
+diff --git a/man/package.yml.5.html b/man/package.yml.5.html
+index aef5688..5c3bee7 100644
+--- a/man/package.yml.5.html
++++ b/man/package.yml.5.html
+@@ -370,6 +370,7 @@ additional functionality.</p>
+ <li> <code>no-bind-now</code>: Configure the package to disable certain flags, where RELRO is unsupported.</li>
+ <li> <code>no-symbolic</code>: Disable <code>-Wl,-Bsymbolic-functions</code> linker flag</li>
+ <li> <code>unroll-loops</code>: Enable <code>-funroll-loops</code>. Use this sparingly, only when it provides benefit.</li>
++<li> <code>runpath</code>: Enable <code>-Wl,--enable-new-dtags</code> to make linker use RUNPATH's instead of RPATH's.</li>
+ <li> <code>thin-lto</code>: Enable Thin Link Time Optimization</li>
+ <li> <code>lto</code>: Enable Link Time Optimization</li>
+ </ul>
+@@ -565,7 +566,7 @@ builddeps:
+ 
+   <ol class='man-decor man-foot man foot'>
+     <li class='tl'></li>
+-    <li class='tc'>March 2018</li>
++    <li class='tc'>July 2018</li>
+     <li class='tr'>package.yml(5)</li>
+   </ol>
+ 
+diff --git a/man/package.yml.5.md b/man/package.yml.5.md
+index bbd5ca3..f1af374 100644
+--- a/man/package.yml.5.md
++++ b/man/package.yml.5.md
+@@ -312,6 +312,7 @@ additional functionality.
+      * `no-bind-now`: Configure the package to disable certain flags, where RELRO is unsupported.
+      * `no-symbolic`: Disable `-Wl,-Bsymbolic-functions` linker flag
+      * `unroll-loops`: Enable `-funroll-loops`. Use this sparingly, only when it provides benefit.
++     * `runpath`: Enable `-Wl,--enable-new-dtags` to make linker use RUNPATH's instead of RPATH's.
+      * `thin-lto`: Enable Thin Link Time Optimization
+      * `lto`: Enable Link Time Optimization
+ 
+diff --git a/ypkg2/scripts.py b/ypkg2/scripts.py
+index 3c2b987..0e826c3 100644
+--- a/ypkg2/scripts.py
++++ b/ypkg2/scripts.py
+@@ -164,6 +164,7 @@ class ScriptGenerator:
+         self.define_export("PKG_ROOT_DIR", "%rootdir%")
+         # Build dir, which is one level up from the source directory.
+         self.define_export("PKG_BUILD_DIR", "%builddir%")
++        self.define_export("LT_SYS_LIBRARY_PATH", "%libdir%")
+         self.define_export("CC", self.context.build.cc)
+         self.define_export("CXX", self.context.build.cxx)
+         if self.context.build.ld_as_needed:
+diff --git a/ypkg2/ypkgcontext.py b/ypkg2/ypkgcontext.py
+index b68ad21..8e173e5 100644
+--- a/ypkg2/ypkgcontext.py
++++ b/ypkg2/ypkgcontext.py
+@@ -49,6 +49,9 @@ THIN_LTO_FLAGS = "-flto=thin -fuse-ld=gold"
+ # Allow unrolling loops
+ UNROLL_LOOPS_FLAGS = "-funroll-loops"
+ 
++# Make linker use RUNPATH instead of RPATH
++RUNPATH_FLAGS = "-Wl,--enable-new-dtags"
++
+ # GCC PGO flags
+ PGO_GEN_FLAGS = "-fprofile-generate -fprofile-dir=\"{}\" "
+ PGO_USE_FLAGS = "-fprofile-use -fprofile-dir=\"{}\" -fprofile-correction"
+@@ -113,6 +116,8 @@ class Flags:
+                 newflags.extend(LTO_FLAGS_GCC.split(" "))
+         elif opt_type == "unroll-loops":
+             newflags.extend(UNROLL_LOOPS_FLAGS.split(" "))
++        elif opt_type == "runpath":
++            newflags.extend(RUNPATH_FLAGS.split(" "))
+         elif opt_type == "no-bind-now":
+             newflags = Flags.filter_flags(f, BIND_NOW_FLAGS)
+         elif opt_type == "no-symbolic":
+@@ -351,13 +356,14 @@ class YpkgContext:
+     def init_optimize(self):
+         """ Handle optimize settings within the spec """
+         for opt in self.spec.pkg_optimize:
+-            self.build.cflags = Flags.optimize_flags(self.build.cflags,
+-                                                     opt,
+-                                                     self.spec.pkg_clang)
+-            self.build.cxxflags = Flags.optimize_flags(self.build.cxxflags,
+-                                                       opt,
+-                                                       self.spec.pkg_clang)
+-            if opt == "no-bind-now" or opt == "no-symbolic":
++            if opt != "runpath":
++                self.build.cflags = Flags.optimize_flags(self.build.cflags,
++                                                        opt,
++                                                        self.spec.pkg_clang)
++                self.build.cxxflags = Flags.optimize_flags(self.build.cxxflags,
++                                                        opt,
++                                                        self.spec.pkg_clang)
++            if opt == "no-bind-now" or opt == "no-symbolic" or opt == "runpath":
+                 self.build.ldflags = Flags.optimize_flags(self.build.ldflags,
+                                                           opt,
+                                                           self.spec.pkg_clang)
+-- 
+2.18.0
+
