@@ -1,0 +1,213 @@
+From 5a86ab8586f6db8012e5dba655ec1c8721c6bfe7 Mon Sep 17 00:00:00 2001
+From: Peter O'Connor <peter@solus-project.com>
+Date: Sun, 3 Jun 2018 16:06:19 +1000
+Subject: [PATCH] Exclude unwanted paths from initrd creation
+
+The goal is to keep initrd as small as possible. With the introduction of avx2
+libraries for core packages, this results in multiple versions of the same
+libraries installed into the inird.
+
+This patch has two parts:
+
+- remove lib32, libfakeroot and haswell from ldconfig lookup libdirs so the
+  included scripts don't lookup these paths for libraries to include.
+- force dracut_install to remove the avx2 directory paths from source and
+  destination files to ensure the universal library is included only instead of
+  including both versions. This also works around the current mechanism which
+  would be broken with the inclusion of AVX512 libraries in future.
+
+This does make an assumption that all haswell libraries will be in /usr/lib64
+which is safe given the lack of linking libraries in /lib64. If "/haswell/"
+isn't in the path, then the path is unaltered.
+
+Signed-off-by: Peter O'Connor <peter@solus-project.com>
+---
+ dracut-functions.sh      |  2 +-
+ install/dracut-install.c | 75 ++++++++++++++++++++++++++++------------
+ 2 files changed, 54 insertions(+), 23 deletions(-)
+
+diff --git a/dracut-functions.sh b/dracut-functions.sh
+index ccc4897..bd3f8df 100755
+--- a/dracut-functions.sh
++++ b/dracut-functions.sh
+@@ -52,7 +52,7 @@ find_binary() {
+ 
+ ldconfig_paths()
+ {
+-    ldconfig -pN 2>/dev/null | grep -E -v '/(lib|lib64|usr/lib|usr/lib64)/[^/]*$' | sed -n 's,.* => \(.*\)/.*,\1,p' | sort | uniq
++    ldconfig -pN 2>/dev/null | grep -E -v '/(libfakeroot|haswell|lib|lib32|lib64|usr/lib|usr/lib64)/[^/]*$' | sed -n 's,.* => \(.*\)/.*,\1,p' | sort | uniq
+ }
+ 
+ # Version comparision function.  Assumes Linux style version scheme.
+diff --git a/install/dracut-install.c b/install/dracut-install.c
+index 4b2ff89..5b40c79 100644
+--- a/install/dracut-install.c
++++ b/install/dracut-install.c
+@@ -596,8 +596,39 @@ static bool check_hashmap(Hashmap *hm, const char *item)
+         return false;
+ }
+ 
++const char *strip_avx_path(const char *fullpath, const char *avxpath)
++{
++        int length;
++        char *spntr = NULL;
++        char npath[120] = "/usr/lib64/";
++
++        // Get pointer to found path
++        char *qpntr = strstr(fullpath, avxpath);
++
++        if(qpntr)
++        {
++                // Remove leading path from the pointer
++                length = strlen(avxpath);
++                spntr = qpntr + length;
++
++                // Join path to /usr/lib64 (dracut default)
++                strcat(npath, spntr);
++                char *resultpath = strdup(npath);
++                return resultpath;
++        }
++        return fullpath;
++}
++
+ static int dracut_install(const char *src, const char *dst, bool isdir, bool resolvedeps, bool hashdst)
+ {
++        const char *srctmp = NULL, *srcn = NULL;
++        const char *dsttmp = NULL, *dstn = NULL;
++
++        srctmp = strip_avx_path(src, "/haswell/avx512_1/");
++        srcn = strip_avx_path(srctmp, "/haswell/");
++        dsttmp = strip_avx_path(dst, "/haswell/avx512_1/");
++        dstn = strip_avx_path(dsttmp, "/haswell/");
++
+         struct stat sb, db;
+         _cleanup_free_ char *fulldstpath = NULL;
+         _cleanup_free_ char *fulldstdir = NULL;
+@@ -605,35 +636,35 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+         bool src_exists = true;
+         char *i = NULL;
+ 
+-        log_debug("dracut_install('%s', '%s')", src, dst);
++        log_debug("dracut_install('%s', '%s')", srcn, dstn);
+ 
+-        if (check_hashmap(items_failed, src)) {
+-                log_debug("hash hit items_failed for '%s'", src);
++        if (check_hashmap(items_failed, srcn)) {
++                log_debug("hash hit items_failed for '%s'", srcn);
+                 return 1;
+         }
+ 
+-        if (hashdst && check_hashmap(items, dst)) {
+-                log_debug("hash hit items for '%s'", dst);
++        if (hashdst && check_hashmap(items, dstn)) {
++                log_debug("hash hit items for '%s'", dstn);
+                 return 0;
+         }
+ 
+-        if (lstat(src, &sb) < 0) {
++        if (lstat(srcn, &sb) < 0) {
+                 src_exists = false;
+                 if (!isdir) {
+-                        i = strdup(src);
++                        i = strdup(srcn);
+                         hashmap_put(items_failed, i, i);
+-                        /* src does not exist */
++                        /* srcn does not exist */
+                         return 1;
+                 }
+         }
+ 
+-        i = strdup(dst);
++        i = strdup(dstn);
+         if (!i)
+                 return -ENOMEM;
+ 
+         hashmap_put(items, i, i);
+ 
+-        ret = asprintf(&fulldstpath, "%s/%s", destrootdir, (dst[0]=='/' ? (dst+1) : dst));
++        ret = asprintf(&fulldstpath, "%s/%s", destrootdir, (dstn[0]=='/' ? (dstn+1) : dstn));
+         if (ret < 0) {
+                 log_error("Out of memory!");
+                 exit(EXIT_FAILURE);
+@@ -649,11 +680,11 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+         if (ret == 0) {
+                 if (resolvedeps && S_ISREG(sb.st_mode) && (sb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH))) {
+                         log_debug("'%s' already exists, but checking for any deps", fulldstpath);
+-                        ret = resolve_deps(src);
++                        ret = resolve_deps(srcn);
+                 } else
+                         log_debug("'%s' already exists", fulldstpath);
+ 
+-                /* dst does already exist */
++                /* dstn does already exist */
+                 return ret;
+         }
+ 
+@@ -672,7 +703,7 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+                 }
+                 /* create destination directory */
+                 log_debug("dest dir '%s' does not exist", fulldstdir);
+-                dname = strdup(dst);
++                dname = strdup(dstn);
+                 if (!dname)
+                         return 1;
+ 
+@@ -691,7 +722,7 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+                 return ret;
+         }
+ 
+-        /* ready to install src */
++        /* ready to install srcn */
+ 
+         if (S_ISDIR(sb.st_mode)) {
+                 log_info("mkdir '%s'", fulldstpath);
+@@ -702,7 +733,7 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+         if (S_ISLNK(sb.st_mode)) {
+                 _cleanup_free_ char *abspath = NULL;
+ 
+-                abspath = realpath(src, NULL);
++                abspath = realpath(srcn, NULL);
+ 
+                 if (abspath == NULL)
+                         return 1;
+@@ -731,7 +762,7 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+ 
+                 if (arg_hmac) {
+                         /* copy .hmac files also */
+-                        hmac_install(src, dst, NULL);
++                        hmac_install(srcn, dstn, NULL);
+                 }
+ 
+                 return 0;
+@@ -739,22 +770,22 @@ static int dracut_install(const char *src, const char *dst, bool isdir, bool res
+ 
+         if (sb.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) {
+                 if (resolvedeps)
+-                        ret += resolve_deps(src);
++                        ret += resolve_deps(srcn);
+                 if (arg_hmac) {
+                         /* copy .hmac files also */
+-                        hmac_install(src, dst, NULL);
++                        hmac_install(srcn, dstn, NULL);
+                 }
+         }
+ 
+         log_debug("dracut_install ret = %d", ret);
+-        log_info("cp '%s' '%s'", src, fulldstpath);
++        log_info("cp '%s' '%s'", srcn, fulldstpath);
+ 
+         if (arg_hostonly && !arg_module)
+-                mark_hostonly(dst);
++                mark_hostonly(dstn);
+ 
+-        ret += cp(src, fulldstpath);
++        ret += cp(srcn, fulldstpath);
+         if (ret == 0 && logfile_f)
+-                dracut_log_cp(src);
++                dracut_log_cp(srcn);
+ 
+         log_debug("dracut_install ret = %d", ret);
+ 
+-- 
+2.18.0
+
