@@ -1,7 +1,9 @@
 #!/bin/bash
 
+SCRIPTDIR=`dirname "$0"`
+
 ###STEP 1: Generate data for Phab
-cap=4500
+cap=5000
 r=1
 rm /tmp/phab-input.txt
 while [ $r -le $cap ]; do
@@ -190,7 +192,7 @@ for i in $NONPKGS $ARCHIVEDPKGS; do
     sed -i "/^${i}$/d" /tmp/Temp.txt
 done
 
-cat /tmp/Temp.txt > ~/git/Solus/common/packages
+cat /tmp/Temp.txt > ${SCRIPTDIR}/../packages
 
 # Cleanup
 rm /tmp/Temp.txt /tmp/phab-input.txt /tmp/phab-output.txt
