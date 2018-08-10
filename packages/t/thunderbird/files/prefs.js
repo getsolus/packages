@@ -1,4 +1,4 @@
-pref("intl.locale.matchOS",                 true);
+pref("intl.locale.requested",               "");
 pref("toolkit.networkmanager.disable",      false);
 pref("offline.autoDetect",                  true);
 pref("mail.shell.checkDefaultClient",       false);

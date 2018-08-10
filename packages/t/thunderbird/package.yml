@@ -1,9 +1,9 @@
 name       : thunderbird
-version    : 52.9.1
-release    : 57
+version    : '60.0'
+release    : 58
 source     :
-    - https://ftp.mozilla.org/pub/thunderbird/releases/52.9.1/source/thunderbird-52.9.1.source.tar.xz : 286fa71504e7184f3a41bcbdebf591bebe8e04dccbad1c93a47c6e72a7125c4d
-    - https://solus-project.com/sources/mozilla/thunderbird-52.9.1-langpacks.tar.xz : 0deaf55038c809040271ef3afe912560f6c5f5f0cb11ab26f7c62fa001cbb59c
+    - https://ftp.mozilla.org/pub/thunderbird/releases/60.0/source/thunderbird-60.0.source.tar.xz : bd7da88dcc03c448a4e975b5a1d3e9bf466ec9151b1059392bcdb50955a22056
+    - https://solus-project.com/sources/mozilla/thunderbird-60.0-langpacks.tar.xz : 1954c97e73b79c4c7460e8b7f76982c6810d786b262e5d1c9ffd0f7f6fe1357e
 license    : MPL-1.1
 component  : network.mail
 networking : yes
@@ -25,7 +25,6 @@ builddeps  :
     - pkgconfig(libjpeg)
     - pkgconfig(libpulse)
     - pkgconfig(libstartup-notification-1.0)
-    - pkgconfig(nspr)
     - pkgconfig(nss)
     - pkgconfig(pixman-1)
     - pkgconfig(x11)
@@ -33,47 +32,39 @@ builddeps  :
     - pkgconfig(xt)
     - autoconf213
     - cargo
+    - llvm-clang
     - yasm
-optimize   :
-    - no-symbolic  # Without this, the UI will be wrecked.
-build      : |
-    # Fedora patches
-    %patch -p1 < $pkgfiles/thunderbird-install-dir.patch
-    %patch -p1 < $pkgfiles/thunderbird-enable-addons.patch
-    # Ported from: http://pkgs.fedoraproject.org/cgit/rpms/thunderbird.git/tree/firefox-gcc-6.0.patch
-    %patch -p1 < $pkgfiles/gcc6.patch
-
-    %patch -p0 < $pkgfiles/dont-try-to-build-mp4parse-bindings.patch
-
+setup      : |
+    cp $pkgfiles/mozilla-api-key .
     cp $pkgfiles/config mozconfig
-    sed -i 's/##JOBCOUNT##/%JOBS%/g' mozconfig
+    sed -e 's|##JOBCOUNT##|%JOBS%|' -e 's|##LIBDIR##|%libdir%|' -i mozconfig
 
-    # GCC6 produces completely broken build
-    export CFLAGS="$CFLAGS -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-schedule-insns2"
-    export CXXFLAGS="$CXXFLAGS -fno-delete-null-pointer-checks -fno-lifetime-dse -fno-schedule-insns2"
+    %patch -p1 < $pkgfiles/thunderbird-enable-addons.patch
 
-    %make -f client.mk build
+    ./mach configure
+build      : |
+    ./mach build
+    ./mach buildsymbols
 install    : |
     # Install locales first
     langpackdir="$installdir/%libdir%/thunderbird/extensions"
-    install -D -d -m 00755 "${langpackdir}"
+    install -dm00755 "${langpackdir}"
     
     tar xf "${sources}/thunderbird-${version}-langpacks.tar.xz"
     for i in lang_pack/*.xpi; do
         lname="$(basename ${i})"
-        install -D -m 00644 "lang_pack/${lname}" "${langpackdir}"/$lname
+        install -m00644 "lang_pack/${lname}" "${langpackdir}/${lname}"
     done
     
-    %make_install -f client.mk install INSTALL_SDK= 
+    DESTDIR=$installdir ./mach install
+
+    install -dm00755 $installdir/usr/share/pixmaps
+    ln -s %libdir%/thunderbird/chrome/icons/default/default128.png $installdir/usr/share/pixmaps/thunderbird.png
+    for i in 16 22 24 32 48 128; do
+        install -dm00755 $installdir/usr/share/icons/hicolor/${i}x${i}
+        ln -s %libdir%/thunderbird/chrome/icons/default/default${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/thunderbird.png
+    done
     install -Dm00644 $pkgfiles/thunderbird.desktop $installdir/usr/share/applications/thunderbird.desktop
 
-    for i in 16 22 24 32 48 256; do
-        install -Dm00644 $installdir/usr/lib/thunderbird/chrome/icons/default/default${i}.png \
-            $installdir/usr/share/icons/hicolor/${i}x${i}/thunderbird.png
-    done
-
-    install -Dm00644 $installdir/usr/lib/thunderbird/chrome/icons/default/default256.png \
-        $installdir/usr/share/pixmaps/thunderbird.png
-
     # set up defaults
-    install -D -m 00644 $pkgfiles/prefs.js $installdir/%libdir%/thunderbird/defaults/pref/prefs.js
+    install -Dm00644 $pkgfiles/prefs.js $installdir/%libdir%/thunderbird/defaults/pref/prefs.js
