@@ -1,8 +1,9 @@
 name       : virtualbox
 version    : 5.2.18
-release    : 69
+release    : 70
 source     :
     - https://download.virtualbox.org/virtualbox/5.2.18/VirtualBox-5.2.18.tar.bz2 : ed0a7efd56c7f39fae79c7ec3321473da412ef0d7914457b66f42679d513efcf
+    - git|https://github.com/jwrdegoede/vboxsf.git : 9451f61e6787e95aa51e42b6381db6b059bc49da
 license    : GPL-2.0-only
 component  :
     - virt
@@ -89,10 +90,11 @@ patterns   :
         - /usr/lib/python2.7
         - /usr/lib64/virtualbox/sdk
     - current : /lib/modules/*.current/extra
-    - guest : /lib/modules/*.lts/misc
+    - guest :
+        - /lib/modules/*.lts/misc
+        - /sbin
     - guest-current : /lib/modules/*.current/misc
     - guest-common :
-        - /sbin
         - /usr/sbin
         - /usr/bin/VBoxClient
         - /usr/bin/VBoxControl
@@ -205,7 +207,6 @@ install    : |
     cp -r sdk/bindings/{VirtualBox.xidl,auth,xpcom} $installdir/%libdir%/virtualbox/sdk/bindings
 
     # systemd stuffs
-    #install -D -m 00644 $pkgfiles/virtualbox.modules $installdir/%libdir%/modules-load.d/virtualbox.conf
     install -D -m 00644 $pkgfiles/virtualbox.sysusers $installdir/%libdir%/sysusers.d/virtualbox.conf
     install -D -m 00644 $pkgfiles/60-vboxdrv.rules $installdir/%libdir%/udev/rules.d/60-vboxdrv.rules
     install -D -m 00755 $pkgfiles/vboxdrv.sh $installdir/%libdir%/virtualbox/vboxdrv.sh
@@ -225,12 +226,19 @@ install    : |
     install -D -m 00755 pam_vbox.so -t $installdir/lib/security
     install -D -m 00755 VBoxOGL*.so -t $installdir/%libdir%/vboxguestadditions
 
-    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
-        pushd ${kern}
-            install -d -m 00755 $installdir/lib/modules/${kern}/misc
-            install -m 00644 *.ko $installdir/lib/modules/${kern}/misc
-        popd
-    done
+    # lts kernel modules
+    pushd %kernel_version_lts%
+        install -d -m 00755 $installdir/lib/modules/%kernel_version_lts%/misc
+        install -m 00644 *.ko $installdir/lib/modules/%kernel_version_lts%/misc
+    popd
+
+    # build vboxsf module from git for current kernel until it is mainlined
+    cp -a $sources/vboxsf.git .
+    pushd vboxsf.git
+        sed "s|\`uname -r\`|%kernel_version_current%|" -i Makefile
+        %make
+        install -D -m 00644 vboxsf.ko $installdir/lib/modules/%kernel_version_current%/misc/vboxsf.ko
+    popd
 
     install -D -m 00644 $pkgfiles/vboxguest.modules $installdir/%libdir%/modules-load.d/vboxguest.conf
     install -D -m 00644 $pkgfiles/vboxguest.sysusers $installdir/%libdir%/sysusers.d/vboxguest.conf
