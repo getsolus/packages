@@ -72,26 +72,37 @@ func main() {
 
 		for _, dir := range dirNames { // For each directory
 			fmt.Printf("Attempting to update %s\n", dir)
-			repoGitConfigPath := filepath.Join(workDir, dir, ".git", "config") // Combine the paths to get to .git/config
+			repoPath := filepath.Join(workDir, dir)
+			repoGitConfigPath := filepath.Join(repoPath, ".git", "config") // Combine the paths to get to .git/config
 
-			fmt.Printf("Attempting to read %s\n", repoGitConfigPath)
-			configContents, configReadErr := ioutil.ReadFile(repoGitConfigPath)
+			repoFile, repoOpenErr := os.Open(repoPath) // Read the path so we can determine if it is a directory or file
 
-			if configReadErr == nil {
-				config := string(configContents[:]) // Convert to a string
-				config = strings.Replace(config, "http://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTP with HTTPS
-				config = strings.Replace(config, "https://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTPS
-				config = strings.Replace(config, "ssh://vcs@dev.solus-project.com/", "ssh://vcs@dev.getsol.us:2222/", -1)
+			if repoOpenErr == nil { // Did not fail to read
+				repoStats, repoStatErr := repoFile.Stat() // Get the stats
 
-				writeErr := ioutil.WriteFile(repoGitConfigPath, []byte(config), 0644)
+				if repoStatErr == nil {
+					if repoStats.IsDir() { // Is a directory
+						fmt.Printf("Attempting to read %s\n", repoGitConfigPath)
+						configContents, configReadErr := ioutil.ReadFile(repoGitConfigPath)
 
-				if writeErr != nil {
-					fmt.Println("Failed to write the config. Adding to a report at the end.")
-					failedRepoChanges = append(failedRepoChanges, dir) // Add this directory to our failed repo changes
-				}	
-			} else {
-				fmt.Println("Failed to read the file. Adding to a report to show at the end.")
-				failedRepoChanges = append(failedRepoChanges, dir) // Add this directory to our failed repo changes
+						if configReadErr == nil {
+							config := string(configContents[:]) // Convert to a string
+							config = strings.Replace(config, "http://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTP with HTTPS
+							config = strings.Replace(config, "https://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTPS
+							config = strings.Replace(config, "ssh://vcs@dev.solus-project.com/", "ssh://vcs@dev.getsol.us:2222/", -1)
+
+							writeErr := ioutil.WriteFile(repoGitConfigPath, []byte(config), 0644)
+
+							if writeErr != nil {
+								fmt.Println("Failed to write the config. Adding to a report at the end.")
+								failedRepoChanges = append(failedRepoChanges, dir) // Add this directory to our failed repo changes
+							}
+						} else {
+							fmt.Println("Failed to read the file. Adding to a report to show at the end.")
+							failedRepoChanges = append(failedRepoChanges, dir) // Add this directory to our failed repo changes
+						}
+					}
+				}
 			}
 		}
 
