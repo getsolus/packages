@@ -179,7 +179,7 @@ class Comparator:
                         spl = line.split("|")
                         com = spl[0]
                         words = "|".join(spl[1:])
-                        href = "https://dev.solus-project.com/source/%s/browse/master/;%s" % (key, com)
+                        href = "https://dev.getsol.us/source/%s/browse/master/;%s" % (key, com)
                         changes.write(" - [%s](%s)\n" % (words, href))
                     changes.write("\n\n")
 
