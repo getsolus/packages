@@ -81,6 +81,10 @@ for tempfile in ${TEMPDIR}/certs/*.tmp; do
   cp "${tempfile}" tempfile.cer
   perl ${CONVERTSCRIPT} > tempfile.crt
   keyhash=$(openssl x509 -noout -in tempfile.crt -hash)
+  if [ "$(file -b --mime-encoding tempfile.crt)" = "iso-8859-1" ]; then
+    iconv -f iso-8859-1 -t ascii//TRANSLIT tempfile.crt -o tempfile.crt
+    echo "Fix encoding for ${keyhash}"
+  fi
   mv tempfile.crt "certs/${keyhash}.pem"
   rm -f tempfile.cer "${tempfile}"
   echo "Created ${keyhash}.pem"
