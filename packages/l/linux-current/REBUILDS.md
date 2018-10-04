@@ -5,6 +5,7 @@ This is a list of things to rebuild after this, in the right order:
 * nvidia-304-glx-driver-current
 * nvidia-340-glx-driver-current
 * nvidia-glx-driver-current
+* open-vm-tools
 * razer-drivers-current
 * v4l2loopback-current
 * virtualbox-current 
