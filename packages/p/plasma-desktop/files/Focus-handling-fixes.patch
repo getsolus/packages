@@ -1,0 +1,118 @@
+From 480962c3ff93f9d3839a426b9ac053399d03e38d Mon Sep 17 00:00:00 2001
+From: Eike Hein <hein@kde.org>
+Date: Wed, 10 Oct 2018 23:41:36 +0900
+Subject: [PATCH] Focus handling fixes
+
+Summary:
+* Fix keyboard nav on the desktop again.
+BUG:399566
+* Fix initial focus properly.
+* Make sure when using arrows after starting Plasma or after clicking
+  into empty space, the first selected item is always 0, not 1 or
+  some random item based on previous activity.
+* Make sure the view is always scrolled up when (re)opening the popup.
+
+Reviewers: broulik
+
+Subscribers: plasma-devel
+
+Tags: #plasma
+
+Differential Revision: https://phabricator.kde.org/D16106
+---
+ .../desktop/package/contents/ui/FolderView.qml       |  6 ++++++
+ .../desktop/package/contents/ui/FolderViewLayer.qml  |  3 +++
+ containments/desktop/package/contents/ui/main.qml    | 12 ++++++++++--
+ 3 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/containments/desktop/package/contents/ui/FolderView.qml b/containments/desktop/package/contents/ui/FolderView.qml
+index ed0ba04f..4e9474e5 100644
+--- a/containments/desktop/package/contents/ui/FolderView.qml
++++ b/containments/desktop/package/contents/ui/FolderView.qml
+@@ -63,6 +63,10 @@ FocusScope {
+     property var dialog: null
+     property Item editor: null
+
++    function positionViewAtBeginning() {
++        gridView.positionViewAtBeginning();
++    }
++
+     function rename() {
+         if (gridView.currentIndex != -1) {
+             var renameAction = folderView.model.action("rename");
+@@ -279,6 +283,7 @@ FocusScope {
+
+             if (!hoveredItem || hoveredItem.blank) {
+                 if (!gridView.ctrlPressed) {
++                    gridView.currentIndex = -1;
+                     dir.clearSelection();
+                 }
+
+@@ -1106,6 +1111,7 @@ FocusScope {
+             onListingCompleted: {
+                 if (!gridView.model && plasmoid.expanded) {
+                     gridView.model = positioner;
++                    gridView.currentIndex = isPopup ? 0 : -1;
+                 }
+             }
+
+diff --git a/containments/desktop/package/contents/ui/FolderViewLayer.qml b/containments/desktop/package/contents/ui/FolderViewLayer.qml
+index e9fbb36d..ea925f86 100644
+--- a/containments/desktop/package/contents/ui/FolderViewLayer.qml
++++ b/containments/desktop/package/contents/ui/FolderViewLayer.qml
+@@ -42,6 +42,8 @@ FocusScope {
+
+     readonly property bool lockedByKiosk: !KAuthorized.authorize("editable_desktop_icons")
+
++    focus: true
++
+     function updateContextualActions() {
+         folderView.model.updateActions();
+
+@@ -170,6 +172,7 @@ FocusScope {
+                 if (plasmoid.expanded) {
+                     folderView.currentIndex = -1;
+                     folderView.forceActiveFocus();
++                    folderView.positionViewAtBeginning();
+                 } else {
+                     goHome();
+
+diff --git a/containments/desktop/package/contents/ui/main.qml b/containments/desktop/package/contents/ui/main.qml
+index 4b7965ee..b07ebaa9 100644
+--- a/containments/desktop/package/contents/ui/main.qml
++++ b/containments/desktop/package/contents/ui/main.qml
+@@ -259,6 +259,12 @@ FolderViewDropArea {
+         return length >= Qt.styleHints.startDragDistance;
+     }
+
++    onFocusChanged: {
++        if (focus && isFolder) {
++            folderViewLayer.item.forceActiveFocus();
++        }
++    }
++
+     onDragEnter: {
+         if (isContainment && plasmoid.immutable && !(isFolder && FolderTools.isFileDrag(event))) {
+             event.ignore();
+@@ -415,8 +421,9 @@ FolderViewDropArea {
+     MouseArea { // unfocus any plasmoid when clicking empty desktop area
+         anchors.fill: parent
+         onPressed: {
+-            root.forceActiveFocus()
++            root.forceActiveFocus();
+             mouse.accepted = false // Bug 351277
++
+             if (toolBox && toolBox.open) {
+                 toolBox.open = false;
+             }
+@@ -448,8 +455,9 @@ FolderViewDropArea {
+         Connections {
+             target: folderViewLayer.view
+
++            // `FolderViewDropArea` is not a FocusScope. We need to forward manually.
+             onPressed: {
+-                folderViewLayer.focus = true;
++                folderViewLayer.forceActiveFocus();
+             }
+         }
+     }
