@@ -11,7 +11,7 @@ while [ $r -le $cap ]; do
     r=$(( $r + 1 ))
 done
 xdg-open /tmp/phab-input.txt > /dev/null 2>&1 &
-xdg-open https://dev.solus-project.com/maniphest/task/edit/form/1/ > /dev/null 2>&1 &
+xdg-open https://dev.getsol.us/maniphest/task/edit/form/1/ > /dev/null 2>&1 &
 touch /tmp/phab-output.txt
 xdg-open /tmp/phab-output.txt > /dev/null 2>&1 &
 
@@ -45,6 +45,7 @@ ARCHIVEDPKGS="amdgpu-pro
 antiword
 arc-firefox-theme
 autotrace
+bigreqsproto
 captiva-icon-theme
 catalyst
 catalyst-glx-driver
@@ -52,11 +53,17 @@ ceti2-gtk-theme
 cgames
 cgoban1
 colordiff
+compositeproto
+corebird
 cscope
 D1671
+damageproto
 diorite
 dkms
+dmxproto
 docbook-xsl
+dri2proto
+dri3proto
 dropbear
 encodings
 esetroot
@@ -67,6 +74,7 @@ gtk3-engine-unico
 faac
 faenza-icon-theme
 fglrx
+fixesproto
 font-adobe-utopia-100dpi
 font-adobe-utopia-75dpi
 font-adobe-utopia-type1
@@ -100,6 +108,7 @@ font-sony-misc
 font-sun-misc
 font-winitzki-cyrillic
 font-xfree86-type1
+fontsproto
 foomatic-filters
 freeimge
 fs-uae-arcade
@@ -108,6 +117,7 @@ fwupdate
 geeqie
 gl-driver-switch
 glamor-egl
+glproto
 gnome-initial-setup
 gnome-js-common
 gnome-packagekit
@@ -118,9 +128,11 @@ gnucash
 grc
 greed
 iceauth
+inputproto
 jmtpfs
 journal
 i3lock-fancy
+kbproto
 kdevplatform
 kernel
 kicad-library
@@ -145,6 +157,7 @@ n1
 notification-daemon
 notify-osd
 diorite
+mysql-workbench
 nuvola-all-services
 nuvola-app-8tracks
 nuvola-app-amazon-cloud-player
@@ -171,22 +184,28 @@ perl-net-bdus
 plex-media-player
 plexhometheater
 pidgin-lwqq
+presentproto
 pycrypto
 python3-colorama
 python3-decorator
 python3-xlib
-python-django
 python-polkit
 python-pyflakes
 python-pylint
+qjson
 qt5-everywhere
 qt5-x11patterns
 qtcreator
 quirky
+randrproto
+recordproto
+renderproto
+resourceproto
 rethinkdb
 rfkill
 roboto-ttf
 sane
+scrnsaverproto
 sessreg
 setuptools_scm
 smproxy
@@ -194,11 +213,19 @@ software-update-icon
 solus-migration
 spidermonkey
 sylpheed
+videoproto
 wocky
 x11perf
+xcmiscproto
 xcmsdb
 xdriinfo
+xextproto
 xf86-input-cmt
+xf86bigfontproto
+xf86dgaproto
+xf86driproto
+xf86vidmodeproto
+xineramaproto
 xkbevd
 xkbutils
 xlsatoms
@@ -206,6 +233,7 @@ xlsclients
 xmlindent
 xorg-driver-video-modesetting
 xpr
+xproto
 xrefresh
 xterm
 xvinfo
