@@ -4,13 +4,10 @@ LINKS="https://releases.llvm.org/${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/cfe-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/compiler-rt-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/lld-${LLVMVERSION}.src.tar.xz
-    https://releases.llvm.org/${LLVMVERSION}/lldb-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/clang-tools-extra-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/libcxx-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/libcxxabi-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/openmp-${LLVMVERSION}.src.tar.xz
-    https://releases.llvm.org/${LLVMVERSION}/polly-${LLVMVERSION}.src.tar.xz
-    https://releases.llvm.org/${LLVMVERSION}/libunwind-${LLVMVERSION}.src.tar.xz"
 
 pushd /tmp
 wget ${LINKS} > /dev/null

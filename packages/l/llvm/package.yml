@@ -1,18 +1,15 @@
 name       : llvm
 version    : 7.0.0
-release    : 60
+release    : 61
 source     :
     - https://releases.llvm.org/7.0.0/llvm-7.0.0.src.tar.xz : 8bc1f844e6cbde1b652c19c1edebc1864456fd9c78b8c1bea038e51b363fe222
     - https://releases.llvm.org/7.0.0/cfe-7.0.0.src.tar.xz : 550212711c752697d2f82c648714a7221b1207fd9441543ff4aa9e3be45bba55
     - https://releases.llvm.org/7.0.0/compiler-rt-7.0.0.src.tar.xz : bdec7fe3cf2c85f55656c07dfb0bd93ae46f2b3dd8f33ff3ad6e7586f4c670d6
     - https://releases.llvm.org/7.0.0/lld-7.0.0.src.tar.xz : fbcf47c5e543f4cdac6bb9bbbc6327ff24217cd7eafc5571549ad6d237287f9c
-    - https://releases.llvm.org/7.0.0/lldb-7.0.0.src.tar.xz : 7ff6d8fee49977d25b3b69be7d22937b92592c7609cf283ed0dcf9e5cd80aa32
     - https://releases.llvm.org/7.0.0/clang-tools-extra-7.0.0.src.tar.xz : 937c5a8c8c43bc185e4805144744799e524059cac877a44d9063926cd7a19dbe
     - https://releases.llvm.org/7.0.0/libcxx-7.0.0.src.tar.xz : 9b342625ba2f4e65b52764ab2061e116c0337db2179c6bce7f9a0d70c52134f0
     - https://releases.llvm.org/7.0.0/libcxxabi-7.0.0.src.tar.xz : 9b45c759ff397512eae4d938ff82827b1bd7ccba49920777e5b5e460baeb245f
     - https://releases.llvm.org/7.0.0/openmp-7.0.0.src.tar.xz : 30662b632f5556c59ee9215c1309f61de50b3ea8e89dcc28ba9a9494bba238ff
-    - https://releases.llvm.org/7.0.0/polly-7.0.0.src.tar.xz : 919810d3249f4ae79d084746b9527367df18412f30fe039addbf941861c8534b
-    - https://releases.llvm.org/7.0.0/libunwind-7.0.0.src.tar.xz : 50aee87717421e70450f1e093c6cd9a27f2b111025e1e08d64d5ace36e338a9c
 homepage   : http://llvm.org/
 license    : NCSA
 summary    :
@@ -23,14 +20,15 @@ summary    :
 component  :
     - programming
     - clang : programming
-debug      : false
-libsplit   : false
-clang      : true
+debug      : no
+emul32     : yes
+libsplit   : no
+clang      : yes
 builddeps  :
+    - pkgconfig32(libelf)
     - pkgconfig32(libffi)
     - pkgconfig32(libxml-2.0)
     - pkgconfig(libedit)
-    - pkgconfig32(libelf)
     - doxygen
     - glibc-32bit-devel
     - libgcc-32bit
@@ -43,36 +41,20 @@ rundeps    :
         - python-six
     - clang-devel :
         - llvm-clang
-    - clang-32bit-devel :
-        - llvm-clang-32bit
-        - llvm-clang-devel
 description: |
     The LLVM package contains a collection of modular and reusable compiler and toolchain technologies. The Low Level Virtual Machine (LLVM) Core libraries provide a modern source and target-independent optimizer, along with code generation support for many popular CPUs (as well as some less common ones!). These libraries are built around a well specified code representation known as the LLVM intermediate representation ("LLVM IR").
 patterns   :
     - clang-devel :
         - /usr/include/clang*
         - /usr/include/lld*
-        - /usr/include/lldb*
         - /usr/include/openmp*
         - /usr/lib64/libclang*.a
         - /usr/lib64/liblldb*.a
-    - clang-32bit :
-        - /usr/lib32/libclang*.so*
-        - /usr/lib32/liblldb*.so*
-        - /usr/lib32/lib*omp*.so
-    - clang-32bit-devel :
-        - /usr/lib32/libclang*.a
-        - /usr/lib32/liblldb*.a
-        - /usr/lib32/clang
-        - /usr/lib32/cmake/
     - clang :
         - /usr/bin
         - /usr/libexec
         - /usr/lib64/clang
         - /usr/lib64/libclang*.so*
-        - /usr/lib64/liblldb*.so*
-        - /usr/lib64/lib*omp*.so
-        - /usr/lib64/python2.7/site-packages/lldb/
         - /usr/share/man/*/*clang*
         - /usr/share/man/*/*scan-build*
         - /usr/share/llvm/cmake
@@ -99,126 +81,78 @@ patterns   :
 replaces   :
     - clang : clang
     - clang-devel : clang-devel
+environment: |
+    # Decontaminate build environment
+    unset LDFLAGS
+    unset LD_AS_NEEDED
+
+    # Set build flags
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        export _LLVM_TRIPLE="%HOST%"
+        export _LLVM_ARCH="x86_64"
+        export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+    else
+        export _LLVM_TRIPLE="i686-pc-linux-gnu"
+        export _LLVM_ARCH="i686"
+        export _LLVM_FLAGS_FINAL="-march=i686 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+    fi
 setup      : |
     # llvm patches
     %patch -p1 < $pkgfiles/0001-llvm-Let-the-linker-find-the-correct-ffi-as-cmake-br.patch
     %patch -p1 < $pkgfiles/D44391-export-LLVM_DYLIB_COMPONENTS-in-LLVMConfig.cmake.patch
 
-    mkdir DISABLED_AREA
     mkdir -p tools
-    # Set up our tools (cfe)
-    tar xf $sources/cfe-${version}.src.tar.xz -C tools
-    mv tools/cfe-${version}.src tools/clang
 
-    # Set up tools
-    for tool in lld lldb polly; do
-        tar xf $sources/${tool}-${version}.src.tar.xz -C tools
-        mv tools/${tool}-${version}.src tools/${tool}
-    done
+    # Only want clang tooling for 64bit build
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        # Set up our tools (cfe)
+        tar xf $sources/cfe-${version}.src.tar.xz -C tools
+        mv tools/cfe-${version}.src tools/clang
 
-    # Now set up all of the projects (compiler-rt, libcxx, libcxxabi, libunwind, openmp)
+        # Set up compiler-rt
+        tar xf $sources/compiler-rt-${version}.src.tar.xz -C projects
+        mv projects/compiler-rt-${version}.src projects/compiler-rt
+
+        # Set up clang-tools-extra
+        tar xf $sources/clang-tools-extra-${version}*.src.tar.xz -C tools/clang/tools
+        mv tools/clang/tools/clang-tools-extra-${version}*.src tools/clang/tools/extra
+
+        # Set up lld
+        tar xf $sources/lld-${version}.src.tar.xz -C tools
+        mv tools/lld-${version}.src tools/lld
+
+        # Make openmp 64bit only for now
+        tar xf $sources/openmp-${version}.src.tar.xz -C projects
+        mv projects/openmp-${version}.src projects/openmp
+
+        # Patch cfe for Solus specific options
+        pushd tools/clang
+            %patch -p1 < $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
+            %patch -p1 < $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
+            %patch -p1 < $pkgfiles/0001-Enable-stack-protector-strong-by-default.patch
+        popd
+
+        # Pull lld in line with binutils linkers for consistency
+        pushd tools/lld
+            %patch -p1 < $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
+            %patch -p1 < $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
+        popd
+    fi
+
+    # Now set up all of the projects (libcxx, libcxxabi)
     mkdir -p projects
-    for project in compiler-rt libcxx libcxxabi libunwind openmp ; do
+    for project in libcxx libcxxabi ; do
         tar xf $sources/${project}-${version}.src.tar.xz -C projects
         mv projects/${project}-${version}.src projects/${project}
     done
-
-    # Patch cfe for Solus specific options
-    pushd tools/clang
-    %patch -p1 < $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
-    %patch -p1 < $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
-    %patch -p1 < $pkgfiles/0001-Enable-stack-protector-strong-by-default.patch
-    popd
-
-    pushd tools/lldb
-    %patch -p1 < $pkgfiles/0001-Fix-python-path-as-python-still-in-lib-directory.patch
-    popd
-
-    # Pull lld inline with binutils linkers for consistency
-    pushd tools/lld
-    %patch -p1 < $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
-    %patch -p1 < $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
-    popd
-
-    # Override compilers for this first run
-    export CC=clang
-    export CXX=clang++
-
-    # Configure
-    mkdir sol-stage1
-    mkdir sol-stage2
-
-    export _LLVM_TRIPLE="%HOST%"
-    export _LLVM_ARCH="x86_64"
-    export _LLVM_FLAGS_BOOTSTRAP="-march=x86-64 -mtune=generic -O2 -fstack-protector -pipe"
-    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
-
-    # Decontaminate environment for stage1 compilation
-    export CFLAGS="$_LLVM_FLAGS_BOOTSTRAP"
-    export CXXFLAGS="$_LLVM_FLAGS_BOOTSTRAP"
-    unset LDFLAGS
-    unset LD_AS_NEEDED
-
-    # Before we start, disable unused tools for stage1
-    mv tools/lldb DISABLED_AREA/lldb
-    mv tools/polly DISABLED_AREA/polly
-    mv projects/libcxx DISABLED_AREA/libcxx
-    mv projects/libcxxabi DISABLED_AREA/libcxxabi
-    mv projects/libunwind DISABLED_AREA/libunwind
-    mv projects/openmp DISABLED_AREA/openmp
-
-    # Start stage1 bootstrap
-    pushd sol-stage1
-    cmake -G Ninja .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
-        -DCLANG_DEFAULT_CXX_STDLIB="libc++" \
-        -DCLANG_DEFAULT_LINKER="lld" \
-        -DCLANG_DEFAULT_OBJCOPY="llvm-objcopy" \
-        -DSANITIZER_CXX_ABI="libc++" \
-        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
-        -DLLVM_BINUTILS_INCDIR=/usr/include \
-        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
-        -DLLVM_ENABLE_LLD=ON \
-        -DLLVM_ENABLE_RTTI=OFF \
-        -DLLVM_ENABLE_PIC=ON \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DLLVM_TARGETS_TO_BUILD="host" \
-        -DLLVM_ENABLE_CXX1Y=ON \
-        -DLLVM_OPTIMIZED_TABLEGEN=YES \
-        -DCOMPILER_RT_BUILD_SANITIZERS=OFF \
-        -DCOMPILER_RT_BUILD_XRAY=OFF \
-        -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
-        -DCOMPILER_RT_BUILD_PROFILE=OFF
-    LC_ALL=en_US.UTF-8 ninja %JOBS% -v
-    popd
-    #    -DCLANG_DEFAULT_RTLIB="compiler-rt" \
-
-    # Use our stage1 compiler
-    STAGE1DIR=$(realpath ./sol-stage1/bin)
-    # We need to preserve the symlink in the name during invocation
-    export CC="${STAGE1DIR}/clang"
-    export CXX="${STAGE1DIR}/clang++"
 
     # Set up stage2 final flags
     export CFLAGS="$_LLVM_FLAGS_FINAL"
     export CXXFLAGS="$_LLVM_FLAGS_FINAL"
 
-    # For stage2 2, re-enable them
-    mv DISABLED_AREA/lldb tools/.
-    mv DISABLED_AREA/polly tools/.
-    mv DISABLED_AREA/libcxx projects/.
-    mv DISABLED_AREA/libcxxabi projects/.
-    mv DISABLED_AREA/libunwind projects/.
-    mv DISABLED_AREA/openmp projects/.
-
-    # Set up clang-tools-extra
-    tar xf $sources/clang-tools-extra-${version}*.src.tar.xz -C tools/clang/tools
-    mv tools/clang/tools/clang-tools-extra-${version}*.src tools/clang/tools/extra
-
-    # Stage2 compile now
-    pushd sol-stage2
+    # Configure
+    mkdir solusBuildDir
+    pushd solusBuildDir
     cmake -G Ninja .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
@@ -240,108 +174,26 @@ setup      : |
         -DLLVM_ENABLE_RTTI=OFF \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
         -DLLVM_ENABLE_CXX1Y=ON \
-        -DPYTHON_EXECUTABLE=/usr/bin/python2 \
-        -DPYTHON_LIBRARY=/usr/lib/libpython2.7.so \
-        -DPYTHON_INCLUDE_DIR=/usr/include/python2.7 \
-        -DLLDB_USE_SYSTEM_SIX=ON \
         -DENABLE_LINKER_BUILD_ID=ON \
         -DLLVM_ENABLE_PIC=ON \
         -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
         -DLLVM_BUILD_LLVM_DYLIB=ON \
-        -DLLVM_LINK_LLVM_DYLIB=ON \
-        -DLLVM_OPTIMIZED_TABLEGEN=YES \
-        -DLIBCXX_USE_COMPILER_RT=ON \
-        -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-        -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
-        -DLIBCXXABI_USE_COMPILER_RT=ON \
-        -DLIBUNWIND_ENABLE_SHARED=OFF \
-        -DLIBUNWIND_USE_COMPILER_RT=ON \
-        -DLIBUNWIND_INCLUDE_DOCS=OFF \
-        -DLIBUNWIND_INSTALL_LIBRARY=ON
+        -DLLVM_LINK_LLVM_DYLIB=ON
+    popd
 build      : |
-    # Build it
-    unset LD_AS_NEEDED
-    LC_ALL=en_US.UTF-8 ninja %JOBS% -C sol-stage2 -v
-
-    # Now build 32-bit llvm bits
-    mkdir sol-stage2-emul32
-    export _LLVM_TRIPLE="i686-pc-linux-gnu"
-    export _LLVM_ARCH="i686"
-    export _LLVM_FLAGS_FINAL="-march=i686 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
-
-    # Before we start emul32, disable lldb/lld
-    mv tools/lld DISABLED_AREA/lld
-    mv tools/lldb DISABLED_AREA/lldb
-
-    STAGE1DIR=$(realpath ./sol-stage1/bin)
-    pushd sol-stage2-emul32
-    # We need to preserve the symlink in the name during invocation
-    export CC="${STAGE1DIR}/clang -m32"
-    export CXX="${STAGE1DIR}/clang++ -m32"
-    export PKG_CONFIG_PATH=/usr/lib32/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig
-
-    export CFLAGS="$_LLVM_FLAGS_FINAL"
-    export CXXFLAGS="$_LLVM_FLAGS_FINAL"
-    # LLVM can't differentiate between 32/64bit configs yet so mangle the non-installed stage1 build
-    mv ${STAGE1DIR}/../lib/clang/7.0.0/lib/linux/libclang_rt.builtins-i386.a ${STAGE1DIR}/../lib/clang/7.0.0/lib/linux/libclang_rt.builtins-x86_64.a
-    unset LDFLAGS
-    unset LD_AS_NEEDED
-
-    # Even though we want to disable stuff, the libLLVM-$VERSION.so won't be installed..
-    cmake -G Ninja .. \
-        -DLLVM_BUILD_DOCS=OFF \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DLLVM_LIBDIR_SUFFIX=32 \
-        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
-        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
-        -DLLVM_ENABLE_FFI=ON \
-        -DLLVM_ENABLE_ZLIB=ON \
-        -DLLVM_ENABLE_RTTI=OFF \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DLLVM_ENABLE_CXX1Y=ON \
-        -DENABLE_LINKER_BUILD_ID=ON \
-        -DLLVM_ENABLE_PIC=ON \
-        -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
-        -DLLVM_BUILD_LLVM_DYLIB=ON \
-        -DLLVM_LINK_LLVM_DYLIB=ON \
-        -DLLVM_OPTIMIZED_TABLEGEN=YES \
-        -DLIBCXX_USE_COMPILER_RT=ON \
-        -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
-        -DLIBCXXABI_USE_COMPILER_RT=ON \
-        -DLIBCXXABI_USE_LLVM_UNWINDER=ON \
-        -DLIBUNWIND_ENABLE_SHARED=OFF \
-        -DLIBUNWIND_USE_COMPILER_RT=ON \
-        -DLIBUNWIND_INCLUDE_DOCS=OFF \
-        -DLIBUNWIND_INSTALL_LIBRARY=ON
-    LC_ALL=en_US.UTF-8 ninja %JOBS% -v
+    %ninja_build -v
 install    : |
-    # Install 32-bit
-    DESTDIR="%installroot%" LC_ALL=en_US.UTF-8 ninja %JOBS% -C sol-stage2-emul32 install -v
-    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-32.h
+    %ninja_install -v
+    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-%LIBSUFFIX%.h
 
-    # Restore directories for stage2 emul32
-    mv DISABLED_AREA/lld tools/.
-    mv DISABLED_AREA/lldb tools/.
+    # Only execute for 64bit build
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
+        ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
 
-    # Allow stage2 native to overwrite any stage2-emul32 files
-    DESTDIR="%installroot%" LC_ALL=en_US.UTF-8 ninja %JOBS% -C sol-stage2 install -v
-    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-64.h
+        # Do NOT include libgomp*, it will conflict with libgomp
+        rm $installdir/%libdir%/libgomp.*
 
-    # Finally add our compatibility header
-    install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
-
-    install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
-    ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
-
-    # Relocate lldb python's custom readline.so module which links agaisnt libedit
-    mv "$installdir"/usr/lib64/python2.7/site-packages/{,lldb/}readline.so
-    sed -i '2isys.path.insert(1, "/usr/lib64/python2.7/site-packages/lldb")' \
-    "$installdir/usr/lib64/python2.7/site-packages/lldb/embedded_interpreter.py"
-
-    %python_compile
-
-    # Do NOT include libgomp*, it will conflict with libgomp
-    rm $installdir/usr/lib{32,64}/libgomp.*
+        # Finally add our compatibility header
+        install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
+    fi
