@@ -1,0 +1,78 @@
+From 867f53608d3a5145e3380e8c1686f40be8f06c31 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Stefan=20Br=C3=BCns?= <stefan.bruens@rwth-aachen.de>
+Date: Thu, 4 Oct 2018 00:27:54 +0200
+Subject: [UDisks2] Power down drive on remove if supported
+
+Summary:
+It is preferable to to do a controlled shutdown prior to disconnecting
+and eventually cutting of power to the drive.
+
+BUG: 270808
+Closes T9730
+
+Test Plan:
+Connect external drive, select "Savely Remove" from context menu
+1. if drive has only on partition, fs is unmounted and drive spins down
+2. if drive has multiple partitions:
+ a) first (not last) partition can be unmounted and remounted
+ b) "Remove"ing last partition spins down drive
+
+Reviewers: #frameworks, ngraham, broulik
+
+Reviewed By: ngraham, broulik
+
+Subscribers: broulik, kde-frameworks-devel, ngraham
+
+Tags: #frameworks
+
+Maniphest Tasks: T9730
+
+Differential Revision: https://phabricator.kde.org/D15932
+---
+ src/solid/devices/backends/udisks2/udisksstorageaccess.cpp | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp b/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
+index 348b9c7..55cfc15 100644
+--- a/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
++++ b/src/solid/devices/backends/udisks2/udisksstorageaccess.cpp
+@@ -173,6 +173,7 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
+             checkAccessibility();
+         }
+     } else if (m_teardownInProgress) { // FIXME
++        qCDebug(UDISKS2) << "Successfully unmounted " << m_device->udi();
+         if (isLuksDevice() && !ctPath.isEmpty() && ctPath != "/") { // unlocked device, lock it
+             callCryptoTeardown();
+         } else if (!ctPath.isEmpty() && ctPath != "/") {
+@@ -182,13 +183,20 @@ void StorageAccess::slotDBusReply(const QDBusMessage & /*reply*/)
+             QString drivePath = m_device->drivePath();
+             if (!drivePath.isEmpty() || drivePath != "/") {
+                 Device drive(drivePath);
++                QDBusConnection c = QDBusConnection::systemBus();
++
+                 if (drive.prop("Ejectable").toBool() &&
+                         drive.prop("MediaAvailable").toBool() &&
+                         !m_device->isOpticalDisc()) { // optical drives have their Eject method
+-                    QDBusConnection c = QDBusConnection::systemBus();
+                     QDBusMessage msg = QDBusMessage::createMethodCall(UD2_DBUS_SERVICE, drivePath, UD2_DBUS_INTERFACE_DRIVE, "Eject");
+                     msg << QVariantMap();   // options, unused now
+                     c.call(msg, QDBus::NoBlock);
++                } else if (drive.prop("CanPowerOff").toBool() &&
++                        !m_device->isOpticalDisc()) { // avoid disconnecting optical drives from the bus
++                    qCDebug(UDISKS2) << "Drive can power off:" << drivePath;
++                    QDBusMessage msg = QDBusMessage::createMethodCall(UD2_DBUS_SERVICE, drivePath, UD2_DBUS_INTERFACE_DRIVE, "PowerOff");
++                    msg << QVariantMap();   // options, unused now
++                    c.call(msg, QDBus::NoBlock);
+                 }
+             }
+
+@@ -285,6 +293,7 @@ bool StorageAccess::unmount()
+
+     msg << QVariantMap();   // options, unused now
+
++    qCDebug(UDISKS2) << "Initiating unmount of " << path;
+     return c.callWithCallback(msg, this,
+                               SLOT(slotDBusReply(QDBusMessage)),
+                               SLOT(slotDBusError(QDBusError)),
+--
+cgit v0.11.2
