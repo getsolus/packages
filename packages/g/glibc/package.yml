@@ -1,17 +1,17 @@
 name       : glibc
 version    : '2.27'
-release    : 52
+release    : 53
 source     :
-    - git|git://sourceware.org/git/glibc.git : 0cd4a5e87f6885a2f15fe8e7eb7378d010cdb606
+    - git|git://sourceware.org/git/glibc.git : 5bdb6897fcb0d7d7101391534e229a65ba56338b
 license    : GPL-3.0-or-later
 summary    : This package contains the GNU C libraries and header files
 description: |
     This package contains the GNU C libraries and header files.  The GNU C library was written originally by Roland McGrath, and is currently maintained by Ulrich Drepper.  Some parts of the library were contributed or worked on by other people. You'll need this package to compile programs.
-clang      : no
 libsplit   : no
 devel      : yes
 autodep    : no
 emul32     : yes
+avx2       : yes
 component  : system.base
 patterns   :
     - 32bit : /lib/ld-linux.so.2
@@ -40,6 +40,9 @@ setup      : |
     # https://sourceware.org/bugzilla/show_bug.cgi?id=15533
     %patch -p1 < $pkgfiles/perf/fix-ld-audit-performance.patch
 
+    # locale data only exists in /usr/lib64 so hardcode it
+    %patch -p1 < $pkgfiles/0001-Hardcode-usr-lib64-path-for-locale.patch
+
     mkdir glibc-build
     pushd glibc-build
 
@@ -49,14 +52,22 @@ setup      : |
         export CC="gcc -m32"
         export CXX="g++ -m32"
         export BUILDHOST="i686-pc-linux-gnu"
-        export CFLAGS="-O3 -g2 -mtune=generic -march=i686 -mstackrealign"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -mprefer-avx128"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=i686 -mstackrealign"
+        fi
     else
         mkdir b64
         pushd b64
         export CC="gcc"
         export CXX="g++"
         export BUILDHOST="x86_64-solus-linux"
-        export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -mprefer-avx128"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64"
+        fi
     fi
     export LDFLAGS="-Wl,-z,max-page-size=0x1000"
     echo "slibdir=%libdir%" >> configparms
@@ -100,12 +111,20 @@ build      : |
         pushd b32
         export CC="gcc -m32"
         export CXX="g++ -m32"
-        export CFLAGS="-O3 -g2 mtune=generic -march=i686 -Wl,-z,max-page-size=0x1000"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 mtune=haswell -march=haswell -mprefer-avx128 -Wl,-z,max-page-size=0x1000"
+        else
+            export CFLAGS="-O3 -g2 mtune=generic -march=i686 -Wl,-z,max-page-size=0x1000"
+        fi
     else
         pushd b64
         export CC="gcc"
         export CXX="g++"
-        export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64 -Wl,-z,max-page-size=0x1000"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -mprefer-avx128 -Wl,-z,max-page-size=0x1000"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64 -Wl,-z,max-page-size=0x1000"
+        fi
     fi
     export LDFLAGS="-Wl,-z,max-page-size=0x1000"
     %make
@@ -118,42 +137,49 @@ install    : |
     if [[ ! -z "${EMUL32BUILD}" ]]; then
         pushd b32
         %make_install install_root=$installdir
-        # Need this guy for 32-bit too, otherwise Steam blows a gasket
-        %make_install install_root=$installdir localedata/install-locales
 
-        mkdir $installdir/lib
-        # Interestingly enough, /lib == /lib64 on Solus.
-        ln -sv /usr/lib32/ld-linux.so.2 $installdir/lib/ld-linux.so.2
+        if [[ -z "${AVX2BUILD}" ]]; then
+            install -dm00755 $installdir/lib
+            # Interestingly enough, /lib == /lib64 on Solus.
+            ln -sv /usr/lib32/ld-linux.so.2 $installdir/lib/ld-linux.so.2
+        fi
     else
         pushd b64
         %make_install install_root=$installdir
-        %make_install install_root=$installdir localedata/install-locales
 
-        if [[ -f $installdir/etc/ld.so.cache ]]; then
-            rm -v $installdir/etc/ld.so.cache
+        if [[ -z "${AVX2BUILD}" ]]; then
+            %make_install install_root=$installdir localedata/install-locales
+
+            if [[ -f $installdir/etc/ld.so.cache ]]; then
+                rm -v $installdir/etc/ld.so.cache
+            fi
+
+            if [[ -f $installdir/etc/localetime ]]; then
+                rm -v $installdir/etc/localtime
+            fi
+
+            install -dm00755 $installdir/var/run/nscd
+            install -dm00755 $installdir/var/db/nscd
+
+            if [[ -d $installdir/usr/share/zoneinfo ]]; then
+                rm -rvf $installdir/usr/share/zoneinfo
+            fi
+
+            if [[ -f $installdir/usr/sbin/zdump ]]; then
+                rm -v $installdir/usr/sbin/zdump
+            fi
+
+            install -dm00755 $installdir/lib64
+            ln -sv /usr/lib64/ld-linux-x86-64.so.2 $installdir/lib64/ld-linux-x86-64.so.2
+
+            # Install stateless ld.so.conf
+            install -Dm00644 $pkgfiles/ld.so.conf $installdir/usr/share/defaults/etc/ld.so.conf
         fi
-
-        if [[ -f $installdir/etc/localetime ]]; then
-            rm -v $installdir/etc/localtime
-        fi
-
-        install -d -D -m 00755 $installdir/var/run/nscd
-        install -d -D -m 00755 $installdir/var/db/nscd
-
-        if [[ -d $installdir/usr/share/zoneinfo ]]; then
-            rm -rvf $installdir/usr/share/zoneinfo
-        fi
-
-        if [[ -f $installdir/usr/sbin/zdump ]]; then
-            rm -v $installdir/usr/sbin/zdump
-        fi
-
-        mkdir $installdir/lib64
-        ln -sv /usr/lib64/ld-linux-x86-64.so.2 $installdir/lib64/ld-linux-x86-64.so.2
-
-        # Install stateless ld.so.conf
-        install -D -m 00644 $pkgfiles/ld.so.conf $installdir/usr/share/defaults/etc/ld.so.conf
     fi
 
-    # libbsd compat link
-    ln -sv libbsd-compat.a $installdir/%libdir%/libbsd.a
+    # Clear out uneeded haswell files
+    if [[ ! -z "${AVX2BUILD}" ]]; then
+        for nuke in `ls $installdir/%libdir% | grep -v -E "libm.so.6|libm-$version.so|libc.so.6|libc-$version.so|libmvec|libcrypt"`; do
+            rm -rf $installdir/%libdir%/${nuke}
+        done
+    fi
