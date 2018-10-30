@@ -1,23 +1,82 @@
 name       : tigervnc
 version    : 1.9.0
-release    : 3
+release    : 4
 source     :
     - https://github.com/TigerVNC/tigervnc/archive/v1.9.0.tar.gz : f15ced8500ec56356c3bf271f52e58ed83729118361c7103eab64a618441f740
-license    : GPL-2.0-or-later
+    - https://www.x.org/releases/individual/xserver/xorg-server-1.20.3.tar.bz2 : 1b3ce466c12cacbe2252b3ad5b0ed561972eef9d09e75900d65fb1e21f9201de
+license    : 
+    - GPL-2.0-or-later
+    - MIT
 component  : network.util
-summary    : Virtual Network Computing (VNC) is a remote display system which allows you to view and interact with a virtual desktop environment that is running on another computer on the network.
+summary    : TigerVNC is a high-performance implementation of the VNC protocol, which allows you to control/view desktops remotely over the internet.
 description: |
     Virtual Network Computing (VNC) is a remote display system which allows you to view and interact with a virtual desktop environment that is running on another computer on the network.
 builddeps  :
+    - pkgconfig(fontutil)
     - pkgconfig(libturbojpeg)
-    - pkgconfig(x11-xcb)
+    - pkgconfig(xfont2)
+    - pkgconfig(xkbfile)
+    - pkgconfig(xorg-macros)
     - pkgconfig(xorg-server)
+    - pkgconfig(xproto)
     - pkgconfig(xrender)
-    - extra-cmake-modules
+    - pkgconfig(xshmfence)     
+    - pkgconfig(xtrans)
     - fltk-devel
+environment: |
+    export CPATH="/usr/include/libdrm"
 setup      : |
-    %cmake
-build      : |
-    %make
+    #extract xorg 
+    for i in $sources/xorg-server-*.tar.bz2; do
+            tar xf ${i} -C $workdir/unix/xserver/
+    done
+    
+    #patch xorg
+    cp -r $workdir/unix/xserver/xorg-server-*/* $workdir/unix/xserver
+    %patch --directory=$workdir/unix/xserver -p1 < $workdir/unix/xserver120.patch
+    
+    #deleted old xorg-server folder
+    rm -r $workdir/unix/xserver/xorg-server-*
+
+    #setup tigervnc-server
+    pushd $workdir/unix/xserver
+    autoreconf -fiv
+    %configure --prefix=%PREFIX% \
+        --with-pic \
+        --without-dtrace \
+        --enable-dri2 \
+        --enable-dri3 \
+        --enable-glx \
+        --disable-dri \
+        --disable-static \
+        --disable-xorg \
+        --disable-xnest \
+        --disable-xvfb \
+        --disable-dmx \
+        --disable-xwin \
+        --disable-xephyr \
+        --disable-kdrive \
+        --disable-xwayland \
+        --disable-selective-werror \
+        --disable-config-hal \
+        --disable-config-udev \
+        --disable-unit-tests \
+        --disable-devel-docs 
+     popd   
+    #setup tigervnc
+    %cmake -G "Unix Makefiles" \
+    -DCMAKE_INSTALL_PREFIX=/usr 
+build      : |  
+    #build tigervnc
+    %make -j1
+    
+    #build tigervnc-server
+    %make -C unix/xserver -j1
 install    : |
+    #install tigervnc
     %make_install
+    
+    #install tigervnc-server 
+    %make_install -C unix/xserver
+    rm -rf $installdir/usr/lib64/xorg/protocol.txt
+    rm -rf $installdir/usr/share/man/man1/Xserver.1
