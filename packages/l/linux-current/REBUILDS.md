@@ -1,13 +1,13 @@
 This is a list of things to rebuild after this, in the right order:
 
-* bbswitch-current
-* broadcom-sta-current
-* nvidia-304-glx-driver-current
-* nvidia-340-glx-driver-current
-* nvidia-glx-driver-current
+* bbswitch
+* broadcom-sta
+* nvidia-340-glx-driver
+* nvidia-390-glx-driver
+* nvidia-glx-driver
+* nvidia-beta-driver
 * open-vm-tools
-* razer-drivers-current
-* v4l2loopback-current
-* virtualbox-current 
-* virtualbox-guest-current
-* vhba-module-current
+* razer-drivers
+* v4l2loopback
+* virtualbox
+* vhba-module
