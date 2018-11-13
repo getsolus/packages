@@ -7,7 +7,7 @@ import datetime
 import time
 
 DAY = 86400  # 86400 seconds in a day
-PERIOD = 31 * DAY  # 31 days is old
+PERIOD = 120 * DAY  # 31 days is old
 
 class HistoryTeacher:
 
@@ -41,7 +41,10 @@ class HistoryTeacher:
         try:
             whence = datetime.datetime(*time.strptime(shittyInput, "%Y-%m-%d")[0:6])
         except:
-            whence = datetime.datetime(*time.strptime(shittyInput, "%m-%d-%Y")[0:6])
+            try:
+                whence = datetime.datetime(*time.strptime(shittyInput, "%d-%m-%Y")[0:6])
+            except:
+                whence = datetime.datetime(*time.strptime(shittyInput, "%m-%d-%Y")[0:6])
         return time.mktime(whence.timetuple())
 
     def dumpDelinquints(self):

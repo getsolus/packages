@@ -341,7 +341,7 @@ def configure_live_account():
     run_chroot(cmd)
 
     # Set an empty password for live user
-    run_chroot("/bin/bash --login -c \"%s\"" % ("echo 'live:' |chpasswd"))
+    run_chroot("/bin/bash --login -c \"%s\"" % ("echo 'live:U6aMy0wojraho' | chpasswd -e"))
 
     # Finally, add the user to the right groups
     cmd = "usermod -a -G %s %s" % ("sudo,audio,video,cdrom,lpadmin,dialout,fuse", "live")
