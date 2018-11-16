@@ -1,8 +1,14 @@
 #!/bin/bash
 
-VERSION="60.3.0"
+VERSION="60.3.1"
 ARCH="x86_64"
 URL="https://ftp.mozilla.org/pub/thunderbird/releases/${VERSION}/linux-${ARCH}/xpi/"
+
+# Ensure we don't have a previous run living here
+if [[ -e lang_pack ]]; then
+    rm -rvf lang_pack
+fi
+
 mkdir lang_pack
 
 pushd lang_pack
