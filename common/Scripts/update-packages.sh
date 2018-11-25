@@ -38,7 +38,10 @@ solus-site-styling
 solus-webplatform-js
 mirror-budgie-desktop
 solus-site-backend
-solus-image-plasma"
+solus-image-plasma
+budgie-desktop-branding-src
+gnome-desktop-branding-src
+plasma-desktop-branding-src"
 
 # These packages are not used within Solus
 ARCHIVEDPKGS="amdgpu-pro
@@ -132,6 +135,7 @@ inputproto
 jmtpfs
 journal
 i3lock-fancy
+itch
 kbproto
 kdevplatform
 kernel
@@ -142,6 +146,7 @@ lapack
 libcutl
 libgames-support
 libirclient
+libqtelegram-ae
 libsdl
 libuuid
 libwnck-1
@@ -176,6 +181,7 @@ nuvola-app-spotify
 nuvola-app-tunein
 nuvola-app-yandex-music
 nuvolaplayer
+nvidia-304-glx-driver
 nxcomp
 nxproxy
 otclient
@@ -213,6 +219,8 @@ software-update-icon
 solus-migration
 spidermonkey
 sylpheed
+tarsnap
+telegramqml
 videoproto
 wocky
 x11perf
