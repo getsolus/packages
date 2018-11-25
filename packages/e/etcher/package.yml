@@ -1,8 +1,9 @@
 name       : etcher
-version    : 1.4.5
+version    : 1.4.8
 release    : 8
 source     :
-    - git|https://github.com/resin-io/etcher.git : v1.4.5
+    - https://github.com/balena-io/etcher/archive/v1.4.8.tar.gz : e652d2c04af6957a3e545c85de20a940bb2620239d72ee3be851ead777ac73e2
+    - git|https://github.com/balena-io/scripts.git : 6077afeee039b2ff9eab5e217ea35c79428881bc
 license    : Apache-2.0
 component  : system.utils
 summary    : Flash OS images to SD cards & USB drives, safely and easily
@@ -16,23 +17,46 @@ builddeps  :
     - pkgconfig(xi)
     - pkgconfig(xscrnsaver)
     - pkgconfig(xtst)
+    - git
     - jq
     - nodejs
 setup      : |
-    %patch -p1 < $pkgfiles/0001-Disable-update-checking.patch
+    cp -a $sources/scripts.git/. scripts/resin
 
+    # Don't blame me for this
+    git init
+    git add .
+    git commit -m"Dummy commit to make the install script happy"
+
+    %patch -p1 < $pkgfiles/0001-Disable-update-checking.patch
+build      : |
     npm config set unsafe-perm=true
     %make electron-develop
-build      : |
-    export RELEASE_TYPE=production
     %make webpack
-    %make package-electron
-install    : |
-    install -Dm00644 $workdir/assets/icon.png $installdir/usr/share/pixmaps/etcher.png
-    install -Dm00644 $pkgfiles/etcher.desktop $installdir/usr/share/applications/etcher.desktop
 
-    install -dm00755 $installdir/usr/share/etcher/
-    cp -R $workdir/dist/linux-unpacked/* $installdir/usr/share/etcher/
+    # Workaround something that is wrong
+    pushd node_modules/7zip-bin
+        npm install
+    popd
+
+    # For Linux there are 3 options deb, rpm or appimage
+    export PATH=$PATH:$PWD/node_modules/.bin/
+    ./scripts/resin/electron/electron-builder.sh \
+        -b $PWD \
+        -r x64 \
+        -t deb \
+        -v production \
+        -n dist/.tmp/npm \
+        -w dist/.tmp
+install    : |
+    install -dm00755 $installdir/usr/share/etcher
+    cp -a dist/linux-unpacked/* $installdir/usr/share/etcher
 
     install -dm00755 $installdir/usr/bin
-    ln -sv /usr/share/etcher/etcher-electron $installdir/usr/bin/etcher
+    ln -sv /usr/share/etcher/balena-etcher-electron $installdir/usr/bin/etcher
+
+    for size in 16x16 32x32 48x48 128x128 256x256 512x512; do
+        install -Dm00644 assets/iconset/$size.png $installdir/usr/share/icons/hicolor/$size/apps/etcher.png
+    done
+
+    install -Dm00644 $pkgfiles/etcher.desktop $installdir/usr/share/applications/etcher.desktop
