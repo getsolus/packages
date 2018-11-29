@@ -24,8 +24,24 @@ import (
     "os"
     "os/user"
     "sort"
-    "strings"
 )
+
+var excludes = []string{
+    "budgie-desktop-branding-src",
+    "gnome-desktop-branding-src",
+    "infrastructure-tooling",
+    "plasma-desktop-branding-src",
+    "solus-appstream-data",
+    "solus-image-budgie",
+    "solus-image-gnome",
+    "solus-image-i3",
+    "solus-image-mate",
+    "solus-image-plasma",
+    "solus-site",
+    "solus-site-backend",
+    "solus-site-styling",
+    "solus-webplatform-js",
+}
 
 type ARCRC struct {
     Config map[string]string `json:"config"`
@@ -94,22 +110,14 @@ func main() {
             panic(err.Error())
         }
         for _,repo := range results.Result.Data {
-            if strings.HasSuffix(repo.Fields.ShortName, "branding-src") {
-                continue
+            excluded := false
+            for _, e := range excludes {
+                if e == repo.Fields.ShortName {
+                    excluded = true
+                    break
+                }
             }
-            if strings.HasPrefix(repo.Fields.ShortName, "solus-image") {
-                continue
-            }
-            if strings.HasPrefix(repo.Fields.ShortName, "solus-site") {
-                continue
-            }
-            if strings.HasPrefix(repo.Fields.ShortName, "solus-webplatform") {
-                continue
-            }
-            if strings.HasPrefix(repo.Fields.ShortName, "solus-appstream") {
-                continue
-            }
-            if repo.Fields.ShortName == "infrastructure-tooling" {
+            if excluded {
                 continue
             }
             repos = append(repos, repo.Fields.ShortName)
