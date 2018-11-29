@@ -26,6 +26,8 @@ import (
     "sort"
 )
 
+const defaultHost = "https://dev.getsol.us/api/"
+
 var excludes = []string{
     "budgie-desktop-branding-src",
     "gnome-desktop-branding-src",
@@ -44,7 +46,6 @@ var excludes = []string{
 }
 
 type ARCRC struct {
-    Config map[string]string `json:"config"`
     Hosts  map[string]map[string]string `json:"hosts"`
 }
 
@@ -81,11 +82,6 @@ func main() {
     if err != nil {
         panic(err.Error())
     }
-    defaultHost, ok := arcrc.Config["default"]
-    if !ok || len(defaultHost) == 0 {
-        panic("No default host found.")
-    }
-    defaultHost += "/api/"
     hostConfig, ok := arcrc.Hosts[defaultHost]
     if !ok || len(hostConfig) == 0 {
         panic("No host config found.")
