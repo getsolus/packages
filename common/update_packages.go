@@ -103,6 +103,12 @@ func main() {
             if strings.HasPrefix(repo.Fields.ShortName, "solus-site") {
                 continue
             }
+            if strings.HasPrefix(repo.Fields.ShortName, "solus-webplatform") {
+                continue
+            }
+            if strings.HasPrefix(repo.Fields.ShortName, "solus-appstream") {
+                continue
+            }
             if repo.Fields.ShortName == "infrastructure-tooling" {
                 continue
             }
