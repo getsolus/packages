@@ -862,6 +862,11 @@ def main():
         run_chroot("rm -v /var/lib/eopkg/history/ -rf")
         run_chroot("install -D -d -m 00755 /var/lib/eopkg/history")
 
+    # Cache the Broadcom wireless drivers on ISO
+    run_chroot("mv /etc/resolv.conf /etc/resolv.conf.bak")
+    check_call("cp /etc/resolv.conf %s/etc/resolv.conf" % targetDirectory)
+    run_chroot("eopkg fetch -o /var/cache/eopkg/packages/ broadcom-sta-common broadcom-sta-current")
+    run_chroot("mv /etc/resolv.conf.bak /etc/resolv.conf")
 
     if not do_mount("/sys", os.path.join(get_image_root(), "sys"), bind=True):
         print("Unable to mount /sys")
