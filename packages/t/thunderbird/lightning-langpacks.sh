@@ -2,7 +2,7 @@
 # Original script by Jan Horak for Fedora
 set -e
 
-VER="60.3.2"
+VER="60.4.0"
 ARCH="x86_64"
 
 WHITE='\033[1;33m'

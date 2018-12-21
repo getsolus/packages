@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="60.3.2"
+VERSION="60.4.0"
 ARCH="x86_64"
 URL="https://ftp.mozilla.org/pub/thunderbird/releases/${VERSION}/linux-${ARCH}/xpi/"
 
