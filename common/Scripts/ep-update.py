@@ -117,7 +117,7 @@ if __name__ == "__main__":
     ent.tail = "\n        "
 
     s = ET.tostring(root, 'utf-8').replace("\r\n", "\n").replace("\t", "    ")
-    complete = "<?xml version=\"1.0\" ?>\n<!DOCTYPE PISI SYSTEM \"https://solus-project.com/standard/pisi-spec.dtd\">\n" + s
+    complete = "<?xml version=\"1.0\" ?>\n<!DOCTYPE PISI SYSTEM \"https://getsol.us/standard/pisi-spec.dtd\">\n" + s
 
     os.unlink(file)
     with open ("pspec.xml", "w") as output:
