@@ -22,16 +22,16 @@ diff --git a/src/daemon.c b/src/daemon.c
 index e62e124..6f949f4 100644
 --- a/src/daemon.c
 +++ b/src/daemon.c
-@@ -49,6 +49,8 @@
+@@ -51,6 +51,8 @@
+ #define PATH_PASSWD "/etc/passwd"
  #define PATH_SHADOW "/etc/shadow"
  #define PATH_GROUP "/etc/group"
- #define PATH_GDM_CUSTOM "/etc/gdm/custom.conf"
 +#define PATH_LIGHTDM_CONFIG "/etc/lightdm/lightdm.conf"
 +#define LIGHTDM_TEST_FILE "/usr/sbin/lightdm"
  
  enum {
          PROP_0,
-@@ -66,6 +68,7 @@ struct DaemonPrivate {
+@@ -70,6 +72,7 @@ struct DaemonPrivate {
          GFileMonitor *shadow_monitor;
          GFileMonitor *group_monitor;
          GFileMonitor *gdm_monitor;
@@ -39,31 +39,31 @@ index e62e124..6f949f4 100644
          GFileMonitor *wtmp_monitor;
  
          guint reload_id;
-@@ -533,9 +536,20 @@ daemon_init (Daemon *daemon)
-                                                     wtmp_helper_get_path_for_monitor (),
-                                                     on_users_monitor_changed);
+@@ -730,9 +733,20 @@ daemon_init (Daemon *daemon)
+                                             wtmp_helper_get_path_for_monitor (),
+                                             on_users_monitor_changed);
  
--        daemon->priv->gdm_monitor = setup_monitor (daemon,
--                                                   PATH_GDM_CUSTOM,
--                                                   on_gdm_monitor_changed);
+-        priv->gdm_monitor = setup_monitor (daemon,
+-                                           PATH_GDM_CUSTOM,
+-                                           on_gdm_monitor_changed);
 +        if (g_file_test ("/etc/gdm", G_FILE_TEST_EXISTS))
 +        {
-+                daemon->priv->gdm_monitor = setup_monitor (daemon,
-+                                                           PATH_GDM_CUSTOM,
-+                                                           on_gdm_monitor_changed);
++                priv->gdm_monitor = setup_monitor (daemon,
++                                                   PATH_GDM_CUSTOM,
++                                                   on_gdm_monitor_changed);
 +        }
 +
 +        if (g_file_test (PATH_LIGHTDM_CONFIG, G_FILE_TEST_EXISTS))
 +        {
-+                daemon->priv->lightdm_monitor = setup_monitor (daemon,
-+                                                           PATH_LIGHTDM_CONFIG,
-+                                                           on_gdm_monitor_changed);
++                priv->lightdm_monitor = setup_monitor (daemon,
++                                                       PATH_LIGHTDM_CONFIG,
++                                                       on_gdm_monitor_changed);
 +        }
 +
          reload_users_timeout (daemon);
          queue_reload_autologin (daemon);
  }
-@@ -1268,10 +1282,10 @@ daemon_local_check_auth (Daemon                *daemon,
+@@ -1464,10 +1478,10 @@ daemon_local_check_auth (Daemon                *daemon,
  }
  
  gboolean
@@ -76,9 +76,9 @@ index e62e124..6f949f4 100644
 +                    gboolean    *enabled,
 +                    GError     **error)
  {
-         GKeyFile *keyfile;
-         GError *local_error;
-@@ -1314,23 +1328,90 @@ load_autologin (Daemon      *daemon,
+         g_autoptr(GKeyFile) keyfile = NULL;
+         GError *local_error = NULL;
+@@ -1502,22 +1515,89 @@ load_autologin (Daemon      *daemon,
          return TRUE;
  }
  
@@ -92,14 +92,13 @@ index e62e124..6f949f4 100644
 +                        gboolean    *enabled,
 +                        GError     **error)
 +{
-+        GKeyFile *keyfile;
++        g_autoptr(GKeyFile) keyfile = NULL;
 +
 +        keyfile = g_key_file_new ();
 +        if (!g_key_file_load_from_file (keyfile,
 +                                        PATH_LIGHTDM_CONFIG,
 +                                        G_KEY_FILE_KEEP_COMMENTS,
 +                                        error)) {
-+                g_key_file_free (keyfile);
 +                return FALSE;
 +        }
 +
@@ -150,8 +149,8 @@ index e62e124..6f949f4 100644
 +                    gboolean     enabled,
 +                    GError     **error)
 +{
-         GKeyFile *keyfile;
-         gchar *data;
+         g_autoptr(GKeyFile) keyfile = NULL;
+         g_autofree gchar *data = NULL;
          gboolean result;
 +        GError *local_error = NULL;
 +
@@ -163,7 +162,6 @@ index e62e124..6f949f4 100644
                                          PATH_GDM_CUSTOM,
                                          G_KEY_FILE_KEEP_COMMENTS,
 -                                        error)) {
--                g_key_file_free (keyfile);
 -                return FALSE;
 +                                        &local_error)) {
 +                /* It's OK for custom.conf to not exist, we will make it */
@@ -176,7 +174,7 @@ index e62e124..6f949f4 100644
          }
  
          g_key_file_set_string (keyfile, "daemon", "AutomaticLoginEnable", enabled ? "True" : "False");
-@@ -1345,6 +1426,72 @@ save_autologin (Daemon      *daemon,
+@@ -1529,6 +1610,72 @@ save_autologin (Daemon      *daemon,
          return result;
  }
  
@@ -222,10 +220,10 @@ index e62e124..6f949f4 100644
 +
 +        g_key_file_free (keyfile);
 +        g_free (data);
-+
++        DaemonPrivate *priv = daemon_get_instance_private (daemon);
 +        /* It's possible we just created this file, set up a monitor for it now */
-+        if (result && !daemon->priv->lightdm_monitor) {
-+                daemon->priv->lightdm_monitor = setup_monitor (daemon,
++        if (result && !priv->lightdm_monitor) {
++                priv->lightdm_monitor = setup_monitor (daemon,
 +                                                       PATH_LIGHTDM_CONFIG,
 +                                                       on_gdm_monitor_changed);
 +        }
