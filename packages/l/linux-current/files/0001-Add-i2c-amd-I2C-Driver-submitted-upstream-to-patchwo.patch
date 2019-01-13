@@ -1,123 +1,66 @@
-From b5a6443bad8ba1b1606d7f4989c82b9bc9401835 Mon Sep 17 00:00:00 2001
+From c11ebb9b8e93920c059b01f6e3a25c680fc40cc5 Mon Sep 17 00:00:00 2001
 From: Joshua Strobl <joshua@stroblindustries.com>
-Date: Mon, 6 Aug 2018 23:03:12 +0300
-Subject: [PATCH 1/2] Port over AMDI0011 patches.
+Date: Fri, 21 Sep 2018 11:23:10 +0300
+Subject: [PATCH 1/2] Add i2c:amd I2C Driver submitted upstream to patchworks.
 
-These patches are ported over from Canonical, from the following sources:
-
-- https://lists.ubuntu.com/archives/kernel-team/2018-June/093509.html
-- https://lists.ubuntu.com/archives/kernel-team/2018-June/093510.html
-- https://lists.ubuntu.com/archives/kernel-team/2018-June/093511.html
-- https://lists.ubuntu.com/archives/kernel-team/2018-June/093512.html
-
-The purpose of the inclusion of this patch is AMDI0011 is used to connect touchpads, such as in the Dell Latitude 5495. Source [here](https://bugs.launchpad.net/ubuntu/+source/linux-oem/+bug/1773940).
-
-This also potentially resolves the lack of touchpad support in the Asus VivoBook X505ZA / K505ZA.
 ---
- drivers/i2c/busses/Kconfig           |  12 +-
+ drivers/i2c/busses/Kconfig           |  10 +
  drivers/i2c/busses/Makefile          |   2 +
- drivers/i2c/busses/i2c-amd-pci-mp2.c | 625 +++++++++++++++++++++++++++
- drivers/i2c/busses/i2c-amd-pci-mp2.h | 253 +++++++++++
- drivers/i2c/busses/i2c-amd-platdrv.c | 335 ++++++++++++++
- 5 files changed, 1226 insertions(+), 1 deletion(-)
+ drivers/i2c/busses/i2c-amd-pci-mp2.c | 580 +++++++++++++++++++++++++++
+ drivers/i2c/busses/i2c-amd-pci-mp2.h | 196 +++++++++
+ drivers/i2c/busses/i2c-amd-platdrv.c | 277 +++++++++++++
+ 5 files changed, 1065 insertions(+)
  create mode 100644 drivers/i2c/busses/i2c-amd-pci-mp2.c
  create mode 100644 drivers/i2c/busses/i2c-amd-pci-mp2.h
  create mode 100644 drivers/i2c/busses/i2c-amd-platdrv.c
 
 diff --git a/drivers/i2c/busses/Kconfig b/drivers/i2c/busses/Kconfig
-index 4f8df2ec..91b7741c 100644
+index f2c681971201..b4f1fd26f1c0 100644
 --- a/drivers/i2c/busses/Kconfig
 +++ b/drivers/i2c/busses/Kconfig
-@@ -69,7 +69,7 @@ config I2C_AMD756_S4882
- 
- config I2C_AMD8111
- 	tristate "AMD 8111"
--	depends on PCI
-+	depends on ACPI && PCI
- 	help
- 	  If you say yes to this option, support will be included for the
- 	  second (SMBus 2.0) AMD 8111 mainboard I2C interface.
 @@ -77,6 +77,16 @@ config I2C_AMD8111
  	  This driver can also be built as a module.  If so, the module
  	  will be called i2c-amd8111.
  
 +config I2C_AMD_MP2
-+   tristate "AMD MP2"
-+   depends on PCI
-+   help
-+     If you say yes to this option, support will be included for mp2
-+     I2C interface.
++	tristate "AMD MP2"
++	depends on ACPI && PCI
++	help
++	  If you say yes to this option, support will be included for mp2
++	  I2C interface.
 +
-+     This driver can also be built as a module.  If so, the module
-+     will be called i2c-amd-platdrv.
++	  This driver can also be built as a module.  If so, the module
++	  will be called i2c-amd-platdrv.
 +
  config I2C_HIX5HD2
  	tristate "Hix5hd2 high-speed I2C driver"
  	depends on ARCH_HISI || ARCH_HIX5HD2 || COMPILE_TEST
 diff --git a/drivers/i2c/busses/Makefile b/drivers/i2c/busses/Makefile
-index 5a869144..9ce0dc1e 100644
+index 5f0cb6915969..039bc4145c2d 100644
 --- a/drivers/i2c/busses/Makefile
 +++ b/drivers/i2c/busses/Makefile
-@@ -114,6 +114,8 @@ obj-$(CONFIG_I2C_XLR)		+= i2c-xlr.o
+@@ -117,6 +117,8 @@ obj-$(CONFIG_I2C_XLR)		+= i2c-xlr.o
  obj-$(CONFIG_I2C_XLP9XX)	+= i2c-xlp9xx.o
  obj-$(CONFIG_I2C_RCAR)		+= i2c-rcar.o
  obj-$(CONFIG_I2C_ZX2967)	+= i2c-zx2967.o
-+obj-$(CONFIG_I2C_AMD_MP2)      += i2c-amd-pci-mp2.o
-+obj-$(CONFIG_I2C_AMD_MP2)      += i2c-amd-platdrv.o
++obj-$(CONFIG_I2C_AMD_MP2)   	+= i2c-amd-pci-mp2.o
++obj-$(CONFIG_I2C_AMD_MP2)   	+= i2c-amd-platdrv.o
  
  # External I2C/SMBus adapter drivers
  obj-$(CONFIG_I2C_DIOLAN_U2C)	+= i2c-diolan-u2c.o
 diff --git a/drivers/i2c/busses/i2c-amd-pci-mp2.c b/drivers/i2c/busses/i2c-amd-pci-mp2.c
 new file mode 100644
-index 00000000..e4023679
+index 000000000000..984314c792b4
 --- /dev/null
 +++ b/drivers/i2c/busses/i2c-amd-pci-mp2.c
-@@ -0,0 +1,625 @@
+@@ -0,0 +1,580 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * This file is provided under a dual BSD/GPLv2 license.  When using or
-+ *   redistributing this file, you may do so under either license.
++ * Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
 + *
-+ *   GPL LICENSE SUMMARY
 + *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   This program is free software; you can redistribute it and/or modify
-+ *   it under the terms of version 2 of the GNU General Public License as
-+ *   published by the Free Software Foundation.
-+ *
-+ *   BSD LICENSE
-+ *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   Redistribution and use in source and binary forms, with or without
-+ *   modification, are permitted provided that the following conditions
-+ *   are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *     * Redistributions in binary form must reproduce the above copy
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *     * Neither the name of AMD Corporation nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ *
++ * Author: Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
 + * AMD PCIe MP2 Communication Driver
-+ * Author: Shyam Sundar S K <Shyam-sundar.S-k at amd.com>
 + */
 +
 +#include <linux/debugfs.h>
@@ -135,13 +78,12 @@ index 00000000..e4023679
 +MODULE_DESCRIPTION(DRIVER_DESC);
 +MODULE_VERSION(DRIVER_VER);
 +MODULE_LICENSE("Dual BSD/GPL");
-+MODULE_AUTHOR("Shyam Sundar S K <Shyam-sundar.S-k at amd.com>");
++MODULE_AUTHOR("Shyam Sundar S K <Shyam-sundar.S-k@amd.com>");
 +
 +static const struct file_operations amd_mp2_debugfs_info;
 +static struct dentry *debugfs_dir;
 +
-+int amd_mp2_connect(struct pci_dev *dev,
-+		    struct i2c_connect_config connect_cfg)
++int amd_mp2_connect(struct pci_dev *dev, struct i2c_config i2c_cfg)
 +{
 +	struct amd_mp2_dev *privdata = pci_get_drvdata(dev);
 +	union i2c_cmd_base i2c_cmd_base;
@@ -149,12 +91,12 @@ index 00000000..e4023679
 +
 +	raw_spin_lock_irqsave(&privdata->lock, flags);
 +	dev_dbg(ndev_dev(privdata), "%s addr: %x id: %d\n", __func__,
-+		connect_cfg.dev_addr, connect_cfg.bus_id);
++		i2c_cfg.dev_addr, i2c_cfg.bus_id);
 +
 +	i2c_cmd_base.ul = 0;
 +	i2c_cmd_base.s.i2c_cmd = i2c_enable;
-+	i2c_cmd_base.s.bus_id = connect_cfg.bus_id;
-+	i2c_cmd_base.s.i2c_speed = connect_cfg.i2c_speed;
++	i2c_cmd_base.s.bus_id = i2c_cfg.bus_id;
++	i2c_cmd_base.s.i2c_speed = i2c_cfg.i2c_speed;
 +
 +	if (i2c_cmd_base.s.bus_id == i2c_bus_1) {
 +		writel(i2c_cmd_base.ul, privdata->mmio + AMD_C2P_MSG1);
@@ -169,35 +111,38 @@ index 00000000..e4023679
 +}
 +EXPORT_SYMBOL_GPL(amd_mp2_connect);
 +
-+int amd_mp2_read(struct pci_dev *dev, struct i2c_read_config read_cfg)
++int amd_mp2_read(struct pci_dev *dev, struct i2c_config i2c_cfg)
 +{
 +	struct amd_mp2_dev *privdata = pci_get_drvdata(dev);
 +	union i2c_cmd_base i2c_cmd_base;
 +
 +	dev_dbg(ndev_dev(privdata), "%s addr: %x id: %d\n", __func__,
-+		read_cfg.dev_addr, read_cfg.bus_id);
++		i2c_cfg.dev_addr, i2c_cfg.bus_id);
 +
 +	privdata->requested = true;
 +	i2c_cmd_base.ul = 0;
 +	i2c_cmd_base.s.i2c_cmd = i2c_read;
-+	i2c_cmd_base.s.dev_addr = read_cfg.dev_addr;
-+	i2c_cmd_base.s.length = read_cfg.length;
-+	i2c_cmd_base.s.bus_id = read_cfg.bus_id;
++	i2c_cmd_base.s.dev_addr = i2c_cfg.dev_addr;
++	i2c_cmd_base.s.length = i2c_cfg.length;
++	i2c_cmd_base.s.bus_id = i2c_cfg.bus_id;
 +
-+	if (read_cfg.length <= 32) {
++	if (i2c_cfg.length <= 32) {
 +		i2c_cmd_base.s.mem_type = use_c2pmsg;
-+		privdata->eventval.buf = (u32 *)read_cfg.buf;
-+		dev_dbg(ndev_dev(privdata), "%s buf: %llx\n", __func__,
-+			(u64)privdata->eventval.buf);
++		privdata->eventval.buf = (u32 *)i2c_cfg.read_buf;
++		if (!privdata->eventval.buf) {
++			dev_err(ndev_dev(privdata), "%s no mem for buf received\n",
++				__func__);
++			return -ENOMEM;
++		}
 +	} else {
 +		i2c_cmd_base.s.mem_type = use_dram;
-+		privdata->read_cfg.phy_addr = read_cfg.phy_addr;
-+		privdata->read_cfg.buf = read_cfg.buf;
-+		write64((u64)privdata->read_cfg.phy_addr,
++		privdata->i2c_cfg.phy_addr = i2c_cfg.phy_addr;
++		privdata->i2c_cfg.read_buf = i2c_cfg.read_buf;
++		write64((u64)privdata->i2c_cfg.phy_addr,
 +			privdata->mmio + AMD_C2P_MSG2);
 +	}
 +
-+	switch (read_cfg.i2c_speed) {
++	switch (i2c_cfg.i2c_speed) {
 +	case 0:
 +		i2c_cmd_base.s.i2c_speed = speed100k;
 +		break;
@@ -230,24 +175,23 @@ index 00000000..e4023679
 +}
 +EXPORT_SYMBOL_GPL(amd_mp2_read);
 +
-+int amd_mp2_write(struct pci_dev *dev, struct i2c_write_config write_cfg)
++int amd_mp2_write(struct pci_dev *dev, struct i2c_config i2c_cfg)
 +{
 +	struct amd_mp2_dev *privdata = pci_get_drvdata(dev);
 +	union i2c_cmd_base i2c_cmd_base;
-+	int i;
-+        int buf_len;
++	int i = 0;
 +
 +	privdata->requested = true;
 +	dev_dbg(ndev_dev(privdata), "%s addr: %x id: %d\n", __func__,
-+		write_cfg.dev_addr, write_cfg.bus_id);
++		i2c_cfg.dev_addr, i2c_cfg.bus_id);
 +
 +	i2c_cmd_base.ul = 0;
 +	i2c_cmd_base.s.i2c_cmd = i2c_write;
-+	i2c_cmd_base.s.dev_addr = write_cfg.dev_addr;
-+	i2c_cmd_base.s.length = write_cfg.length;
-+	i2c_cmd_base.s.bus_id = write_cfg.bus_id;
++	i2c_cmd_base.s.dev_addr = i2c_cfg.dev_addr;
++	i2c_cmd_base.s.length = i2c_cfg.length;
++	i2c_cmd_base.s.bus_id = i2c_cfg.bus_id;
 +
-+	switch (write_cfg.i2c_speed) {
++	switch (i2c_cfg.i2c_speed) {
 +	case 0:
 +		i2c_cmd_base.s.i2c_speed = speed100k;
 +		break;
@@ -267,17 +211,16 @@ index 00000000..e4023679
 +		dev_err(ndev_dev(privdata), "Invalid ConnectionSpeed\n");
 +	}
 +
-+	if (write_cfg.length <= 32) {
++	if (i2c_cfg.length <= 32) {
 +		i2c_cmd_base.s.mem_type = use_c2pmsg;
-+                buf_len = (write_cfg.length + 3) / 4;
-+		for (i = 0; i < buf_len; i++) {
-+			writel(write_cfg.buf[i],
++		for (i = 0; i < ((i2c_cfg.length + 3) / 4); i++) {
++			writel(i2c_cfg.write_buf[i],
 +			       privdata->mmio + (AMD_C2P_MSG2 + i * 4));
 +		}
 +	} else {
 +		i2c_cmd_base.s.mem_type = use_dram;
-+		privdata->write_cfg.phy_addr = write_cfg.phy_addr;
-+		write64((u64)privdata->write_cfg.phy_addr,
++		privdata->i2c_cfg.phy_addr = i2c_cfg.phy_addr;
++		write64((u64)privdata->i2c_cfg.phy_addr,
 +			privdata->mmio + AMD_C2P_MSG2);
 +	}
 +
@@ -313,8 +256,7 @@ index 00000000..e4023679
 +{
 +	struct amd_mp2_dev *privdata = mp2_dev(work);
 +	u32 readdata = 0;
-+	int i;
-+        int buf_len;
++	int i = 0;
 +	int sts = privdata->eventval.base.r.status;
 +	int res = privdata->eventval.base.r.response;
 +	int len = privdata->eventval.base.r.length;
@@ -322,8 +264,7 @@ index 00000000..e4023679
 +	if (res == command_success && sts == i2c_readcomplete_event) {
 +		if (privdata->ops->read_complete) {
 +			if (len <= 32) {
-+                                buf_len = (len + 3) / 4;
-+				for (i = 0; i < buf_len; i++) {
++				for (i = 0; i < ((len + 3) / 4); i++) {
 +					readdata = readl(privdata->mmio +
 +							(AMD_C2P_MSG2 + i * 4));
 +					privdata->eventval.buf[i] = readdata;
@@ -386,13 +327,9 @@ index 00000000..e4023679
 +	struct amd_mp2_dev *privdata;
 +	void __iomem *mmio;
 +	u8 *buf;
++	u32 data;
 +	size_t buf_size;
 +	ssize_t ret, off;
-+	union {
-+		u64 v64;
-+		u32 v32;
-+		u16 v16;
-+	} u;
 +
 +	privdata = filp->private_data;
 +	mmio = privdata->mmio;
@@ -410,64 +347,64 @@ index 00000000..e4023679
 +			"========================\n");
 +	off += scnprintf(buf + off, buf_size - off,
 +			"\tMP2 C2P Message Register Dump:\n\n");
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG0);
++	data = readl(privdata->mmio + AMD_C2P_MSG0);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG0 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG0 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG1);
++	data = readl(privdata->mmio + AMD_C2P_MSG1);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG1 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG1 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG2);
++	data = readl(privdata->mmio + AMD_C2P_MSG2);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG2 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG2 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG3);
++	data = readl(privdata->mmio + AMD_C2P_MSG3);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG3 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG3 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG4);
++	data = readl(privdata->mmio + AMD_C2P_MSG4);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG4 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG4 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG5);
++	data = readl(privdata->mmio + AMD_C2P_MSG5);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG5 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG5 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG6);
++	data = readl(privdata->mmio + AMD_C2P_MSG6);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG6 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG6 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG7);
++	data = readl(privdata->mmio + AMD_C2P_MSG7);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG7 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG7 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG8);
++	data = readl(privdata->mmio + AMD_C2P_MSG8);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG8 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG8 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_C2P_MSG9);
++	data = readl(privdata->mmio + AMD_C2P_MSG9);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_C2P_MSG9 -\t\t\t%#06x\n", u.v32);
++			"AMD_C2P_MSG9 -\t\t\t%#06x\n", data);
 +
 +	off += scnprintf(buf + off, buf_size - off,
 +			"\n\tMP2 P2C Message Register Dump:\n\n");
 +
-+	u.v32 = readl(privdata->mmio + AMD_P2C_MSG1);
++	data = readl(privdata->mmio + AMD_P2C_MSG1);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_P2C_MSG1 -\t\t\t%#06x\n", u.v32);
++			"AMD_P2C_MSG1 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_P2C_MSG2);
++	data = readl(privdata->mmio + AMD_P2C_MSG2);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_P2C_MSG2 -\t\t\t%#06x\n", u.v32);
++			"AMD_P2C_MSG2 -\t\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_P2C_MSG_INTEN);
++	data = readl(privdata->mmio + AMD_P2C_MSG_INTEN);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_P2C_MSG_INTEN -\t\t%#06x\n", u.v32);
++			"AMD_P2C_MSG_INTEN -\t\t%#06x\n", data);
 +
-+	u.v32 = readl(privdata->mmio + AMD_P2C_MSG_INTSTS);
++	data = readl(privdata->mmio + AMD_P2C_MSG_INTSTS);
 +	off += scnprintf(buf + off, buf_size - off,
-+			"AMD_P2C_MSG_INTSTS -\t\t%#06x\n", u.v32);
++			"AMD_P2C_MSG_INTSTS -\t\t%#06x\n", data);
 +
 +	ret = simple_read_from_buffer(ubuf, count, offp, buf, off);
 +	kfree(buf);
@@ -485,8 +422,8 @@ index 00000000..e4023679
 +		if (!privdata->debugfs_dir) {
 +			privdata->debugfs_info = NULL;
 +		} else {
-+			privdata->debugfs_info = debugfs_create_file(
-+					"info", 0400, privdata->debugfs_dir,
++			privdata->debugfs_info = debugfs_create_file
++				("info", 0400, privdata->debugfs_dir,
 +					privdata, &amd_mp2_debugfs_info);
 +		}
 +	}
@@ -544,7 +481,6 @@ index 00000000..e4023679
 +
 +	base = pci_resource_start(pdev, bar_index);
 +	size = pci_resource_len(pdev, bar_index);
-+	dev_dbg(ndev_dev(privdata), "Base addr:%llx size:%llx\n", base, size);
 +
 +	privdata->mmio = ioremap(base, size);
 +	if (!privdata->mmio) {
@@ -700,55 +636,16 @@ index 00000000..e4023679
 +module_exit(amd_mp2_pci_driver_exit);
 diff --git a/drivers/i2c/busses/i2c-amd-pci-mp2.h b/drivers/i2c/busses/i2c-amd-pci-mp2.h
 new file mode 100644
-index 00000000..aa6ab68c
+index 000000000000..787484e989f5
 --- /dev/null
 +++ b/drivers/i2c/busses/i2c-amd-pci-mp2.h
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,196 @@
 +/* SPDX-License-Identifier: GPL-2.0
 + *
-+ * This file is provided under a dual BSD/GPLv2 license.  When using or
-+ *   redistributing this file, you may do so under either license.
++ * Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved
 + *
-+ *   GPL LICENSE SUMMARY
-+ *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   This program is free software; you can redistribute it and/or modify
-+ *   it under the terms of version 2 of the GNU General Public License as
-+ *   published by the Free Software Foundation.
-+ *
-+ *   BSD LICENSE
-+ *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   Redistribution and use in source and binary forms, with or without
-+ *   modification, are permitted provided that the following conditions
-+ *   are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *     * Redistributions in binary form must reproduce the above copy
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *     * Neither the name of AMD Corporation nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ *
++ * Author: Shyam Sundar S K <Shyam-sundar.S-k@amd.com>
 + * AMD PCIe MP2 Communication Interface Driver
-+ * Author: Shyam Sundar S K <Shyam-sundar.S-k at amd.com>
 + */
 +
 +#ifndef I2C_AMD_PCI_MP2_H
@@ -886,31 +783,17 @@ index 00000000..aa6ab68c
 +
 +/* data structures for communication with I2c*/
 +
-+struct i2c_connect_config {
-+	enum i2c_bus_index bus_id;
-+	u64 i2c_speed;
-+	u16 dev_addr;
-+};
-+
-+struct i2c_write_config {
++struct i2c_config {
 +	enum i2c_bus_index bus_id;
 +	u64 i2c_speed;
 +	u16 dev_addr;
 +	u32 length;
 +	phys_addr_t phy_addr;
-+	u32 *buf;
++	u8 *read_buf;
++	u32 *write_buf;
 +};
 +
-+struct i2c_read_config {
-+	enum i2c_bus_index bus_id;
-+	u64 i2c_speed;
-+	u16 dev_addr;
-+	u32 length;
-+	phys_addr_t phy_addr;
-+	u8 *buf;
-+};
-+
-+// struct to send/receive data b/w pci and i2c drivers
++/* struct to send/receive data b/w pci and i2c drivers*/
 +struct amd_i2c_pci_ops {
 +	int (*read_complete)(struct i2c_event event, void *dev_ctx);
 +	int (*write_complete)(struct i2c_event event, void *dev_ctx);
@@ -918,9 +801,7 @@ index 00000000..aa6ab68c
 +};
 +
 +struct amd_i2c_common {
-+	struct i2c_connect_config connect_cfg;
-+	struct i2c_read_config read_cfg;
-+	struct i2c_write_config write_cfg;
++	struct i2c_config i2c_cfg;
 +	const struct amd_i2c_pci_ops *ops;
 +	struct pci_dev *pdev;
 +};
@@ -932,22 +813,20 @@ index 00000000..aa6ab68c
 +	void __iomem *mmio;
 +	struct i2c_event eventval;
 +	enum i2c_cmd reqcmd;
-+	struct i2c_connect_config connect_cfg;
-+	struct i2c_read_config read_cfg;
-+	struct i2c_write_config write_cfg;
++	struct i2c_config i2c_cfg;
 +	union i2c_cmd_base i2c_cmd_base;
 +	const struct amd_i2c_pci_ops *ops;
 +	struct delayed_work work;
 +	void *i2c_dev_ctx;
-+	bool	requested;
++	bool requested;
 +	raw_spinlock_t lock;
 +};
 +
-+int amd_mp2_read(struct pci_dev *pdev, struct i2c_read_config read_cfg);
++int amd_mp2_read(struct pci_dev *pdev, struct i2c_config i2c_cfg);
 +int amd_mp2_write(struct pci_dev *pdev,
-+		  struct i2c_write_config write_cfg);
++		  struct i2c_config i2c_cfg);
 +int amd_mp2_connect(struct pci_dev *pdev,
-+		    struct i2c_connect_config connect_cfg);
++		    struct i2c_config i2c_cfg);
 +int amd_i2c_register_cb(struct pci_dev *pdev, const struct amd_i2c_pci_ops *ops,
 +			void *dev_ctx);
 +
@@ -959,57 +838,18 @@ index 00000000..aa6ab68c
 +#endif
 diff --git a/drivers/i2c/busses/i2c-amd-platdrv.c b/drivers/i2c/busses/i2c-amd-platdrv.c
 new file mode 100644
-index 00000000..110ef895
+index 000000000000..95e3b37e4de7
 --- /dev/null
 +++ b/drivers/i2c/busses/i2c-amd-platdrv.c
-@@ -0,0 +1,335 @@
+@@ -0,0 +1,277 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + *
-+ * This file is provided under a dual BSD/GPLv2 license.  When using or
-+ *   redistributing this file, you may do so under either license.
++ * Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
 + *
-+ *   GPL LICENSE SUMMARY
 + *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   This program is free software; you can redistribute it and/or modify
-+ *   it under the terms of version 2 of the GNU General Public License as
-+ *   published by the Free Software Foundation.
-+ *
-+ *   BSD LICENSE
-+ *
-+ *   Copyright (C) 2018 Advanced Micro Devices, Inc. All Rights Reserved.
-+ *
-+ *   Redistribution and use in source and binary forms, with or without
-+ *   modification, are permitted provided that the following conditions
-+ *   are met:
-+ *
-+ *     * Redistributions of source code must retain the above copyright
-+ *       notice, this list of conditions and the following disclaimer.
-+ *     * Redistributions in binary form must reproduce the above copy
-+ *       notice, this list of conditions and the following disclaimer in
-+ *       the documentation and/or other materials provided with the
-+ *       distribution.
-+ *     * Neither the name of AMD Corporation nor the names of its
-+ *       contributors may be used to endorse or promote products derived
-+ *       from this software without specific prior written permission.
-+ *
-+ *   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-+ *   "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-+ *   LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-+ *   A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-+ *   OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-+ *   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-+ *   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-+ *   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-+ *   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-+ *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-+ *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-+ *
-+
++ * Author: Nehal Bakulchandra Shah <Nehal-bakulchandra.shah@amd.com>
 + * AMD I2C Platform Driver
-+ * Author: Nehal Bakulchandra Shah <Nehal-bakulchandra.shah at amd.com>
 + */
 +
 +#include <linux/kernel.h>
@@ -1018,11 +858,10 @@ index 00000000..110ef895
 +#include <linux/slab.h>
 +#include <linux/i2c.h>
 +#include <linux/platform_device.h>
++#include <linux/dma-mapping.h>
 +#include <linux/acpi.h>
 +#include <linux/delay.h>
 +#include "i2c-amd-pci-mp2.h"
-+#include <linux/dma-mapping.h>
-+#define  DRIVER_NAME "AMD-I2C-PLATDRV"
 +
 +struct amd_i2c_dev {
 +	struct platform_device *pdev;
@@ -1033,15 +872,13 @@ index 00000000..110ef895
 +	bool is_configured;
 +	u8 bus_id;
 +	u8 *buf;
-+
 +};
 +
 +static int i2c_amd_read_completion(struct i2c_event event, void *dev_ctx)
 +{
 +	struct amd_i2c_dev *i2c_dev = (struct amd_i2c_dev *)dev_ctx;
 +	struct amd_i2c_common *commond = &i2c_dev->i2c_common;
-+	int i;
-+        int buf_len;
++	int i = 0;
 +
 +	if (event.base.r.status == i2c_readcomplete_event) {
 +		if (event.base.r.length <= 32) {
@@ -1051,28 +888,21 @@ index 00000000..110ef895
 +			memcpy(i2c_dev->msg_buf->buf,
 +			       (unsigned char *)event.buf, event.base.r.length);
 +
-+                        buf_len = (event.base.r.length + 3) / 4;
-+			for (i = 0; i < buf_len; i++)
-+				pr_devel("%s:%s readdata:%x\n",
-+					 DRIVER_NAME, __func__, event.buf[i]);
++			for (i = 0; i < ((event.base.r.length + 3) / 4); i++)
++				pr_devel("%s: readdata:%x\n",
++					 __func__, event.buf[i]);
 +
 +		} else {
 +			memcpy(i2c_dev->msg_buf->buf,
-+			       (unsigned char *)commond->read_cfg.buf,
++			       (unsigned char *)commond->i2c_cfg.read_buf,
 +				event.base.r.length);
-+			pr_devel("%s:%s virt:%llx phy_addr:%llx\n",
-+				 DRIVER_NAME, __func__,
-+				(u64)commond->read_cfg.buf,
-+				(u64)commond->read_cfg.phy_addr);
 +
-+                        buf_len = (event.base.r.length + 3) / 4;
-+			for (i = 0; i < buf_len; i++)
-+				pr_devel("%s:%s readdata:%x\n",
-+					 DRIVER_NAME, __func__, ((unsigned int *)
-+				commond->read_cfg.buf)[i]);
++			for (i = 0; i < ((event.base.r.length + 3) / 4); i++)
++				pr_devel("%s: readdata:%x\n", __func__,
++					 ((unsigned int *)commond->i2c_cfg.read_buf)[i]);
 +		}
 +
-+		complete(&i2c_dev->msg_complete);
++				complete(&i2c_dev->msg_complete);
 +	}
 +
 +	return 0;
@@ -1083,7 +913,7 @@ index 00000000..110ef895
 +	struct amd_i2c_dev *i2c_dev = (struct amd_i2c_dev *)dev_ctx;
 +
 +	if (event.base.r.status == i2c_writecomplete_event)
-+		complete(&i2c_dev->msg_complete);
++			complete(&i2c_dev->msg_complete);
 +
 +	return 0;
 +}
@@ -1093,7 +923,7 @@ index 00000000..110ef895
 +	struct amd_i2c_dev *i2c_dev = (struct amd_i2c_dev *)dev_ctx;
 +
 +	if (event.base.r.status == i2c_busenable_complete)
-+		complete(&i2c_dev->msg_complete);
++			complete(&i2c_dev->msg_complete);
 +
 +	return 0;
 +}
@@ -1110,23 +940,15 @@ index 00000000..110ef895
 +	int ret;
 +
 +	amd_i2c_register_cb(i2c_common->pdev, &data_handler, (void *)i2c_dev);
-+	i2c_common->connect_cfg.bus_id = i2c_dev->bus_id;
-+	i2c_common->connect_cfg.dev_addr = slaveaddr;
-+	i2c_common->connect_cfg.i2c_speed = speed400k;
++	i2c_common->i2c_cfg.bus_id = i2c_dev->bus_id;
++	i2c_common->i2c_cfg.dev_addr = slaveaddr;
++	i2c_common->i2c_cfg.i2c_speed = speed400k;
++	ret = amd_mp2_connect(i2c_common->pdev, i2c_common->i2c_cfg);
 +
-+	ret = amd_mp2_connect(i2c_common->pdev, i2c_common->connect_cfg);
 +	if (ret)
-+		return -1;
++		return	-EIO;
 +
 +	mdelay(100);
-+
-+	i2c_common->write_cfg.bus_id = i2c_dev->bus_id;
-+	i2c_common->write_cfg.dev_addr = slaveaddr;
-+	i2c_common->write_cfg.i2c_speed = speed400k;
-+
-+	i2c_common->read_cfg.bus_id = i2c_dev->bus_id;
-+	i2c_common->read_cfg.dev_addr = slaveaddr;
-+	i2c_common->read_cfg.i2c_speed = speed400k;
 +
 +	return 0;
 +}
@@ -1140,7 +962,6 @@ index 00000000..110ef895
 +	unsigned long timeout;
 +	struct i2c_msg *pmsg;
 +	unsigned char *dma_buf = NULL;
-+
 +	dma_addr_t phys;
 +
 +	reinit_completion(&dev->msg_complete);
@@ -1152,41 +973,41 @@ index 00000000..110ef895
 +
 +	for (i = 0; i < num; i++) {
 +		pmsg = &msgs[i];
-+		if (pmsg->flags & I2C_M_RD) {
-+			if (pmsg->len <= 32) {
-+				i2c_common->read_cfg.buf = dev->buf;
-+				i2c_common->read_cfg.length = pmsg->len;
-+				i2c_common->read_cfg.phy_addr =
-+							virt_to_phys(dev->buf);
-+			} else {
-+				dma_buf = (u8 *)dma_alloc_coherent(&i2c_common->pdev->dev,
++		i2c_common->i2c_cfg.length = pmsg->len;
++		if (pmsg->len > 32) {
++			dma_buf = (u8 *)dma_alloc_coherent(&i2c_common->pdev->dev,
 +					pmsg->len, &phys, GFP_KERNEL);
++			i2c_common->i2c_cfg.phy_addr = phys;
++		}
 +
-+				if (!dma_buf)
-+					return -ENOMEM;
++		if (pmsg->flags & I2C_M_RD) {
++			if (pmsg->len <= 32)
++				i2c_common->i2c_cfg.read_buf = dev->buf;
++			else
++				i2c_common->i2c_cfg.read_buf = dma_buf;
 +
-+				i2c_common->read_cfg.buf = dma_buf;
-+				i2c_common->read_cfg.length = pmsg->len;
-+				i2c_common->read_cfg.phy_addr = phys;
-+			}
 +			dev->msg_buf = pmsg;
 +			amd_mp2_read(i2c_common->pdev,
-+				     i2c_common->read_cfg);
-+			timeout = wait_for_completion_timeout
-+					(&dev->msg_complete, 50);
-+			if (pmsg->len > 32 && dma_buf)
-+				dma_free_coherent(&i2c_common->pdev->dev,
-+						  pmsg->len, dma_buf, phys);
++				     i2c_common->i2c_cfg);
 +
 +		} else {
-+			i2c_common->write_cfg.buf = (unsigned int *)pmsg->buf;
-+			i2c_common->write_cfg.length = pmsg->len;
-+			amd_mp2_write(i2c_common->pdev,
-+				      i2c_common->write_cfg);
++			if (pmsg->len <= 32)
++				i2c_common->i2c_cfg.write_buf = (unsigned int *)pmsg->buf;
++			else
++				i2c_common->i2c_cfg.write_buf = (unsigned int *)dma_buf;
 +
-+			timeout = wait_for_completion_timeout
-+						(&dev->msg_complete, 50);
++			amd_mp2_write(i2c_common->pdev,
++				      i2c_common->i2c_cfg);
 +		}
++
++		timeout = wait_for_completion_timeout
++					(&dev->msg_complete, 50);
++		if (dma_buf)
++			dma_free_coherent(&i2c_common->pdev->dev,
++					  pmsg->len, dma_buf, phys);
++
++		if (timeout == 0)
++			return -ETIMEDOUT;
 +	}
 +	return num;
 +}
@@ -1238,6 +1059,12 @@ index 00000000..110ef895
 +	i2c_dev->adapter.algo_data = i2c_dev;
 +	ACPI_COMPANION_SET(&i2c_dev->adapter.dev, ACPI_COMPANION(&pdev->dev));
 +	i2c_dev->adapter.dev.of_node = dev->of_node;
++	/*buffer for 32 bytes of read  data*/
++	i2c_dev->buf = kzalloc(32, GFP_KERNEL);
++
++	if (!i2c_dev->buf)
++		return -ENOMEM;
++
 +	snprintf(i2c_dev->adapter.name, sizeof(i2c_dev->adapter.name), "%s-%s",
 +		 "i2c_dev-i2c", dev_name(pdev->dev.parent));
 +
@@ -1248,13 +1075,7 @@ index 00000000..110ef895
 +		pr_err("%s Could not find pdev in i2c\n", __func__);
 +		return -EINVAL;
 +	}
-+	i2c_dev->buf = kzalloc(32, GFP_KERNEL);
-+
-+	if (!i2c_dev->buf)
-+		return -ENOMEM;
-+
 +	platform_set_drvdata(pdev, i2c_dev);
-+
 +	i2c_set_adapdata(&i2c_dev->adapter, i2c_dev);
 +
 +	init_completion(&i2c_dev->msg_complete);
@@ -1272,6 +1093,7 @@ index 00000000..110ef895
 +	struct amd_i2c_dev *i2c_dev = platform_get_drvdata(pdev);
 +
 +	kfree(i2c_dev->buf);
++
 +	i2c_del_adapter(&i2c_dev->adapter);
 +
 +	return 0;
@@ -1294,10 +1116,9 @@ index 00000000..110ef895
 +
 +module_platform_driver(amd_i2c_plat_driver);
 +
-+MODULE_AUTHOR("Nehal Shah <nehal-bakulchandra.shah at amd.com>");
++MODULE_AUTHOR("Nehal Shah <nehal-bakulchandra.shah@amd.com>");
 +MODULE_DESCRIPTION("AMD I2C Platform Driver");
 +MODULE_LICENSE("Dual BSD/GPL");
-+
 -- 
-2.18.0
+2.19.2
 
