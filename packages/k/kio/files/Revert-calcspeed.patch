@@ -1,0 +1,141 @@
+From b8a5f34b34b6c4e37684fe2782b8cf39c38cd928 Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 14 Jan 2019 13:32:52 +0100
+Subject: [PATCH] Revert "Refactor SlaveInterface::calcSpeed"
+
+This reverts commit 4e2a815b9a107663a3d75e9d9d1be336adea888e.
+This commit causes crashes due to improper division and there are some
+outstanding code review issues as well.
+
+BUG: 402665
+---
+ src/core/slaveinterface.cpp | 48 ++++++++++++++++++++++++-------------
+ src/core/slaveinterface_p.h | 19 +++++++--------
+ 2 files changed, 39 insertions(+), 28 deletions(-)
+
+diff --git a/src/core/slaveinterface.cpp b/src/core/slaveinterface.cpp
+index 6eb2b08d..88f649c8 100644
+--- a/src/core/slaveinterface.cpp
++++ b/src/core/slaveinterface.cpp
+@@ -45,7 +45,6 @@ SlaveInterface::SlaveInterface(SlaveInterfacePrivate &dd, QObject *parent)
+     : QObject(parent), d_ptr(&dd)
+ {
+     connect(&d_ptr->speed_timer, &QTimer::timeout, this, &SlaveInterface::calcSpeed);
+-    d_ptr->transfer_details.reserve(max_count);
+ }
+ 
+ SlaveInterface::~SlaveInterface()
+@@ -98,24 +97,36 @@ void SlaveInterface::calcSpeed()
+         return;
+     }
+ 
+-    // Note for future reference: A list is maintained for sizes and times.
+-    // Minimum list size is 1 and maximum list size is 8. Delta is calculated
+-    // using first and last item from the list.
+-
+-    const qint64 elapsed_time = d->elapsed_timer.elapsed();
+-    if (elapsed_time >= 900) {
+-        if (d->transfer_details.count() == max_count) {
+-            d->transfer_details.removeFirst();
++    const qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
++    const qint64 diff = currentTime - d->start_time;
++    if (diff - d->last_time >= 900) {
++        d->last_time = diff;
++        if (d->nums == max_nums) {
++            // let's hope gcc can optimize that well enough
++            // otherwise I'd try memcpy :)
++            for (unsigned int i = 1; i < max_nums; ++i) {
++                d->times[i - 1] = d->times[i];
++                d->sizes[i - 1] = d->sizes[i];
++            }
++            d->nums--;
+         }
++        d->times[d->nums] = diff;
++        d->sizes[d->nums++] = d->filesize - d->offset;
++
++        KIO::filesize_t lspeed = 1000 * (d->sizes[d->nums - 1] - d->sizes[0]) / (d->times[d->nums - 1] - d->times[0]);
++
++//qDebug() << (long)d->filesize << diff
++//          << long(d->sizes[d->nums-1] - d->sizes[0])
++//          << d->times[d->nums-1] - d->times[0]
++//          << long(lspeed) << double(d->filesize) / diff
++//          << convertSize(lspeed)
++//          << convertSize(long(double(d->filesize) / diff) * 1000);
+ 
+-        const SlaveInterfacePrivate::TransferInfo first = d->transfer_details.first();
+-        const SlaveInterfacePrivate::TransferInfo last = {elapsed_time, (d->filesize - d->offset)};
+-        KIO::filesize_t lspeed = 1000 * (last.size - first.size) / (last.time - first.time);
+         if (!lspeed) {
+-            d->transfer_details.clear();
++            d->nums = 1;
++            d->times[0] = diff;
++            d->sizes[0] = d->filesize - d->offset;
+         }
+-        d->transfer_details.append(last);
+-
+         emit speed(lspeed);
+     }
+ }
+@@ -198,10 +209,13 @@ bool SlaveInterface::dispatch(int _cmd, const QByteArray &rawdata)
+     }
+     case INF_TOTAL_SIZE: {
+         KIO::filesize_t size = readFilesize_t(stream);
++        d->start_time = QDateTime::currentMSecsSinceEpoch();
++        d->last_time = 0;
+         d->filesize = d->offset;
+-        d->transfer_details.append({0, 0});
++        d->sizes[0] = d->filesize - d->offset;
++        d->times[0] = 0;
++        d->nums = 1;
+         d->speed_timer.start(1000);
+-        d->elapsed_timer.start();
+         d->slave_calcs_speed = false;
+         emit totalSize(size);
+         break;
+diff --git a/src/core/slaveinterface_p.h b/src/core/slaveinterface_p.h
+index efb17d0f..a4cb5d3f 100644
+--- a/src/core/slaveinterface_p.h
++++ b/src/core/slaveinterface_p.h
+@@ -29,19 +29,17 @@
+ #include <QTimer>
+ #include <QPointer>
+ #include <QHostInfo>
+-#include <QVector>
+-#include <QElapsedTimer>
+ 
+ #include "kiocoredebug.h"
+ 
+-static const unsigned int max_count = 8;
++static const unsigned int max_nums = 8;
+ 
+ class KIO::SlaveInterfacePrivate
+ {
+ public:
+     SlaveInterfacePrivate()
+-        : connection(nullptr), filesize(0), offset(0),
+-          slave_calcs_speed(false)
++        : connection(nullptr), filesize(0), offset(0), last_time(0), start_time(0),
++          nums(0), slave_calcs_speed(false)
+     {
+     }
+     virtual ~SlaveInterfacePrivate()
+@@ -55,14 +53,13 @@ class KIO::SlaveInterfacePrivate
+     // We need some metadata here for our SSL code in messageBox() and for sslMetaData().
+     MetaData sslMetaData;
+ 
+-    struct TransferInfo {
+-        qint64 time;
+-        KIO::filesize_t size;
+-    };
+-    QVector<TransferInfo> transfer_details;
+-    QElapsedTimer elapsed_timer;
++    KIO::filesize_t sizes[max_nums];
++    qint64 times[max_nums];
+ 
+     KIO::filesize_t filesize, offset;
++    size_t last_time;
++    qint64 start_time;
++    uint nums;
+     bool slave_calcs_speed;
+ 
+     void slotHostInfo(const QHostInfo &info);
