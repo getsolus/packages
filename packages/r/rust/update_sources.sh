@@ -1,5 +1,5 @@
 # Fetch the latest sources and sha256sums automagically
-VERSION=1.31.1
+VERSION=1.32.0
 mkdir /tmp/rust; cd /tmp/rust
 
 wget https://raw.githubusercontent.com/rust-lang/rust/${VERSION}/src/stage0.txt
