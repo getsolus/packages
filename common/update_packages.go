@@ -29,9 +29,11 @@ import (
 const defaultHost = "https://dev.getsol.us/api/"
 
 var excludes = []string{
+    "budgie-desktop-src",
     "budgie-desktop-branding-src",
     "gnome-desktop-branding-src",
     "infrastructure-tooling",
+    "linux-next",
     "plasma-desktop-branding-src",
     "solus-appstream-data",
     "solus-image-budgie",
