@@ -1,20 +1,32 @@
-From 77b5fd4495a375fcf412653cd91873a243bbe079 Mon Sep 17 00:00:00 2001
+From 1d3fcf2f5e12cc920b1d3d8d9071feeb553e2c87 Mon Sep 17 00:00:00 2001
 From: Joshua Strobl <joshua@stroblindustries.com>
-Date: Fri, 16 Mar 2018 22:21:26 +0200
+Date: Tue, 26 Feb 2019 18:33:51 +0200
 Subject: [PATCH 1/1] Strip out some broken tests.
 
-Some tests are only assuming a single static string of PASS. In reality these tests will also return LD_PRELOAD issues because it assumes fakeroot.
-Additionally runtime pprof tests are failing as a result of too new of binutils.
+Some tests are only assuming a single static string of PASS. In reality these tests will also return LD_PRELOAD issues because it assumes fakeroot. Additionally runtime pprof tests are failing as a result of too new of binutils.
 ---
- misc/cgo/testcshared/cshared_test.go | 60 -----------------------
- src/runtime/crash_cgo_test.go        | 71 ----------------------------
- 2 files changed, 131 deletions(-)
+ misc/cgo/test/cgo_test.go            |  1 -
+ misc/cgo/testcshared/cshared_test.go | 60 ---------------------
+ src/runtime/crash_cgo_test.go        | 80 ----------------------------
+ 3 files changed, 141 deletions(-)
 
+diff --git a/misc/cgo/test/cgo_test.go b/misc/cgo/test/cgo_test.go
+index 2cb93d9c2e..b0c6b4dcd3 100644
+--- a/misc/cgo/test/cgo_test.go
++++ b/misc/cgo/test/cgo_test.go
+@@ -47,7 +47,6 @@ func Test6833(t *testing.T)                  { test6833(t) }
+ func Test3250(t *testing.T)                  { test3250(t) }
+ func TestCallbackStack(t *testing.T)         { testCallbackStack(t) }
+ func TestFpVar(t *testing.T)                 { testFpVar(t) }
+-func Test4339(t *testing.T)                  { test4339(t) }
+ func Test6390(t *testing.T)                  { test6390(t) }
+ func Test5986(t *testing.T)                  { test5986(t) }
+ func Test7665(t *testing.T)                  { test7665(t) }
 diff --git a/misc/cgo/testcshared/cshared_test.go b/misc/cgo/testcshared/cshared_test.go
-index e43422de6e..895b8059e0 100644
+index e5b90ff194..62f04c9fff 100644
 --- a/misc/cgo/testcshared/cshared_test.go
 +++ b/misc/cgo/testcshared/cshared_test.go
-@@ -288,26 +288,6 @@ func cleanupAndroid() {
+@@ -298,26 +298,6 @@ func cleanupAndroid() {
  	}
  }
  
@@ -41,7 +53,7 @@ index e43422de6e..895b8059e0 100644
  // test1: shared library can be dynamically loaded and exported symbols are accessible.
  func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
  	t.Parallel()
-@@ -333,46 +313,6 @@ func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
+@@ -347,46 +327,6 @@ func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
  	}
  }
  
@@ -89,7 +101,7 @@ index e43422de6e..895b8059e0 100644
  func TestMainExportedOnAndroid(t *testing.T) {
  	t.Parallel()
 diff --git a/src/runtime/crash_cgo_test.go b/src/runtime/crash_cgo_test.go
-index 3b9fedc7a4..f080f1ddb0 100644
+index c1dd757797..0ae79228bc 100644
 --- a/src/runtime/crash_cgo_test.go
 +++ b/src/runtime/crash_cgo_test.go
 @@ -10,7 +10,6 @@ import (
@@ -100,11 +112,12 @@ index 3b9fedc7a4..f080f1ddb0 100644
  	"os/exec"
  	"runtime"
  	"strconv"
-@@ -272,76 +271,6 @@ func TestCgoTracebackContext(t *testing.T) {
+@@ -262,85 +261,6 @@ func TestCgoTracebackContext(t *testing.T) {
+ 		t.Errorf("expected %q got %v", want, got)
  	}
  }
- 
--func testCgoPprof(t *testing.T, buildArg, runArg string) {
+-
+-func testCgoPprof(t *testing.T, buildArg, runArg, top, bottom string) {
 -	t.Parallel()
 -	if runtime.GOOS != "linux" || (runtime.GOARCH != "amd64" && runtime.GOARCH != "ppc64le") {
 -		t.Skipf("not yet supported on %s/%s", runtime.GOOS, runtime.GOARCH)
@@ -128,7 +141,7 @@ index 3b9fedc7a4..f080f1ddb0 100644
 -	defer os.Remove(fn)
 -
 -	for try := 0; try < 2; try++ {
--		cmd := testenv.CleanCmdEnv(exec.Command(testenv.GoToolPath(t), "tool", "pprof", "-top", "-nodecount=1"))
+-		cmd := testenv.CleanCmdEnv(exec.Command(testenv.GoToolPath(t), "tool", "pprof", "-traces"))
 -		// Check that pprof works both with and without explicit executable on command line.
 -		if try == 0 {
 -			cmd.Args = append(cmd.Args, exe, fn)
@@ -148,35 +161,43 @@ index 3b9fedc7a4..f080f1ddb0 100644
 -			cmd.Env = append(cmd.Env, "PPROF_TMPDIR="+os.TempDir())
 -		}
 -
--		top, err := cmd.CombinedOutput()
--		t.Logf("%s:\n%s", cmd.Args, top)
+-		out, err := cmd.CombinedOutput()
+-		t.Logf("%s:\n%s", cmd.Args, out)
 -		if err != nil {
 -			t.Error(err)
--		} else if !bytes.Contains(top, []byte("cpuHog")) {
--			t.Error("missing cpuHog in pprof output")
+-			continue
+-		}
+-
+-		trace := findTrace(string(out), top)
+-		if len(trace) == 0 {
+-			t.Errorf("%s traceback missing.", top)
+-			continue
+-		}
+-		if trace[len(trace)-1] != bottom {
+-			t.Errorf("invalid traceback origin: got=%v; want=[%s ... %s]", trace, top, bottom)
 -		}
 -	}
 -}
 -
 -func TestCgoPprof(t *testing.T) {
--	testCgoPprof(t, "", "CgoPprof")
+-	testCgoPprof(t, "", "CgoPprof", "cpuHog", "runtime.main")
 -}
 -
 -func TestCgoPprofPIE(t *testing.T) {
--	testCgoPprof(t, "-buildmode=pie", "CgoPprof")
+-	testCgoPprof(t, "-buildmode=pie", "CgoPprof", "cpuHog", "runtime.main")
 -}
 -
 -func TestCgoPprofThread(t *testing.T) {
--	testCgoPprof(t, "", "CgoPprofThread")
+-	testCgoPprof(t, "", "CgoPprofThread", "cpuHogThread", "cpuHogThread2")
 -}
 -
 -func TestCgoPprofThreadNoTraceback(t *testing.T) {
--	testCgoPprof(t, "", "CgoPprofThreadNoTraceback")
+-	testCgoPprof(t, "", "CgoPprofThreadNoTraceback", "cpuHogThread", "runtime._ExternalCode")
 -}
 -
  func TestRaceProf(t *testing.T) {
- 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+ 	if (runtime.GOOS != "linux" && runtime.GOOS != "freebsd") || runtime.GOARCH != "amd64" {
  		t.Skipf("not yet supported on %s/%s", runtime.GOOS, runtime.GOARCH)
 -- 
-2.18.0
+2.20.1
 
