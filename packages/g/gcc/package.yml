@@ -1,8 +1,9 @@
 name       : gcc
-version    : 8.2.0
-release    : 44
+version    : 8.3.0
+release    : 45
 source     :
-    - https://ftp.gnu.org/gnu/gcc/gcc-8.2.0/gcc-8.2.0.tar.xz : 196c3c04ba2613f893283977e6011b2345d1cd1af9abeac58e916b1aab3e0080
+    - https://ftp.gnu.org/gnu/gcc/gcc-8.3.0/gcc-8.3.0.tar.xz : 64baadfe6cc0f4947a84cb12d7f0dfaf45bb58b7e92461639596c21e02d97d2c
+    - https://github.com/gcc-mirror/gcc/compare/gcc-8_3_0-release...gcc-8-branch.patch : 6efa10c20b22d874bb0ab3aeddb4e412ef9158dca2b826170ae1f4564b34ac1d
 homepage   : http://gcc.gnu.org/
 license    : GPL-3.0-or-later
 component  :
@@ -83,9 +84,12 @@ patterns   :
     - ^libgomp-32bit : /usr/lib32/libgomp*
     - ^libstdc++ :
         - /usr/lib64/lib*++*
+        - /usr/share/gdb/auto-load/usr/lib64/libstdc++*
         - /usr/share/locale/*/LC_MESSAGES/cpplib.mo
         - /usr/share/locale/*/LC_MESSAGES/libstdc++.mo
-    - ^libstdc++-32bit : /usr/lib32/lib*++*
+    - ^libstdc++-32bit :
+        - /usr/lib32/lib*++*
+        - /usr/share/gdb/auto-load/usr/lib32/libstdc++*
     - main : /usr/lib64/*.a
     - ^g++ :
         - /usr/bin/c++
@@ -101,14 +105,7 @@ patterns   :
         - /usr/bin/*fortran*
         - /usr/lib64/*fortran*.a
         - /usr/share/man/*/*fortran*
-setup      : |
-    %patch -p1 < $pkgfiles/0001-gcc-Ensure-SSP-is-always-present.patch
-    %patch -p1 < $pkgfiles/0002-Use-usr-lib-64-32-x32-for-linker-locations-on-Solus-.patch
-    %patch -p1 < $pkgfiles/optimize-at-least-some.patch
-    %patch -p1 < $pkgfiles/optimize.patch
-
-    %patch -p1 < $pkgfiles/isl.patch
-
+environment: |
     export triplet=x86_64-solus-linux
     # Set sane and safe flags for a compiler build
     export CFLAGS="-mtune=generic -march=x86-64 -g1 -O3 -fstack-protector -pipe -fPIC -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=0x1000"
@@ -116,6 +113,13 @@ setup      : |
     export CFLAGS_FOR_TARGET=${CFLAGS}
     export CC=${triplet}-gcc
     export CXX=${triplet}-g++
+setup      : |
+    %patch -p1 < $sources/gcc-*-branch.patch
+
+    %patch -p1 < $pkgfiles/0001-gcc-Ensure-SSP-is-always-present.patch
+    %patch -p1 < $pkgfiles/0002-Use-usr-lib-64-32-x32-for-linker-locations-on-Solus-.patch
+    %patch -p1 < $pkgfiles/optimize-at-least-some.patch
+    %patch -p1 < $pkgfiles/optimize.patch
 
     mkdir build; pushd build
     ../configure --prefix=/usr \
@@ -134,6 +138,7 @@ setup      : |
                --enable-multilib \
                --with-multilib-list=m32,m64 \
                --enable-lto \
+               --with-gcc-major-version-only \
                --with-bugurl='https://dev.solus-project.com/' \
                --with-arch_32=i686 \
                --enable-linker-build-id  \
@@ -150,20 +155,25 @@ build      : |
 install    : |
     %make_install -C build
 
-    export triplet=x86_64-solus-linux
+    sversion=${version%.*.*}
     # Linky linky
     install -dm 00755 $installdir/lib
     ln -s /usr/bin/cpp $installdir/lib/cpp
     ln -s /usr/bin/gcc $installdir/usr/bin/cc
 
     for crt in libgcc.a crtbegin.o crtend.o crtbeginS.o crtendS.o; do
-        ln -s %libdir%/gcc/$triplet/$version/$crt $installdir/usr/lib64/$crt
-        ln -s %libdir%/gcc/$triplet/$version/32/$crt $installdir/usr/lib32/$crt
+        ln -s %libdir%/gcc/$triplet/$sversion/$crt $installdir/usr/lib64/$crt
+        ln -s %libdir%/gcc/$triplet/$sversion/32/$crt $installdir/usr/lib32/$crt
     done
 
     # Ensure LTO will work properly.
     install -dm 00755 $installdir/%libdir%/bfd-plugins
-    ln -s %libdir%/gcc/$triplet/$version/liblto_plugin.so $installdir/%libdir%/bfd-plugins/liblto_plugin.so
+    ln -s %libdir%/gcc/$triplet/$sversion/liblto_plugin.so $installdir/%libdir%/bfd-plugins/liblto_plugin.so
+
+    # Install gdb files to right location
+    install -dm00755 $installdir/usr/share/gdb/auto-load/usr/lib{32,64}
+    mv $installdir/usr/lib32/libstdc++.so.*-gdb.py $installdir/usr/share/gdb/auto-load/usr/lib32/.
+    mv $installdir/%libdir%/libstdc++.so.*-gdb.py $installdir/usr/share/gdb/auto-load/%libdir%/.
 
     # eopkg built-in dbginfo is janky
     rm $installdir/usr/bin/gcov-dump
