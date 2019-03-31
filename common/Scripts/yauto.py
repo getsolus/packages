@@ -245,8 +245,8 @@ description: |
                 install = "%ninja_install"
             elif self.compile_type == PYTHON_MODULES:
                 setup = ""
-                build = "%python_setup"
-                install = "%python_install"
+                build = "%python3_setup"
+                install = "%python3_install"
             elif self.compile_type == PERL_MODULES:
                 setup = "%perl_setup"
                 build = "%perl_build"
