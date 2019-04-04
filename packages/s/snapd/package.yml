@@ -1,7 +1,7 @@
 name       : snapd
 version    : '2.38'
 homepage   : https://snapcraft.io/
-release    : 40
+release    : 41
 source     :
     - https://github.com/snapcore/snapd/releases/download/2.38/snapd_2.38.vendor.tar.xz : 64ac100e5da2f588824a963eb2358663326d468e38d5556b289ffd9f100c1176
 license    : GPL-3.0-only
@@ -23,77 +23,58 @@ rundeps    :
     - apparmor
     - libselinux
     - squashfs-tools
+environment:
+    export snapddir=src/github.com/snapcore/snapd
+    export commands=(snap snapctl snapd snap-failure)
+    export stacommands=(snap-update-ns snap-seccomp snap-exec)
+    export bincommands=(snap snapctl)
+    export dcommands=(snapd snap-exec snap-failure snap-update-ns snap-seccomp)
 setup      : |
     mkdir -p src/github.com/snapcore
-    ln -s `pwd` src/github.com/snapcore/snapd
+    ln -s `pwd` ${snapddir}
 
-    # Set up the version from packaging
-    pushd src/github.com/snapcore/snapd
+    pushd ${snapddir}
     ./mkversion.sh "$version"
 
     %apply_patches
 
-    # Now configure C portion
     pushd cmd
     %reconfigure --enable-nvidia-biarch
 build      : |
-    commands=(snap snapctl snapd snap-failure)
-    for snapcracklepop in ${commands[@]}; do
-        GOPATH="`pwd`" go install -v github.com/snapcore/snapd/cmd/$snapcracklepop
+    for snapvar in ${commands[@]}; do
+        GOPATH="`pwd`" go install github.com/snapcore/snapd/cmd/$snapvar
     done
-    # snap-update-ns, snap-seccomp and snap-exec needs to be static.
-    pathcommands=(update-ns seccomp exec)
-    for staticpath in ${pathcommands[@]} ; do
-        GOPATH="`pwd`" go build -o bin/snap-$staticpath --ldflags '-extldflags "-static"' -v github.com/snapcore/snapd/cmd/snap-$staticpath
+    for staticpath in ${stacommands[@]} ; do
+        GOPATH="`pwd`" go build -o bin/$staticpath --ldflags '-extldflags "-static"' github.com/snapcore/snapd/cmd/$staticpath
     done
-    
-    %make -C src/github.com/snapcore/snapd/cmd
-install    : |
-    # C portions
-    %make_install -C src/github.com/snapcore/snapd/cmd
 
+    %make -C ${snapddir}/cmd
+install    : |
+    %make_install -C ${snapddir}/cmd
     # Golang binaries
-    bincommands=(snap snapctl)
-    dcommands=(snapd snap-exec snap-failure snap-update-ns snap-seccomp)
     for tgtbin in ${bincommands[@]} ; do
         install -m00755 bin/$tgtbin $installdir/usr/bin/.
     done
     for tgtbin in ${dcommands[@]} ; do
         install -m00755 bin/$tgtbin $installdir/%libdir%/$package/.
     done
-
     # Move into the base dir so we can install stuff
-    pushd src/github.com/snapcore/snapd
-
-    # Completion
-    install -m00644 data/info $installdir/%libdir%/$package/info
-    rm -vf $installdir/usr/bin/ubuntu-core-launcher
-
-    # Polkit
-    install -Dm00644 data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
-
-    # systemd
+    pushd ${snapddir}
     %make_install -C data/systemd \
-        LIBEXECDIR="%libdir%" \
-        SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system"
+            LIBEXECDIR="%libdir%" \
+            SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system"
 
-    # need tmpfiles to construct the void dir, the package is not allowed to
-    # ship with it in Solus
-    install -Dm00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
-    rm -rf $installdir/var
-
-    # You have snapd installed, so you wanna use it. Vendor-enable the .socket
-    install -dm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
-    ln -sv ../snapd.socket $installdir/%libdir%/systemd/system/sockets.target.wants/snapd.socket
-
-    # empty usr/src directory (i.e. linux-lts-headers linux-current-headers) to
-    # satisfy bindmounts in confinement
     install -Ddm00755 $installdir/usr/src
-
-    # Ensure we can integrate snapd in the environment
+    install -dm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
+        ln -sv ../snapd.socket $installdir/%libdir%/systemd/system/sockets.target.wants/snapd.socket
+    install -Dm00644 data/info $installdir/%libdir%/$package/info
+    install -Dm00644 data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
+    install -Dm00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
     install -Dm00644 $pkgfiles/70-snapd.sh $installdir/usr/share/defaults/etc/profile.d/70-snapd.sh
-
-    # bash completion
+    # Completions
     install -Dm00644 data/completion/snap $installdir/usr/share/bash-completion/completions/snap
-    install -m00644 data/completion/complete.sh $installdir/%libdir%/snapd/complete.sh
-    install -m00644 data/completion/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
+    install -Dm00644 data/completion/complete.sh $installdir/%libdir%/snapd/complete.sh
+    install -Dm00644 data/completion/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
+    # remove unneeded stuff
+    rm -rf $installdir/var
+    rm -f $installdir/usr/bin/ubuntu-core-launcher
