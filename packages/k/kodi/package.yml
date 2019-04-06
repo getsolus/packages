@@ -1,35 +1,42 @@
 name       : kodi
-version    : '17.6'
-release    : 45
+version    : '18.1'
+release    : 46
 source     :
-    - https://github.com/xbmc/xbmc/archive/17.6-Krypton.tar.gz : c8312fe92e5bab1cdac1da93d60baed88fa1574146c50c44e3c86d01671c2b1d
+    - git|https://github.com/xbmc/xbmc.git : 18.1-Leia 
 license    : GPL-2.0-or-later
 component  : desktop.multimedia
 summary    : Free and open source software media center
 description: |
-    Kodi® (formerly known as XBMC™) is an award-winning free and open source (GPL) software media center for playing videos, music, pictures, games, and more.
+    Kodi® (formerly known as XBMC™) is an award-winning free and open source
+    (GPL) software media center for playing videos, music, pictures, games,
+    and more.
 networking : yes
 builddeps  :
+    - pkgconfig(RapidJSON)
     - pkgconfig(alsa)
     - pkgconfig(avahi-client)
     - pkgconfig(bluez)
     - pkgconfig(dbus-1)
+    - pkgconfig(fmt)
+    - pkgconfig(fstrcmp)
     - pkgconfig(glu)
-    - pkgconfig(gnutls)
     - pkgconfig(lcms2)
     - pkgconfig(libass)
-    - pkgconfig(libavformat)
+    - pkgconfig(libavcodec)
     - pkgconfig(libbluray)
     - pkgconfig(libcap)
     - pkgconfig(libcdio)
     - pkgconfig(libcec)
     - pkgconfig(libcurl)
+    - pkgconfig(libdvdcss)
     - pkgconfig(libjpeg)
+    - pkgconfig(liblzma)
     - pkgconfig(libmicrohttpd)
+    - pkgconfig(libmodplug)
     - pkgconfig(libnfs)
     - pkgconfig(libplist)
-    - pkgconfig(libpng)
     - pkgconfig(libpulse)
+    - pkgconfig(libraw)
     - pkgconfig(libssh)
     - pkgconfig(libusb-1.0)
     - pkgconfig(libva)
@@ -43,8 +50,7 @@ builddeps  :
     - pkgconfig(tinyxml)
     - pkgconfig(vdpau)
     - pkgconfig(xrandr)
-    - pkgconfig(yajl)
-    - crossguid-devel
+    - flatbuffers-devel
     - giflib-devel
     - git
     - gperf
@@ -52,58 +58,58 @@ builddeps  :
     - lzo-devel
     - openjdk-8-devel
     - shairplay-devel
+    - sndio-devel
     - swig
 replaces   :
     - kodi-addon-inputstream-adaptive
+    - kodi-pvr-iptvsimple
 rundeps    :
+    - libmodplug
     - shairplay
 setup      : |
-    # WARN: Do NOT enable binutils-gold, even if kodi prefers it
-    #   --  binutils-gold makes ffmpeg barf on gnutls during ./configure
+    # WARN: Do NOT enable binutils-gold, even if kodi says it prefers it
+    #   --  binutils-gold makes the main kodi build fail.
     #
     mkdir kodi-build && cd kodi-build
-    %cmake \
-      "$workdir/project/cmake" \
+    %cmake .. \
       -DBUILD_SHARED_LIBS=ON \
       -DENABLE_EVENTCLIENTS=ON \
+      -DENABLE_MARIADBCLIENT=ON \
+      -DMARIADBCLIENT_INCLUDE_DIR=/usr/include/mysql \
+      -DENABLE_MYSQLCLIENT=OFF \
       -DLIRC_DEVICE=/var/run/lirc/lircd
 
     # INFO: To display available configuration variables and
     #       their detected values, uncomment the following:
     #
-    # cmake ../project/cmake -L | awk '{if(f)print} /-- Cache values/{f=1}'
-    # fail_for_inspection  # stop the build here to inspect config options
-
-    # INFO: The kodi binary addon build system doesn't behave like one would
-    #       expect and thus configuring the addons using PREFIX=/usr is
-    #       actually a deliberate choice:
-    #       By specifying a non-writeable prefix, we trick the build system into
-    #       installing everything under its own made-up .install/ PREFIX inside
-    #       the addon-build directory, from which we can then install the build
-    #       artifacts manually in the install section below.
+    #cmake .. -L | awk '{if(f)print} /-- Cache values/{f=0}'
+    #exit 1  # stop the build here to inspect config options
     #
-    cd .. && mkdir addon-build && cd addon-build
-    %cmake \
-    "$workdir/project/cmake/addons" \
-    -DCMAKE_PREFIX=/usr \
-    -DADDONS_TO_BUILD="inputstream.adaptive peripheral.joystick"
 build      : |
-    # noiser build for troubleshooting purposes
-    # make VERBOSE=1 -j1
+    # Fix up mariadb mysql.h include path
+    %patch -p1 < $pkgfiles/mariadb-fix.patch
+
+    # main kodi build
+    #
     %make -C kodi-build
 
-    # build binary addons
-    %make -C addon-build
+    # INFO: noiser build for troubleshooting purposes
+    # %make VERBOSE=1 -j1 -C kodi-build
+    #
 install    : |
     # install kodi proper
-    %make_install -C kodi-build
+    #
+    %make_install -C kodi-build 
 
-    # INFO: This is *by far* the easiest way to install the binary addons
-    #       Note that the '-a' flag (for 'archive') preserves the permissions
-    #       as created by the kodi binary addons makefile install target.
-    echo "Installing binary addons:"
-    cp -av $workdir/addon-build/.install/lib/* $installdir/%libdir%
-    cp -av $workdir/addon-build/.install/share/* $installdir/usr/share/
+    # INFO: The binary addons need to reference installed Kodi software
+    #       artifacts. Since we're building a "batteries included" version
+    #       of Kodi in one go, we need to violate the configure/build/install
+    #       order here and only configure *after* kodi has been installed to
+    #       the CMAKE_INSTALL_PREFIX.
+    #       Note that the default binary add-on make target includes all sorts
+    #       of fancy dependency fetching/building plus an install target.
+    #
+    %make -C tools/depends/target/binary-addons PREFIX="$installdir/usr"
 check      : |
     # INFO: Tests last forever. You can run them locally but please make sure
     #       the commands are commented out before publishing
