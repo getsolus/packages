@@ -1,0 +1,55 @@
+From 412016f1b3acc9e5acc994627f9177b1cf6b32ea Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Apr 2019 08:52:34 +0200
+Subject: [PATCH] Revert "[platforms/x11] Force glXSwapBuffers to block with
+ NVIDIA driver"
+
+This reverts commit 3ce5af5c21fd80e3da231b50c39c3ae357e9f15c.
+---
+ .../platforms/x11/standalone/glxbackend.cpp   | 22 ++++++++++++++-----
+ 1 file changed, 17 insertions(+), 5 deletions(-)
+
+diff --git a/plugins/platforms/x11/standalone/glxbackend.cpp b/plugins/platforms/x11/standalone/glxbackend.cpp
+index 70dba6000..eb2d46414 100644
+--- a/plugins/platforms/x11/standalone/glxbackend.cpp
++++ b/plugins/platforms/x11/standalone/glxbackend.cpp
+@@ -115,11 +115,6 @@ GlxBackend::GlxBackend(Display *display)
+     , haveSwapInterval(false)
+     , m_x11Display(display)
+ {
+-     // Ensures calls to glXSwapBuffers will always block until the next
+-     // retrace when using the proprietary NVIDIA driver. This must be
+-     // set before libGL.so is loaded.
+-     setenv("__GL_MaxFramesAllowed", "1", true);
+-
+      // Force initialization of GLX integration in the Qt's xcb backend
+      // to make it call XESetWireToEvent callbacks, which is required
+      // by Mesa when using DRI2.
+@@ -701,8 +696,25 @@ void GlxBackend::present()
+                 glXWaitGL();
+                 if (char result = m_swapProfiler.end()) {
+                     gs_tripleBufferUndetected = gs_tripleBufferNeedsDetection = false;
++                    if (result == 'd' && GLPlatform::instance()->driver() == Driver_NVidia) {
++                        // TODO this is a workaround, we should get __GL_YIELD set before libGL checks it
++                        if (qstrcmp(qgetenv("__GL_YIELD"), "USLEEP")) {
++                            options->setGlPreferBufferSwap(0);
++                            setSwapInterval(0);
++                            result = 0; // hint proper behavior
++                            qCWarning(KWIN_X11STANDALONE) << "\nIt seems you are using the nvidia driver without triple buffering\n"
++                                              "You must export __GL_YIELD=\"USLEEP\" to prevent large CPU overhead on synced swaps\n"
++                                              "Preferably, enable the TripleBuffer Option in the xorg.conf Device\n"
++                                              "For this reason, the tearing prevention has been disabled.\n"
++                                              "See https://bugs.kde.org/show_bug.cgi?id=322060\n";
++                        }
++                    }
+                     setBlocksForRetrace(result == 'd');
+                 }
++            } else if (blocksForRetrace()) {
++                // at least the nvidia blob manages to swap async, ie. return immediately on double
++                // buffering - what messes our timing calculation and leads to laggy behavior #346275
++                glXWaitGL();
+             }
+         } else {
+             waitSync();
+-- 
+2.20.1
