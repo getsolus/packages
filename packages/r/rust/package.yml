@@ -1,54 +1,80 @@
 name       : rust
-version    : 1.32.0
-release    : 48
+version    : 1.34.0
+release    : 49
 source     :
-    - https://static.rust-lang.org/dist/rustc-1.32.0-src.tar.gz : 4c594c7712a0e7e8eae6526c464bf6ea1d82f77b4f61717c3fc28fb27ba2224a
-    - https://static.rust-lang.org/dist/2018-12-20/rustc-1.31.1-x86_64-unknown-linux-gnu.tar.gz : 77d47ce7e27a146e4301f11befd43f3fc5ac195ace0dfc07ac8154f130b057ea
-    - https://static.rust-lang.org/dist/2018-12-20/rust-std-1.31.1-x86_64-unknown-linux-gnu.tar.gz : 699664b3a64959a2d75e486e19e7cc9934cbcbf2c57a977dd2a2b33cff367da1
-    - https://static.rust-lang.org/dist/2018-12-20/cargo-0.32.0-x86_64-unknown-linux-gnu.tar.gz : b3d3dc57182fb173ecf367f7884dceb855a096d9b9b32eba994e3359ddc68cd4
+    - https://static.rust-lang.org/dist/rustc-1.34.0-src.tar.gz : 7ac85acffd79dd3a7c44305d9eaabd1f1e7116e2e6e11e770e4bf5f92c0f1f59
+    - https://static.rust-lang.org/dist/2019-02-28/rustc-1.33.0-x86_64-unknown-linux-gnu.tar.gz : 54a342f718b712d8a17fd7878ebd37d22a82ebc70b59c421168cd4153fd04c2b
+    - https://static.rust-lang.org/dist/2019-02-28/rust-std-1.33.0-x86_64-unknown-linux-gnu.tar.gz : 661c2ba717ae1502f002b4c6e7aeb8941685c7ea8fe7ac26ed9ede26f615b7af
+    - https://static.rust-lang.org/dist/2019-02-28/cargo-0.34.0-x86_64-unknown-linux-gnu.tar.gz : 4795ae5ca3bb8c7c83ca338676bb02b670efa1eb474e346284b629dc872bcce8
 license    :
     - Apache-2.0
     - MIT
-summary    : Rust is a systems programming language that runs blazingly fast, prevents nearly all segfaults, and guarantees thread safety.
-description: |
-    Rust is a systems programming language that runs blazingly fast, prevents nearly all segfaults, and guarantees thread safety.
-component  : programming
-builddeps  :
-    - python
-rundeps    :
-    - binutils
-    - glibc-devel
+summary    :
+    - A fast and secure system programming language
+    - docs   : Documentation for the Rust language
+    - ^cargo : The Rust build system
+description:
+    - Rust is a systems programming language that runs blazingly fast, prevents nearly all segfaults, and guarantees thread safety.
+    - docs   : Documentation for the Rust language.
+    - ^cargo : The Rust build system.
+component  :
+    - programming
+    - docs   : programming
+    - ^cargo : programming.tools
 patterns   :
-    - [/usr/bin/*, /usr/lib/*, /usr/share/bash-completion/*, /usr/share/man/*]
-    - docs : [/usr/share/doc/*]
+    - ^cargo :
+        - /usr/bin/cargo
+        - /usr/share/bash-completion/completions/cargo
+        - /usr/share/man/man1/cargo*
+        - /usr/share/zsh/site-functions/_cargo
+    - docs   :
+        - /usr/share/doc/*
 libsplit   : no
-environment: |
-    unset LD_AS_NEEDED LDFLAGS CXXFLAGS CFLAGS
+builddeps  :
+    # Cargo deps
+    - pkgconfig(libgit2)
+    - pkgconfig(libssh2)
+    # i686 target deps
+    - fakeroot-32bit    # Tests
+    - glibc-32bit-devel
+    - libgcc-32bit
+rundeps    :
+    - ^cargo :
+        - libgit2
+        - libssh2
+        - rust
+setup      : |
+    %patch -p1 < $pkgfiles/Fix-rust-1.34-bootstrap.patch
+    stage0_date=$(grep '^date' src/stage0.txt | awk '{ print $2 }')
+    mkdir -p build/cache/$stage0_date
+    ln -sv $sources/* build/cache/$stage0_date/
+    sed -e 's|PREFIX|%PREFIX%|' \
+        -e 's|LIBDIR|%libdir%|' $pkgfiles/config.toml.in > config.toml
+build      : |
+    export LIBGIT2_SYS_USE_PKG_CONFIG=1
+    export LIBSSH2_SYS_USE_PKG_CONFIG=1
 
+    # These env variables are for LLVM to be built correctly
+    # since it sometimes fails on the build server
+    unset LD_AS_NEEDED LDFLAGS CXXFLAGS CFLAGS
     export CFLAGS="-march=x86-64 -mtune=generic -O3 -fstack-protector -pipe"
     export CXXFLAGS="$CFLAGS"
-    export PATH="$workdir/.bin:$PATH"
 
-    # You need to change this with every update
-    export STAGE0_DATE="2018-12-20"
-    export RUST_STD_VERS="1.31.1"
-    export CARGO_VERS="0.32.0"
-setup      : |
-    mkdir -p $workdir/build/cache/$STAGE0_DATE
-    ln -sv $sources/rust{c,-std}-$RUST_STD_VERS-x86_64-unknown-linux-gnu.tar.gz \
-        $sources/cargo-$CARGO_VERS-x86_64-unknown-linux-gnu.tar.gz \
-        $workdir/build/cache/$STAGE0_DATE/
-    mkdir -p $workdir/.bin
-    ln -sv /usr/bin/ar $workdir/.bin/x86_64-solus-linux-ar
-    sed -e 's:LIBDIR:%libdir%:' $pkgfiles/config.toml.in > $workdir/config.toml
-build      : |
     ./x.py build %JOBS%
-    ./x.py doc %JOBS%
 install    : |
-    export DESTDIR="$installdir"
-    ./x.py install %JOBS%
+    DESTDIR=$installdir ./x.py install %JOBS%
+    install -m00644 -d $installdir/usr/share/bash-completion/completions
+    mv $installdir/etc/bash_completion.d/cargo $installdir/usr/share/bash-completion/completions/
+    rm -rf $installdir/etc
+
+    # Remove text files from libs (manifests, installation logs...)
+    find $installdir/%libdir%/rustlib -maxdepth 1 -type f -delete
+
+    # Remove license files and such
+    find $installdir/usr/share/doc/rust \( -name '*LICENSE*' -o -name '*COPYRIGHT*' \) -delete
+    rm $installdir/usr/share/doc/rust/{README.md,README.md.old}
 check      : |
     ./x.py test src/test/compile-fail
-    ./x.py test src/test/rustdoc
     ./x.py test src/test/run-fail
     ./x.py test src/test/run-pass
+    ./x.py test src/test/rustdoc
