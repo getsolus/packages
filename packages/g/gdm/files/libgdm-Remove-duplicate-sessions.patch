@@ -1,0 +1,151 @@
+From beee85a6ee398f7f8d3ba09c148006c6d04c84c0 Mon Sep 17 00:00:00 2001
+From: Iain Lane <iainl@gnome.org>
+Date: Fri, 15 Mar 2019 17:51:45 +0000
+Subject: [PATCH] libgdm: Remove duplicate sessions once, after all sessions
+ have been processed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+We add sessions to a hash table keyed on the basename without extension,
+and while we're adding them we de-duplicate based on the translated name
+(the text that will be visible in the switcher).
+
+This has a problem. In this situation:
+
+```
+laney@disco:~$ tree /usr/share/{wayland-,x}sessions/
+/usr/share/wayland-sessions/
+├── gnome.desktop
+└── ubuntu-wayland.desktop
+/usr/share/xsessions/
+├── gnome.desktop -> gnome-xorg.desktop
+├── gnome-xorg.desktop
+└── ubuntu.desktop
+```
+
+We process the X sessions first, and then the Wayland sessions. The
+deduplication might end up removing `xsessions/gnome-xorg` and leaving
+`xsessions/gnome`. Then when we come to process the Wayland sessions, we
+will clobber `xsessions/gnome` with `wayland-sessions/gnome`, as they
+have the same ID.
+
+When everything is working, it is actually *intentional* that
+`xsessions/gnome` gets clobbered, so that you end up seeing "GNOME"
+(wayland) and "GNOME on Xorg" in the switcher, and not (e.g.) "GNOME on
+Xorg" twice, and you have the correct fallback behaviour in case you ever
+enable/disable Wayland.
+
+Instead of filtering while we add things, we can add all the sessions we
+find (clobbering duplicate IDs as before), and then process the list
+once at the end, removing sessions with duplicated visible names at that
+point.
+
+Closes: #473
+---
+ libgdm/gdm-sessions.c | 47 ++++++++++++++++++++++++++++---------------
+ 1 file changed, 31 insertions(+), 16 deletions(-)
+
+diff --git a/libgdm/gdm-sessions.c b/libgdm/gdm-sessions.c
+index 46713db5..9001c47b 100644
+--- a/libgdm/gdm-sessions.c
++++ b/libgdm/gdm-sessions.c
+@@ -111,14 +111,6 @@ key_file_is_relevant (GKeyFile     *key_file)
+         return TRUE;
+ }
+ 
+-static gboolean
+-find_session_with_same_name (const char     *id,
+-                             GdmSessionFile *session,
+-                             const char     *translated_name)
+-{
+-        return g_strcmp0 (session->translated_name, translated_name) == 0;
+-}
+-
+ static void
+ load_session_file (const char              *id,
+                    const char              *path)
+@@ -126,7 +118,7 @@ load_session_file (const char              *id,
+         GKeyFile          *key_file;
+         GError            *error;
+         gboolean           res;
+-        GdmSessionFile    *session, *session_with_same_name;
++        GdmSessionFile    *session;
+ 
+         key_file = g_key_file_new ();
+ 
+@@ -162,13 +154,6 @@ load_session_file (const char              *id,
+         session->translated_name = g_key_file_get_locale_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Name", NULL, NULL);
+         session->translated_comment = g_key_file_get_locale_string (key_file, G_KEY_FILE_DESKTOP_GROUP, "Comment", NULL, NULL);
+ 
+-        session_with_same_name = g_hash_table_find (gdm_available_sessions_map,
+-                                                    (GHRFunc) find_session_with_same_name,
+-                                                    session->translated_name);
+-
+-        if (session_with_same_name != NULL)
+-                g_hash_table_remove (gdm_available_sessions_map, session_with_same_name->id);
+-
+         g_hash_table_insert (gdm_available_sessions_map,
+                              g_strdup (id),
+                              session);
+@@ -176,6 +161,29 @@ load_session_file (const char              *id,
+         g_key_file_free (key_file);
+ }
+ 
++static gboolean
++remove_duplicate_sessions (gpointer key,
++                           gpointer value,
++                           gpointer user_data)
++{
++        gboolean already_known;
++        const char *id;
++        GHashTable *names_seen_before;
++        GdmSessionFile *session;
++
++        id = (const char *) key;
++        names_seen_before = (GHashTable *) user_data;
++        session = (GdmSessionFile *) value;
++        already_known = !g_hash_table_add (names_seen_before, session->translated_name);
++
++        if (already_known)
++                g_debug ("GdmSession: Removing %s (%s) as we already have a session by this name",
++                         session->id,
++                         session->path);
++
++        return already_known;
++}
++
+ static void
+ collect_sessions_from_directory (const char *dirname)
+ {
+@@ -230,6 +238,7 @@ collect_sessions_from_directory (const char *dirname)
+ static void
+ collect_sessions (void)
+ {
++        g_autoptr(GHashTable) names_seen_before = NULL;
+         GArray     *xorg_search_array = NULL;
+         GArray     *wayland_search_array = NULL;
+         gchar      *session_dir = NULL;
+@@ -241,6 +250,8 @@ collect_sessions (void)
+                 DATADIR "/xsessions/",
+         };
+ 
++        names_seen_before = g_hash_table_new (g_str_hash, g_str_equal);
++
+         xorg_search_array = g_array_new (TRUE, TRUE, sizeof (char *));
+ 
+         const gchar * const *system_data_dirs = g_get_system_data_dirs ();
+@@ -291,6 +302,10 @@ collect_sessions (void)
+         }
+ 
+         g_array_free (wayland_search_array, TRUE);
++
++        g_hash_table_foreach_remove (gdm_available_sessions_map,
++                                     remove_duplicate_sessions,
++                                     names_seen_before);
+ #endif
+ }
+ 
+-- 
+2.18.1
+
