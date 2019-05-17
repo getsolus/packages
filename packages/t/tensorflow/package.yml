@@ -1,0 +1,80 @@
+name       : tensorflow
+version    : 1.12.0
+release    : 1
+source     :
+    - https://github.com/tensorflow/tensorflow/archive/v1.12.0.tar.gz : 3c87b81e37d4ed7f3da6200474fa5e656ffd20d8811068572f43610cae97ca92
+license    : Apache-2.0
+component  :
+    - programming.python
+    - c-api : programming.library
+summary    :
+    - An open source machine learning framework for high performance numerical computation
+    - c-api : The C API for tensorflow
+description: |
+    TensorFlow™ is an open source software library for high performance numerical computation using data flow graphs.
+networking : yes
+patterns   :
+    - c-api :
+        - /usr/include
+        - /usr/lib64
+builddeps  :
+    - pkgconfig(libcares)
+    - pkgconfig(ompi)
+    - pkgconfig(python3)
+    - bazel
+    - python-keras-applications
+    - python-keras-preprocessing
+    - python-wheel
+rundeps    :
+    - python-absl-py
+    - python-astor
+    - python-gast
+    - python-keras-applications
+    - python-keras-preprocessing
+    - python-mock
+    - python-tensorboard
+setup      : |
+    %patch -p1 < $pkgfiles/import_bazelrc.patch
+
+    cp -a $workdir $PKG_BUILD_DIR/py3build
+
+    export USE_DEFAULT_PYTHON_LIB_PATH=1
+    export TF_NEED_IGNITE=0
+    export TF_ENABLE_XLA=1
+    export TF_NEED_OPENCL_SYCL=0
+    export TF_NEED_ROCM=0
+    export TF_NEED_CUDA=0
+    export TF_DOWNLOAD_CLANG=0
+    export TF_NEED_MPI=1
+    export MPI_HOME=/usr
+    export CC_OPT_FLAGS="-mtune=generic -march=x86-64 -g2 -O3"
+    export TF_SET_ANDROID_WORKSPACE=0
+
+    pushd $PKG_BUILD_DIR/py3build
+    export PYTHON_BIN_PATH=/usr/bin/python3
+    mkdir -p $PKG_BUILD_DIR/bazel-cache-py3build
+    TEST_TMPDIR=$PKG_BUILD_DIR/bazel-cache-py3build ./configure
+    popd
+build      : |
+    pushd $PKG_BUILD_DIR/py3build
+    TEST_TMPDIR=$PKG_BUILD_DIR/bazel-cache-py3build bazel build --config=opt //tensorflow:libtensorflow.so //tensorflow/tools/pip_package:build_pip_package
+    mkdir -p tmp
+    bazel-bin/tensorflow/tools/pip_package/build_pip_package tmp/tensorflow_pkg
+    popd
+install    : |
+    pushd $PKG_BUILD_DIR/py3build
+    WHEEL_NAME=$(basename tmp/tensorflow_pkg/tensorflow*.whl)
+    pip3 install --no-deps --root=$installdir tmp/tensorflow_pkg/$WHEEL_NAME
+
+    # Remove tensorboard
+    rm -rfv $installdir/usr/bin/tensorboard
+
+    # tensorflow-c-api
+    tensorflow/c/generate-pc.sh --prefix=/usr --libdir=lib64 --version=$version
+    install -Dm00644 tensorflow.pc $installdir/usr/lib64/pkgconfig/tensorflow.pc
+    install -Dm00755 bazel-bin/tensorflow/libtensorflow.so $installdir/usr/lib64/libtensorflow.so
+    ln -s /usr/lib64/python3.6/site-packages/tensorflow/libtensorflow_framework.so $installdir/usr/lib64/libtensorflow_framework.so
+    install -Dm00644 tensorflow/c/c_api.h $installdir/usr/include/tensorflow/c/c_api.h
+    install -Dm00644 tensorflow/c/c_api_experimental.h $installdir/usr/include/tensorflow/c/c_api_experimental.h
+    install -Dm00644 tensorflow/c/eager/c_api.h $installdir/usr/include/tensorflow/c/eager/c_api.h
+    popd
