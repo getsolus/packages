@@ -1,17 +1,28 @@
 #!/bin/bash
-
-VERSION="66.0.5"
+set -e
+VER=$1
 ARCH="x86_64"
-URL="https://ftp.mozilla.org/pub/firefox/releases/${VERSION}/linux-${ARCH}/xpi/"
+RELURL="https://ftp.mozilla.org/pub/firefox/releases"
 
-# Ensure we don't have a previous run living here
-if [[ -e lang_pack ]]; then
-    rm -rvf lang_pack
+if [[ ! $VER =~ ^[0-9]+(\.[0-9]+)*$ ]];
+then
+  echo "Usage: $0 <version number>"
+  echo ""
+  echo "Error: missing or invalid Firefox version number"
+  exit 1
 fi
 
-mkdir lang_pack
+echo "Processing Firefox langpacks"
 
-pushd lang_pack
+URL="${RELURL}/${VER}/linux-${ARCH}/xpi/"
+
+# Ensure we don't have a previous run living here
+if [[ -e ff_lang_pack ]]; then
+    rm -rvf ff_lang_pack
+fi
+
+mkdir ff_lang_pack
+pushd ff_lang_pack
 
 echo "mirror ." | lftp "${URL}"
 
@@ -30,4 +41,11 @@ done
 
 popd
 
-tar cvfJ firefox-${VERSION}-langpacks.tar.xz lang_pack
+tar cvfJ firefox-${VER}-langpacks.tar.xz ff_lang_pack
+
+rm -fr ff_lang_pack
+
+SHASUM=$(sha256sum firefox-${VER}-langpacks.tar.xz)
+echo ""
+echo "firefox-${VER}-langpacks.tar.xz : ${SHASUM%% *}"
+
