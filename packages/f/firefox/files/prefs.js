@@ -10,7 +10,7 @@ pref("network.manage-offline-status",       true);
 pref("extensions.shownSelectionUI",         true);
 pref("startup.homepage_override_url",       "");
 pref("browser.startup.homepage",            "data:text/plain,browser.startup.homepage=https://getsol.us/blog/");
-pref("browser.newtabpage.pinned",           '[{"url":"https://getsol.us/blog/","title":"Blogs | Solus Project"}]');
+pref("browser.newtabpage.pinned",           '[{"url":"https://getsol.us/blog/","title":"Blogs | Solus"}]');
 pref("extensions.autoDisableScopes",        0);
 pref("layers.use-image-offscreen-surfaces", false);
 pref("media.mediasource.enabled",           true);
@@ -23,3 +23,5 @@ pref("extensions.webextensions.base-content-security-policy", "script-src 'self'
 pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
 pref("spellchecker.dictionary_path", "/usr/share/hunspell");
 pref("widget.content.gtk-theme-override","Adwaita:light");
+pref("browser.newtabpage.activity-stream.disableSnippets", true);
+pref("browser.newtabpage.activity-stream.feeds.snippets", false);
