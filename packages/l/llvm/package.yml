@@ -1,6 +1,6 @@
 name       : llvm
 version    : 7.0.0
-release    : 65
+release    : 66
 source     :
     - https://releases.llvm.org/7.0.0/llvm-7.0.0.src.tar.xz : 8bc1f844e6cbde1b652c19c1edebc1864456fd9c78b8c1bea038e51b363fe222
     - https://releases.llvm.org/7.0.0/cfe-7.0.0.src.tar.xz : 550212711c752697d2f82c648714a7221b1207fd9441543ff4aa9e3be45bba55
@@ -40,11 +40,24 @@ rundeps    :
         - llvm-devel
     - clang-devel :
         - llvm-clang
+    - clang-32bit-devel :
+        - llvm-clang-32bit
+        - llvm-clang-devel
 description: |
     The LLVM package contains a collection of modular and reusable compiler and toolchain technologies. The Low Level Virtual Machine (LLVM) Core libraries provide a modern source and target-independent optimizer, along with code generation support for many popular CPUs (as well as some less common ones!). These libraries are built around a well specified code representation known as the LLVM intermediate representation ("LLVM IR").
 patterns   :
     - 32bit-devel :
+        - /usr/bin/llvm-config32
         - /usr/lib32/cmake/llvm
+    - clang-32bit :
+        - /usr/lib32/libclang*.so*
+        - /usr/lib32/liblldb*.so*
+        - /usr/lib32/lib*omp*.so*
+    - clang-32bit-devel :
+        - /usr/lib32/clang
+        - /usr/lib32/cmake/clang
+        - /usr/lib32/libclang*.a
+        - /usr/lib32/liblldb*.a
     - clang-devel :
         - /usr/include/clang*
         - /usr/include/lld*
@@ -104,16 +117,26 @@ setup      : |
 
     mkdir -p tools
 
-    # Only want clang tooling for 64bit build
+    # Set up our tools (cfe)
+    tar xf $sources/cfe-${version}.src.tar.xz -C tools
+    mv tools/cfe-${version}.src tools/clang
+
+    # Set up compiler-rt
+    tar xf $sources/compiler-rt-${version}.src.tar.xz -C projects
+    mv projects/compiler-rt-${version}.src projects/compiler-rt
+
+    # Set up openmp
+    tar xf $sources/openmp-${version}.src.tar.xz -C projects
+    mv projects/openmp-${version}.src projects/openmp
+
+    # Patch cfe for Solus specific options
+    pushd tools/clang
+        %patch -p1 < $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
+        %patch -p1 < $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
+        %patch -p1 < $pkgfiles/0001-Enable-stack-protector-strong-by-default.patch
+    popd
+
     if [[ -z "${EMUL32BUILD}" ]]; then
-        # Set up our tools (cfe)
-        tar xf $sources/cfe-${version}.src.tar.xz -C tools
-        mv tools/cfe-${version}.src tools/clang
-
-        # Set up compiler-rt
-        tar xf $sources/compiler-rt-${version}.src.tar.xz -C projects
-        mv projects/compiler-rt-${version}.src projects/compiler-rt
-
         # Set up clang-tools-extra
         tar xf $sources/clang-tools-extra-${version}*.src.tar.xz -C tools/clang/tools
         mv tools/clang/tools/clang-tools-extra-${version}*.src tools/clang/tools/extra
@@ -121,17 +144,6 @@ setup      : |
         # Set up lld
         tar xf $sources/lld-${version}.src.tar.xz -C tools
         mv tools/lld-${version}.src tools/lld
-
-        # Make openmp 64bit only for now
-        tar xf $sources/openmp-${version}.src.tar.xz -C projects
-        mv projects/openmp-${version}.src projects/openmp
-
-        # Patch cfe for Solus specific options
-        pushd tools/clang
-            %patch -p1 < $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
-            %patch -p1 < $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
-            %patch -p1 < $pkgfiles/0001-Enable-stack-protector-strong-by-default.patch
-        popd
 
         # Pull lld in line with binutils linkers for consistency
         pushd tools/lld
@@ -169,7 +181,7 @@ setup      : |
         -DLLVM_ENABLE_FFI=ON \
         -DLLVM_ENABLE_ZLIB=ON \
         -DLLVM_BUILD_DOCS=OFF \
-        -DLLVM_ENABLE_RTTI=OFF \
+        -DLLVM_ENABLE_RTTI=ON \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
         -DLLVM_ENABLE_CXX1Y=ON \
         -DENABLE_LINKER_BUILD_ID=ON \
@@ -182,16 +194,18 @@ build      : |
     %ninja_build -v
 install    : |
     %ninja_install -v
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        mv $installdir/usr/bin/llvm-config{,32}
+    fi
     mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-%LIBSUFFIX%.h
+
+    # Do NOT include libgomp*, it will conflict with libgomp
+    rm $installdir/%libdir%/libgomp.*
 
     # Only execute for 64bit build
     if [[ -z "${EMUL32BUILD}" ]]; then
         install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
         ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
-
-        # Do NOT include libgomp*, it will conflict with libgomp
-        rm $installdir/%libdir%/libgomp.*
-
         # Finally add our compatibility header
         install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
     fi
