@@ -1,0 +1,102 @@
+From 8088902fa886af20e8a4dfc8d07daa38c918eb4a Mon Sep 17 00:00:00 2001
+From: Kovid Goyal <kovid@kovidgoyal.net>
+Date: Tue, 2 Jul 2019 16:18:16 +0530
+Subject: [PATCH] Workaround for sortByColumn being partially broken in Qt
+ 5.13.0
+
+Fixes #1834989 [Qt 5.13 seems to break sorting the book list](https://bugs.launchpad.net/calibre/+bug/1834989)
+---
+ src/calibre/gui2/actions/match_books.py         |  2 +-
+ src/calibre/gui2/dialogs/edit_authors_dialog.py |  2 +-
+ src/calibre/gui2/library/models.py              |  2 +-
+ src/calibre/gui2/library/views.py               | 11 ++++++-----
+ src/calibre/gui2/tweak_book/spell.py            |  2 +-
+ 5 files changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/src/calibre/gui2/actions/match_books.py b/src/calibre/gui2/actions/match_books.py
+index fa6e043d23..d481489b8d 100644
+--- a/src/calibre/gui2/actions/match_books.py
++++ b/src/calibre/gui2/actions/match_books.py
+@@ -17,7 +17,7 @@ class MatchBookAction(InterfaceAction):
+     action_spec = (_('Match book to library'), 'book.png',
+             _('Match this book to a book in the library'),
+             ())
+-    dont_add_to = frozenset(['menubar', 'toolbar', 'context-menu', 'toolbar-child', 'context-menu-cover-browser'])
++    dont_add_to = frozenset(('menubar', 'toolbar', 'context-menu', 'toolbar-child', 'context-menu-cover-browser'))
+     action_type = 'current'
+ 
+     def genesis(self):
+diff --git a/src/calibre/gui2/dialogs/edit_authors_dialog.py b/src/calibre/gui2/dialogs/edit_authors_dialog.py
+index 9ad1e1266e..ed26c5d8aa 100644
+--- a/src/calibre/gui2/dialogs/edit_authors_dialog.py
++++ b/src/calibre/gui2/dialogs/edit_authors_dialog.py
+@@ -97,7 +97,6 @@ def __init__(self, parent, db, id_to_select, select_sort, select_link):
+         self.sort_by_author.clicked.connect(self.do_sort_by_author)
+         self.author_order = 1
+ 
+-        self.table.sortByColumn(1, Qt.AscendingOrder)
+         self.sort_by_author_sort.clicked.connect(self.do_sort_by_author_sort)
+         self.sort_by_author_sort.setCheckable(True)
+         self.sort_by_author_sort.setChecked(True)
+@@ -139,6 +138,7 @@ def __init__(self, parent, db, id_to_select, select_sort, select_link):
+ 
+         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+         self.table.customContextMenuRequested .connect(self.show_context_menu)
++        self.do_sort_by_author_sort()
+ 
+     def save_state(self):
+         self.table_column_widths = []
+diff --git a/src/calibre/gui2/library/models.py b/src/calibre/gui2/library/models.py
+index d0a34791ef..05f816f194 100644
+--- a/src/calibre/gui2/library/models.py
++++ b/src/calibre/gui2/library/models.py
+@@ -500,7 +500,7 @@ def search(self, text, reset=True):
+             self.searched.emit(True)
+         self.search_done.emit()
+ 
+-    def sort(self, col, order, reset=True):
++    def sort(self, col, order=Qt.AscendingOrder, reset=True):
+         if not self.db:
+             return
+         if not isinstance(order, bool):
+diff --git a/src/calibre/gui2/library/views.py b/src/calibre/gui2/library/views.py
+index d122d58209..5eaa3975e7 100644
+--- a/src/calibre/gui2/library/views.py
++++ b/src/calibre/gui2/library/views.py
+@@ -511,17 +511,18 @@ def set_sort_indicator(self, logical_idx, ascending):
+             ch.blockSignals(False)
+ 
+     def sort_by_column_and_order(self, col, ascending):
++        order = Qt.AscendingOrder if ascending else Qt.DescendingOrder
+         self.column_header.blockSignals(True)
+-        self.sortByColumn(col, Qt.AscendingOrder if ascending else Qt.DescendingOrder)
++        self.column_header.setSortIndicator(col, order)
+         self.column_header.blockSignals(False)
++        self.model().sort(col, order)
+         if self.is_library_view:
+             self.set_sort_indicator(col, ascending)
+ 
+     def user_sort_requested(self, col, order=Qt.AscendingOrder):
+-        if col >= len(self.column_map) or col < 0:
+-            return QTableView.sortByColumn(self, col)
+-        field = self.column_map[col]
+-        self.intelligent_sort(field, order == Qt.AscendingOrder)
++        if 0 <= col < len(self.column_map):
++            field = self.column_map[col]
++            self.intelligent_sort(field, order == Qt.AscendingOrder)
+ 
+     def pin_view_user_sort_requested(self, col, order=Qt.AscendingOrder):
+         if col < len(self.column_map) and col >= 0:
+diff --git a/src/calibre/gui2/tweak_book/spell.py b/src/calibre/gui2/tweak_book/spell.py
+index 930267b721..88026a6c00 100644
+--- a/src/calibre/gui2/tweak_book/spell.py
++++ b/src/calibre/gui2/tweak_book/spell.py
+@@ -1055,7 +1055,7 @@ def sort_type_changed(self):
+         if self.words_model.sort_on[0] == 0:
+             with self:
+                 hh = self.words_view.horizontalHeader()
+-                self.words_view.sortByColumn(hh.sortIndicatorSection(), hh.sortIndicatorOrder())
++                self.words_view.model().sort(hh.sortIndicatorSection(), hh.sortIndicatorOrder())
+ 
+     def search_type_changed(self):
+         tprefs['spell_check_case_sensitive_search'] = bool(self.case_sensitive_search.isChecked())
