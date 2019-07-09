@@ -12,6 +12,7 @@ pref("startup.homepage_override_url",       "");
 pref("browser.startup.homepage",            "data:text/plain,browser.startup.homepage=https://getsol.us/blog/");
 pref("browser.newtabpage.pinned",           '[{"url":"https://getsol.us/blog/","title":"Blogs | Solus"}]');
 pref("extensions.autoDisableScopes",        0);
+pref("extensions.htmlaboutaddons.recommendations.enabled", false);
 pref("layers.use-image-offscreen-surfaces", false);
 pref("media.mediasource.enabled",           true);
 pref("media.mediasource.webm.enabled",      true);
