@@ -1,19 +1,51 @@
 name       : android-tools
-version    : 5.1
-release    : 1
+# lookup version here
+# https://android.googlesource.com/platform/development/+/refs/heads/master/sdk/plat_tools_source.prop_template
+version    : 29.0.1
+release    : 2
 source     :
-    - https://github.com/ubports/android-tools/archive/5.1-r1.tar.gz : e90593579c1b4b3806b23e509a10465e0548fcf968a018d13e989972c8c9fd96
+    - git|https://android.googlesource.com/platform/system/core : android-9.0.0_r45
+    - git|https://android.googlesource.com/platform/system/extras : android-9.0.0_r45
+    - git|https://android.googlesource.com/platform/external/f2fs-tools : android-9.0.0_r45
+    - git|https://android.googlesource.com/platform/external/e2fsprogs : android-9.0.0_r45
+    - git|https://android.googlesource.com/platform/external/avb : android-9.0.0_r45
+    # https://android.googlesource.com/platform/external/boringssl/+/android-9.0.0_r45/BORINGSSL_REVISION
+    - git|https://boringssl.googlesource.com/boringssl : 45210dd4e21ace9d28cb76b3f83303fcdd2efcce
 license    : Apache-2.0
 summary    : Android development tools (adb and fastboot)
 component  : programming.tools
 description: |
     Android development tools, this includes adb (android debug bridge) and fastboot (diagnostic protocol for androids fastboot bootloader)
+clang      : yes
 builddeps  :
+    - pkgconfig(libusb-1.0)
+    - pkgconfig(libpcre2-8)
     - pkgconfig(libselinux)
+    - pkgconfig(libsepol)
+    - gtest-devel
+    - ruby
+    - golang
+environment:
+    export PKGVER=%version%
 setup      : |
-    #Patch for obsolete use of major() and minor() to fix build
-    %patch -p2 < $pkgfiles/major_minor.patch
+    # Cleanup build dir and copy all the sources in their respective directories
+    rm -rf *
+    pushd $sources
+    for src in *.git ; do
+        cp -r "$src" "$workdir/${src%.git}"
+    done
+    popd
+
+    # Patch the sources so they can build on Solus
+    %patch -p1 < $pkgfiles/fix_build_core.patch -d $workdir/core
+    %patch -p1 < $pkgfiles/fix_build_e2fsprogs.patch -d $workdir/e2fsprogs
+    sed -i 's|/usr/bin/env python$|/usr/bin/env python2|g' $workdir/avb/avbtool
+
+    # Generate ninja build files
+    $pkgfiles/generate_build.rb > $workdir/build.ninja
+    mkdir -p $workdir/boringssl/build && cd $workdir/boringssl/build && cmake -GNinja ..
 build      : |
-    %make
+    ninja %JOBS% -C $workdir/boringssl/build
+    ninja %JOBS% -C $workdir
 install    : |
-    %make_install
+    install -Dm00755 -t "$installdir"/usr/bin adb fastboot mke2fs.android e2fsdroid ext2simg core/mkbootimg/mkbootimg avb/avbtool
