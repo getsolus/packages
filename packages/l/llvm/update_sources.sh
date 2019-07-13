@@ -1,5 +1,5 @@
 #!/bin/bash
-LLVMVERSION=7.0.0
+LLVMVERSION=8.0.0
 LINKS="https://releases.llvm.org/${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/cfe-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/compiler-rt-${LLVMVERSION}.src.tar.xz
@@ -8,7 +8,7 @@ LINKS="https://releases.llvm.org/${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/libcxx-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/libcxxabi-${LLVMVERSION}.src.tar.xz
     https://releases.llvm.org/${LLVMVERSION}/openmp-${LLVMVERSION}.src.tar.xz
-
+"
 pushd /tmp
 wget ${LINKS} > /dev/null
 for i in ${LINKS}; do
