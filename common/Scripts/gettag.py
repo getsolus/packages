@@ -19,7 +19,7 @@ def getYmlTag(spec):
     y = None
     try:
         f = open(spec, "r")
-        y = yaml.load(f)
+        y = yaml.safe_load(f)
         f.close()
     except Exception, e:
         print "Unable to load %s: %s" % (spec, e)
