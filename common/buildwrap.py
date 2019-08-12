@@ -26,8 +26,8 @@ import shlex
 import glob
 
 WorkDir = "/BUILDDIR"
-SSH_HOST = "solus-project.com"
-BASE_REPO = "ssh://vcs@dev.solus-project.com/source"
+SSH_HOST = "getsol.us"
+BASE_REPO = "ssh://vcs@dev.getsol.us:2222/source"
 
 targetRepo = "unstable"
 

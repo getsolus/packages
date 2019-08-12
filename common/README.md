@@ -1,7 +1,7 @@
 Getting setup
 ------------
 
-    git clone https://dev.solus-project.com/source/common.git
+    git clone https://dev.getsol.us:2222/source/common.git
     ln -sv common/Makefile.common .
     ln -sv common/Makefile.toplevel Makefile
     ln -sv common/Makefile.iso .
@@ -29,7 +29,7 @@ Submitting a build
 -----------------
 Submission is only possible for maintainers. As a maintainer you may freely
 push to your package(s) and initiate builds for them, which will be pushed to
-the unstable repository. You can watch builds at the [Solus Package Build Status Page](https://build.solus-project.com/)
+the unstable repository. You can watch builds at the [Solus Package Build Status Page](https://build.getsol.us/)
 
 If you're submitting a `package.yml` build, ensure you also commit the `pspec_$ARCH.xml`
 file, as builds are created from git tags.
@@ -47,7 +47,7 @@ To request maintainer rights for a repository, it is expected that some level
 of contribution/maintenance has already happened by way of testing/patching, and
 there is reasonable trust demonstrated to "hand the keys" over to a repository.
 
-Currently, the request mechanism is to [email ikey](mailto:root@solus-project.com), or [catch him on IRC](irc://irc.freenode.net/#Solus-Dev)
+Currently, the request mechanism is to [catch JoshStrobl on IRC](irc://irc.freenode.net/#Solus-Dev)
 Bluntly put, it is far easier to grant access to active community members than those
 unknown to the project.
 
