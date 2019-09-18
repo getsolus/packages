@@ -1,0 +1,67 @@
+From c9c53cb55fd6e782c50f36da1e2adbf28111a660 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Fri, 20 Sep 2019 16:21:00 +0200
+Subject: [PATCH] clutter/actor: Cancel delayed timelines on removal
+
+Delayed clutter timelines might be removed while they are still in the
+process of being executed, but if they are not playing yet their delay
+timeout won't be stopped, causing them to be executed anyway, leading to a
+potential crash.
+
+In fact if something else keeps a reference on the timelines (i.e. gjs), the
+dispose vfunc delay cancellation won't take effect, causing the timelines to
+be started and added to the master clock.
+
+To avoid this, expose clutter_timeline_cancel_delay() function and call it
+if a timeline is not playing but has a delay set.
+
+Fixes https://gitlab.gnome.org/GNOME/mutter/issues/815
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/805
+---
+ clutter/clutter/clutter-actor.c    | 2 ++
+ clutter/clutter/clutter-private.h  | 2 ++
+ clutter/clutter/clutter-timeline.c | 2 +-
+ 3 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index f600a838c..0aa77e3d6 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -19484,6 +19484,8 @@ transition_closure_free (gpointer data)
+ 
+       if (clutter_timeline_is_playing (timeline))
+         clutter_timeline_stop (timeline);
++      else if (clutter_timeline_get_delay (timeline) > 0)
++        clutter_timeline_cancel_delay (timeline);
+ 
+       /* remove the reference added in add_transition_internal() */
+       g_object_unref (clos->transition);
+diff --git a/clutter/clutter/clutter-private.h b/clutter/clutter/clutter-private.h
+index a34cae44b..d1da84c8e 100644
+--- a/clutter/clutter/clutter-private.h
++++ b/clutter/clutter/clutter-private.h
+@@ -315,6 +315,8 @@ gboolean        _clutter_run_progress_function  (GType gtype,
+                                                  gdouble progress,
+                                                  GValue *retval);
+ 
++void            clutter_timeline_cancel_delay (ClutterTimeline *timeline);
++
+ G_END_DECLS
+ 
+ #endif /* __CLUTTER_PRIVATE_H__ */
+diff --git a/clutter/clutter/clutter-timeline.c b/clutter/clutter/clutter-timeline.c
+index bb4f77f06..88b76be4b 100644
+--- a/clutter/clutter/clutter-timeline.c
++++ b/clutter/clutter/clutter-timeline.c
+@@ -424,7 +424,7 @@ clutter_timeline_set_custom_property (ClutterScriptable *scriptable,
+     g_object_set_property (G_OBJECT (scriptable), name, value);
+ }
+ 
+-static void
++void
+ clutter_timeline_cancel_delay (ClutterTimeline *timeline)
+ {
+   g_clear_handle_id (&timeline->priv->delay_id, g_source_remove);
+-- 
+2.22.0
+
