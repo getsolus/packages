@@ -32,6 +32,8 @@ RUBY = 7
 RUBY_GEMS = 8
 MESON = 9
 YARN  = 10
+WAF = 11
+QMAKE = 12
 
 class DepObject:
 
@@ -149,6 +151,10 @@ class AutoPackage:
                         known_types.append(CMAKE)
                 if "yarn.lock" in file:
                     known_types.append(YARN)
+                if "wscript" in file:
+                    known_types.append(WAF)
+                if ".pro" in file:
+                    known_types.append(QMAKE)
         if ".gem" in self.file_name:
             known_types.append(RUBY_GEMS)
 
@@ -180,6 +186,12 @@ class AutoPackage:
         elif MESON in known_types:
             print "meson"
             self.compile_type = MESON
+        elif WAF in known_types:
+            self.compile_type = WAF
+            print "waf"
+        elif QMAKE in known_types:
+            self.compile_type = QMAKE
+            print "qmake"
         elif YARN in known_types:
             self.compile_type = YARN
             self.networking = True
@@ -288,6 +300,14 @@ description: |
                 setup = ""
                 build = ""
                 install = "%gem_install"
+            elif self.compile_type == QMAKE:
+                setup = "%qmake"
+                build = "%make"
+                install = "%make_install"
+            elif self.compile_type == WAF:
+                setup = "%waf_configure"
+                build = "%waf_build"
+                install = "%waf_install"
             elif self.compile_type == YARN:
                 setup = "yarn install"
                 build = ""
