@@ -30,6 +30,7 @@ PERL_MODULES = 5
 CABAL = 6
 RUBY = 7
 RUBY_GEMS = 8
+MESON = 9
 
 class DepObject:
 
@@ -125,9 +126,6 @@ class AutoPackage:
                         known_types.append(GNOMEY)
                     else:
                         known_types.append(AUTOTOOLS)
-                if "CMakeLists.txt" in file:
-                    # This will use the actions with cmake
-                    known_types.append(CMAKE)
                 if "setup.py" in file:
                     # this is a python module.
                     known_types.append(PYTHON_MODULES)
@@ -140,6 +138,17 @@ class AutoPackage:
                     known_types.append(CABAL)
                 if ".gemspec" in file:
                     known_types.append(RUBY)
+                if "meson.build" in file:
+                    known_types.append(MESON)
+                    try:
+                        known_types.remove(CMAKE)
+                    except:
+                        pass
+                if "CMakeLists.txt" in file:
+                    try:
+                        known_types.index(MESON)
+                    except: # Don't have Meson added
+                        known_types.append(CMAKE)
         if ".gem" in self.file_name:
             known_types.append(RUBY_GEMS)
 
@@ -168,6 +177,9 @@ class AutoPackage:
         elif RUBY_GEMS in known_types:
             print "ruby-gem"
             self.compile_type = RUBY_GEMS
+        elif MESON in known_types:
+            print "meson"
+            self.compile_type = MESON
         else:
             print "unknown"
 
@@ -241,6 +253,10 @@ description: |
                 setup = "%configure --disable-static"
             elif self.compile_type == CMAKE:
                 setup = "%cmake_ninja"
+                build = "%ninja_build"
+                install = "%ninja_install"
+            elif self.compile_type == MESON:
+                setup = "%meson_configure"
                 build = "%ninja_build"
                 install = "%ninja_install"
             elif self.compile_type == PYTHON_MODULES:
