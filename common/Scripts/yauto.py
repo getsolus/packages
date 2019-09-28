@@ -31,6 +31,7 @@ CABAL = 6
 RUBY = 7
 RUBY_GEMS = 8
 MESON = 9
+YARN  = 10
 
 class DepObject:
 
@@ -86,6 +87,7 @@ class AutoPackage:
         # Package name, including hyphens
         self.package_name = ("-".join(path.split("-")[:-1])).lower()
         self.compile_type = None
+        self.networking = False
 
         print "Package: %s\nVersion: %s" % (self.package_name, self.version_string)
 
@@ -140,15 +142,13 @@ class AutoPackage:
                     known_types.append(RUBY)
                 if "meson.build" in file:
                     known_types.append(MESON)
-                    try:
+                    if CMAKE in known_types:
                         known_types.remove(CMAKE)
-                    except:
-                        pass
                 if "CMakeLists.txt" in file:
-                    try:
-                        known_types.index(MESON)
-                    except: # Don't have Meson added
+                    if not MESON in known_types:
                         known_types.append(CMAKE)
+                if "yarn.lock" in file:
+                    known_types.append(YARN)
         if ".gem" in self.file_name:
             known_types.append(RUBY_GEMS)
 
@@ -180,6 +180,10 @@ class AutoPackage:
         elif MESON in known_types:
             print "meson"
             self.compile_type = MESON
+        elif YARN in known_types:
+            self.compile_type = YARN
+            self.networking = True
+            print "yarn"
         else:
             print "unknown"
 
@@ -219,7 +223,7 @@ class AutoPackage:
         return deps
 
     def create_yaml(self):
-        ''' Attempt creation of a package.yaml... '''
+        ''' Attempt creation of a package.yml... '''
         with open('package.yml', 'w') as yml:
             mapping = { "NAME" : self.package_name,
                         "VERSION" : self.version_string,
@@ -232,11 +236,15 @@ release    : 1
 source     :
     - %(SOURCE)s : %(SHA256SUM)s
 license    : GPL-2.0-or-later # CHECK ME
-component  : PLEASE FILL ME IN
-summary    : PLEASE FILL ME IN
+component  : PLEASE FILL ME IN\n""" % mapping
+
+            if self.networking:
+                tmp += "\nnetworking : yes\n"
+
+            tmp += """summary    : PLEASE FILL ME IN
 
 description: |
-    PLEASE FILL ME IN""" % mapping
+    PLEASE FILL ME IN"""
 
             totalStr = tmp
             setup = None
@@ -280,7 +288,11 @@ description: |
                 setup = ""
                 build = ""
                 install = "%gem_install"
-
+            elif self.compile_type == YARN:
+                setup = "yarn install"
+                build = ""
+                install = ""
+            
             if setup is None:
                 setup = "%configure"
             if build is None:
