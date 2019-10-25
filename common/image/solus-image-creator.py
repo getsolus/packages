@@ -31,7 +31,6 @@ release = False
 
 # We rmf these packages if they exist just to clean out the ISO again.
 initrd_cleanups = {
-    '/lib/firmware/intel-ucode' : 'intel-microcode',
     '/usr/bin/strip': 'binutils',
     '/usr/bin/dracut': 'dracut',
     '/usr/sbin/prelink': 'prelink',
