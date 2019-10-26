@@ -14,7 +14,7 @@ import (
 func PausePrompt() {
 	var response string
 	var yesNo bool
-	
+
 	for !yesNo { // While we haven't replied yes / no
 		fmt.Print("Does this directory contain all the child directories of various repos (such as nano)? [y/N]: ")
 		stdinReader := bufio.NewReader(os.Stdin)     // Create a new buffer IO reader that reads stdinReader
@@ -36,16 +36,13 @@ func PausePrompt() {
 	}
 }
 
-
-
 func main() {
 	fmt.Println("This script will attempt to update all your git URLs for repos to point to getsol.us.")
 	fmt.Println("In the event this is not successful, please reclone common and re-run make clone.")
 	PausePrompt()
 
-
 	// If we're continuing, we're in the right directory
-	if workDir, getWdErr := os.Getwd(); getWdErr == nil {	
+	if workDir, getWdErr := os.Getwd(); getWdErr == nil {
 		failedRepoChanges := []string{}
 		currentUser, getUserErr := user.Current() // Get the current user
 
@@ -86,8 +83,8 @@ func main() {
 						configContents, configReadErr := ioutil.ReadFile(repoGitConfigPath)
 
 						if configReadErr == nil {
-							config := string(configContents[:]) // Convert to a string
-							config = strings.Replace(config, "http://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTP with HTTPS
+							config := string(configContents[:])                                                              // Convert to a string
+							config = strings.Replace(config, "http://dev.solus-project.com/", "https://dev.getsol.us/", -1)  // Replace HTTP with HTTPS
 							config = strings.Replace(config, "https://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTPS
 							config = strings.Replace(config, "ssh://vcs@dev.solus-project.com/", "ssh://vcs@dev.getsol.us:2222/", -1)
 
