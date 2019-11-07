@@ -67,7 +67,7 @@ Name                : ldb, version: 1.5.5, release: 11
 
 ```
 
-In this example, ldb needs to be updated from 1.5.5 -> 1.5.6 in the Solus repo.
+In this example, ldb needs to be updated from 1.5.5 -> 1.5.6 in the Solus repo prior to building and landing Samba-4.10.10.
 
 
 ## Worst case Samba rebuild stack:
@@ -108,8 +108,16 @@ When doing major version updates, create a phab task with associated diff stacks
 - gvfs
 - kio-extras
 - kodi (this takes around 1 hour on my system)
-- kodi-devel (not listed by `eopkg-deps rev samba`, but still necessary)
+- kodi-devel (not listed by `eopkg-deps rev samba`, but still recommended due to kodi rebuild)
 - mpd
 - mpv (mpv-libs is built as part of mpv)
 - python-pysmbc
 - vlc
+
+## Suggested Test Plan for each Samba rebuild
+
+- Run sudo testparm -v and check for anomalies in the default config
+- Run sudo systemctl enable --now smb ; smbclient -N -L localhost and check that the service runs and that it is possible to connect to the smb daemon
+-- look for smbd and ports 139 and 445 in `sudo ss -plantu`
+- Rebuild current gvfs and kio-extras (*especially important if there were removals in abi_symbols*), reboot and ensure that anonymous and authenticated user access works in the Dolphin and Nautilus file managers
+- Rebuild mpv, vlc and kodi (*especially important if there were removals in abi_symbols*) and ensure that smb:// URI playback works (note that vlc can be temperamental in this regard)
