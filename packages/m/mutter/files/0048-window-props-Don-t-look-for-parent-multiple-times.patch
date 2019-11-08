@@ -1,0 +1,79 @@
+From 598be2b1d8335b2837e2d1d23db2fd20706753e2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Tue, 29 Oct 2019 16:14:43 +0000
+Subject: [PATCH 48/50] window-props: Don't look for parent multiple times
+
+Once we set the transient_for, we look for parent MetaWindow, so instead
+of overwriting this value for loops check, just use another function
+and avoid to look for the xwindow again when setting the MetaWindow parent.
+
+https://gitlab.gnome.org/GNOME/mutter/merge_requests/895
+
+
+(cherry picked from commit c85fb107c0556283062f2bf9b8d990f1e2c0acae)
+---
+ src/x11/window-props.c | 33 ++++++++++++++++++++-------------
+ 1 file changed, 20 insertions(+), 13 deletions(-)
+
+diff --git a/src/x11/window-props.c b/src/x11/window-props.c
+index 48454befe..2564909a9 100644
+--- a/src/x11/window-props.c
++++ b/src/x11/window-props.c
+@@ -1625,6 +1625,22 @@ reload_wm_hints (MetaWindow    *window,
+   meta_window_queue (window, META_QUEUE_UPDATE_ICON | META_QUEUE_MOVE_RESIZE);
+ }
+ 
++static gboolean
++check_xtransient_for_loop (MetaWindow *window,
++                           MetaWindow *parent)
++{
++  while (parent)
++    {
++      if (parent == window)
++        return TRUE;
++
++      parent = meta_x11_display_lookup_x_window (parent->display->x11_display,
++                                                 parent->xtransient_for);
++    }
++
++  return FALSE;
++}
++
+ static void
+ reload_transient_for (MetaWindow    *window,
+                       MetaPropValue *value,
+@@ -1647,18 +1663,11 @@ reload_transient_for (MetaWindow    *window,
+         }
+ 
+       /* Make sure there is not a loop */
+-      while (parent)
++      if (check_xtransient_for_loop (window, parent))
+         {
+-          if (parent == window)
+-            {
+-              meta_warning ("WM_TRANSIENT_FOR window 0x%lx for %s would create loop.\n",
+-                            transient_for, window->desc);
+-              transient_for = None;
+-              break;
+-            }
+-
+-          parent = meta_x11_display_lookup_x_window (parent->display->x11_display,
+-                                                     parent->xtransient_for);
++          meta_warning ("WM_TRANSIENT_FOR window 0x%lx for %s would create a "
++                        "loop.\n", transient_for, window->desc);
++          transient_for = None;
+         }
+     }
+   else
+@@ -1679,8 +1688,6 @@ reload_transient_for (MetaWindow    *window,
+     meta_window_set_transient_for (window, NULL);
+   else
+     {
+-      parent = meta_x11_display_lookup_x_window (window->display->x11_display,
+-                                                 window->xtransient_for);
+       meta_window_set_transient_for (window, parent);
+     }
+ }
+-- 
+2.23.0
+

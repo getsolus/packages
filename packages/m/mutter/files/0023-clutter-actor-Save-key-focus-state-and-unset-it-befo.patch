@@ -1,0 +1,232 @@
+From a22731e2b2982019863784f30177dac2b7942be3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Thu, 10 Oct 2019 16:11:20 +0000
+Subject: [PATCH 23/50] clutter/actor: Save key-focus state and unset it before
+ destruction
+
+When clutter actors with key focus are destroyed we emit ::key-focus-out on
+them just after their destruction. This is against our assumption that no
+signal should be emitted after "::destroy" (see GNOME/mutter!769 [1]), and
+in fact could cause the shell to do actions that we won't ever stop on
+destroy callback.
+
+To avoid this to happen, use a private function to set its key-state (so we
+can avoid looking for the stage) and emit ::key-focus-in/out events and use
+this value in both clutter_actor_has_key_focus(),
+clutter_actor_grab_key_focus() and on unmap and destruction to unset the
+stage key focus before we emit the ::destroy signal.
+
+As result of this, we can now avoid to unset the key focus on actor
+destruction in the stage.
+
+[1] https://gitlab.gnome.org/GNOME/mutter/merge_requests/769
+
+Fixes https://gitlab.gnome.org/GNOME/gnome-shell/issues/1704
+
+
+(cherry picked from commit c2d03bf73e5a945296d22c4d95709eeebf2eb57c)
+---
+ clutter/clutter/clutter-actor-private.h |  3 ++
+ clutter/clutter/clutter-actor.c         | 57 +++++++++++++++++--------
+ clutter/clutter/clutter-stage.c         | 31 +++-----------
+ 3 files changed, 48 insertions(+), 43 deletions(-)
+
+diff --git a/clutter/clutter/clutter-actor-private.h b/clutter/clutter/clutter-actor-private.h
+index 119ec4296..fa2d4c328 100644
+--- a/clutter/clutter/clutter-actor-private.h
++++ b/clutter/clutter/clutter-actor-private.h
+@@ -274,6 +274,9 @@ void                            _clutter_actor_set_enable_paint_unmapped
+ void                            _clutter_actor_set_has_pointer                          (ClutterActor *self,
+                                                                                          gboolean      has_pointer);
+ 
++void                            _clutter_actor_set_has_key_focus                        (ClutterActor *self,
++                                                                                         gboolean      has_key_focus);
++
+ void                            _clutter_actor_queue_redraw_with_clip                   (ClutterActor             *self,
+                                                                                          ClutterRedrawFlags        flags,
+                                                                                          const ClutterPaintVolume *clip_volume);
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index e763291a5..ecf9a597d 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -835,6 +835,7 @@ struct _ClutterActorPrivate
+   guint enable_model_view_transform : 1;
+   guint enable_paint_unmapped       : 1;
+   guint has_pointer                 : 1;
++  guint has_key_focus               : 1;
+   guint propagated_one_redraw       : 1;
+   guint paint_volume_valid          : 1;
+   guint last_paint_volume_valid     : 1;
+@@ -1691,6 +1692,20 @@ clutter_actor_is_mapped (ClutterActor *self)
+   return CLUTTER_ACTOR_IS_MAPPED (self);
+ }
+ 
++static void
++maybe_unset_key_focus (ClutterActor *self)
++{
++  ClutterActor *stage;
++
++  if (!self->priv->has_key_focus)
++    return;
++
++  stage = _clutter_actor_get_stage_internal (self);
++
++  if (stage)
++    clutter_stage_set_key_focus (CLUTTER_STAGE (stage), NULL);
++}
++
+ static void
+ clutter_actor_real_unmap (ClutterActor *self)
+ {
+@@ -1724,17 +1739,7 @@ clutter_actor_real_unmap (ClutterActor *self)
+ 
+   /* relinquish keyboard focus if we were unmapped while owning it */
+   if (!CLUTTER_ACTOR_IS_TOPLEVEL (self))
+-    {
+-      ClutterStage *stage;
+-
+-      stage = CLUTTER_STAGE (_clutter_actor_get_stage_internal (self));
+-
+-      if (stage != NULL &&
+-          clutter_stage_get_key_focus (stage) == self)
+-        {
+-          clutter_stage_set_key_focus (stage, NULL);
+-        }
+-    }
++    maybe_unset_key_focus (self);
+ }
+ 
+ /**
+@@ -6064,6 +6069,8 @@ clutter_actor_dispose (GObject *object)
+                 object->ref_count,
+ 		g_type_name (G_OBJECT_TYPE (self)));
+ 
++  maybe_unset_key_focus (self);
++
+   /* Stop the emission of any property change */
+   g_object_freeze_notify (object);
+ 
+@@ -15979,6 +15986,9 @@ clutter_actor_grab_key_focus (ClutterActor *self)
+ 
+   g_return_if_fail (CLUTTER_IS_ACTOR (self));
+ 
++  if (self->priv->has_key_focus)
++    return;
++
+   stage = _clutter_actor_get_stage_internal (self);
+   if (stage != NULL)
+     clutter_stage_set_key_focus (CLUTTER_STAGE (stage), self);
+@@ -16768,6 +16778,23 @@ _clutter_actor_set_has_pointer (ClutterActor *self,
+     }
+ }
+ 
++void
++_clutter_actor_set_has_key_focus (ClutterActor *self,
++                                  gboolean      has_key_focus)
++{
++  ClutterActorPrivate *priv = self->priv;
++
++  if (priv->has_key_focus != has_key_focus)
++    {
++      priv->has_key_focus = has_key_focus;
++
++      if (has_key_focus)
++        g_signal_emit (self, actor_signals[KEY_FOCUS_IN], 0);
++      else
++        g_signal_emit (self, actor_signals[KEY_FOCUS_OUT], 0);
++    }
++}
++
+ /**
+  * clutter_actor_get_text_direction:
+  * @self: a #ClutterActor
+@@ -17616,15 +17643,9 @@ clutter_actor_clear_effects (ClutterActor *self)
+ gboolean
+ clutter_actor_has_key_focus (ClutterActor *self)
+ {
+-  ClutterActor *stage;
+-
+   g_return_val_if_fail (CLUTTER_IS_ACTOR (self), FALSE);
+ 
+-  stage = _clutter_actor_get_stage_internal (self);
+-  if (stage == NULL)
+-    return FALSE;
+-
+-  return clutter_stage_get_key_focus (CLUTTER_STAGE (stage)) == self;
++  return self->priv->has_key_focus;
+ }
+ 
+ static gboolean
+diff --git a/clutter/clutter/clutter-stage.c b/clutter/clutter/clutter-stage.c
+index 245cb8997..3a8a019d2 100644
+--- a/clutter/clutter/clutter-stage.c
++++ b/clutter/clutter/clutter-stage.c
+@@ -1066,10 +1066,7 @@ clutter_stage_emit_key_focus_event (ClutterStage *stage,
+   if (priv->key_focused_actor == NULL)
+     return;
+ 
+-  if (focus_in)
+-    g_signal_emit_by_name (priv->key_focused_actor, "key-focus-in");
+-  else
+-    g_signal_emit_by_name (priv->key_focused_actor, "key-focus-out");
++  _clutter_actor_set_has_key_focus (CLUTTER_ACTOR (stage), focus_in);
+ 
+   g_object_notify_by_pspec (G_OBJECT (stage), obj_props[PROP_KEY_FOCUS]);
+ }
+@@ -3011,14 +3008,6 @@ clutter_stage_get_title (ClutterStage       *stage)
+   return stage->priv->title;
+ }
+ 
+-static void
+-on_key_focus_destroy (ClutterActor *actor,
+-                      ClutterStage *stage)
+-{
+-  /* unset the key focus */
+-  clutter_stage_set_key_focus (stage, NULL);
+-}
+-
+ /**
+  * clutter_stage_set_key_focus:
+  * @stage: the #ClutterStage
+@@ -3058,18 +3047,14 @@ clutter_stage_set_key_focus (ClutterStage *stage,
+       old_focused_actor = priv->key_focused_actor;
+ 
+       /* set key_focused_actor to NULL before emitting the signal or someone
+-       * might hide the previously focused actor in the signal handler and we'd
+-       * get re-entrant call and get glib critical from g_object_weak_unref
++       * might hide the previously focused actor in the signal handler
+        */
+-      g_signal_handlers_disconnect_by_func (priv->key_focused_actor,
+-                                            G_CALLBACK (on_key_focus_destroy),
+-                                            stage);
+       priv->key_focused_actor = NULL;
+ 
+-      g_signal_emit_by_name (old_focused_actor, "key-focus-out");
++      _clutter_actor_set_has_key_focus (old_focused_actor, FALSE);
+     }
+   else
+-    g_signal_emit_by_name (stage, "key-focus-out");
++    _clutter_actor_set_has_key_focus (CLUTTER_ACTOR (stage), FALSE);
+ 
+   /* Note, if someone changes key focus in focus-out signal handler we'd be
+    * overriding the latter call below moving the focus where it was originally
+@@ -3079,14 +3064,10 @@ clutter_stage_set_key_focus (ClutterStage *stage,
+   if (actor != NULL)
+     {
+       priv->key_focused_actor = actor;
+-
+-      g_signal_connect (actor,
+-                        "destroy", G_CALLBACK (on_key_focus_destroy),
+-                        stage);
+-      g_signal_emit_by_name (priv->key_focused_actor, "key-focus-in");
++      _clutter_actor_set_has_key_focus (actor, FALSE);
+     }
+   else
+-    g_signal_emit_by_name (stage, "key-focus-in");
++    _clutter_actor_set_has_key_focus (CLUTTER_ACTOR (stage), TRUE);
+ 
+   g_object_notify_by_pspec (G_OBJECT (stage), obj_props[PROP_KEY_FOCUS]);
+ }
+-- 
+2.23.0
+
