@@ -1,13 +1,13 @@
 #!/bin/bash
-LLVMVERSION=8.0.1
-LINKS="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/cfe-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/compiler-rt-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/lld-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/clang-tools-extra-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/libcxx-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/libcxxabi-${LLVMVERSION}.src.tar.xz
-    https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/openmp-${LLVMVERSION}.src.tar.xz
+LLVMVERSION=9.0.0
+LINKS="https://releases.llvm.org/${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/cfe-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/compiler-rt-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/lld-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/clang-tools-extra-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/libcxx-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/libcxxabi-${LLVMVERSION}.src.tar.xz
+    https://releases.llvm.org/${LLVMVERSION}/openmp-${LLVMVERSION}.src.tar.xz
 "
 pushd /tmp
 wget ${LINKS} > /dev/null
