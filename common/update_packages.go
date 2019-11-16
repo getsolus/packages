@@ -45,6 +45,7 @@ var excludes = []string{
 	"solus-site-backend",
 	"solus-site-styling",
 	"solus-webplatform-js",
+	"ypkg-next-gen",
 }
 
 type ARCRC struct {
