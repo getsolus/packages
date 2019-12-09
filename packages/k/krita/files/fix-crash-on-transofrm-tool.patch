@@ -1,0 +1,51 @@
+From 2dc2ed5f5a6be2b81aab5001de8389e3f3cbdcac Mon Sep 17 00:00:00 2001
+From: Dmitry Kazakov <dimula73@gmail.com>
+Date: Wed, 4 Dec 2019 20:41:25 +0300
+Subject: [PATCH] Fix a crash when cancelling Transform Tool action
+
+The crash happens only on systems that have asserts enabled, that
+is, don't have NDEBUG defined.
+
+Binding uninitialized '*m_savedTransformArgs' to a cont-reference
+generated valid c++ code (a reference initialized with nullptr),
+and given that finishStrokeImpl() didn't try to use/dereference
+this reference, the code worked fine and didn't crash on systems
+without asserts.
+
+But on systems with asserts enabled (non NDEBUG), boost::optional
+triggered a sanity check assert for dereferencing nullptr and crashed
+the application.
+
+The patch removes entire code for resetting m_savedTransformArgs in
+cancelStrokeCallback(). It was actually an artifact of some initial
+refactoring.
+
+Thanks Fredrik Hansson for pointing out the problem!
+https://invent.kde.org/kde/krita/merge_requests/197
+
+BUG:414672
+---
+ .../strokes/transform_stroke_strategy.cpp                | 9 +--------
+ 1 file changed, 1 insertion(+), 8 deletions(-)
+
+diff --git a/plugins/tools/tool_transform2/strokes/transform_stroke_strategy.cpp b/plugins/tools/tool_transform2/strokes/transform_stroke_strategy.cpp
+index 42d405feae..1b1318e82a 100644
+--- a/plugins/tools/tool_transform2/strokes/transform_stroke_strategy.cpp
++++ b/plugins/tools/tool_transform2/strokes/transform_stroke_strategy.cpp
+@@ -706,12 +706,5 @@ void TransformStrokeStrategy::finishStrokeCallback()
+ 
+ void TransformStrokeStrategy::cancelStrokeCallback()
+ {
+-    const bool shouldRecoverSavedInitialState =
+-        !m_initialTransformArgs.isIdentity();
+-
+-    if (shouldRecoverSavedInitialState) {
+-        m_savedTransformArgs = m_initialTransformArgs;
+-    }
+-
+-    finishStrokeImpl(shouldRecoverSavedInitialState, *m_savedTransformArgs);
++    finishStrokeImpl(!m_initialTransformArgs.isIdentity(), m_initialTransformArgs);
+ }
+-- 
+2.24.0
+
