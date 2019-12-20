@@ -96,9 +96,6 @@ start()
     if ! $MODPROBE vboxnetadp > /dev/null 2>&1; then
         failure "modprobe vboxnetadp failed. Please use 'dmesg' to find out why"
     fi
-    if ! $MODPROBE vboxpci > /dev/null 2>&1; then
-        failure "modprobe vboxpci failed. Please use 'dmesg' to find out why"
-    fi
     # Create the /dev/vboxusb directory if the host supports that method
     # of USB access.  The USB code checks for the existance of that path.
     if grep -q usb_device /proc/devices; then
@@ -113,11 +110,6 @@ stop()
 {
     begin_msg "Stopping VirtualBox services" console
 
-    if running vboxpci; then
-        if ! rmmod vboxpci 2>/dev/null; then
-            failure "Cannot unload module vboxpci"
-        fi
-    fi
     if running vboxnetadp; then
         if ! rmmod vboxnetadp 2>/dev/null; then
             failure "Cannot unload module vboxnetadp"
@@ -148,9 +140,6 @@ dmnstatus()
             if running vboxnetadp; then
                 str="$str, vboxnetadp"
             fi
-        fi
-        if running vboxpci; then
-            str="$str, vboxpci"
         fi
         echo "VirtualBox kernel modules ($str) are loaded."
     else
