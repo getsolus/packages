@@ -126,4 +126,4 @@ When doing major version updates, create a phab task with associated diff stack 
 - Run sudo systemctl enable --now smb ; smbclient -N -L localhost and check that the service runs and that it is possible to connect to the smb daemon
 -- Look for smbd and ports 139 and 445 in `sudo ss -plantu`
 - Rebuild current gvfs and kio-extras (*especially important if there were removals in abi_symbols*), reboot and ensure that anonymous and authenticated user access works in the Dolphin and Nautilus file managers
-- Rebuild mpv, vlc and kodi (*especially important if there were removals in abi_symbols*) and ensure that smb:// URI playback works (note that vlc can be temperamental in this regard)
+- Rebuild mpv, vlc and kodi (*especially important if there were removals in abi_symbols*) and ensure that smb:// URI playback works (note that vlc can be temperamental in this regard -- see T8538)
