@@ -19,7 +19,6 @@ pref("media.mediasource.webm.enabled",      true);
 pref("app.update.auto",                     false);
 pref("app.update.enabled",                  false);
 pref("app.update.autoInstallEnabled",       false);
-pref("layers.acceleration.force-enabled",   false);
 pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
 pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
 pref("spellchecker.dictionary_path", "/usr/share/hunspell");
