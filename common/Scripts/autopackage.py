@@ -50,14 +50,24 @@ class AutoPackage:
     def __init__(self, uri):
         self.package_uri = uri
         homeDir = os.environ ["HOME"]
-        config = ".solus/packager"
-        self.config_dir = os.path.join (homeDir, config)
-        if not os.path.exists (self.config_dir):
-            print "Config file not found at %s" % self.config_dir
-            sys.exit (-1)
+        config = ".config/solus/packager"
+        config_old = ".solus/packager"
+        config_p = os.path.join(homeDir, config)
+        config_old_p = os.path.join(homeDir, config_old)
 
-        # See the above commentary for details on the file format
-        self.config = ConfigObj (self.config_dir)
+        use_conf = None
+
+        if os.path.exists(config_p): # New packager exists
+            use_conf = config_p
+        else:
+            if os.path.exists(config_old_p): # Old only exists
+                use_conf = config_old_p
+            else:
+                print "Config file could not be found."
+                sys.exit(-1)
+
+        self.config = ConfigObj(use_conf)
+
         self.email = self.config["Packager"]["Email"]
         self.packager_name = self.config["Packager"]["Name"]
 

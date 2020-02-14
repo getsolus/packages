@@ -21,7 +21,7 @@ import commands
 from configobj import ConfigObj
 
 ''' Example config file
-~/.solus/packager
+~/.config/solus/packager
 
 [Packager]
 Name=Your Name Goes Here
@@ -33,13 +33,23 @@ if __name__ == "__main__":
     #    print "Not enough arguments - aborting"
     #    sys.exit(1)
     homeDir = os.environ ["HOME"]
-    config = ".solus/packager"
+    config = ".config/solus/packager"
+    config_old = ".solus/packager"
     config_p = os.path.join(homeDir, config)
-    if not os.path.exists(config_p):
-        print "Config file not found at %s" % config_p
-        sys.exit (1)
+    config_old_p = os.path.join(homeDir, config_old)
 
-    config = ConfigObj(config_p)
+    use_conf = None
+
+    if os.path.exists(config_p): # New packager exists
+        use_conf = config_p
+    else:
+        if os.path.exists(config_old_p): # Old only exists
+            use_conf = config_old_p
+        else:
+            print "Config file could not be found."
+            sys.exit(1)
+
+    config = ConfigObj(use_conf)
     newname = config["Packager"]["Name"]
     newemail = config["Packager"]["Email"]
 
