@@ -2,10 +2,16 @@ SHELL = /bin/bash
 
 .PHONY: help
 
-
 help:
-	@echo "update  - Update current project list"
+	@echo "stateless      - Update the stateless report"
+	@echo "sync-licenses  - Update the SPDX license list"
+	@echo "update         - Update current project list"
 
+sync-licenses:
+	@Scripts/sync_licenses.sh
 
 update:
-	@curl https://build.getsol.us/projects.list | grep -E "^packages/" | cut -d '/' -f 2 | sed -e 's/\.git$$//g' | sort > packages
+	go run Go/update_packages.go > packages
+
+stateless:
+	@Scripts/update_stateless.sh
