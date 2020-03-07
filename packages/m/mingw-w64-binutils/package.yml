@@ -1,0 +1,78 @@
+name       : mingw-w64-binutils
+version    : 2.33.1
+release    : 1
+source     :
+    - ftp://gcc.gnu.org/pub/binutils/releases/binutils-2.33.1.tar.xz : ab66fc2d1c3ec0359b8e08843c9f33b63e8707efdff5e4cc5c200eae24722cbf
+license    : GPL-3.0-or-later
+homepage   : https://www.gnu.org/software/binutils/
+component  : programming
+summary    :
+    - Binutils for MinGW-w64 targeting 64 bit
+    - 32bit: Binutils for MinGW-w64 targeting 32 bit
+description: |
+    A set of programs to assemble and manipulate binary and object files for MinGW-w64
+strip      : no
+patterns   :
+    - 32bit:
+        - /usr/share/mingw-w64/i686-w64-mingw32/*
+        - /usr/share/mingw-w64/bin/i686-w64-mingw32-*
+        - /usr/share/info/i686-w64-mingw32-*
+        - /usr/share/man/man1/i686-w64-mingw32-*
+environment: |
+    export TARGET32=i686-w64-mingw32
+    export TARGET64=x86_64-w64-mingw32
+    export PREFIX=/usr/share/mingw-w64
+setup      : |
+    # Build steps: binutils -> gcc core -> mingw-w64 -> mingw-w64 with headers and winpthreads -> gcc
+
+    _binutils_conf() {
+        ../configure \
+            --target=$1 \
+            --disable-multilib \
+            --disable-werror \
+            --disable-nls \
+            --enable-lto \
+            --with-system-zlib \
+            --prefix=$PREFIX
+    }
+
+    mkdir bindir64 && pushd bindir64
+    _binutils_conf $TARGET64
+    popd
+
+    mkdir bindir32 && pushd bindir32
+    _binutils_conf $TARGET32
+build      : |
+    %make -C bindir64
+    %make -C bindir32
+install    : |
+    mkdir -p $installdir/usr/share/info
+
+    %make install-strip -C bindir32 DESTDIR=$installdir
+
+    # Rename info files with i686-w64-mingw32 prefix
+    pushd $installdir$PREFIX/share/info
+    for info in as bfd binutils gprof ld; do
+        mv $info.info $installdir/usr/share/info/$TARGET32-$info.info
+    done
+    popd
+
+    %make install-strip -C bindir64 DESTDIR=$installdir
+
+    # Rename info files with x86_64-w64-mingw32 prefix
+    pushd $installdir$PREFIX/share/info
+    for info in as bfd binutils gprof ld; do
+        mv $info.info $installdir/usr/share/info/$TARGET64-$info.info
+    done
+    popd
+
+    # Remove binaries that conflict with host binutils
+    for bin in ar as nm objcopy objdump ranlib strip readelf; do
+        rm -f $installdir$PREFIX/bin/$bin
+    done
+
+    mv $installdir$PREFIX/share/man $installdir/usr/share/man
+    rm -r $installdir$PREFIX/share
+
+    # Install profile.d script which adds MinGW toolchain to path
+    install -D -m 00644 $pkgfiles/50-mingw-w64-toolchain-path.sh $installdir/usr/share/defaults/etc/profile.d/50-mingw-w64-toolchain-path.sh
