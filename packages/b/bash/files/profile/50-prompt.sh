@@ -16,6 +16,8 @@ unset FG
 unset BG
 unset AT
 unset HCOLOR
-shopt -s checkwinsize
+if [ $SHELL != "/bin/zsh" ]; then
+    shopt -s checkwinsize
+fi
 
 # End /usr/share/defaults/etc/profile.d/50-prompt.sh
