@@ -1,0 +1,70 @@
+From 5e815367294d75ec886e497750d0345c551e0fbd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Marco=20Trevisan=20=28Trevi=C3=B1o=29?= <mail@3v1n0.net>
+Date: Mon, 24 Feb 2020 21:40:50 +0100
+Subject: [PATCH] docking: Delay hide requests if we're currently showing
+
+Wait that the show animation is completed before we try to hide a sliding
+dock.
+
+This fixes a regression caused by commit 662604b because with clutter
+animations, a transition would remove the previous one queued for an object,
+and thus the delay wouldn't work anymore.
+
+So, instead of relying on the waiting time, let's just use the _animateIn()
+onComplete() callback in order to request an hide while the show animation
+is still going.
+---
+ docking.js | 25 +++++++++++++++----------
+ 1 file changed, 15 insertions(+), 10 deletions(-)
+
+diff --git a/docking.js b/docking.js
+index 6d2c4d60..b5fcac4c 100644
+--- a/docking.js
++++ b/docking.js
+@@ -681,15 +681,14 @@ var DockedDash = GObject.registerClass({
+         // If no hiding animation is running or queued
+         if ((this._dockState == State.SHOWN) || (this._dockState == State.SHOWING)) {
+             let settings = DockManager.settings;
+-            let delay;
++            let delay = settings.get_double('hide-delay');
+ 
+-            if (this._dockState == State.SHOWING)
+-                //if a show already started, let it finish; queue hide without removing the show.
+-                // to obtain this I increase the delay to avoid the overlap and interference
+-                // between the animations
+-                delay = settings.get_double('hide-delay') + settings.get_double('animation-time');
+-            else
+-                delay = settings.get_double('hide-delay');
++            if (this._dockState == State.SHOWING) {
++                // if a show already started, let it finish; queue hide without removing the show.
++                // to obtain this, we wait for the animateIn animation to be completed
++                this._delayedHide = true;
++                return;
++            }
+ 
+             this.emit('hiding');
+             this._animateOut(settings.get_double('animation-time'), delay);
+@@ -698,6 +697,7 @@ var DockedDash = GObject.registerClass({
+ 
+     _animateIn(time, delay) {
+         this._dockState = State.SHOWING;
++        delete this._delayedHide;
+ 
+         this._slider.ease_property('slidex', 1, {
+             duration: time * 1000,
+@@ -710,8 +710,13 @@ var DockedDash = GObject.registerClass({
+                 // gives users an opportunity to hover over the dock
+                 if (this._removeBarrierTimeoutId > 0)
+                     GLib.source_remove(this._removeBarrierTimeoutId);
+-                this._removeBarrierTimeoutId = GLib.timeout_add(
+-                    GLib.PRIORITY_DEFAULT, 100, this._removeBarrier.bind(this));
++
++                if (!this._delayedHide) {
++                    this._removeBarrierTimeoutId = GLib.timeout_add(
++                        GLib.PRIORITY_DEFAULT, 100, this._removeBarrier.bind(this));
++                } else {
++                    this._hide();
++                }
+             }
+         });
+     }
