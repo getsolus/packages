@@ -1,0 +1,98 @@
+From e07506ed85c2a8905ef6cb6ddef6ff90223e86dd Mon Sep 17 00:00:00 2001
+From: Thomas Haller <thaller@redhat.com>
+Date: Fri, 6 Mar 2020 19:20:50 +0100
+Subject: [PATCH] version: calculate NMA_API_VERSION based on the version
+ number
+
+The concept of NMA_VERSION_CUR_STABLE and NMA_VERSION_NEXT_STABLE is
+flawed. Only the current API version of the source matters.
+
+If the current checkout is still in development (from master branch,
+odd numbers, e.g. 1.8.29+), then this is already aspiring the upcoming
+API (e.g. 1.8.30). Hence, also for such development version, it should
+pretend to be already the to-be-released version.
+
+For releases (tagged, with even numbers, like 1.8.28), obviously the
+version is exactly the API version.
+
+Since we have a versioning scheme based on odd/even numbers, we can
+calculate the current/upcoming API version. Do that.
+
+This also allows us to skip bumping the NMA_VERSION_CUR_STABLE
+and NMA_VERSION_NEXT_STABLE macros. That was easy for forget, resulting
+in a broken release. While the release process was documented to bump
+these two defines, it's easy to forget.
+
+The same is done by libnm, which also follows the odd/even versioning
+scheme.
+---
+ src/nma-version.h.in | 33 ++++++++++++++++++++++++++-------
+ 1 file changed, 26 insertions(+), 7 deletions(-)
+
+diff --git a/src/nma-version.h.in b/src/nma-version.h.in
+index 1ba9382e..53378844 100644
+--- a/src/nma-version.h.in
++++ b/src/nma-version.h.in
+@@ -62,26 +62,41 @@
+ #define NMA_VERSION_1_8_26 (NMA_ENCODE_VERSION (1, 8, 26))
+ #define NMA_VERSION_1_8_28 (NMA_ENCODE_VERSION (1, 8, 28))
+ 
+-#define NMA_VERSION_CUR_STABLE  NMA_VERSION_1_8_26
+-#define NMA_VERSION_NEXT_STABLE NMA_VERSION_1_8_28
++/* For releases, NMA_API_VERSION is equal to NMA_VERSION.
++ *
++ * For development builds, NMA_API_VERSION is the next
++ * stable API after NMA_VERSION. When you run a development
++ * version, you are already using the future API, even if
++ * it is not yet release. Hence, the currently used API
++ * version is the future one.  */
++#define NMA_API_VERSION \
++    (((NMA_MINOR_VERSION % 2) == 1) \
++        ? NMA_ENCODE_VERSION (NMA_MAJOR_VERSION, NMA_MINOR_VERSION + 1, 0                               ) \
++        : NMA_ENCODE_VERSION (NMA_MAJOR_VERSION, NMA_MINOR_VERSION    , ((NMA_MICRO_VERSION + 1) / 2) * 2))
++
++/* deprecated. */
++#define NMA_VERSION_CUR_STABLE  NMA_API_VERSION
++
++/* deprecated. */
++#define NMA_VERSION_NEXT_STABLE NMA_API_VERSION
+ 
+ #define NMA_VERSION NMA_ENCODE_VERSION (NMA_MAJOR_VERSION, NMA_MINOR_VERSION, NMA_MICRO_VERSION)
+ 
+-/* Deprecation / Availability macros */
++/*****************************************************************************/
+ 
+ #if !defined (NMA_VERSION_MIN_REQUIRED) || (NMA_VERSION_MIN_REQUIRED == 0)
+ # undef NMA_VERSION_MIN_REQUIRED
+-# define NMA_VERSION_MIN_REQUIRED (NMA_VERSION_CUR_STABLE)
++# define NMA_VERSION_MIN_REQUIRED (NMA_API_VERSION)
+ #endif
+ 
+ #if !defined (NMA_VERSION_MAX_ALLOWED) || (NMA_VERSION_MAX_ALLOWED == 0)
+ # undef NMA_VERSION_MAX_ALLOWED
+-# define NMA_VERSION_MAX_ALLOWED (NMA_VERSION_NEXT_STABLE)
++# define NMA_VERSION_MAX_ALLOWED (NMA_API_VERSION)
+ #endif
+ 
+ /* sanity checks */
+-#if NMA_VERSION_MIN_REQUIRED > NMA_VERSION_NEXT_STABLE
+-#error "NMA_VERSION_MIN_REQUIRED must be <= NMA_VERSION_NEXT_STABLE"
++#if NMA_VERSION_MIN_REQUIRED > NMA_API_VERSION
++#error "NMA_VERSION_MIN_REQUIRED must be <= NMA_API_VERSION"
+ #endif
+ #if NMA_VERSION_MAX_ALLOWED < NMA_VERSION_MIN_REQUIRED
+ #error "NMA_VERSION_MAX_ALLOWED must be >= NMA_VERSION_MIN_REQUIRED"
+@@ -90,6 +105,10 @@
+ #error "NMA_VERSION_MIN_REQUIRED must be >= NMA_VERSION_1_2"
+ #endif
+ 
++/*****************************************************************************/
++
++/* Deprecation / Availability macros */
++
+ #if NMA_VERSION_MIN_REQUIRED >= NMA_VERSION_1_2
+ # define NMA_DEPRECATED_IN_1_2           G_DEPRECATED
+ # define NMA_DEPRECATED_IN_1_2_FOR(f)    G_DEPRECATED_FOR(f)
+-- 
+2.24.1
+
