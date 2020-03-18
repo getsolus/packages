@@ -1,0 +1,60 @@
+From 36b8dcbe076a02d5687238bb5ac999dd43277a65 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Florian=20M=C3=BCllner?= <fmuellner@gnome.org>
+Date: Sat, 14 Dec 2019 19:15:53 +0100
+Subject: [PATCH] a11y: Change HC icon theme first
+
+There are two ways for applications to provide a high contrast icon:
+
+ 1. install an icon into the HighContrast theme
+ 2. install a symbolic icon into the default hicolor theme
+
+The latter is preferred nowadays, and implemented in the high-contrast
+CSS variant by enforcing the symbolic icon style.
+
+However together with the way we currently enable/disable high-contrast,
+this can lead to the following race:
+ 1. the GTK theme is changed from HighContrast
+ 2. we reload the default stylesheet
+ 3. the icon style changes to "regular", so we request a
+    new icon from the HighContrast icon theme
+ 4. the icon theme is changed from HighContrast
+ 5. we evict existing icons from the cache
+ 6. we reload icons for the new icon theme; however as we
+    find a pending request (from 3), we re-use it
+ 7. the request from 3 finishes, and we end up with a
+    wrong icon in the cache
+
+The simplest fix is to change the icon theme before the GTK theme: Unlike the
+theme name, the icon style is encoded in the cache key, so we won't re-use
+an old (and incorrect) request in that case.
+
+https://gitlab.gnome.org/GNOME/gnome-shell/issues/2414
+---
+ js/ui/status/accessibility.js | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/js/ui/status/accessibility.js b/js/ui/status/accessibility.js
+index 206ed5114c..04406e2255 100644
+--- a/js/ui/status/accessibility.js
++++ b/js/ui/status/accessibility.js
+@@ -139,14 +139,14 @@ class ATIndicator extends PanelMenu.Button {
+             interfaceSettings.is_writable(KEY_ICON_THEME),
+             enabled => {
+                 if (enabled) {
+-                    interfaceSettings.set_string(KEY_GTK_THEME, HIGH_CONTRAST_THEME);
+                     interfaceSettings.set_string(KEY_ICON_THEME, HIGH_CONTRAST_THEME);
++                    interfaceSettings.set_string(KEY_GTK_THEME, HIGH_CONTRAST_THEME);
+                 } else if (!hasHC) {
+-                    interfaceSettings.set_string(KEY_GTK_THEME, gtkTheme);
+                     interfaceSettings.set_string(KEY_ICON_THEME, iconTheme);
++                    interfaceSettings.set_string(KEY_GTK_THEME, gtkTheme);
+                 } else {
+-                    interfaceSettings.reset(KEY_GTK_THEME);
+                     interfaceSettings.reset(KEY_ICON_THEME);
++                    interfaceSettings.reset(KEY_GTK_THEME);
+                 }
+             });
+ 
+-- 
+2.24.1
+
