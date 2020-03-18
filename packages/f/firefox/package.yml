@@ -1,6 +1,6 @@
 name       : firefox
 version    : 74.0
-release    : 186
+release    : 187
 source     :
     - https://ftp.mozilla.org/pub/firefox/releases/74.0/source/firefox-74.0.source.tar.xz : 74589c2836d7c30134636823c3caefbcaed0ea7c3abb2def9e3ddd9f86d9440a
     - https://getsol.us/sources/mozilla/firefox-74.0-langpacks.tar.xz : af3e48c566f7ac546e239e2b260746bb0f37c7379ef042cab344c5cccb092093
@@ -50,10 +50,27 @@ setup      : |
     pushd third_party/python/psutil/
     patch -p1 < $pkgfiles/Future-proof-disk_io_counters.patch
     popd
-
-    ./mach configure
 build      : |
-    xvfb-run -a -n 55 -s "-screen 0 1024x768x24 -ac +extension GLX +render -noreset" ./mach build
+    # Instrument build
+    echo "ac_add_options --enable-profile-generate=cross" >> .mozconfig
+    ./mach build
+
+    # Package and run automated benchmarks for profiling
+    ./mach package
+    LLVM_PROFDATA=llvm-profdata JARLOG_FILE="$PWD/jarlog" xvfb-run -s "-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
+    ./mach python build/pgo/profileserver.py
+
+    # Clean for rebuild
+    ./mach clobber
+
+    # Profile use build and enable lto
+    sed -i '/--enable-profile-generate=cross/d' .mozconfig
+    echo "ac_add_options --enable-lto=cross" >> .mozconfig
+    echo "ac_add_options --enable-profile-use=cross" >> .mozconfig
+    echo "ac_add_options --with-pgo-profile-path=${PWD@Q}/merged.profdata" >> .mozconfig
+    echo "ac_add_options --with-pgo-jarlog=${PWD@Q}/jarlog" >> .mozconfig
+    ./mach build
+
     ./mach buildsymbols
 install    : |
     # Install locales first
