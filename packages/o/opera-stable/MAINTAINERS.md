@@ -2,4 +2,4 @@ This file is used to indicate responsibility for the maintenance of this package
 
 - Troy Harvey
   - IRC: Harvey
-  - Email: harveydev@protonmail.com
+  - Email: harveydevel@gmail.com
