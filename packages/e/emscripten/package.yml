@@ -1,0 +1,78 @@
+name       : emscripten
+version    : 1.39.10
+release    : 1
+source     :
+    - git|https://github.com/llvm/llvm-project : 2150a6d0d635dea12c23dc84f356deeacbc8fbc2
+    - https://github.com/emscripten-core/emscripten/archive/1.39.10.tar.gz : 63c40e3c01eb416d48f1d46b7a180f7fcac67bd6cef23999457a1a6f9c7ba645
+license    :
+    - NCSA
+    - MIT
+homepage   : https://emscripten.org/
+component  : programming
+summary    : An LLVM-to-Web Compiler
+description: |
+    Emscripten is an LLVM-to-JavaScript compiler. It takes LLVM bitcode - which can be generated from C/C++, using clang or any other language that can be converted into LLVM and compiles that into JavaScript.
+builddeps  :
+    - llvm-32bit-devel
+    - nodejs
+rundeps    :
+    - binaryen
+    - closure-compiler
+    - nodejs
+clang      : yes
+debug      : no
+networking : yes
+environment: |
+    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -gline-tables-only -O3 -fstack-protector -pipe -DNDEBUG"
+setup      : |
+    tar xf $sources/${version}.tar.gz
+    mv emscripten-${version} emscripten
+    pushd emscripten
+    %apply_patches
+    npm install
+    ln -sf /usr/share/java/closure-compiler/closure-compiler-linter.jar node_modules/google-closure-compiler-java/compiler.jar
+    popd
+
+    export CFLAGS="$_LLVM_FLAGS_FINAL"
+    export CXXFLAGS="$_LLVM_FLAGS_FINAL"
+
+    mkdir llvm/solusBuildDir && cd llvm/solusBuildDir
+    cmake -G Ninja .. \
+        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr/share/emscripten/llvm \
+        -DCMAKE_AR="/usr/bin/llvm-ar" \
+        -DCMAKE_STRIP="/usr/bin/llvm-strip" \
+        -DCMAKE_RANLIB="/usr/bin/llvm-ranlib" \
+        -DCMAKE_NM="/usr/bin/llvm-nm" \
+        -DCMAKE_SKIP_RPATH=YES \
+        -DCLANG_DEFAULT_LINKER="lld" \
+        -DCLANG_DEFAULT_OBJCOPY="llvm-objcopy" \
+        -DLLVM_TARGETS_TO_BUILD="host;WebAssembly" \
+        -DLLVM_BUILD_RUNTIME=OFF \
+        -DLLVM_TOOL_LTO_BUILD=ON \
+        -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+        -DLLVM_INCLUDE_EXAMPLES=OFF \
+        -DLLVM_INCLUDE_TESTS=OFF \
+        -DLLVM_ENABLE_PROJECTS="lld;clang" \
+        -DLLVM_ENABLE_PIC=ON \
+        -DCLANG_INCLUDE_TESTS=OFF
+build      : |
+    cd llvm
+    %ninja_build
+install    : |
+    install -d $installdir/usr/{bin,share/emscripten/emsdk}
+    cp -r llvm/solusBuildDir/bin $installdir/usr/share/emscripten/llvm
+
+    cd emscripten
+
+    cp -rup em* cmake src system node_modules site third_party tools $installdir/usr/share/emscripten/emsdk
+
+    cd $installdir/usr/share/emscripten/emsdk
+
+    rm -rf $installdir/usr/share/emscripten/emsdk/{*.bat,site/source,system/lib/pkgconfig}
+
+    for bin in {em++,em-config,emar,emcc,emconfigure,emmake,emranlib,emrun,emscons}; do
+        ln -s /usr/share/emscripten/emsdk/$bin $installdir/usr/bin/$bin
+    done
