@@ -1,2 +1,2 @@
 #!/bin/sh
-exec "/usr/bin/java" -jar /usr/share/java/cryptomator/cryptomator.jar "$@"
+exec /usr/lib64/openjdk-8/bin/java -jar /usr/share/cryptomator/cryptomator.jar "$@"
