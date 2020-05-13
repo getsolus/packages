@@ -1,3 +1,3 @@
 #!/bin/sh
-cd /usr/share/chatty
-java -jar Chatty.jar "$@"
+
+exec /usr/lib64/openjdk-8/bin/java -jar /usr/share/chatty/Chatty.jar "$@"
