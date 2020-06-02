@@ -25,3 +25,4 @@ pref("spellchecker.dictionary_path", "/usr/share/hunspell");
 pref("widget.content.gtk-theme-override","Adwaita:light");
 pref("browser.newtabpage.activity-stream.disableSnippets", true);
 pref("browser.newtabpage.activity-stream.feeds.snippets", false);
+pref("ui.context_menus.after_mouseup", true);
