@@ -1,18 +1,21 @@
 name       : openjdk-11
 version    : 11.0.8
-release    : 1
+release    : 2
 source     :
-    - http://hg.openjdk.java.net/jdk-updates/jdk11u/archive/jdk-11.0.8+5.tar.bz2 : 56fe2712180b6efe81bb0b9b1bbaf8abb27fc9b03213fefb91194e51a44b559f
-    - https://download.java.net/java/GA/jdk11/9/GPL/openjdk-11.0.2_linux-x64_bin.tar.gz : 99be79935354f5c0df1ad293620ea36d13f48ec3ea870c838f20c504c9668b57
+    - https://hg.openjdk.java.net/jdk-updates/jdk11u/archive/jdk-11.0.8+5.tar.bz2 : 56fe2712180b6efe81bb0b9b1bbaf8abb27fc9b03213fefb91194e51a44b559f
+    - https://hg.openjdk.java.net/openjfx/11-dev/rt/archive/11.0.8+1.tar.bz2 : c7135b2be088515665b72d5597e57d29c51799c9a401ca51574c8802ed21b827
 license    : GPL-2.0-with-classpath-exception
 component  : programming.java
-summary    : Open implementation of Oracle's Java Development Kit
+summary    : Open implementation of Oracle's Java Development Kit version 11
 description: |
-    Open implementation of Oracle's Java Development Kit
+    Open implementation of Oracle's Java Development Kit version 11, with OpenJFX 11 included
 ccache     : no
+networking : yes
 builddeps  :
     - pkgconfig(alsa)
     - pkgconfig(fontconfig)
+    - pkgconfig(gtk+-2.0)
+    - pkgconfig(gtk+-3.0)
     - pkgconfig(lcms2)
     - pkgconfig(libjpeg)
     - pkgconfig(x11)
@@ -21,15 +24,27 @@ builddeps  :
     - pkgconfig(xrender)
     - pkgconfig(xt)
     - pkgconfig(xtst)
+    - pkgconfig(xxf86vm)
+    - apache-ant
     - cups-devel
     - giflib-devel
+    - openjdk-11-devel
     - p7zip
 setup      : |
-    # Unpack prebuilt tarball for bootstrap
-    tar xvzf $sources/openjdk-11.0.2_linux-x64_bin.tar.gz -C $workdir
+    # Unpack openjfx for integration
+    mkdir openjfx-11
+    tar xjf $sources/11.*.tar.bz2 -C $workdir/openjfx-11 --strip-components=1
+
+    # Build OpenJFX
+    pushd openjfx-11
+    %patch -p1 < $pkgfiles/disable-warnings-as-errors.patch
+    chmod +x gradlew
+    export CFLAGS="-Wno-error"
+    JAVA_HOME=/usr/lib64/openjdk-11 GRADLE_USER_HOME=$workdir/.gradle TERM=dumb ./gradlew zips --no-daemon
+    popd
 
     bash ./configure --prefix="$installdir/usr" \
-        --with-boot-jdk=$workdir/jdk-11.0.2 \
+        --with-boot-jdk="/usr/lib64/openjdk-11" \
         --with-version-build=10 \
         --with-version-pre="" \
         --with-version-opt="" \
@@ -41,23 +56,35 @@ setup      : |
         --with-zlib=system \
         --enable-unlimited-crypto \
         --disable-warnings-as-errors \
+        --with-import-modules=$workdir/openjfx-11/build/modular-sdk \
+        --with-cacerts-file=%libdir%/openjdk-11/lib/security/cacerts \
         --with-jobs=%YJOBS% \
         --with-extra-ldflags="$LDFLAGS"
 build      : |
-    make images
+    make images legacy-jre-image
 install    : |
-    install -Ddm 00755 $installdir/%libdir% $installdir/usr/include/openjdk-11 $installdir/usr/share/man/man1
+    install -Ddm 00755 $installdir/%libdir%/ 
+    mkdir -p $installdir/usr/include/openjdk-11/ $installdir/usr/share/applications/
+
     make install
 
     # Binaries
-    mv $installdir/usr/jvm/openjdk-%version% $installdir/%libdir%/openjdk-11
-    rm -rf $installdir/usr/jvm
-    rm -rf $installdir/usr/bin
+    mv $installdir/usr/jvm/openjdk-%version% $installdir/%libdir%/openjdk-11/
+    rm -rf $installdir/usr/jvm/
+    rm -rf $installdir/usr/bin/
 
-    # Headers and man pages
-    cd build/linux-x86_64-normal-server-release
-    cp -ar jdk/include/* $installdir/usr/include/openjdk-11/.
-    mv $installdir/usr/lib64/openjdk-11/man/man1/*.1 $installdir/usr/share/man/man1/
+    # Headers
+    cd build/linux-x86_64-normal-server-release/
+    cp -ar jdk/include/* $installdir/usr/include/openjdk-11/
+    # Symlink header files (because some apps look for them in $JAVA_HOME)
+    ln -s /usr/include/openjdk-11/ $installdir/usr/lib64/openjdk-11/include/
+
+    # Man pages
+    mv $installdir/usr/lib64/openjdk-11/man/ $installdir/usr/share/
+    find $installdir/usr/share/man/ -type f -exec rename -- ".1" "-11.1" {} \;
+    # Remove pre-existing symlink first
+    rm $installdir/usr/share/man/ja
+    mv -f $installdir/usr/share/man/ja_JP.UTF-8/ $installdir/usr/share/man/ja/
 
     # Add java-11-jar.desktop into usable apps
-    install -Dm 00644 $pkgfiles/java-11-jar.desktop $installdir/usr/share/applications/java-11-jar.desktop
+    install -Dm 00644 $pkgfiles/java-11-jar.desktop $installdir/usr/share/applications/
