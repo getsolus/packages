@@ -90,6 +90,7 @@ When doing major version updates, create a phab task with associated diff stack 
 - notmuch
 - (samba)
 - tevent
+- cifs-utils 
 
 ### tevent safety rebuilds (eopkg-deps rev tevent)
 
