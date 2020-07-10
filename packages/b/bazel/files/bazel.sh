@@ -1,3 +1,5 @@
 #!/bin/sh
 
-JAVA_HOME=/usr/lib64/openjdk-8 exec /usr/share/bazel/bazel "$@"
+[ -z "$JAVA_HOME" ] && export JAVA_HOME=/usr/lib64/openjdk-11
+
+exec /usr/share/bazel/bazel "$@"
