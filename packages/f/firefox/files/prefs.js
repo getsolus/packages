@@ -13,6 +13,7 @@ pref("extensions.htmlaboutaddons.recommendations.enabled", false);
 pref("extensions.shownSelectionUI",         true);
 pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
 pref("general.smoothScroll",                true);
+pref("geo.provider.network.url", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
 pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
 pref("intl.locale.requested",               "");
 pref("layers.use-image-offscreen-surfaces", false);
