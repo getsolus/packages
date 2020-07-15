@@ -1,0 +1,175 @@
+From af941bc523e414af0b17d06eb247afe7ddaf23b8 Mon Sep 17 00:00:00 2001
+From: Paul Eggert <eggert@cs.ucla.edu>
+Date: Wed, 8 Jul 2020 07:45:05 -0700
+Subject: [PATCH 12/13] tests: simplify since expr now works on bignums
+
+* cfg.mk (sc_prohibit_expr_unsigned): Remove.
+* tests/dd/skip-seek-past-dev.sh (DEV_OFLOW):
+* tests/id/setgid.sh (gp1):
+* tests/misc/cut-huge-range.sh (CUT_MAX):
+* tests/misc/expr.pl:
+* tests/misc/sort-discrim.sh:
+Assume expr works on bignums.
+* tests/misc/cut-huge-range.sh (subtract_one):
+Remove; no longer needed.
+---
+ tests/dd/skip-seek-past-dev.sh |  3 +-
+ tests/id/setgid.sh             |  3 +-
+ tests/misc/cut-huge-range.sh   | 22 +-------------
+ tests/misc/expr.pl             |  4 ---
+ tests/misc/sort-discrim.sh     | 54 ++++++++++++++++------------------
+ 5 files changed, 29 insertions(+), 57 deletions(-)
+
+diff --git a/tests/dd/skip-seek-past-dev.sh b/tests/dd/skip-seek-past-dev.sh
+index 5fdf637a0..39dd35ac4 100755
+--- a/tests/dd/skip-seek-past-dev.sh
++++ b/tests/dd/skip-seek-past-dev.sh
+@@ -39,8 +39,7 @@ dev_size=$(get_device_size "$device") ||
+   skip_ "failed to determine size of $device"
+ 
+ # Don't use shell arithmetic as older versions of dash use longs
+-DEV_OFLOW=$(expr $dev_size + 1) ||
+-  skip_ "failed to adjust device size $dev_size"
++DEV_OFLOW=$(expr $dev_size + 1) || framework_failure_
+ 
+ timeout 10 dd bs=1 skip=$DEV_OFLOW count=0 status=noxfer < "$device" 2> err
+ test "$?" = "1" || fail=1
+diff --git a/tests/id/setgid.sh b/tests/id/setgid.sh
+index dc793d13c..1cb240031 100755
+--- a/tests/id/setgid.sh
++++ b/tests/id/setgid.sh
+@@ -24,8 +24,7 @@ getlimits_
+ 
+ # Construct a different group number
+ gp1=$NON_ROOT_GID
+-gp1=$(expr $gp1 + 1) ||
+-  skip_ "failed to adjust GID $NON_ROOT_GID"
++gp1=$(expr $gp1 + 1) || framework_failure_
+ 
+ test "$gp1" -lt $GID_T_MAX ||
+   skip_ "GID $gp1 is reserved on some systems"
+diff --git a/tests/misc/cut-huge-range.sh b/tests/misc/cut-huge-range.sh
+index dae2632ca..2362908c8 100755
+--- a/tests/misc/cut-huge-range.sh
++++ b/tests/misc/cut-huge-range.sh
+@@ -23,30 +23,10 @@ getlimits_
+ vm=$(get_min_ulimit_v_ returns_ 0 cut -b1 /dev/null) \
+   || skip_ "this shell lacks ulimit support"
+ 
+-# sed script to subtract one from the input.
+-# Each input line should consist of a positive decimal number.
+-# Each output line's number is one less than the input's.
+-# There's no limit (other than line length) on the number's magnitude.
+-subtract_one='
+-  s/$/@/
+-  : again
+-  s/0@/@9/
+-  s/1@/0/
+-  s/2@/1/
+-  s/3@/2/
+-  s/4@/3/
+-  s/5@/4/
+-  s/6@/5/
+-  s/7@/6/
+-  s/8@/7/
+-  s/9@/8/
+-  t again
+-'
+-
+ # Ensure we can cut up to our sentinel value.
+ # Don't use expr to subtract one,
+ # since UINTMAX_MAX may exceed its maximum value.
+-CUT_MAX=$(echo $UINTMAX_MAX | sed "$subtract_one")
++CUT_MAX=$(expr $UINTMAX_MAX - 1) || framework_failure_
+ 
+ # From coreutils-8.10 through 8.20, this would make cut try to allocate
+ # a 256MiB bit vector.
+diff --git a/tests/misc/expr.pl b/tests/misc/expr.pl
+index e45f8e7ab..166358011 100755
+--- a/tests/misc/expr.pl
++++ b/tests/misc/expr.pl
+@@ -193,10 +193,6 @@ my @Tests =
+       {ERR=>"$prog: syntax error: expecting ')' instead of 'a'\n"}],
+     );
+ 
+-# If using big numbers fails, remove all /^bignum-/ tests
+-qx!expr $big_prod '*' $big_prod '*' $big_prod!
+-  or @Tests = grep {$_->[0] !~ /^bignum-/} @Tests;
+-
+ # Append a newline to end of each expected 'OUT' string.
+ my $t;
+ foreach $t (@Tests)
+diff --git a/tests/misc/sort-discrim.sh b/tests/misc/sort-discrim.sh
+index 9fc3acdc5..dc275a0d1 100755
+--- a/tests/misc/sort-discrim.sh
++++ b/tests/misc/sort-discrim.sh
+@@ -42,40 +42,38 @@ compare exp out || fail=1
+ # looks at the number plus two decimal digits, but if -h is
+ # used it looks at one decimal place plus a 4-bit SI prefix value.
+ # In both cases, there's an extra factor of 2 for the sign.
+-# Note INTMAX_MAX is used below as that's that largest number
+-# expr can handle on all systems (without GMP).
+-max_int100=$(expr $INTMAX_MAX / 100) &&
+-max_frac100=$(printf '%.2d' $(expr $INTMAX_MAX % 100)) &&
+-max_int160=$(expr $INTMAX_MAX / 160) &&
+-max_frac160=$(expr $INTMAX_MAX / 16 % 10) &&
++max_int200=$(expr $UINTMAX_MAX / 200) &&
++max_frac200=$(printf '%.2d' $(expr $UINTMAX_MAX / 2 % 100)) &&
++max_int320=$(expr $UINTMAX_MAX / 320) &&
++max_frac320=$(expr $UINTMAX_MAX / 32 % 10) &&
+ { printf -- "\
+     -$UINTMAX_OFLOW
+     -$UINTMAX_MAX
+-    -${max_int100}0.1
+-    -${max_int100}0
+-    -${max_int100}0.0
+-    -${max_int160}0.1
+-    -${max_int160}0
+-    -${max_int160}0.0
+-    -$max_int100.${max_frac100}1
+-    -$max_int100.$max_frac100
+-    -$max_int160.${max_frac160}1
+-    -$max_int160.$max_frac160
++    -${max_int200}0.1
++    -${max_int200}0
++    -${max_int200}0.0
++    -${max_int320}0.1
++    -${max_int320}0
++    -${max_int320}0.0
++    -$max_int200.${max_frac200}1
++    -$max_int200.$max_frac200
++    -$max_int320.${max_frac320}1
++    -$max_int320.$max_frac320
+ " &&
+   seq -- -10 .001 10 &&
+   printf "\
+-    $max_int160
+-    $max_int160.$max_frac160
+-    $max_int160.${max_frac160}1
+-    $max_int100
+-    $max_int100.$max_frac100
+-    $max_int100.${max_frac100}1
+-    ${max_int160}0
+-    ${max_int160}0.0
+-    ${max_int160}0.1
+-    ${max_int100}0
+-    ${max_int100}0.0
+-    ${max_int100}0.1
++    $max_int320
++    $max_int320.$max_frac320
++    $max_int320.${max_frac320}1
++    $max_int200
++    $max_int200.$max_frac200
++    $max_int200.${max_frac200}1
++    ${max_int320}0
++    ${max_int320}0.0
++    ${max_int320}0.1
++    ${max_int200}0
++    ${max_int200}0.0
++    ${max_int200}0.1
+     $UINTMAX_MAX
+     $UINTMAX_OFLOW
+ "
+-- 
+2.27.0
+

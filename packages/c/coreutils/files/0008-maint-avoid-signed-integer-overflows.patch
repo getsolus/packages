@@ -1,0 +1,67 @@
+From 0fe9fdece735234819ead2cad7902ba9a6cd8487 Mon Sep 17 00:00:00 2001
+From: Tobias Stoeckmann <tobias@stoeckmann.org>
+Date: Sun, 14 Jun 2020 14:47:11 +0200
+Subject: [PATCH 08/13] maint: avoid signed integer overflows
+
+Since -LONG_MIN results in LONG_MIN again, the operation itself is
+a signed integer overflow.
+
+This can be observed with the following calls (best if compiled
+with -ftrapv or -fsanitize=undefined):
+
+  $ numfmt --padding=-9223372036854775808
+  $ seq 1e-9223372036854775808
+
+Technically, the change in seq "reduces" the precision, but a double
+or long double that small would be represented as 0 anyway.
+
+* src/numfmt.c: Explicitly disallow --padding=LONG_MIN.
+* src/seq.c: Treat 1e$LONG_MIN as 1e-$LONG_MAX.
+* tests/misc/numfmt.pl: Add a test case.
+* tests/misc/seq-precision.sh: Likewise.
+
+Fixes https://bugs.gnu.org/41850
+---
+ tests/misc/numfmt.pl        | 3 +++
+ tests/misc/seq-precision.sh | 6 ++++++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/tests/misc/numfmt.pl b/tests/misc/numfmt.pl
+index a78e9c302..47ff34444 100755
+--- a/tests/misc/numfmt.pl
++++ b/tests/misc/numfmt.pl
+@@ -178,6 +178,9 @@ my @Tests =
+      ['pad-3.1', '--padding=0 5',
+              {ERR => "$prog: invalid padding value '0'\n"},
+              {EXIT => '1'}],
++     ['pad-3.2', "--padding=$limits->{LONG_MIN} 0",
++             {ERR => "$prog: invalid padding value '$limits->{LONG_MIN}'\n"},
++             {EXIT => '1'}],
+      ['pad-4', '--padding=10 --to=si 50000',             {OUT=>'       50K'}],
+      ['pad-5', '--padding=-10 --to=si 50000',            {OUT=>'50K       '}],
+ 
+diff --git a/tests/misc/seq-precision.sh b/tests/misc/seq-precision.sh
+index b5b167783..08f9863ed 100755
+--- a/tests/misc/seq-precision.sh
++++ b/tests/misc/seq-precision.sh
+@@ -18,6 +18,7 @@
+ 
+ . "${srcdir=.}/tests/init.sh"; path_prepend_ ./src
+ print_ver_ seq
++getlimits_
+ 
+ # Integer only.  Before v8.24 these would switch output format
+ 
+@@ -76,4 +77,9 @@ seq -w 1.10000e5 1.10000e5 > out || fail=1
+ printf "%s\n" 110000 > exp || framework_failure_
+ compare exp out || fail=1
+ 
++# Ensure no undefined behavior which failed with <= 8.32
++# This test would fail with: -fsanitize=undefined
++seq 1e$LONG_MIN 2> err || fail=1
++compare /dev/null err || fail=1
++
+ Exit $fail
+-- 
+2.27.0
+
