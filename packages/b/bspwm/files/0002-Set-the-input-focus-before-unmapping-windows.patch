@@ -1,0 +1,143 @@
+From d4dee3962fe7e5be22dba18a147ee712b154d34b Mon Sep 17 00:00:00 2001
+From: Bastien Dejean <nihilhill@gmail.com>
+Date: Mon, 3 Aug 2020 13:37:54 +0200
+Subject: [PATCH] Set the input focus before unmapping windows
+
+Fixes #811.
+---
+ src/desktop.c | 18 ------------------
+ src/desktop.h |  1 -
+ src/monitor.c | 15 ---------------
+ src/monitor.h |  1 -
+ src/tree.c    | 30 ++++++++++++++++++++++++++++--
+ 5 files changed, 28 insertions(+), 37 deletions(-)
+
+diff --git a/src/desktop.c b/src/desktop.c
+index f8571226..aba3729f 100644
+--- a/src/desktop.c
++++ b/src/desktop.c
+@@ -36,24 +36,6 @@
+ #include "subscribe.h"
+ #include "settings.h"
+ 
+-void focus_desktop(monitor_t *m, desktop_t *d)
+-{
+-	bool changed = (m != mon || m->desk != d);
+-
+-	focus_monitor(m);
+-
+-	if (m->desk != d) {
+-		show_desktop(d);
+-		hide_desktop(m->desk);
+-		m->desk = d;
+-	}
+-
+-	if (changed) {
+-		ewmh_update_current_desktop();
+-		put_status(SBSC_MASK_DESKTOP_FOCUS, "desktop_focus 0x%08X 0x%08X\n", m->id, d->id);
+-	}
+-}
+-
+ bool activate_desktop(monitor_t *m, desktop_t *d)
+ {
+ 	if (d != NULL && m == mon) {
+diff --git a/src/desktop.h b/src/desktop.h
+index 132a4824..33fa5950 100644
+--- a/src/desktop.h
++++ b/src/desktop.h
+@@ -27,7 +27,6 @@
+ 
+ #define DEFAULT_DESK_NAME    "Desktop"
+ 
+-void focus_desktop(monitor_t *m, desktop_t *d);
+ bool activate_desktop(monitor_t *m, desktop_t *d);
+ bool find_closest_desktop(coordinates_t *ref, coordinates_t *dst, cycle_dir_t dir, desktop_select_t *sel);
+ bool find_any_desktop(coordinates_t *ref, coordinates_t *dst, desktop_select_t *sel);
+diff --git a/src/monitor.c b/src/monitor.c
+index 38805828..4b248bc2 100644
+--- a/src/monitor.c
++++ b/src/monitor.c
+@@ -196,21 +196,6 @@ void adapt_geometry(xcb_rectangle_t *rs, xcb_rectangle_t *rd, node_t *n)
+ 	}
+ }
+ 
+-void focus_monitor(monitor_t *m)
+-{
+-	if (mon == m) {
+-		return;
+-	}
+-
+-	mon = m;
+-
+-	if (pointer_follows_monitor) {
+-		center_pointer(m->rectangle);
+-	}
+-
+-	put_status(SBSC_MASK_MONITOR_FOCUS, "monitor_focus 0x%08X\n", m->id);
+-}
+-
+ void add_monitor(monitor_t *m)
+ {
+ 	xcb_rectangle_t r = m->rectangle;
+diff --git a/src/monitor.h b/src/monitor.h
+index 33b64e5c..90aaeb4b 100644
+--- a/src/monitor.h
++++ b/src/monitor.h
+@@ -35,7 +35,6 @@ monitor_t *find_monitor(uint32_t id);
+ monitor_t *get_monitor_by_randr_id(xcb_randr_output_t id);
+ void embrace_client(monitor_t *m, client_t *c);
+ void adapt_geometry(xcb_rectangle_t *rs, xcb_rectangle_t *rd, node_t *n);
+-void focus_monitor(monitor_t *m);
+ void add_monitor(monitor_t *m);
+ void unlink_monitor(monitor_t *m);
+ void remove_monitor(monitor_t *m);
+diff --git a/src/tree.c b/src/tree.c
+index 7ef784c4..7481ccae 100644
+--- a/src/tree.c
++++ b/src/tree.c
+@@ -609,9 +609,36 @@ bool focus_node(monitor_t *m, desktop_t *d, node_t *n)
+ 
+ 	draw_border(n, true, true);
+ 
+-	focus_desktop(m, d);
++	bool desk_changed = (m != mon || m->desk != d);
++	bool has_input_focus = false;
++
++	if (mon != m) {
++		mon = m;
++
++		if (pointer_follows_monitor) {
++			center_pointer(m->rectangle);
++		}
++
++		put_status(SBSC_MASK_MONITOR_FOCUS, "monitor_focus 0x%08X\n", m->id);
++	}
++
++	if (m->desk != d) {
++		show_desktop(d);
++		set_input_focus(n);
++		has_input_focus = true;
++		hide_desktop(m->desk);
++		m->desk = d;
++	}
++
++	if (desk_changed) {
++		ewmh_update_current_desktop();
++		put_status(SBSC_MASK_DESKTOP_FOCUS, "desktop_focus 0x%08X 0x%08X\n", m->id, d->id);
++	}
+ 
+ 	d->focus = n;
++	if (!has_input_focus) {
++		set_input_focus(n);
++	}
+ 	ewmh_update_active_window();
+ 	history_add(m, d, n, true);
+ 
+@@ -627,7 +654,6 @@ bool focus_node(monitor_t *m, desktop_t *d, node_t *n)
+ 	put_status(SBSC_MASK_NODE_FOCUS, "node_focus 0x%08X 0x%08X 0x%08X\n", m->id, d->id, n->id);
+ 
+ 	stack(d, n, true);
+-	set_input_focus(n);
+ 
+ 	if (pointer_follows_focus) {
+ 		center_pointer(get_rectangle(m, d, n));
