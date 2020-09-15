@@ -1,6 +1,6 @@
 name       : fftw
 version    : 3.3.8
-release    : 9
+release    : 10
 source     :
     - http://fftw.org/fftw-3.3.8.tar.gz : 6113262f6e92c5bd474f2875fa1b01054c4ad5040f6b0da7c03c98821d9ae303
 license    : GPL-2.0-or-later
@@ -8,31 +8,57 @@ summary    : FFTW Fourier transform library
 description: |
     FFTW is a C subroutine library for computing the discrete Fourier transform (DFT) in one or more dimensions, of arbitrary input size, and of both real and complex data (as well as of even/odd data, i.e. the discrete cosine/sine transforms or DCT/DST).
 component  : programming
+avx2       : yes
 builddeps  :
     - gfortran
     - libpth-devel
 setup      : |
-    CONFOPTS="$CONFOPTS --prefix=/usr --libdir=%libdir% --disable-static --enable-shared --enable-openmp --enable-sse2 --enable-threads"
-    mkdir .fftw-single
-    mv * .fftw-single/ && mv .fftw-single fftw-single
-    cp -R fftw-single fftw-double
-    cp -R fftw-single fftw-long-double
-    # Single precision
-    cd fftw-single/
-    ./configure $CONFOPTS --enable-float
-    # Double precision
-    cd ../fftw-double/
-    ./configure $CONFOPTS --enable-avx
-    # Long double
-    cd ../fftw-long-double/
-    ./configure ${CONFOPTS/--enable-sse2/} --enable-long-double
+    export CONFOPTS="$CONFOPTS --prefix=/usr --libdir=%libdir% --disable-static --enable-shared --enable-openmp --enable-threads"
+    export avxflags="--libdir=%libdir%/haswell --enable-sse2 --enable-fma --enable-avx2"
+
+    mkdir .fftw && mv * .fftw/
+    
+    if [[ ! -z "${AVX2BUILD}" ]]; then
+        mv .fftw fftw-single-avx2
+        cp -R fftw-single-avx2 fftw-double-avx2
+
+        # Single precision AVX2
+        pushd fftw-single-avx2/
+        ./configure $CONFOPTS $avxflags --enable-float
+        popd
+        # Double precision AVX2
+        pushd fftw-double-avx2/
+        ./configure $CONFOPTS $avxflags
+        popd
+    else
+        mv .fftw fftw-single
+        cp -R fftw-single fftw-double
+        cp -R fftw-single fftw-long-double
+
+        # Single precision
+        pushd fftw-single/
+        ./configure $CONFOPTS --enable-sse2 --enable-float
+        popd
+        # Double precision
+        pushd fftw-double/
+        ./configure $CONFOPTS --enable-sse2 --enable-avx
+        popd
+        # Long double
+        pushd fftw-long-double/
+        ./configure $CONFOPTS --enable-long-double
+        popd
+    fi
 build      : |
-    cd $workdir/fftw-single/
-    %make
-    %make_install
-    cd $workdir/fftw-double/
-    %make
-    %make_install
-    cd $workdir/fftw-long-double/
-    %make
-    %make_install
+    if [[ ! -z "${AVX2BUILD}" ]]; then
+        export CFLAGS="$CFLAGS -mtune=haswell -march=haswell"
+        export TO_BUILD="fftw-single-avx2 fftw-double-avx2"
+    else
+        export TO_BUILD="fftw-single fftw-double fftw-long-double"
+    fi
+
+    for dir in $TO_BUILD; do
+        pushd $dir
+        %make
+        %make_install
+        popd
+    done
