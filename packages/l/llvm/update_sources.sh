@@ -1,5 +1,5 @@
 #!/bin/bash
-LLVMVERSION=9.0.1
+LLVMVERSION=10.0.1
 LINKS="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/llvm-${LLVMVERSION}.src.tar.xz
     https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/clang-${LLVMVERSION}.src.tar.xz
     https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVMVERSION}/compiler-rt-${LLVMVERSION}.src.tar.xz
