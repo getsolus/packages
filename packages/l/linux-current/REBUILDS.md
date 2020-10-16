@@ -7,7 +7,7 @@ This is a list of things to rebuild after this, in the right order:
 * nvidia-beta-driver
 * nvidia-developer-driver
 * open-vm-tools
-* razer-drivers
+* openrazer
 * v4l2loopback
 * virtualbox
 * vhba-module

@@ -3,3 +3,6 @@ This file is used to indicate responsibility for the maintenance of this package
 - Bryan T. Meyers
   - IRC: DataDrake
   - Email: bryan@getsol.us
+- Joshua Strobl
+  - IRC: JoshStrobl
+  - Email: joshua@getsol.us
