@@ -1,0 +1,93 @@
+From 078ef8acd08d0c33d7fd428a062fe3f5f8042e9f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Wed, 8 Jul 2020 12:38:57 +0000
+Subject: [PATCH 14/27] clutter/actor: Handle getting (un-)mapped during
+ painting differently
+
+We currently support only one case where an actor can get mapped or
+unmapped during painting, that is using
+_clutter_actor_enable_paint_unmapped() (although we could arguably do a
+better job explicitely forbidding it in other cases). This function is
+called when painting ClutterClone or MetaWindowActors during
+screensharing. It temporarily (fake) realizes and maps the actor and all
+its children so it can get painted.
+
+Now a problem will appear when we'll start coupling layout and the
+mapped state of actors more closely with the next commit: Since
+enable_paint_unmapped() is meant to be enabled and disabled during every
+clone paint, we also notify the "mapped" property twice on every clone
+paint. That means with the next commit we would queue a relayout for the
+source actor on every clone paint.
+
+To avoid this unnecessary work, check whether we're being painted while
+unmapped using the new unmapped_paint_branch_counter. Then avoid queuing
+relayouts or invalidating paint volumes in that case.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1366
+
+
+(cherry picked from commit 9b502150088de067ce6625f262cb7fd402074997)
+---
+ clutter/clutter/clutter-actor.c | 38 +++++++++++++++++++--------------
+ 1 file changed, 22 insertions(+), 16 deletions(-)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index d06138b57..db3bcc06a 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -1609,18 +1609,21 @@ clutter_actor_real_map (ClutterActor *self)
+ 
+   CLUTTER_ACTOR_SET_FLAGS (self, CLUTTER_ACTOR_MAPPED);
+ 
+-  self->priv->needs_paint_volume_update = TRUE;
+-
+-  /* We skip unmapped actors when updating the stage-views list, so if
+-   * an actors list got invalidated while it was unmapped make sure to
+-   * set priv->needs_update_stage_views to TRUE for all actors up the
+-   * hierarchy now.
+-   */
+-  if (self->priv->needs_update_stage_views)
++  if (self->priv->unmapped_paint_branch_counter == 0)
+     {
+-      /* Avoid the early return in queue_update_stage_views() */
+-      self->priv->needs_update_stage_views = FALSE;
+-      queue_update_stage_views (self);
++      self->priv->needs_paint_volume_update = TRUE;
++
++      /* We skip unmapped actors when updating the stage-views list, so if
++       * an actors list got invalidated while it was unmapped make sure to
++       * set priv->needs_update_stage_views to TRUE for all actors up the
++       * hierarchy now.
++       */
++      if (self->priv->needs_update_stage_views)
++        {
++          /* Avoid the early return in queue_update_stage_views() */
++          self->priv->needs_update_stage_views = FALSE;
++          queue_update_stage_views (self);
++        }
+     }
+ 
+   /* notify on parent mapped before potentially mapping
+@@ -1721,11 +1724,14 @@ clutter_actor_real_unmap (ClutterActor *self)
+ 
+   CLUTTER_ACTOR_UNSET_FLAGS (self, CLUTTER_ACTOR_MAPPED);
+ 
+-  /* clear the contents of the last paint volume, so that hiding + moving +
+-   * showing will not result in the wrong area being repainted
+-   */
+-  _clutter_paint_volume_init_static (&priv->last_paint_volume, NULL);
+-  priv->last_paint_volume_valid = TRUE;
++  if (self->priv->unmapped_paint_branch_counter == 0)
++    {
++      /* clear the contents of the last paint volume, so that hiding + moving +
++       * showing will not result in the wrong area being repainted
++       */
++     _clutter_paint_volume_init_static (&priv->last_paint_volume, NULL);
++      priv->last_paint_volume_valid = TRUE;
++    }
+ 
+   /* notify on parent mapped after potentially unmapping
+    * children, so apps see a bottom-up notification.
+-- 
+2.29.1
+

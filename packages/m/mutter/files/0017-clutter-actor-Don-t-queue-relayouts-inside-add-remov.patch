@@ -1,0 +1,123 @@
+From 1eec141c81e6972e25942f4c0357841927960358 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Fri, 3 Jul 2020 12:03:09 +0000
+Subject: [PATCH 17/27] clutter/actor: Don't queue relayouts inside
+ add/remove_child_internal
+
+Since we now moved the queuing of relayouts into the mapping and
+unmapping functions, we no longer need to do it when adding or removing
+a child, that's because removing a child always unmaps the child, and
+adding it to a stage (if it's visible) will map it.
+
+So remove those calls to queue_relayout() since they're no longer
+needed.
+
+With the above we no longer queue a relayout in
+clutter_actor_add_child_internal(), that means there's one place where
+we need to explicitely queue relayouts now: That's when using the
+set_child_at_index/above/below() APIs, those are special because they
+avoid unmapping and mapping of actors and would now no longer get a
+relayout.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1366
+
+
+(cherry picked from commit 29caa5bea576ed056aa6c82de192426abe6019ae)
+---
+ clutter/clutter/clutter-actor.c | 38 ++-------------------------------
+ 1 file changed, 2 insertions(+), 36 deletions(-)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index cc07d1adc..503907adf 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -4281,7 +4281,6 @@ clutter_actor_remove_child_internal (ClutterActor                 *self,
+   gboolean destroy_meta, emit_parent_set, emit_actor_removed, check_state;
+   gboolean flush_queue;
+   gboolean notify_first_last;
+-  gboolean was_mapped;
+   gboolean stop_transitions;
+   gboolean clear_stage_views;
+   GObject *obj;
+@@ -4313,8 +4312,6 @@ clutter_actor_remove_child_internal (ClutterActor                 *self,
+ 
+   if (check_state)
+     {
+-      was_mapped = CLUTTER_ACTOR_IS_MAPPED (child);
+-
+       /* we need to unrealize *before* we set parent_actor to NULL,
+        * because in an unrealize method actors are dissociating from the
+        * stage, which means they need to be able to
+@@ -4324,8 +4321,6 @@ clutter_actor_remove_child_internal (ClutterActor                 *self,
+        */
+       clutter_actor_update_map_state (child, MAP_STATE_MAKE_UNREALIZED);
+     }
+-  else
+-    was_mapped = FALSE;
+ 
+   if (flush_queue)
+     {
+@@ -4387,12 +4382,6 @@ clutter_actor_remove_child_internal (ClutterActor                 *self,
+   if (emit_parent_set && !CLUTTER_ACTOR_IN_DESTRUCTION (child))
+     g_signal_emit (child, actor_signals[PARENT_SET], 0, self);
+ 
+-  /* if the child was mapped then we need to relayout ourselves to account
+-   * for the removed child
+-   */
+-  if (was_mapped)
+-    clutter_actor_queue_relayout (self);
+-
+   /* we need to emit the signal before dropping the reference */
+   if (emit_actor_removed)
+     _clutter_container_emit_actor_removed (CLUTTER_CONTAINER (self), child);
+@@ -12061,29 +12050,6 @@ clutter_actor_add_child_internal (ClutterActor              *self,
+   if (CLUTTER_ACTOR_IS_MAPPED (child))
+     clutter_actor_queue_redraw (child);
+ 
+-  /* maintain the invariant that if an actor needs layout,
+-   * its parents do as well
+-   */
+-  if (clutter_actor_needs_relayout (child))
+-    {
+-      /* we work around the short-circuiting we do
+-       * in clutter_actor_queue_relayout() since we
+-       * want to force a relayout
+-       */
+-      child->priv->needs_width_request = TRUE;
+-      child->priv->needs_height_request = TRUE;
+-      child->priv->needs_allocation = TRUE;
+-
+-      if (CLUTTER_ACTOR_IS_MAPPED (child))
+-        child->priv->needs_paint_volume_update = TRUE;
+-
+-      /* we only queue a relayout here, because any possible
+-       * redraw has already been queued either by show() or
+-       * by our call to queue_redraw() above
+-       */
+-      _clutter_actor_queue_only_relayout (child->priv->parent);
+-    }
+-
+   if (emit_actor_added)
+     _clutter_container_emit_actor_added (CLUTTER_CONTAINER (self), child);
+ 
+@@ -12558,7 +12524,7 @@ clutter_actor_set_child_above_sibling (ClutterActor *self,
+                                     sibling);
+   g_object_unref(child);
+ 
+-  clutter_actor_queue_redraw_on_parent (child);
++  clutter_actor_queue_relayout (self);
+ }
+ 
+ /**
+@@ -12605,7 +12571,7 @@ clutter_actor_set_child_below_sibling (ClutterActor *self,
+                                     sibling);
+   g_object_unref(child);
+ 
+-  clutter_actor_queue_redraw_on_parent (child);
++  clutter_actor_queue_relayout (self);
+ }
+ 
+ /**
+-- 
+2.29.1
+

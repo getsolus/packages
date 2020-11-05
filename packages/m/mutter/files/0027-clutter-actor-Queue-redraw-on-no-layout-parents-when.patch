@@ -1,0 +1,58 @@
+From 0caae95ad756e42343fd09e29cf526f61b6781c2 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Sun, 1 Nov 2020 11:33:59 +0000
+Subject: [PATCH 27/27] clutter/actor: Queue redraw on no-layout parents when
+ unmapping
+
+As explained in https://gitlab.gnome.org/GNOME/mutter/-/issues/1494,
+with commit 29caa5bea576ed056aa6c82de192426abe6019ae we stopped queueing
+a relayout for the parent of the removed actor in
+clutter_actor_remove_child_internal(). This relayout was, as opposed to
+the relayout in clutter_actor_real_hide()/clutter_actor_real_unmap(),
+queued unconditionally without looking at the parents NO_LAYOUT flag.
+
+Now while that relayout in clutter_actor_remove_child_internal() would
+do unnecessary work if the parent had the NO_LAYOUT flag set, it did
+also queue a redraw of the parent, which is necessary in any case.
+
+So by removing that relayout in clutter_actor_remove_child_internal(),
+we stopped queueing redraws for NO_LAYOUT parents when a child gets
+removed from the scenegraph. This caused bugs where the texture of the
+child would be left visible on the screen even though the child got
+destroyed.
+
+To fix this, make sure again that we always queue a redraw on the parent
+when unmapping a child.
+
+Fixes https://gitlab.gnome.org/GNOME/mutter/-/issues/1494
+
+
+(cherry picked from commit c88615aac869bf94a0e9ebc372396eabc640c0a3)
+---
+ clutter/clutter/clutter-actor.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/clutter/clutter/clutter-actor.c b/clutter/clutter/clutter-actor.c
+index 503907adf..febfb3191 100644
+--- a/clutter/clutter/clutter-actor.c
++++ b/clutter/clutter/clutter-actor.c
+@@ -1740,9 +1740,13 @@ clutter_actor_real_unmap (ClutterActor *self)
+      _clutter_paint_volume_init_static (&priv->last_paint_volume, NULL);
+       priv->last_paint_volume_valid = TRUE;
+ 
+-      if (priv->parent && !CLUTTER_ACTOR_IN_DESTRUCTION (priv->parent) &&
+-          (!(priv->parent->flags & CLUTTER_ACTOR_NO_LAYOUT)))
+-        clutter_actor_queue_relayout (priv->parent);
++      if (priv->parent && !CLUTTER_ACTOR_IN_DESTRUCTION (priv->parent))
++        {
++          if (G_UNLIKELY (priv->parent->flags & CLUTTER_ACTOR_NO_LAYOUT))
++            clutter_actor_queue_redraw (priv->parent);
++          else
++            clutter_actor_queue_relayout (priv->parent);
++        }
+     }
+ 
+   /* notify on parent mapped after potentially unmapping
+-- 
+2.29.1
+

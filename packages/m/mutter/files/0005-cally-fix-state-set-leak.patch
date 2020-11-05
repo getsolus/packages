@@ -1,0 +1,81 @@
+From 9ba6f9f8d69e7816e1a524b4315f1d3f827db4fc Mon Sep 17 00:00:00 2001
+From: Ray Strode <rstrode@redhat.com>
+Date: Thu, 30 Apr 2020 14:23:09 +0000
+Subject: [PATCH 05/27] cally: fix state set leak
+
+cally_actor_action_do_action leaks a state set object in the
+case where the actor is defunct, insensitive, or hidden.
+
+This commit plugs the leak.
+
+https://gitlab.gnome.org/GNOME/mutter/-/merge_requests/1225
+
+
+(cherry picked from commit 79e5ec57d24f1650cdb2f23e68c9f8bf6a494283)
+---
+ clutter/clutter/cally/cally-actor.c | 26 +++++++++++++++-----------
+ 1 file changed, 15 insertions(+), 11 deletions(-)
+
+diff --git a/clutter/clutter/cally/cally-actor.c b/clutter/clutter/cally/cally-actor.c
+index fa0257548..44f4f64bb 100644
+--- a/clutter/clutter/cally/cally-actor.c
++++ b/clutter/clutter/cally/cally-actor.c
+@@ -767,10 +767,11 @@ static gboolean
+ cally_actor_action_do_action (AtkAction *action,
+                              gint       index)
+ {
+-  CallyActor           *cally_actor = NULL;
+-  AtkStateSet          *set         = NULL;
+-  CallyActorPrivate    *priv        = NULL;
+-  CallyActorActionInfo *info        = NULL;
++  CallyActor *cally_actor = NULL;
++  AtkStateSet *set = NULL;
++  CallyActorPrivate *priv = NULL;
++  CallyActorActionInfo *info = NULL;
++  gboolean did_action = FALSE;
+ 
+   cally_actor = CALLY_ACTOR (action);
+   priv = cally_actor->priv;
+@@ -778,21 +779,19 @@ cally_actor_action_do_action (AtkAction *action,
+   set = atk_object_ref_state_set (ATK_OBJECT (cally_actor));
+ 
+   if (atk_state_set_contains_state (set, ATK_STATE_DEFUNCT))
+-    return FALSE;
++    goto out;
+ 
+   if (!atk_state_set_contains_state (set, ATK_STATE_SENSITIVE) ||
+       !atk_state_set_contains_state (set, ATK_STATE_SHOWING))
+-    return FALSE;
+-
+-  g_object_unref (set);
++    goto out;
+ 
+   info = _cally_actor_get_action_info (cally_actor, index);
+ 
+   if (info == NULL)
+-    return FALSE;
++    goto out;
+ 
+   if (info->do_action_func == NULL)
+-    return FALSE;
++    goto out;
+ 
+   if (!priv->action_queue)
+     priv->action_queue = g_queue_new ();
+@@ -802,7 +801,12 @@ cally_actor_action_do_action (AtkAction *action,
+   if (!priv->action_idle_handler)
+     priv->action_idle_handler = g_idle_add (idle_do_action, cally_actor);
+ 
+-  return TRUE;
++  did_action = TRUE;
++
++out:
++  g_clear_object (&set);
++
++  return did_action;
+ }
+ 
+ static gboolean
+-- 
+2.29.1
+

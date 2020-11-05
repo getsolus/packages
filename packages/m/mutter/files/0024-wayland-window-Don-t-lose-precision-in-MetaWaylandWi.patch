@@ -1,0 +1,244 @@
+From 01e2a54f3358c3ff50c583585cffa53f725bee3d Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Thu, 29 Oct 2020 10:11:15 +0100
+Subject: [PATCH 24/27] wayland/window: Don't lose precision in
+ MetaWaylandWindowConfiguration
+
+Commit 8bdd2aa7 would offset the window position by the difference
+between the configured window size and the committed size from the
+client to prevent the window from drifting while resizing.
+
+This, however, did not take into account the actual geometry scale, so
+when using any scale greater than 1, the window would rapidly drift away
+due to that offset.
+
+In order to solve this, we need to make sure we store away the pending
+window configuration in the stage coordinate space, in order to not
+loose precision. When we then calculate the offset given the result from
+the client, it'll use the right scalars, while before, one scalar was in
+surface coordinates, while the other in stage coordinates.
+
+https://gitlab.gnome.org/GNOME/mutter/-/issues/1490
+(cherry picked from commit eaa6efef56d3a251e864c7064d7c6ad5d1329c78)
+---
+ src/wayland/meta-wayland-legacy-xdg-shell.c     |  7 ++++---
+ src/wayland/meta-wayland-window-configuration.c |  8 +++++++-
+ src/wayland/meta-wayland-window-configuration.h |  5 ++++-
+ src/wayland/meta-wayland-wl-shell.c             |  3 ++-
+ src/wayland/meta-wayland-xdg-shell.c            | 13 ++++++++-----
+ src/wayland/meta-window-wayland.c               | 11 ++++++++---
+ 6 files changed, 33 insertions(+), 14 deletions(-)
+
+diff --git a/src/wayland/meta-wayland-legacy-xdg-shell.c b/src/wayland/meta-wayland-legacy-xdg-shell.c
+index c9c0df6e6..926ee14e3 100644
+--- a/src/wayland/meta-wayland-legacy-xdg-shell.c
++++ b/src/wayland/meta-wayland-legacy-xdg-shell.c
+@@ -609,8 +609,8 @@ meta_wayland_zxdg_toplevel_v6_send_configure (MetaWaylandZxdgToplevelV6      *xd
+   fill_states (&states, window);
+ 
+   zxdg_toplevel_v6_send_configure (xdg_toplevel->resource,
+-                                   configuration->width,
+-                                   configuration->height,
++                                   configuration->width / configuration->scale,
++                                   configuration->height / configuration->scale,
+                                    &states);
+   wl_array_release (&states);
+ 
+@@ -1075,7 +1075,8 @@ meta_wayland_zxdg_popup_v6_configure (MetaWaylandShellSurface        *shell_surf
+ 
+   zxdg_popup_v6_send_configure (xdg_popup->resource,
+                                 x, y,
+-                                configuration->width, configuration->height);
++                                configuration->width / configuration->scale,
++                                configuration->height / configuration->scale);
+   meta_wayland_zxdg_surface_v6_send_configure (xdg_surface, configuration);
+ }
+ 
+diff --git a/src/wayland/meta-wayland-window-configuration.c b/src/wayland/meta-wayland-window-configuration.c
+index 013f10a73..a0ee8f805 100644
+--- a/src/wayland/meta-wayland-window-configuration.c
++++ b/src/wayland/meta-wayland-window-configuration.c
+@@ -29,6 +29,7 @@ meta_wayland_window_configuration_new (int                 x,
+                                        int                 y,
+                                        int                 width,
+                                        int                 height,
++                                       int                 scale,
+                                        MetaMoveResizeFlags flags,
+                                        MetaGravity         gravity)
+ {
+@@ -46,6 +47,7 @@ meta_wayland_window_configuration_new (int                 x,
+     .width = width,
+     .height = height,
+ 
++    .scale = scale,
+     .gravity = gravity,
+     .flags = flags,
+   };
+@@ -57,7 +59,8 @@ MetaWaylandWindowConfiguration *
+ meta_wayland_window_configuration_new_relative (int rel_x,
+                                                 int rel_y,
+                                                 int width,
+-                                                int height)
++                                                int height,
++                                                int scale)
+ {
+   MetaWaylandWindowConfiguration *configuration;
+ 
+@@ -72,6 +75,8 @@ meta_wayland_window_configuration_new_relative (int rel_x,
+     .has_size = TRUE,
+     .width = width,
+     .height = height,
++
++    .scale = scale,
+   };
+ 
+   return configuration;
+@@ -85,6 +90,7 @@ meta_wayland_window_configuration_new_empty (void)
+   configuration = g_new0 (MetaWaylandWindowConfiguration, 1);
+   *configuration = (MetaWaylandWindowConfiguration) {
+     .serial = ++global_serial_counter,
++    .scale = 1,
+   };
+ 
+   return configuration;
+diff --git a/src/wayland/meta-wayland-window-configuration.h b/src/wayland/meta-wayland-window-configuration.h
+index 61672d5e4..b524f431f 100644
+--- a/src/wayland/meta-wayland-window-configuration.h
++++ b/src/wayland/meta-wayland-window-configuration.h
+@@ -43,6 +43,7 @@ struct _MetaWaylandWindowConfiguration
+   int width;
+   int height;
+ 
++  int scale;
+   MetaGravity gravity;
+   MetaMoveResizeFlags flags;
+ };
+@@ -51,13 +52,15 @@ MetaWaylandWindowConfiguration * meta_wayland_window_configuration_new (int
+                                                                         int                 y,
+                                                                         int                 width,
+                                                                         int                 height,
++                                                                        int                 scale,
+                                                                         MetaMoveResizeFlags flags,
+                                                                         MetaGravity         gravity);
+ 
+ MetaWaylandWindowConfiguration * meta_wayland_window_configuration_new_relative (int rel_x,
+                                                                                  int rel_y,
+                                                                                  int width,
+-                                                                                 int height);
++                                                                                 int height,
++                                                                                 int scale);
+ 
+ MetaWaylandWindowConfiguration * meta_wayland_window_configuration_new_empty (void);
+ 
+diff --git a/src/wayland/meta-wayland-wl-shell.c b/src/wayland/meta-wayland-wl-shell.c
+index f67734799..2388afd28 100644
+--- a/src/wayland/meta-wayland-wl-shell.c
++++ b/src/wayland/meta-wayland-wl-shell.c
+@@ -657,7 +657,8 @@ wl_shell_surface_role_configure (MetaWaylandShellSurface        *shell_surface,
+ 
+   wl_shell_surface_send_configure (wl_shell_surface->resource,
+                                    0,
+-                                   configuration->width, configuration->height);
++                                   configuration->width / configuration->scale,
++                                   configuration->height / configuration->scale);
+ 
+   wl_shell_surface->emulated_ack_configure_serial = configuration->serial;
+ }
+diff --git a/src/wayland/meta-wayland-xdg-shell.c b/src/wayland/meta-wayland-xdg-shell.c
+index 768b909ac..176f8a908 100644
+--- a/src/wayland/meta-wayland-xdg-shell.c
++++ b/src/wayland/meta-wayland-xdg-shell.c
+@@ -700,8 +700,8 @@ meta_wayland_xdg_toplevel_send_configure (MetaWaylandXdgToplevel         *xdg_to
+   fill_states (xdg_toplevel, &states);
+ 
+   xdg_toplevel_send_configure (xdg_toplevel->resource,
+-                               configuration->width,
+-                               configuration->height,
++                               configuration->width / configuration->scale,
++                               configuration->height / configuration->scale,
+                                &states);
+   wl_array_release (&states);
+ 
+@@ -1250,7 +1250,8 @@ meta_wayland_xdg_popup_configure (MetaWaylandShellSurface        *shell_surface,
+     }
+   xdg_popup_send_configure (xdg_popup->resource,
+                             x, y,
+-                            configuration->width, configuration->height);
++                            configuration->width / configuration->scale,
++                            configuration->height / configuration->scale);
+ 
+   meta_wayland_xdg_surface_send_configure (xdg_surface, configuration);
+ }
+@@ -2046,8 +2047,10 @@ meta_wayland_xdg_positioner_to_placement (MetaWaylandXdgPositioner *xdg_position
+                 }
+               if (configuration->has_size)
+                 {
+-                  parent_rect.width = configuration->width;
+-                  parent_rect.height = configuration->height;
++                  parent_rect.width =
++                    configuration->width / configuration->scale;
++                  parent_rect.height =
++                    configuration->height / configuration->scale;
+                 }
+             }
+           else if (xdg_positioner->has_parent_size)
+diff --git a/src/wayland/meta-window-wayland.c b/src/wayland/meta-window-wayland.c
+index e2d2d71da..b4329d452 100644
+--- a/src/wayland/meta-window-wayland.c
++++ b/src/wayland/meta-window-wayland.c
+@@ -59,6 +59,7 @@ struct _MetaWindowWayland
+   int last_sent_height;
+   int last_sent_rel_x;
+   int last_sent_rel_y;
++  int last_sent_geometry_scale;
+   MetaGravity last_sent_gravity;
+ 
+   gboolean has_been_shown;
+@@ -192,6 +193,7 @@ surface_state_changed (MetaWindow *window)
+                                            wl_window->last_sent_y,
+                                            wl_window->last_sent_width,
+                                            wl_window->last_sent_height,
++                                           wl_window->last_sent_geometry_scale,
+                                            META_MOVE_RESIZE_STATE_CHANGED,
+                                            wl_window->last_sent_gravity);
+ 
+@@ -271,8 +273,8 @@ meta_window_wayland_move_resize_internal (MetaWindow                *window,
+     }
+   else
+     {
+-      configured_width = constrained_rect.width / geometry_scale;
+-      configured_height = constrained_rect.height / geometry_scale;
++      configured_width = constrained_rect.width;
++      configured_height = constrained_rect.height;
+     }
+ 
+   /* For wayland clients, the size is completely determined by the client,
+@@ -334,7 +336,8 @@ meta_window_wayland_move_resize_internal (MetaWindow                *window,
+                       meta_wayland_window_configuration_new_relative (rel_x,
+                                                                       rel_y,
+                                                                       configured_width,
+-                                                                      configured_height);
++                                                                      configured_height,
++                                                                      geometry_scale);
+                     meta_window_wayland_configure (wl_window, configuration);
+ 
+                     wl_window->last_sent_rel_x = rel_x;
+@@ -386,6 +389,7 @@ meta_window_wayland_move_resize_internal (MetaWindow                *window,
+                                                    configured_y,
+                                                    configured_width,
+                                                    configured_height,
++                                                   geometry_scale,
+                                                    flags,
+                                                    gravity);
+           meta_window_wayland_configure (wl_window, configuration);
+@@ -401,6 +405,7 @@ meta_window_wayland_move_resize_internal (MetaWindow                *window,
+   wl_window->last_sent_y = configured_y;
+   wl_window->last_sent_width = configured_width;
+   wl_window->last_sent_height = configured_height;
++  wl_window->last_sent_geometry_scale = geometry_scale;
+   wl_window->last_sent_gravity = gravity;
+ 
+   if (can_move_now)
+-- 
+2.29.1
+
