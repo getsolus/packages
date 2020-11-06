@@ -1,0 +1,1087 @@
+From 3d847ff80d429cadf0bc59aa50caa37bf27c0201 Mon Sep 17 00:00:00 2001
+From: Sam Thursfield <sam@afuera.me.uk>
+Date: Sun, 7 Jun 2020 21:53:20 +0200
+Subject: [PATCH 2/3] Generate queries using SPARQL templates
+
+The code to generate SPARQL queries was split across many different
+source files, making it difficult to make big changes. Now the
+queries are written out as templates and we use template substitution
+to build the SPARQL that we send to Tracker.
+---
+ src/meson.build                             |   5 +
+ src/photos-base-manager.c                   |  15 ++
+ src/photos-base-manager.h                   |   4 +
+ src/photos-filterable.c                     |   8 -
+ src/photos-filterable.h                     |   3 -
+ src/photos-query-builder.c                  | 207 +++++++++-----------
+ src/photos-search-type-manager.c            |  59 +-----
+ src/photos-search-type.c                    |  67 +++----
+ src/photos-search-type.h                    |   6 +-
+ src/photos-sparql-template.c                | 187 ++++++++++++++++++
+ src/photos-sparql-template.h                |  38 ++++
+ src/photos.gresource.xml                    |   4 +
+ src/queries/all.sparql.template             |  31 +++
+ src/queries/collections.sparql.template     |  14 ++
+ src/queries/favorite-photos.sparql.template |  12 ++
+ src/queries/photos.sparql.template          |  11 ++
+ 16 files changed, 446 insertions(+), 225 deletions(-)
+ create mode 100644 src/photos-sparql-template.c
+ create mode 100644 src/photos-sparql-template.h
+ create mode 100644 src/queries/all.sparql.template
+ create mode 100644 src/queries/collections.sparql.template
+ create mode 100644 src/queries/favorite-photos.sparql.template
+ create mode 100644 src/queries/photos.sparql.template
+
+diff --git a/src/meson.build b/src/meson.build
+index 9919f0cf..b5b2759c 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -195,6 +195,7 @@ sources = common_sources + files(
+   'photos-source.c',
+   'photos-source-manager.c',
+   'photos-source-notification.c',
++  'photos-sparql-template.c',
+   'photos-spinner-box.c',
+   'photos-thumbnail-factory.c',
+   'photos-tool.c',
+@@ -290,6 +291,10 @@ resource_data = files(
+   'photos-selection-toolbar.ui',
+   'photos-share-dialog.ui',
+   'photos-zoom-controls.ui',
++  'queries/all.sparql.template',
++  'queries/collections.sparql.template',
++  'queries/favorite-photos.sparql.template',
++  'queries/photos.sparql.template',
+ )
+ 
+ sources += gnome.compile_resources(
+diff --git a/src/photos-base-manager.c b/src/photos-base-manager.c
+index d49d19a5..052638d5 100644
+--- a/src/photos-base-manager.c
++++ b/src/photos-base-manager.c
+@@ -250,6 +250,12 @@ photos_base_manager_default_get_where (PhotosBaseManager *self, gint flags)
+ }
+ 
+ 
++static PhotosSparqlTemplate *
++photos_base_manager_default_get_sparql_template (PhotosBaseManager *self, gint flags)
++{
++  return NULL;
++}
++
+ static void
+ photos_base_manager_default_remove_object_by_id (PhotosBaseManager *self, const gchar *id)
+ {
+@@ -438,6 +444,7 @@ photos_base_manager_class_init (PhotosBaseManagerClass *class)
+   class->get_object_by_id = photos_base_manager_default_get_object_by_id;
+   class->get_previous_object = photos_base_manager_default_get_previous_object;
+   class->get_where = photos_base_manager_default_get_where;
++  class->get_sparql_template = photos_base_manager_default_get_sparql_template;
+   class->remove_object_by_id = photos_base_manager_default_remove_object_by_id;
+   class->set_active_object = photos_base_manager_default_set_active_object;
+ 
+@@ -714,6 +721,14 @@ photos_base_manager_get_where (PhotosBaseManager *self, gint flags)
+ }
+ 
+ 
++PhotosSparqlTemplate *
++photos_base_manager_get_sparql_template (PhotosBaseManager *self, gint flags)
++{
++  g_return_val_if_fail (PHOTOS_IS_BASE_MANAGER (self), NULL);
++  return PHOTOS_BASE_MANAGER_GET_CLASS (self)->get_sparql_template (self, flags);
++}
++
++
+ void
+ photos_base_manager_process_new_objects (PhotosBaseManager *self, GHashTable *new_objects)
+ {
+diff --git a/src/photos-base-manager.h b/src/photos-base-manager.h
+index 99d203e9..04cfa7db 100644
+--- a/src/photos-base-manager.h
++++ b/src/photos-base-manager.h
+@@ -24,6 +24,7 @@
+ #define PHOTOS_BASE_MANAGER_H
+ 
+ #include <glib-object.h>
++#include "photos-sparql-template.h"
+ 
+ G_BEGIN_DECLS
+ 
+@@ -46,6 +47,7 @@ struct _PhotosBaseManagerClass
+   gchar         *(*get_where)              (PhotosBaseManager *self, gint flags);
+   void           (*remove_object_by_id)    (PhotosBaseManager *self, const gchar *id);
+   gboolean       (*set_active_object)      (PhotosBaseManager *self, GObject *object);
++  PhotosSparqlTemplate *(*get_sparql_template) (PhotosBaseManager *self, gint flags);
+ 
+   /* signals */
+   void           (*active_changed)         (PhotosBaseManager *self, GObject *object);
+@@ -80,6 +82,8 @@ const gchar        *photos_base_manager_get_title                (PhotosBaseMana
+ 
+ gchar              *photos_base_manager_get_where                (PhotosBaseManager *self, gint flags);
+ 
++PhotosSparqlTemplate *photos_base_manager_get_sparql_template    (PhotosBaseManager *self, gint flags);
++
+ void                photos_base_manager_process_new_objects      (PhotosBaseManager *self, GHashTable *new_objects);
+ 
+ void                photos_base_manager_remove_object            (PhotosBaseManager *self, GObject *object);
+diff --git a/src/photos-filterable.c b/src/photos-filterable.c
+index 361b1c29..aaa4109c 100644
+--- a/src/photos-filterable.c
++++ b/src/photos-filterable.c
+@@ -69,14 +69,6 @@ photos_filterable_get_id (PhotosFilterable *self)
+ }
+ 
+ 
+-gchar *
+-photos_filterable_get_where (PhotosFilterable *self)
+-{
+-  g_return_val_if_fail (PHOTOS_IS_FILTERABLE (self), NULL);
+-  return PHOTOS_FILTERABLE_GET_IFACE (self)->get_where (self);
+-}
+-
+-
+ gboolean
+ photos_filterable_is_search_criterion (PhotosFilterable *self)
+ {
+diff --git a/src/photos-filterable.h b/src/photos-filterable.h
+index e768bca0..8a3415fc 100644
+--- a/src/photos-filterable.h
++++ b/src/photos-filterable.h
+@@ -37,7 +37,6 @@ struct _PhotosFilterableInterface
+   gboolean (*get_builtin) (PhotosFilterable *self);
+   gchar *(*get_filter) (PhotosFilterable *self);
+   const gchar *(*get_id) (PhotosFilterable *self);
+-  gchar *(*get_where) (PhotosFilterable *self);
+   gboolean (*is_search_criterion) (PhotosFilterable *self);
+ };
+ 
+@@ -47,8 +46,6 @@ gchar              *photos_filterable_get_filter         (PhotosFilterable *self
+ 
+ const gchar        *photos_filterable_get_id             (PhotosFilterable *self);
+ 
+-gchar              *photos_filterable_get_where          (PhotosFilterable *self);
+-
+ gboolean            photos_filterable_is_search_criterion  (PhotosFilterable *self);
+ 
+ G_END_DECLS
+diff --git a/src/photos-query-builder.c b/src/photos-query-builder.c
+index 6b996811..e0735bde 100644
+--- a/src/photos-query-builder.c
++++ b/src/photos-query-builder.c
+@@ -26,112 +26,76 @@
+ #include <string.h>
+ 
+ #include "photos-base-manager.h"
++#include "photos-query.h"
+ #include "photos-query-builder.h"
+ #include "photos-search-type.h"
+ #include "photos-source-manager.h"
+ #include "photos-search-match-manager.h"
+ #include "photos-search-type-manager.h"
+ 
++#define PHOTOS_QUERY_COLLECTIONS_IDENTIFIER "photos:collection:"
++#define PHOTOS_QUERY_LOCAL_COLLECTIONS_IDENTIFIER "photos:collection:local:"
+ 
+-static gchar *
+-photos_query_builder_filter (PhotosSearchContextState *state, gint flags)
+-{
+-  gchar *sparql;
+-  g_autofree gchar *src_mngr_filter = NULL;
+-  g_autofree gchar *srch_mtch_mngr_filter = NULL;
+-  g_autofree gchar *srch_typ_mngr_filter = NULL;
++const gchar *collections_default_filter = \
++  "(fn:starts-with (nao:identifier (?urn), '" PHOTOS_QUERY_COLLECTIONS_IDENTIFIER "')"
++  "   || (?urn = nfo:image-category-screenshot))";
+ 
+-  src_mngr_filter = photos_base_manager_get_filter (state->src_mngr, flags);
+-  srch_mtch_mngr_filter = photos_base_manager_get_filter (state->srch_mtch_mngr, flags);
+-  srch_typ_mngr_filter = photos_base_manager_get_filter (state->srch_typ_mngr, flags);
+ 
+-  sparql = g_strdup_printf ("FILTER (%s && %s && %s)",
+-                            src_mngr_filter,
+-                            srch_mtch_mngr_filter,
+-                            srch_typ_mngr_filter);
+-
+-  return sparql;
+-}
++/* This includes mimetype blocklist */
++const gchar *photos_default_filter = \
++  "(nie:mimeType(?urn) != 'image/gif' && nie:mimeType(?urn) != 'image/x-eps')";
+ 
+ 
+ static gchar *
+-photos_query_builder_optional (void)
+-{
+-  return g_strdup ("OPTIONAL { ?urn nco:creator ?creator . } "
+-                   "OPTIONAL { ?urn nco:publisher ?publisher . }");
+-}
+-
+-
+-static gchar *
+-photos_query_builder_inner_where (PhotosSearchContextState *state, gboolean global, gint flags)
++photos_query_builder_query (PhotosSearchContextState *state,
++                            gboolean global,
++                            gint flags,
++                            PhotosOffsetController *offset_cntrlr)
+ {
+-  g_autofree gchar *item_mngr_where = NULL;
++  PhotosSparqlTemplate *template;
++  const gchar *projection = NULL;
++  g_autofree gchar *item_pattern = NULL;
++  g_autofree gchar *search_filter = NULL;
++  g_autofree gchar *source_filter = NULL;
++  const gchar *order = NULL;
++  g_autofree gchar *offset_limit = NULL;
+   gchar *sparql;
+-  g_autofree gchar *srch_typ_mngr_where = NULL;
+ 
+-  srch_typ_mngr_where = photos_base_manager_get_where (state->srch_typ_mngr, flags);
++  template = photos_base_manager_get_sparql_template (state->srch_typ_mngr, flags);
++
++  projection = "?urn "
++               "nie:url (?urn) "
++               "nfo:fileName (?urn) "
++               "nie:mimeType (?urn) "
++               "nie:title (?urn) "
++               "tracker:coalesce (nco:fullname (?creator), nco:fullname (?publisher), '') "
++               "tracker:coalesce (nfo:fileLastModified (?urn), nie:contentLastModified (?urn)) AS ?mtime "
++               "nao:identifier (?urn) "
++               "rdf:type (?urn) "
++               "nie:dataSource(?urn) "
++               "( EXISTS { ?urn nao:hasTag nao:predefined-tag-favorite } ) "
++               "( EXISTS { ?urn nco:contributor ?contributor FILTER ( ?contributor != ?creator ) } ) "
++               "tracker:coalesce(nfo:fileCreated (?urn), nie:contentCreated (?urn)) "
++               "nfo:width (?urn) "
++               "nfo:height (?urn) "
++               "nfo:equipment (?urn) "
++               "nfo:orientation (?urn) "
++               "nmm:exposureTime (?urn) "
++               "nmm:fnumber (?urn) "
++               "nmm:focalLength (?urn) "
++               "nmm:isoSpeed (?urn) "
++               "nmm:flash (?urn) "
++               "slo:location (?urn) ";
++
++  item_pattern = photos_base_manager_get_where (state->item_mngr, flags);
+ 
+   if (!(flags & PHOTOS_QUERY_FLAGS_UNFILTERED))
+     {
+-      if (global)
+-        {
+-          /* TODO: SearchCategoryManager */
+-
+-          item_mngr_where = photos_base_manager_get_where (state->item_mngr, flags);
+-        }
++      source_filter = photos_base_manager_get_filter (state->src_mngr, flags);
++      search_filter = photos_base_manager_get_filter (state->srch_mtch_mngr, flags);
+     }
+ 
+-  sparql = g_strdup_printf ("WHERE { %s %s }",
+-                            srch_typ_mngr_where,
+-                            (item_mngr_where != NULL) ? item_mngr_where : "");
+-
+-  return sparql;
+-}
+-
+-
+-static gchar *
+-photos_query_builder_where (PhotosSearchContextState *state, gboolean global, gint flags)
+-{
+-  const gchar *count_items = "COUNT (?item) AS ?count";
+-  gboolean item_defined;
+-  g_autofree gchar *filter = NULL;
+-  g_autofree gchar *optional = NULL;
+-  gchar *sparql;
+-  g_autofree gchar *where_sparql = NULL;
+-
+-  where_sparql = photos_query_builder_inner_where (state, global, flags);
+-  item_defined = strstr (where_sparql, "?item") != NULL;
+-
+-  optional = photos_query_builder_optional ();
+-
+-  if (!(flags & PHOTOS_QUERY_FLAGS_UNFILTERED))
+-    filter = photos_query_builder_filter (state, flags);
+-
+-  sparql = g_strdup_printf ("WHERE {{"
+-                            "    SELECT ?urn rdf:type (?urn) AS ?type %s %s GROUP BY (?urn)"
+-                            "  }"
+-                            "  %s %s"
+-                            "}",
+-                            item_defined ? count_items : "",
+-                            where_sparql,
+-                            optional,
+-                            (filter != NULL) ? filter : "");
+-
+-  return sparql;
+-}
+-
+-
+-static gchar *
+-photos_query_builder_query (PhotosSearchContextState *state,
+-                            gboolean global,
+-                            gint flags,
+-                            PhotosOffsetController *offset_cntrlr)
+-{
+-  gchar *sparql;
+-  g_autofree gchar *tail_sparql = NULL;
+-  g_autofree gchar *where_sparql = NULL;
+-
+-  where_sparql = photos_query_builder_where (state, global, flags);
++  order = "ORDER BY DESC (?mtime)";
+ 
+   if (global && (flags & PHOTOS_QUERY_FLAGS_UNLIMITED) == 0)
+     {
+@@ -144,35 +108,19 @@ photos_query_builder_query (PhotosSearchContextState *state,
+           step = photos_offset_controller_get_step (offset_cntrlr);
+         }
+ 
+-      tail_sparql = g_strdup_printf ("ORDER BY DESC (?mtime) LIMIT %d OFFSET %d", step, offset);
++      offset_limit = g_strdup_printf ("LIMIT %d OFFSET %d", step, offset);
+     }
+ 
+-  sparql = g_strconcat ("SELECT ?urn "
+-                        "nie:url (?urn) "
+-                        "nfo:fileName (?urn) "
+-                        "nie:mimeType (?urn) "
+-                        "nie:title (?urn) "
+-                        "tracker:coalesce (nco:fullname (?creator), nco:fullname (?publisher), '') "
+-                        "tracker:coalesce (nfo:fileLastModified (?urn), nie:contentLastModified (?urn)) AS ?mtime "
+-                        "nao:identifier (?urn) "
+-                        "rdf:type (?urn) "
+-                        "nie:dataSource(?urn) "
+-                        "( EXISTS { ?urn nao:hasTag nao:predefined-tag-favorite } ) "
+-                        "( EXISTS { ?urn nco:contributor ?contributor FILTER ( ?contributor != ?creator ) } ) "
+-                        "tracker:coalesce(nfo:fileCreated (?urn), nie:contentCreated (?urn)) "
+-                        "nfo:width (?urn) "
+-                        "nfo:height (?urn) "
+-                        "nfo:equipment (?urn) "
+-                        "nfo:orientation (?urn) "
+-                        "nmm:exposureTime (?urn) "
+-                        "nmm:fnumber (?urn) "
+-                        "nmm:focalLength (?urn) "
+-                        "nmm:isoSpeed (?urn) "
+-                        "nmm:flash (?urn) "
+-                        "slo:location (?urn) ",
+-                        where_sparql,
+-                        tail_sparql,
+-                        NULL);
++  sparql = photos_sparql_template_get_sparql (template,
++                                              "projection", projection,
++                                              "collections_default_filter", collections_default_filter,
++                                              "item_pattern", item_pattern,
++                                              "photos_default_filter", photos_default_filter,
++                                              "source_filter", source_filter ? source_filter : "",
++                                              "search_filter", search_filter ? search_filter : "",
++                                              "order", order,
++                                              "offset_limit", offset_limit ? offset_limit : "",
++                                              NULL);
+ 
+   return sparql;
+ }
+@@ -231,12 +179,37 @@ photos_query_builder_collection_icon_query (PhotosSearchContextState *state, con
+ PhotosQuery *
+ photos_query_builder_count_query (PhotosSearchContextState *state, gint flags)
+ {
+-  PhotosQuery *query;
++  PhotosSparqlTemplate *template;
++  const gchar *projection = NULL;
++  g_autofree gchar *item_pattern = NULL;
++  g_autofree gchar *search_filter = NULL;
++  g_autofree gchar *source_filter = NULL;
+   g_autofree gchar *sparql = NULL;
+-  g_autofree gchar *where_sparql = NULL;
++  PhotosQuery *query;
++
++  template = photos_base_manager_get_sparql_template (state->srch_typ_mngr, flags);
++
++  projection = "COUNT(?urn) ";
++
++  item_pattern = photos_base_manager_get_where (state->item_mngr, flags);
++
++  if (! (flags & PHOTOS_QUERY_FLAGS_UNFILTERED))
++    {
++      source_filter = photos_base_manager_get_filter (state->src_mngr, flags);
++      search_filter = photos_base_manager_get_filter (state->srch_mtch_mngr, flags);
++    }
++
++  sparql = photos_sparql_template_get_sparql (template,
++                                              "projection", projection,
++                                              "collections_default_filter", collections_default_filter,
++                                              "item_pattern", item_pattern,
++                                              "photos_default_filter", photos_default_filter,
++                                              "source_filter", source_filter ? source_filter : "",
++                                              "search_filter", search_filter ? search_filter : "",
++                                              "order", "",
++                                              "offset_limit", "",
++                                              NULL);
+ 
+-  where_sparql = photos_query_builder_where (state, TRUE, flags);
+-  sparql = g_strconcat ("SELECT DISTINCT COUNT(?urn) ", where_sparql, NULL);
+   query = photos_query_new (state, sparql);
+ 
+   return query;
+diff --git a/src/photos-search-type-manager.c b/src/photos-search-type-manager.c
+index 87f441ed..5c87d4a4 100644
+--- a/src/photos-search-type-manager.c
++++ b/src/photos-search-type-manager.c
+@@ -41,13 +41,6 @@ struct _PhotosSearchTypeManager
+ G_DEFINE_TYPE (PhotosSearchTypeManager, photos_search_type_manager, PHOTOS_TYPE_BASE_MANAGER);
+ 
+ 
+-static const gchar *BLACKLISTED_MIME_TYPES[] =
+-{
+-  "image/gif",
+-  "image/x-eps"
+-};
+-
+-
+ static gchar *
+ photos_search_type_manager_get_filter (PhotosBaseManager *mngr, gint flags)
+ {
+@@ -69,9 +62,8 @@ photos_search_type_manager_get_filter (PhotosBaseManager *mngr, gint flags)
+   return filter;
+ }
+ 
+-
+-static gchar *
+-photos_search_type_manager_get_where (PhotosBaseManager *mngr, gint flags)
++static PhotosSparqlTemplate *
++photos_search_type_manager_get_sparql_template (PhotosBaseManager *mngr, gint flags)
+ {
+   GObject *search_type;
+ 
+@@ -86,74 +78,39 @@ photos_search_type_manager_get_where (PhotosBaseManager *mngr, gint flags)
+   else
+     search_type = photos_base_manager_get_object_by_id (mngr, PHOTOS_SEARCH_TYPE_STOCK_ALL);
+ 
+-  return photos_filterable_get_where (PHOTOS_FILTERABLE (search_type));
++  return photos_search_type_get_sparql_template (PHOTOS_SEARCH_TYPE (search_type));
+ }
+ 
+-
+ static void
+ photos_search_type_manager_init (PhotosSearchTypeManager *self)
+ {
+   PhotosSearchType *search_type;
+-  gchar *item_filter;
+-  gchar *all_filter;
+-  gchar *blacklisted_mime_types_filter;
+-  gchar *col_filter;
+-  gchar **strv;
+-  guint i;
+-  guint n_elements;
+-
+-  n_elements = G_N_ELEMENTS (BLACKLISTED_MIME_TYPES);
+-  strv = (gchar **) g_malloc0_n (n_elements + 1, sizeof (gchar *));
+-  for (i = 0; i < n_elements; i++)
+-    strv[i] = g_strdup_printf ("nie:mimeType(?urn) != '%s'", BLACKLISTED_MIME_TYPES[i]);
+-
+-  blacklisted_mime_types_filter = g_strjoinv (" && ", strv);
+-
+-  item_filter = g_strdup_printf ("(fn:contains (?type, 'nmm#Photo') && %s)", blacklisted_mime_types_filter);
+-  col_filter = g_strdup_printf ("(fn:contains (?type, 'nfo#DataContainer')"
+-                                " && ?count > 0"
+-                                " && (fn:starts-with (nao:identifier (?urn), '%s')"
+-                                "     || (?urn = nfo:image-category-screenshot)))",
+-                                PHOTOS_QUERY_COLLECTIONS_IDENTIFIER);
+-  all_filter = g_strdup_printf ("(%s || %s)", col_filter, item_filter);
+ 
+   search_type = photos_search_type_new_full (PHOTOS_SEARCH_TYPE_STOCK_ALL,
+                                              _("All"),
+-                                             "?urn a rdfs:Resource. "
+-                                             "OPTIONAL {?item a nmm:Photo; nie:isPartOf ?urn}",
+-                                             all_filter);
++                                             "resource:///org/gnome/Photos/all.sparql.template");
+   photos_base_manager_add_object (PHOTOS_BASE_MANAGER (self), G_OBJECT (search_type));
+   g_object_unref (search_type);
+ 
+   search_type = photos_search_type_new_full (PHOTOS_SEARCH_TYPE_STOCK_COLLECTIONS,
+                                              _("Albums"),
+-                                             "?urn a nfo:DataContainer. "
+-                                             "?item a nmm:Photo; nie:isPartOf ?urn.",
+-                                             col_filter);
++                                             "resource:///org/gnome/Photos/collections.sparql.template");
+   photos_base_manager_add_object (PHOTOS_BASE_MANAGER (self), G_OBJECT (search_type));
+   g_object_unref (search_type);
+ 
+   search_type = photos_search_type_new_full (PHOTOS_SEARCH_TYPE_STOCK_FAVORITES,
+                                              _("Favorites"),
+-                                             "?urn a nmm:Photo; nao:hasTag nao:predefined-tag-favorite. ",
+-                                             blacklisted_mime_types_filter);
++                                             "resource:///org/gnome/Photos/favorite-photos.sparql.template");
+   photos_base_manager_add_object (PHOTOS_BASE_MANAGER (self), G_OBJECT (search_type));
+   g_object_unref (search_type);
+ 
+   search_type = photos_search_type_new_full (PHOTOS_SEARCH_TYPE_STOCK_PHOTOS,
+                                              _("Photos"),
+-                                             "?urn a nmm:Photo",
+-                                             blacklisted_mime_types_filter);
++                                             "resource:///org/gnome/Photos/photos.sparql.template");
+   photos_base_manager_add_object (PHOTOS_BASE_MANAGER (self), G_OBJECT (search_type));
+   g_object_unref (search_type);
+ 
+   photos_base_manager_set_active_object_by_id (PHOTOS_BASE_MANAGER (self), PHOTOS_SEARCH_TYPE_STOCK_ALL);
+-
+-  g_free (item_filter);
+-  g_free (all_filter);
+-  g_free (blacklisted_mime_types_filter);
+-  g_free (col_filter);
+-  g_strfreev (strv);
+ }
+ 
+ 
+@@ -163,7 +120,7 @@ photos_search_type_manager_class_init (PhotosSearchTypeManagerClass *class)
+   PhotosBaseManagerClass *base_manager_class = PHOTOS_BASE_MANAGER_CLASS (class);
+ 
+   base_manager_class->get_filter = photos_search_type_manager_get_filter;
+-  base_manager_class->get_where = photos_search_type_manager_get_where;
++  base_manager_class->get_sparql_template = photos_search_type_manager_get_sparql_template;
+ }
+ 
+ 
+diff --git a/src/photos-search-type.c b/src/photos-search-type.c
+index 44dc60eb..f3bbae15 100644
+--- a/src/photos-search-type.c
++++ b/src/photos-search-type.c
+@@ -25,24 +25,23 @@
+ 
+ #include "photos-filterable.h"
+ #include "photos-search-type.h"
++#include "photos-sparql-template.h"
+ 
+ 
+ struct _PhotosSearchType
+ {
+   GObject parent_instance;
+-  gchar *filter;
+   gchar *id;
+   gchar *name;
+-  gchar *where;
++  PhotosSparqlTemplate *sparql_template;
+ };
+ 
+ enum
+ {
+   PROP_0,
+-  PROP_FILTER,
+   PROP_ID,
+   PROP_NAME,
+-  PROP_WHERE,
++  PROP_SPARQL_TEMPLATE,
+ };
+ 
+ static void photos_search_type_filterable_iface_init (PhotosFilterableInterface *iface);
+@@ -53,14 +52,6 @@ G_DEFINE_TYPE_WITH_CODE (PhotosSearchType, photos_search_type, G_TYPE_OBJECT,
+                                                 photos_search_type_filterable_iface_init));
+ 
+ 
+-static gchar *
+-photos_search_type_get_filter (PhotosFilterable *iface)
+-{
+-  PhotosSearchType *self = PHOTOS_SEARCH_TYPE (iface);
+-  return g_strdup (self->filter);
+-}
+-
+-
+ static const gchar *
+ photos_search_type_get_id (PhotosFilterable *filterable)
+ {
+@@ -69,14 +60,6 @@ photos_search_type_get_id (PhotosFilterable *filterable)
+ }
+ 
+ 
+-static gchar *
+-photos_search_type_get_where (PhotosFilterable *iface)
+-{
+-  PhotosSearchType *self = PHOTOS_SEARCH_TYPE (iface);
+-  return g_strdup (self->where);
+-}
+-
+-
+ static gboolean
+ photos_search_type_is_search_criterion (PhotosFilterable *iface)
+ {
+@@ -84,15 +67,20 @@ photos_search_type_is_search_criterion (PhotosFilterable *iface)
+ }
+ 
+ 
++PhotosSparqlTemplate *
++photos_search_type_get_sparql_template (PhotosSearchType *self)
++{
++  return self->sparql_template;
++}
++
+ static void
+ photos_search_type_finalize (GObject *object)
+ {
+   PhotosSearchType *self = PHOTOS_SEARCH_TYPE (object);
+ 
+-  g_free (self->filter);
+   g_free (self->id);
+   g_free (self->name);
+-  g_free (self->where);
++  g_clear_object (&self->sparql_template);
+ 
+   G_OBJECT_CLASS (photos_search_type_parent_class)->finalize (object);
+ }
+@@ -113,6 +101,10 @@ photos_search_type_get_property (GObject *object, guint prop_id, GValue *value,
+       g_value_set_string (value, self->name);
+       break;
+ 
++    case PROP_SPARQL_TEMPLATE:
++      g_value_set_object (value, self->sparql_template);
++      break;
++
+     default:
+       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+       break;
+@@ -127,10 +119,6 @@ photos_search_type_set_property (GObject *object, guint prop_id, const GValue *v
+ 
+   switch (prop_id)
+     {
+-    case PROP_FILTER:
+-      self->filter = g_value_dup_string (value);
+-      break;
+-
+     case PROP_ID:
+       self->id = g_value_dup_string (value);
+       break;
+@@ -139,8 +127,8 @@ photos_search_type_set_property (GObject *object, guint prop_id, const GValue *v
+       self->name = g_value_dup_string (value);
+       break;
+ 
+-    case PROP_WHERE:
+-      self->where = g_value_dup_string (value);
++    case PROP_SPARQL_TEMPLATE:
++      self->sparql_template = g_object_ref (g_value_get_object (value));
+       break;
+ 
+     default:
+@@ -165,14 +153,6 @@ photos_search_type_class_init (PhotosSearchTypeClass *class)
+   object_class->get_property = photos_search_type_get_property;
+   object_class->set_property = photos_search_type_set_property;
+ 
+-  g_object_class_install_property (object_class,
+-                                   PROP_FILTER,
+-                                   g_param_spec_string ("filter",
+-                                                        "",
+-                                                        "",
+-                                                        "(true)",
+-                                                        G_PARAM_CONSTRUCT_ONLY | G_PARAM_WRITABLE));
+-
+   g_object_class_install_property (object_class,
+                                    PROP_ID,
+                                    g_param_spec_string ("id",
+@@ -190,11 +170,11 @@ photos_search_type_class_init (PhotosSearchTypeClass *class)
+                                                         G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE));
+ 
+   g_object_class_install_property (object_class,
+-                                   PROP_WHERE,
+-                                   g_param_spec_string ("where",
+-                                                        "",
++                                   PROP_SPARQL_TEMPLATE,
++                                   g_param_spec_object ("sparql-template",
+                                                         "",
+                                                         "",
++                                                        PHOTOS_TYPE_SPARQL_TEMPLATE,
+                                                         G_PARAM_CONSTRUCT_ONLY | G_PARAM_WRITABLE));
+ }
+ 
+@@ -202,9 +182,7 @@ photos_search_type_class_init (PhotosSearchTypeClass *class)
+ static void
+ photos_search_type_filterable_iface_init (PhotosFilterableInterface *iface)
+ {
+-  iface->get_filter = photos_search_type_get_filter;
+   iface->get_id = photos_search_type_get_id;
+-  iface->get_where = photos_search_type_get_where;
+   iface->is_search_criterion = photos_search_type_is_search_criterion;
+ }
+ 
+@@ -217,12 +195,13 @@ photos_search_type_new (const gchar *id, const gchar *name)
+ 
+ 
+ PhotosSearchType *
+-photos_search_type_new_full (const gchar *id, const gchar *name, const gchar *where, const gchar *filter)
++photos_search_type_new_full (const gchar *id, const gchar *name, const gchar *template_path)
+ {
++  g_autoptr (PhotosSparqlTemplate) template = photos_sparql_template_new (template_path);
++
+   return g_object_new (PHOTOS_TYPE_SEARCH_TYPE,
+                        "id", id,
+                        "name", name,
+-                       "filter", filter,
+-                       "where", where,
++                       "sparql-template", template,
+                        NULL);
+ }
+diff --git a/src/photos-search-type.h b/src/photos-search-type.h
+index 2f7135bd..7d699dd4 100644
+--- a/src/photos-search-type.h
++++ b/src/photos-search-type.h
+@@ -24,6 +24,7 @@
+ #define PHOTOS_SEARCH_TYPE_H
+ 
+ #include <glib-object.h>
++#include "photos-sparql-template.h"
+ 
+ G_BEGIN_DECLS
+ 
+@@ -39,8 +40,9 @@ PhotosSearchType    *photos_search_type_new                (const gchar *id, con
+ 
+ PhotosSearchType    *photos_search_type_new_full           (const gchar *id,
+                                                             const gchar *name,
+-                                                            const gchar *where,
+-                                                            const gchar *filter);
++                                                            const gchar *template_path);
++
++PhotosSparqlTemplate *photos_search_type_get_sparql_template (PhotosSearchType *self);
+ 
+ G_END_DECLS
+ 
+diff --git a/src/photos-sparql-template.c b/src/photos-sparql-template.c
+new file mode 100644
+index 00000000..b32437c0
+--- /dev/null
++++ b/src/photos-sparql-template.c
+@@ -0,0 +1,187 @@
++/*
++ * Photos - access, organize and share your photos on GNOME
++ * Copyright © 2020 Sam Thursfield <sam@afuera.me.uk>
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <gio/gio.h>
++
++#include "photos-sparql-template.h"
++
++#define MAX_SPARQL_TEMPLATE_SIZE (1024 * 10)
++
++struct _PhotosSparqlTemplate {
++  GObject parent_instance;
++  gchar *template_path;
++  gchar *template_text;
++};
++
++G_DEFINE_TYPE (PhotosSparqlTemplate, photos_sparql_template, G_TYPE_OBJECT)
++
++enum {
++  PROP_0,
++  PROP_TEMPLATE_PATH,
++  N_PROPS
++};
++
++PhotosSparqlTemplate *
++photos_sparql_template_new (const gchar *template_path)
++{
++  return g_object_new (PHOTOS_TYPE_SPARQL_TEMPLATE, "template-path", template_path, NULL);
++}
++
++static void
++photos_sparql_template_constructed (GObject *object)
++{
++  PhotosSparqlTemplate *self = PHOTOS_SPARQL_TEMPLATE (object);
++  g_autoptr (GFile) file = NULL;
++  g_autoptr (GFileInputStream) stream = NULL;
++  gchar buffer[MAX_SPARQL_TEMPLATE_SIZE + 1];
++  gsize bytes_read;
++  g_autoptr (GError) error = NULL;
++
++  G_OBJECT_CLASS (photos_sparql_template_parent_class)->constructed (object);
++
++  file = g_file_new_for_uri (self->template_path);
++
++  stream = g_file_read (file, NULL, &error);
++
++  if (!stream)
++    {
++      g_critical ("Failed to open template %s: %s", self->template_path, error->message);
++    }
++
++  g_input_stream_read_all (G_INPUT_STREAM (stream), buffer, MAX_SPARQL_TEMPLATE_SIZE, &bytes_read, NULL, &error);
++
++  if (error)
++    {
++      g_critical ("Failed to read template %s: %s", self->template_path, error->message);
++    }
++
++  buffer[bytes_read] = '\0';
++
++  self->template_text  = g_strdup (buffer);
++}
++
++static void
++photos_sparql_template_finalize (GObject *object)
++{
++  G_OBJECT_CLASS (photos_sparql_template_parent_class)->finalize (object);
++}
++
++static void
++photos_sparql_template_get_property (GObject    *object,
++                                     guint       prop_id,
++                                     GValue     *value,
++                                     GParamSpec *pspec)
++{
++  PhotosSparqlTemplate *self = PHOTOS_SPARQL_TEMPLATE (object);
++
++  switch (prop_id)
++    {
++    case PROP_TEMPLATE_PATH:
++      g_value_set_string (value, self->template_path);
++      break;
++
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++    }
++}
++
++static void
++photos_sparql_template_set_property (GObject      *object,
++                                     guint         prop_id,
++                                     const GValue *value,
++                                     GParamSpec   *pspec)
++{
++  PhotosSparqlTemplate *self = PHOTOS_SPARQL_TEMPLATE (object);
++
++  switch (prop_id)
++    {
++    case PROP_TEMPLATE_PATH:
++      self->template_path = g_value_dup_string (value);
++      break;
++
++    default:
++      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
++    }
++}
++
++static void
++photos_sparql_template_class_init (PhotosSparqlTemplateClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->constructed = photos_sparql_template_constructed;
++  object_class->finalize = photos_sparql_template_finalize;
++  object_class->get_property = photos_sparql_template_get_property;
++  object_class->set_property = photos_sparql_template_set_property;
++
++  g_object_class_install_property (object_class,
++                                   PROP_TEMPLATE_PATH,
++                                   g_param_spec_string ("template-path",
++                                                        "Template path",
++                                                        "Path to the template file.",
++                                                        NULL,
++                                                        G_PARAM_CONSTRUCT_ONLY | G_PARAM_READWRITE));
++}
++
++static void
++photos_sparql_template_init (PhotosSparqlTemplate *self)
++{
++}
++
++
++gchar *
++photos_sparql_template_get_sparql (PhotosSparqlTemplate *self,
++                                   const gchar          *first_binding_name, ...)
++{
++  va_list va;
++  gchar *sparql;
++
++  sparql = self->template_text;
++
++  /* FIXME: this is an inefficent way to do template substitutions
++   * because we allocate and free a copy of the string for each binding.
++   * We should check https://gitlab.gnome.org/GNOME/template-glib/
++   */
++  if (first_binding_name)
++    {
++      GRegex *regex;
++      gchar *name_regex;
++      const gchar *name;
++      const gchar *value;
++
++      va_start (va, first_binding_name);
++      name = first_binding_name;
++      do {
++        value = va_arg (va, const gchar *);
++
++        if (value == NULL)
++          {
++            g_critical ("Missing value for argument \"%s\"", name);
++            break;
++          }
++
++        name_regex = g_strdup_printf ("{{\\s?%s\\s?}}", name);
++        regex = g_regex_new (name_regex, 0, 0, NULL);
++        sparql = g_regex_replace_literal (regex, sparql, -1, 0, value, 0, NULL) ;
++      } while ((name = va_arg (va, const gchar *)));
++
++      va_end (va);
++    }
++
++  return sparql;
++}
+diff --git a/src/photos-sparql-template.h b/src/photos-sparql-template.h
+new file mode 100644
+index 00000000..66351b38
+--- /dev/null
++++ b/src/photos-sparql-template.h
+@@ -0,0 +1,38 @@
++/*
++ * Photos - access, organize and share your photos on GNOME
++ * Copyright © 2020 Sam Thursfield <sam@afuera.me.uk>
++ *
++ * This program is free software: you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation, either version 3 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#pragma once
++
++#include <glib-object.h>
++
++G_BEGIN_DECLS
++
++#define PHOTOS_TYPE_SPARQL_TEMPLATE (photos_sparql_template_get_type())
++
++G_DECLARE_FINAL_TYPE (PhotosSparqlTemplate, photos_sparql_template, PHOTOS, SPARQL_TEMPLATE, GObject)
++
++struct _PhotosSparqlTemplateClass
++{
++  GObjectClass parent_class;
++};
++
++PhotosSparqlTemplate *photos_sparql_template_new (const gchar *template_path);
++
++gchar *photos_sparql_template_get_sparql (PhotosSparqlTemplate *self, const gchar *first_binding_name, ...)  G_GNUC_NULL_TERMINATED;
++
++G_END_DECLS
+diff --git a/src/photos.gresource.xml b/src/photos.gresource.xml
+index 1015b11d..39e6d842 100644
+--- a/src/photos.gresource.xml
++++ b/src/photos.gresource.xml
+@@ -35,6 +35,10 @@
+     <file alias="selection-toolbar.ui" preprocess="xml-stripblanks" compressed="true">photos-selection-toolbar.ui</file>
+     <file alias="share-dialog.ui" preprocess="xml-stripblanks" compressed="true">photos-share-dialog.ui</file>
+     <file alias="zoom-controls.ui" preprocess="xml-stripblanks" compressed="true">photos-zoom-controls.ui</file>
++    <file alias="all.sparql.template">queries/all.sparql.template</file>
++    <file alias="collections.sparql.template">queries/collections.sparql.template</file>
++    <file alias="favorite-photos.sparql.template">queries/favorite-photos.sparql.template</file>
++    <file alias="photos.sparql.template">queries/photos.sparql.template</file>
+   </gresource>
+ 
+   <gresource prefix="/org/gnome/Photos/gtk">
+diff --git a/src/queries/all.sparql.template b/src/queries/all.sparql.template
+new file mode 100644
+index 00000000..1cef98e8
+--- /dev/null
++++ b/src/queries/all.sparql.template
+@@ -0,0 +1,31 @@
++SELECT {{projection}}
++{
++    {
++        SELECT {{projection}}
++        {
++            {
++                SELECT ?urn COUNT(?item) AS ?count
++                {
++                    ?urn a nfo:DataContainer.
++                    ?item a nmm:Photo; nie:isPartOf ?urn.
++                } GROUP BY ?urn
++            }
++            FILTER (?count > 0 && {{collections_default_filter}} && {{search_filter}})
++        }
++        GROUP BY ?urn
++    }
++    UNION
++    {
++        SELECT {{projection}}
++        {
++            ?urn a nmm:Photo .
++            OPTIONAL { ?urn nco:creator ?creator . }
++            OPTIONAL { ?urn nco:publisher ?publisher . }
++            {{item_pattern}}
++            FILTER ({{photos_default_filter}} && {{source_filter}} && {{search_filter}})
++        }
++        GROUP BY ?urn
++    }
++}
++{{order}}
++{{offset_limit}}
+diff --git a/src/queries/collections.sparql.template b/src/queries/collections.sparql.template
+new file mode 100644
+index 00000000..20b35cd6
+--- /dev/null
++++ b/src/queries/collections.sparql.template
+@@ -0,0 +1,14 @@
++SELECT {{projection}}
++{
++    {
++        SELECT ?urn COUNT(?item) AS ?count
++        {
++            ?urn a nfo:DataContainer.
++            ?item a nmm:Photo; nie:isPartOf ?urn.
++        } GROUP BY ?urn
++    }
++    FILTER (?count > 0 && {{collections_default_filter}} && {{search_filter}})
++}
++GROUP BY ?urn
++{{order}}
++{{offset_limit}}
+diff --git a/src/queries/favorite-photos.sparql.template b/src/queries/favorite-photos.sparql.template
+new file mode 100644
+index 00000000..0885a08a
+--- /dev/null
++++ b/src/queries/favorite-photos.sparql.template
+@@ -0,0 +1,12 @@
++SELECT {{projection}}
++{
++    ?urn a nmm:Photo .
++    ?urn a nmm:Photo; nao:hasTag nao:predefined-tag-favorite .
++    OPTIONAL { ?urn nco:creator ?creator . }
++    OPTIONAL { ?urn nco:publisher ?publisher . }
++    {{item_pattern}}
++    FILTER ({{photos_default_filter}} && {{source_filter}} && {{search_filter}})
++}
++GROUP BY ?urn
++{{order}}
++{{offset_limit}}
+diff --git a/src/queries/photos.sparql.template b/src/queries/photos.sparql.template
+new file mode 100644
+index 00000000..4eb10b74
+--- /dev/null
++++ b/src/queries/photos.sparql.template
+@@ -0,0 +1,11 @@
++SELECT {{projection}}
++{
++    ?urn a nmm:Photo .
++    OPTIONAL { ?urn nco:creator ?creator . }
++    OPTIONAL { ?urn nco:publisher ?publisher . }
++    {{item_pattern}}
++    FILTER ({{photos_default_filter}} && {{source_filter}} && {{search_filter}})
++}
++GROUP BY ?urn
++{{order}}
++{{offset_limit}}
+-- 
+2.29.1
+
