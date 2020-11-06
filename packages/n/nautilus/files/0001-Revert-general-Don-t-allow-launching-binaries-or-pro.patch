@@ -1,0 +1,543 @@
+From dfc5655d23f92c2395f852d0ae1c1264fd8ffc63 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Tue, 20 Oct 2020 19:34:52 +0300
+Subject: [PATCH 1/2] Revert "general: Don't allow launching binaries or
+ programs in general"
+
+This reverts commit 3a22ed5b8e3bbc1c59ff3069ee79755168754916.
+---
+ src/nautilus-directory-async.c | 253 +++++++++++++++++++++++++++++++++
+ src/nautilus-files-view.c      |  12 +-
+ src/nautilus-mime-actions.c    | 169 ++++++++++++++++++++++
+ src/nautilus-mime-actions.h    |   2 +-
+ 4 files changed, 434 insertions(+), 2 deletions(-)
+
+diff --git a/src/nautilus-directory-async.c b/src/nautilus-directory-async.c
+index 9f3033157..fecaeecb3 100644
+--- a/src/nautilus-directory-async.c
++++ b/src/nautilus-directory-async.c
+@@ -3573,6 +3573,259 @@ file_info_start (NautilusDirectory *directory,
+     g_object_unref (location);
+ }
+ 
++static gboolean
++is_link_trusted (NautilusFile *file,
++                 gboolean      is_launcher)
++{
++    GFile *location;
++    gboolean res;
++    g_autofree gchar *trusted = NULL;
++
++    if (!is_launcher)
++    {
++        return TRUE;
++    }
++
++    trusted = nautilus_file_get_metadata (file,
++                                          NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED,
++                                          NULL);
++    if (nautilus_file_can_execute (file) && trusted != NULL)
++    {
++        return TRUE;
++    }
++
++    res = FALSE;
++
++    if (nautilus_file_is_local (file))
++    {
++        location = nautilus_file_get_location (file);
++        res = nautilus_is_in_system_dir (location);
++        g_object_unref (location);
++    }
++
++    return res;
++}
++
++static void
++link_info_done (NautilusDirectory *directory,
++                NautilusFile      *file,
++                const char        *uri,
++                const char        *name,
++                GIcon             *icon,
++                gboolean           is_launcher)
++{
++    gboolean is_trusted;
++
++    file->details->link_info_is_up_to_date = TRUE;
++
++    is_trusted = is_link_trusted (file, is_launcher);
++
++    if (is_trusted)
++    {
++        nautilus_file_set_display_name (file, name, name, TRUE);
++    }
++    else
++    {
++        nautilus_file_set_display_name (file, NULL, NULL, TRUE);
++    }
++
++    file->details->got_link_info = TRUE;
++    g_clear_object (&file->details->custom_icon);
++
++    if (uri)
++    {
++        g_free (file->details->activation_uri);
++        file->details->activation_uri = NULL;
++        file->details->got_custom_activation_uri = TRUE;
++        file->details->activation_uri = g_strdup (uri);
++    }
++    if (is_trusted && (icon != NULL))
++    {
++        file->details->custom_icon = g_object_ref (icon);
++    }
++    file->details->is_launcher = is_launcher;
++    file->details->is_trusted_link = is_trusted;
++
++    nautilus_directory_async_state_changed (directory);
++}
++
++static void
++link_info_stop (NautilusDirectory *directory)
++{
++    NautilusFile *file;
++
++    if (directory->details->link_info_read_state != NULL)
++    {
++        file = directory->details->link_info_read_state->file;
++
++        if (file != NULL)
++        {
++            g_assert (NAUTILUS_IS_FILE (file));
++            g_assert (file->details->directory == directory);
++            if (is_needy (file,
++                          lacks_link_info,
++                          REQUEST_LINK_INFO))
++            {
++                return;
++            }
++        }
++
++        /* The link info is not wanted, so stop it. */
++        link_info_cancel (directory);
++    }
++}
++
++static void
++link_info_got_data (NautilusDirectory *directory,
++                    NautilusFile      *file,
++                    gboolean           result,
++                    goffset            bytes_read,
++                    char              *file_contents)
++{
++    char *link_uri, *uri, *name;
++    GIcon *icon;
++    gboolean is_launcher;
++
++    nautilus_directory_ref (directory);
++
++    uri = NULL;
++    name = NULL;
++    icon = NULL;
++    is_launcher = FALSE;
++
++    /* Handle the case where we read the Nautilus link. */
++    if (result)
++    {
++        link_uri = nautilus_file_get_uri (file);
++        nautilus_link_get_link_info_given_file_contents (file_contents, bytes_read, link_uri,
++                                                         &uri, &name, &icon, &is_launcher);
++        g_free (link_uri);
++    }
++    else
++    {
++        /* FIXME bugzilla.gnome.org 42433: We should report this error to the user. */
++    }
++
++    nautilus_file_ref (file);
++    link_info_done (directory, file, uri, name, icon, is_launcher);
++    nautilus_file_changed (file);
++    nautilus_file_unref (file);
++
++    g_free (uri);
++    g_free (name);
++
++    if (icon != NULL)
++    {
++        g_object_unref (icon);
++    }
++
++    nautilus_directory_unref (directory);
++}
++
++static void
++link_info_read_state_free (LinkInfoReadState *state)
++{
++    g_object_unref (state->cancellable);
++    g_free (state);
++}
++
++static void
++link_info_nautilus_link_read_callback (GObject      *source_object,
++                                       GAsyncResult *res,
++                                       gpointer      user_data)
++{
++    LinkInfoReadState *state;
++    gsize file_size;
++    char *file_contents;
++    gboolean result;
++    NautilusDirectory *directory;
++
++    state = user_data;
++
++    if (state->directory == NULL)
++    {
++        /* Operation was cancelled. Bail out */
++        link_info_read_state_free (state);
++        return;
++    }
++
++    directory = nautilus_directory_ref (state->directory);
++
++    result = g_file_load_contents_finish (G_FILE (source_object),
++                                          res,
++                                          &file_contents, &file_size,
++                                          NULL, NULL);
++
++    state->directory->details->link_info_read_state = NULL;
++    async_job_end (state->directory, "link info");
++
++    link_info_got_data (state->directory, state->file, result, file_size, file_contents);
++
++    if (result)
++    {
++        g_free (file_contents);
++    }
++
++    link_info_read_state_free (state);
++
++    nautilus_directory_unref (directory);
++}
++
++static void
++link_info_start (NautilusDirectory *directory,
++                 NautilusFile      *file,
++                 gboolean          *doing_io)
++{
++    GFile *location;
++    gboolean nautilus_style_link;
++    LinkInfoReadState *state;
++
++    if (directory->details->link_info_read_state != NULL)
++    {
++        *doing_io = TRUE;
++        return;
++    }
++
++    if (!is_needy (file,
++                   lacks_link_info,
++                   REQUEST_LINK_INFO))
++    {
++        return;
++    }
++    *doing_io = TRUE;
++
++    /* Figure out if it is a link. */
++    nautilus_style_link = nautilus_file_is_nautilus_link (file);
++    location = nautilus_file_get_location (file);
++
++    /* If it's not a link we are done. If it is, we need to read it. */
++    if (!nautilus_style_link)
++    {
++        link_info_done (directory, file, NULL, NULL, NULL, FALSE);
++    }
++    else
++    {
++        if (!async_job_start (directory, "link info"))
++        {
++            g_object_unref (location);
++            return;
++        }
++
++        state = g_new0 (LinkInfoReadState, 1);
++        state->directory = directory;
++        state->file = file;
++        state->cancellable = g_cancellable_new ();
++
++        directory->details->link_info_read_state = state;
++
++        g_file_load_contents_async (location,
++                                    state->cancellable,
++                                    link_info_nautilus_link_read_callback,
++                                    state);
++    }
++    g_object_unref (location);
++}
++
+ static void
+ thumbnail_done (NautilusDirectory *directory,
+                 NautilusFile      *file,
+diff --git a/src/nautilus-files-view.c b/src/nautilus-files-view.c
+index dbfb39c34..917ab9514 100644
+--- a/src/nautilus-files-view.c
++++ b/src/nautilus-files-view.c
+@@ -8935,7 +8935,17 @@ nautilus_files_view_move_copy_items (NautilusFilesView *view,
+     NautilusFile *target_file;
+ 
+     target_file = nautilus_file_get_existing_by_uri (target_uri);
+-    if (copy_action == GDK_ACTION_COPY &&
++    /* special-case "command:" here instead of starting a move/copy */
++    if (target_file != NULL && nautilus_file_is_launcher (target_file))
++    {
++        nautilus_file_unref (target_file);
++        nautilus_launch_desktop_file (
++            gtk_widget_get_screen (GTK_WIDGET (view)),
++            target_uri, item_uris,
++            nautilus_files_view_get_containing_window (view));
++        return;
++    }
++    else if (copy_action == GDK_ACTION_COPY &&
+              nautilus_is_file_roller_installed () &&
+              target_file != NULL &&
+              nautilus_file_is_archive (target_file))
+diff --git a/src/nautilus-mime-actions.c b/src/nautilus-mime-actions.c
+index 316066d4c..c8e2c1c1a 100644
+--- a/src/nautilus-mime-actions.c
++++ b/src/nautilus-mime-actions.c
+@@ -49,6 +49,7 @@
+ 
+ typedef enum
+ {
++    ACTIVATION_ACTION_LAUNCH_DESKTOP_FILE,
+     ACTIVATION_ACTION_ASK,
+     ACTIVATION_ACTION_LAUNCH,
+     ACTIVATION_ACTION_LAUNCH_IN_TERMINAL,
+@@ -727,6 +728,11 @@ get_activation_action (NautilusFile *file)
+         return ACTIVATION_ACTION_EXTRACT;
+     }
+ 
++    if (nautilus_file_is_nautilus_link (file))
++    {
++        return ACTIVATION_ACTION_LAUNCH_DESKTOP_FILE;
++    }
++
+     activation_uri = nautilus_file_get_activation_uri (file);
+     if (activation_uri == NULL)
+     {
+@@ -1193,6 +1199,14 @@ search_for_application_dbus_call_notify_cb (GDBusProxy   *proxy,
+ 
+     g_variant_unref (variant);
+ 
++    /* activate the file again */
++    nautilus_mime_activate_files (parameters_install->parent_window,
++                                  parameters_install->slot,
++                                  parameters_install->files,
++                                  parameters_install->activation_directory,
++                                  parameters_install->flags,
++                                  parameters_install->user_confirmation);
++
+     activate_parameters_install_free (parameters_install);
+ }
+ 
+@@ -1384,6 +1398,145 @@ out:
+     show_unhandled_type_error (parameters_install);
+ }
+ 
++typedef struct
++{
++    GtkWindow *parent_window;
++    NautilusFile *file;
++} ActivateParametersDesktop;
++
++static void
++activate_parameters_desktop_free (ActivateParametersDesktop *parameters_desktop)
++{
++    if (parameters_desktop->parent_window)
++    {
++        g_object_remove_weak_pointer (G_OBJECT (parameters_desktop->parent_window), (gpointer *) &parameters_desktop->parent_window);
++    }
++    nautilus_file_unref (parameters_desktop->file);
++    g_free (parameters_desktop);
++}
++
++static void
++untrusted_launcher_response_callback (GtkDialog                 *dialog,
++                                      int                        response_id,
++                                      ActivateParametersDesktop *parameters)
++{
++    GdkScreen *screen;
++    char *uri;
++    GFile *file;
++
++    switch (response_id)
++    {
++        case GTK_RESPONSE_OK:
++        {
++            file = nautilus_file_get_location (parameters->file);
++
++            /* We need to do this in order to prevent malicious desktop files
++             * with the executable bit already set.
++             * See https://bugzilla.gnome.org/show_bug.cgi?id=777991
++             */
++            nautilus_file_set_metadata (parameters->file, NAUTILUS_METADATA_KEY_DESKTOP_FILE_TRUSTED,
++                                        NULL,
++                                        "yes");
++
++            nautilus_file_mark_desktop_file_executable (file,
++                                                        parameters->parent_window,
++                                                        TRUE,
++                                                        NULL, NULL);
++
++            /* Need to force a reload of the attributes so is_trusted is marked
++             * correctly. Not sure why the general monitor doesn't fire in this
++             * case when setting the metadata
++             */
++            nautilus_file_invalidate_all_attributes (parameters->file);
++
++            screen = gtk_widget_get_screen (GTK_WIDGET (parameters->parent_window));
++            uri = nautilus_file_get_uri (parameters->file);
++            DEBUG ("Launching untrusted launcher %s", uri);
++            nautilus_launch_desktop_file (screen, uri, NULL,
++                                          parameters->parent_window);
++            g_free (uri);
++            g_object_unref (file);
++        }
++        break;
++
++        default:
++        {
++            /* Just destroy dialog */
++        }
++        break;
++    }
++
++    gtk_widget_destroy (GTK_WIDGET (dialog));
++    activate_parameters_desktop_free (parameters);
++}
++
++static void
++activate_desktop_file (ActivateParameters *parameters,
++                       NautilusFile       *file)
++{
++    ActivateParametersDesktop *parameters_desktop;
++    char *primary, *secondary, *display_name;
++    GtkWidget *dialog;
++    GdkScreen *screen;
++    char *uri;
++
++    screen = gtk_widget_get_screen (GTK_WIDGET (parameters->parent_window));
++
++    if (!nautilus_file_is_trusted_link (file))
++    {
++        /* copy the parts of parameters we are interested in as the orignal will be freed */
++        parameters_desktop = g_new0 (ActivateParametersDesktop, 1);
++        if (parameters->parent_window)
++        {
++            parameters_desktop->parent_window = parameters->parent_window;
++            g_object_add_weak_pointer (G_OBJECT (parameters_desktop->parent_window), (gpointer *) &parameters_desktop->parent_window);
++        }
++        parameters_desktop->file = nautilus_file_ref (file);
++
++        primary = _("Untrusted application launcher");
++        display_name = nautilus_file_get_display_name (file);
++        secondary =
++            g_strdup_printf (_("The application launcher “%s” has not been marked as trusted. "
++                               "If you do not know the source of this file, launching it may be unsafe."
++                               ),
++                             display_name);
++
++        dialog = gtk_message_dialog_new (parameters->parent_window,
++                                         0,
++                                         GTK_MESSAGE_WARNING,
++                                         GTK_BUTTONS_NONE,
++                                         NULL);
++        g_object_set (dialog,
++                      "text", primary,
++                      "secondary-text", secondary,
++                      NULL);
++
++        gtk_dialog_add_button (GTK_DIALOG (dialog),
++                               _("_Cancel"), GTK_RESPONSE_CANCEL);
++
++        gtk_dialog_set_default_response (GTK_DIALOG (dialog), GTK_RESPONSE_CANCEL);
++        if (nautilus_file_can_set_permissions (file))
++        {
++            gtk_dialog_add_button (GTK_DIALOG (dialog),
++                                   _("Trust and _Launch"), GTK_RESPONSE_OK);
++        }
++        g_signal_connect (dialog, "response",
++                          G_CALLBACK (untrusted_launcher_response_callback),
++                          parameters_desktop);
++        gtk_widget_show (dialog);
++
++        g_free (display_name);
++        g_free (secondary);
++        return;
++    }
++
++    uri = nautilus_file_get_uri (file);
++    DEBUG ("Launching trusted launcher %s", uri);
++    nautilus_launch_desktop_file (screen, uri, NULL,
++                                  parameters->parent_window);
++    g_free (uri);
++}
++
+ static void
+ on_launch_default_for_uri (GObject      *source_object,
+                            GAsyncResult *res,
+@@ -1433,6 +1586,8 @@ activate_files (ActivateParameters *parameters)
+     int count;
+     g_autofree char *old_working_dir = NULL;
+     GdkScreen *screen;
++    gboolean closed_window;
++    g_autoptr (GQueue) launch_desktop_files = NULL;
+     g_autoptr (GQueue) launch_files = NULL;
+     g_autoptr (GQueue) launch_in_terminal_files = NULL;
+     g_autoptr (GQueue) open_in_app_uris = NULL;
+@@ -1440,6 +1595,7 @@ activate_files (ActivateParameters *parameters)
+     GList *l;
+     ActivationAction action;
+ 
++    launch_desktop_files = g_queue_new ();
+     launch_files = g_queue_new ();
+     launch_in_terminal_files = g_queue_new ();
+     open_in_view_files = g_queue_new ();
+@@ -1470,6 +1626,12 @@ activate_files (ActivateParameters *parameters)
+ 
+         switch (action)
+         {
++            case ACTIVATION_ACTION_LAUNCH_DESKTOP_FILE:
++            {
++                g_queue_push_tail (launch_desktop_files, file);
++            }
++            break;
++
+             case ACTIVATION_ACTION_LAUNCH:
+             {
+                 g_queue_push_tail (launch_files, file);
+@@ -1514,6 +1676,13 @@ activate_files (ActivateParameters *parameters)
+         }
+     }
+ 
++    for (l = g_queue_peek_head_link (launch_desktop_files); l != NULL; l = l->next)
++    {
++        file = NAUTILUS_FILE (l->data);
++
++        activate_desktop_file (parameters, file);
++    }
++
+     if (parameters->activation_directory &&
+         (!g_queue_is_empty (launch_files) ||
+          !g_queue_is_empty (launch_in_terminal_files)))
+diff --git a/src/nautilus-mime-actions.h b/src/nautilus-mime-actions.h
+index 9765894cb..4a02d3cfc 100644
+--- a/src/nautilus-mime-actions.h
++++ b/src/nautilus-mime-actions.h
+@@ -51,4 +51,4 @@ void                   nautilus_mime_activate_file                        (GtkWi
+ 									   NautilusWindowOpenFlags  flags);
+ gint                   nautilus_mime_types_get_number_of_groups           (void);
+ const gchar*           nautilus_mime_types_group_get_name                 (gint                     group_index);
+-GPtrArray*             nautilus_mime_types_group_get_mimetypes            (gint                     group_index);
++GList*                 nautilus_mime_types_group_get_mimetypes            (gint                     group_index);
+-- 
+2.28.0
+
