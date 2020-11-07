@@ -1,0 +1,1 @@
+This package is held back to 3.34.x due to 3.36.0+ requiring libhandy, a mobile-oriented library developed by Purism.
