@@ -1,0 +1,312 @@
+From 7ceb8a8b6392c378002945a158b9a15cff4e1bce Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Thu, 10 Dec 2020 21:54:42 +0200
+Subject: [PATCH 1/1] Fix FTBFS in 5.9+. Merge in previous changes for 5.1 and
+ 5.6. Drops 4.15 patch.
+
+Thanks to Joan Bruguera for the patch.
+
+Details below:
+
+Fixes linux-next where get_fs/set_fs is already removed for some architectures.
+
+NB: Some checks in wlc_ioctl_internal are likely superfluous,
+    but I'm not familiar enough with the driver to remove them with confidence.
+
+See also: https://lwn.net/Articles/722267/
+          https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/commit/arch/x86/include/asm/uaccess.h?h=next-20200911&id=47058bb54b57962b3958a936ddbc59355e4c5504
+          https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/commit/include/linux/uaccess.h?h=next-20200911&id=5e6e9852d6f76e01b2e6803c74258afa5b432bc5
+---
+ src/shared/linux_osl.c          |  2 +-
+ src/wl/sys/wl_cfg80211_hybrid.c | 25 +-----------
+ src/wl/sys/wl_iw.c              | 25 +-----------
+ src/wl/sys/wl_linux.c           | 69 ++++++++++++++++++++++++++-------
+ src/wl/sys/wl_linux.h           |  6 +++
+ src/wl/sys/wlc_pub.h            |  1 +
+ 6 files changed, 67 insertions(+), 61 deletions(-)
+
+diff --git a/src/shared/linux_osl.c b/src/shared/linux_osl.c
+index 6157d18..8237ec7 100644
+--- a/src/shared/linux_osl.c
++++ b/src/shared/linux_osl.c
+@@ -942,7 +942,7 @@ osl_getcycles(void)
+ void *
+ osl_reg_map(uint32 pa, uint size)
+ {
+-	return (ioremap_nocache((unsigned long)pa, (unsigned long)size));
++	return (ioremap((unsigned long)pa, (unsigned long)size));
+ }
+ 
+ void
+diff --git a/src/wl/sys/wl_cfg80211_hybrid.c b/src/wl/sys/wl_cfg80211_hybrid.c
+index 7b606e0..3ab8f3a 100644
+--- a/src/wl/sys/wl_cfg80211_hybrid.c
++++ b/src/wl/sys/wl_cfg80211_hybrid.c
+@@ -38,6 +38,7 @@
+ #include <wlioctl.h>
+ #include <proto/802.11.h>
+ #include <wl_cfg80211_hybrid.h>
++#include <wl_linux.h>
+ 
+ #define EVENT_TYPE(e) dtoh32((e)->event_type)
+ #define EVENT_FLAGS(e) dtoh16((e)->flags)
+@@ -435,30 +436,8 @@ static void key_endian_to_host(struct wl_wsec_key *key)
+ static s32
+ wl_dev_ioctl(struct net_device *dev, u32 cmd, void *arg, u32 len)
+ {
+-	struct ifreq ifr;
+-	struct wl_ioctl ioc;
+-	mm_segment_t fs;
+-	s32 err = 0;
+-
+ 	BUG_ON(len < sizeof(int));
+-
+-	memset(&ioc, 0, sizeof(ioc));
+-	ioc.cmd = cmd;
+-	ioc.buf = arg;
+-	ioc.len = len;
+-	strcpy(ifr.ifr_name, dev->name);
+-	ifr.ifr_data = (caddr_t)&ioc;
+-
+-	fs = get_fs();
+-	set_fs(get_ds());
+-#if defined(WL_USE_NETDEV_OPS)
+-	err = dev->netdev_ops->ndo_do_ioctl(dev, &ifr, SIOCDEVPRIVATE);
+-#else
+-	err = dev->do_ioctl(dev, &ifr, SIOCDEVPRIVATE);
+-#endif
+-	set_fs(fs);
+-
+-	return err;
++	return wlc_ioctl_internal(dev, cmd, arg, len);
+ }
+ 
+ static s32
+diff --git a/src/wl/sys/wl_iw.c b/src/wl/sys/wl_iw.c
+index c4c610b..e346b15 100644
+--- a/src/wl/sys/wl_iw.c
++++ b/src/wl/sys/wl_iw.c
+@@ -37,6 +37,7 @@ typedef const struct si_pub	si_t;
+ 
+ #include <wl_dbg.h>
+ #include <wl_iw.h>
++#include <wl_linux.h>
+ 
+ extern bool wl_iw_conn_status_str(uint32 event_type, uint32 status,
+ 	uint32 reason, char* stringBuf, uint buflen);
+@@ -103,29 +104,7 @@ dev_wlc_ioctl(
+ 	int len
+ )
+ {
+-	struct ifreq ifr;
+-	wl_ioctl_t ioc;
+-	mm_segment_t fs;
+-	int ret;
+-
+-	memset(&ioc, 0, sizeof(ioc));
+-	ioc.cmd = cmd;
+-	ioc.buf = arg;
+-	ioc.len = len;
+-
+-	strcpy(ifr.ifr_name, dev->name);
+-	ifr.ifr_data = (caddr_t) &ioc;
+-
+-	fs = get_fs();
+-	set_fs(get_ds());
+-#if defined(WL_USE_NETDEV_OPS)
+-	ret = dev->netdev_ops->ndo_do_ioctl(dev, &ifr, SIOCDEVPRIVATE);
+-#else
+-	ret = dev->do_ioctl(dev, &ifr, SIOCDEVPRIVATE);
+-#endif
+-	set_fs(fs);
+-
+-	return ret;
++	return wlc_ioctl_internal(dev, cmd, arg, len);
+ }
+ 
+ static int
+diff --git a/src/wl/sys/wl_linux.c b/src/wl/sys/wl_linux.c
+index 0d05100..1525027 100644
+--- a/src/wl/sys/wl_linux.c
++++ b/src/wl/sys/wl_linux.c
+@@ -93,7 +93,11 @@ struct iw_statistics *wl_get_wireless_stats(struct net_device *dev);
+ 
+ #include <wlc_wowl.h>
+ 
++#ifdef HAVE_TIMER_SETUP
++static void wl_timer(struct timer_list *list);
++#else
+ static void wl_timer(ulong data);
++#endif
+ static void _wl_timer(wl_timer_t *t);
+ static struct net_device *wl_alloc_linux_if(wl_if_t *wlif);
+ 
+@@ -582,7 +586,7 @@ wl_attach(uint16 vendor, uint16 device, ulong regs,
+ 	}
+ 	wl->bcm_bustype = bustype;
+ 
+-	if ((wl->regsva = ioremap_nocache(dev->base_addr, PCI_BAR0_WINSZ)) == NULL) {
++	if ((wl->regsva = ioremap(dev->base_addr, PCI_BAR0_WINSZ)) == NULL) {
+ 		WL_ERROR(("wl%d: ioremap() failed\n", unit));
+ 		goto fail;
+ 	}
+@@ -772,7 +776,7 @@ wl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+ 	if ((val & 0x0000ff00) != 0)
+ 		pci_write_config_dword(pdev, 0x40, val & 0xffff00ff);
+ 		bar1_size = pci_resource_len(pdev, 2);
+-		bar1_addr = (uchar *)ioremap_nocache(pci_resource_start(pdev, 2),
++		bar1_addr = (uchar *)ioremap(pci_resource_start(pdev, 2),
+ 			bar1_size);
+ 	wl = wl_attach(pdev->vendor, pdev->device, pci_resource_start(pdev, 0), PCI_BUS, pdev,
+ 		pdev->irq, bar1_addr, bar1_size);
+@@ -1643,10 +1647,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+ 		goto done2;
+ 	}
+ 
+-	if (segment_eq(get_fs(), KERNEL_DS))
+-		buf = ioc.buf;
+-
+-	else if (ioc.buf) {
++	if (ioc.buf) {
+ 		if (!(buf = (void *) MALLOC(wl->osh, MAX(ioc.len, WLC_IOCTL_MAXLEN)))) {
+ 			bcmerror = BCME_NORESOURCE;
+ 			goto done2;
+@@ -1667,7 +1668,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+ 	WL_UNLOCK(wl);
+ 
+ done1:
+-	if (ioc.buf && (ioc.buf != buf)) {
++	if (ioc.buf) {
+ 		if (copy_to_user(ioc.buf, buf, ioc.len))
+ 			bcmerror = BCME_BADADDR;
+ 		MFREE(wl->osh, buf, MAX(ioc.len, WLC_IOCTL_MAXLEN));
+@@ -1680,6 +1681,39 @@ done2:
+ 	return (OSL_ERROR(bcmerror));
+ }
+ 
++int
++wlc_ioctl_internal(struct net_device *dev, int cmd, void *buf, int len)
++{
++	wl_info_t *wl;
++	wl_if_t *wlif;
++	int bcmerror;
++
++	if (!dev)
++		return -ENETDOWN;
++
++	wl = WL_INFO(dev);
++	wlif = WL_DEV_IF(dev);
++	if (wlif == NULL || wl == NULL || wl->dev == NULL)
++		return -ENETDOWN;
++
++	bcmerror = 0;
++
++	WL_TRACE(("wl%d: wlc_ioctl_internal: cmd 0x%x\n", wl->pub->unit, cmd));
++
++	WL_LOCK(wl);
++	if (!capable(CAP_NET_ADMIN)) {
++		bcmerror = BCME_EPERM;
++	} else {
++		bcmerror = wlc_ioctl(wl->wlc, cmd, buf, len, wlif->wlcif);
++	}
++	WL_UNLOCK(wl);
++
++	ASSERT(VALID_BCMERROR(bcmerror));
++	if (bcmerror != 0)
++		wl->pub->bcmerror = bcmerror;
++	return (OSL_ERROR(bcmerror));
++}
++
+ static struct net_device_stats*
+ wl_get_stats(struct net_device *dev)
+ {
+@@ -2297,11 +2331,17 @@ wl_timer_task(wl_task_t *task)
+ 	atomic_dec(&t->wl->callbacks);
+ }
+ 
++#ifdef HAVE_TIMER_SETUP
++static void
++wl_timer(struct timer_list *list)
++{
++	wl_timer_t *t = from_timer(t,list,timer);
++#else
+ static void
+ wl_timer(ulong data)
+ {
+ 	wl_timer_t *t = (wl_timer_t *)data;
+-
++#endif
+ 	if (!WL_ALL_PASSIVE_ENAB(t->wl))
+ 		_wl_timer(t);
+ 	else
+@@ -2352,9 +2392,13 @@ wl_init_timer(wl_info_t *wl, void (*fn)(void *arg), void *arg, const char *tname
+ 
+ 	bzero(t, sizeof(wl_timer_t));
+ 
++#ifdef HAVE_TIMER_SETUP
++	timer_setup(&t->timer, wl_timer,0);
++#else
+ 	init_timer(&t->timer);
+ 	t->timer.data = (ulong) t;
+ 	t->timer.function = wl_timer;
++#endif
+ 	t->wl = wl;
+ 	t->fn = fn;
+ 	t->arg = arg;
+@@ -3334,13 +3378,10 @@ wl_proc_write(struct file *filp, const char __user *buff, size_t length, loff_t
+ 	return length;
+ }
+ 
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 10, 0)
+-static const struct file_operations wl_fops = {
+-	.owner	= THIS_MODULE,
+-	.read	= wl_proc_read,
+-	.write	= wl_proc_write,
++static const struct proc_ops wl_fops = {
++	.proc_read	= wl_proc_read,
++	.proc_write	= wl_proc_write,
+ };
+-#endif
+ 
+ static int
+ wl_reg_proc_entry(wl_info_t *wl)
+diff --git a/src/wl/sys/wl_linux.h b/src/wl/sys/wl_linux.h
+index 5b1048e..d8975fd 100644
+--- a/src/wl/sys/wl_linux.h
++++ b/src/wl/sys/wl_linux.h
+@@ -22,6 +22,7 @@
+ #define _wl_linux_h_
+ 
+ #include <wlc_types.h>
++#include <wlc_pub.h>
+ 
+ typedef struct wl_timer {
+ 	struct timer_list 	timer;
+@@ -187,6 +188,11 @@ extern irqreturn_t wl_isr(int irq, void *dev_id, struct pt_regs *ptregs);
+ extern int __devinit wl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent);
+ extern void wl_free(wl_info_t *wl);
+ extern int  wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd);
++extern int wlc_ioctl_internal(struct net_device *dev, int cmd, void *buf, int len);
+ extern struct net_device * wl_netdev_get(wl_info_t *wl);
+ 
+ #endif 
++
++#if defined(timer_setup) && defined(from_timer)
++#define HAVE_TIMER_SETUP
++#endif
+\ No newline at end of file
+diff --git a/src/wl/sys/wlc_pub.h b/src/wl/sys/wlc_pub.h
+index 53a98b8..2b5a029 100644
+--- a/src/wl/sys/wlc_pub.h
++++ b/src/wl/sys/wlc_pub.h
+@@ -24,6 +24,7 @@
+ 
+ #include <wlc_types.h>
+ #include <wlc_utils.h>
++#include <siutils.h>
+ #include "proto/802.11.h"
+ #include "proto/bcmevent.h"
+ 
+-- 
+2.29.2
+
