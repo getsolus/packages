@@ -21,7 +21,7 @@ import shutil
 from configobj import ConfigObj
 
 ''' Example config file
-~/.solus/packager
+~/.config/solus/packager
 
 [Packager]
 Name=Your Name Goes Here
