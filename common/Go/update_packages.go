@@ -30,6 +30,7 @@ const defaultHost = "https://dev.getsol.us/api/"
 
 var excludes = []string{
 	"budgie-desktop-src",
+	"budgie-desktop-view-src",
 	"budgie-desktop-branding-src",
 	"gnome-desktop-branding-src",
 	"infrastructure-tooling",
