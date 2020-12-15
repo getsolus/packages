@@ -1,0 +1,167 @@
+autofs-5.1.6 - make autofs.a a shared library
+
+From: Ian Kent <raven@themaw.net>
+
+When the linker option -Bsymbolic-functions is used the static library
+that is linked to each object, automount and the shared lookup, parse
+and mount shared libraries becomes unusable because static storage
+allocated and initialized in the the library becomes undefined after
+certain events, such as forking to become a daemon.
+
+This can be fixed by changing the autofs static library to a shared
+library.
+---
+ CHANGELOG        |    1 +
+ Makefile.conf.in |    3 +++
+ Makefile.rules   |    5 +++--
+ autofs.spec      |    1 +
+ daemon/Makefile  |    2 +-
+ lib/Makefile     |   13 +++++++------
+ modules/Makefile |   12 ++++++------
+ 7 files changed, 22 insertions(+), 15 deletions(-)
+
+--- autofs-5.1.6.orig/CHANGELOG	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/CHANGELOG	2020-12-12 18:26:11.938000000 +0800
+@@ -11,6 +11,7 @@
+ - initialize struct addrinfo for getaddrinfo() calls.
+ - fix quoted string length calc in expandsunent().
+ - move AUTOFS_LIB to end of build rule lines.
++- make autofs.a a shared library.
+ 
+ 
+ 07/10/2019 autofs-5.1.6
+--- autofs-5.1.6.orig/Makefile.conf.in	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/Makefile.conf.in	2020-12-12 18:26:11.939000000 +0800
+@@ -85,6 +85,9 @@
+ prefix = @prefix@
+ exec_prefix = @exec_prefix@
+ 
++# Shared library directory
++sharedlibdir = @libdir@
++
+ # SSS library module directory
+ ssslibdir=@sssldir@
+ 
+--- autofs-5.1.6.orig/Makefile.rules	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/Makefile.rules	2020-12-12 18:26:11.939000000 +0800
+@@ -17,7 +17,8 @@
+ INSTALLROOT = $(DESTDIR)
+ 
+ # autofs utility library
+-AUTOFS_LIB = ../lib/autofs.a
++AUTOFS_LIB      = ../lib/libautofs.so
++AUTOFS_LIB_LINK = -L../lib -lautofs
+ 
+ # Compilers, linkers and flags
+ # The STRIP defined here *must not* remove any dynamic-loading symbols
+@@ -71,5 +72,5 @@
+ 	$(CC) $(CFLAGS) -S $<
+ 
+ .c.so:
+-	$(CC) $(SOLDFLAGS) $(CFLAGS) -o $*.so $< $(LDFLAGS) $(LIBS) $(AUTOFS_LIB)
++	$(CC) $(SOLDFLAGS) $(CFLAGS) -o $*.so $< $(LDFLAGS) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) $*.so
+--- autofs-5.1.6.orig/autofs.spec	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/autofs.spec	2020-12-12 18:26:11.939000000 +0800
+@@ -209,6 +209,7 @@
+ %{_sbindir}/mount.fedfs
+ %{_sbindir}/fedfs-map-nfs4
+ %endif
++%{_libdir}/libautofs.so
+ %dir %{_libdir}/autofs
+ %{_libdir}/autofs/*
+ %{_mandir}/*/*
+--- autofs-5.1.6.orig/daemon/Makefile	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/daemon/Makefile	2020-12-12 18:26:11.939000000 +0800
+@@ -35,7 +35,7 @@
+ all: automount
+ 
+ automount: $(OBJS) $(AUTOFS_LIB)
+-	$(CC) $(DAEMON_LDFLAGS) -o automount $(OBJS) $(LDFLAGS) $(LIBS) $(AUTOFS_LIB)
++	$(CC) $(DAEMON_LDFLAGS) -o automount $(OBJS) $(LDFLAGS) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) automount
+ 
+ clean:
+--- autofs-5.1.6.orig/lib/Makefile	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/lib/Makefile	2020-12-12 18:26:11.939000000 +0800
+@@ -18,7 +18,7 @@
+ YACCSRC = nss_tok.c nss_parse.tab.c nss_parse.tab.h \
+ 	  master_tok.c master_parse.tab.c master_parse.tab.h
+ 
+-LIB = autofs.a
++LIB = libautofs.so
+ 
+ CFLAGS += -I../include -fPIC -D_GNU_SOURCE
+ CFLAGS += -DAUTOFS_MAP_DIR=\"$(autofsmapdir)\"
+@@ -30,12 +30,11 @@
+ 
+ .PHONY: all install clean
+ 
+-all: autofs.a
++all: libautofs.so
+ 
+-autofs.a: $(OBJS)
+-	rm -f $(LIB)
+-	$(AR) $(ARFLAGS) $(LIB) $(OBJS)
+-	-$(RANLIB) $(LIB)
++libautofs.so: $(OBJS)
++	$(CC) $(SOLDFLAGS) $(CFLAGS) -o $*.so $^ $(LDFLAGS) $(LIBS)
++	$(STRIP) $*.so
+ 
+ mount.h: mount.x
+ 	$(RPCGEN) -h -o mount.h mount.x
+@@ -77,6 +76,8 @@
+ rpc_subs.o: mount.h
+ 
+ install: all
++	install -d -m 755 $(INSTALLROOT)$(autofslibdir)
++	install -c $(LIB) -m 755 $(INSTALLROOT)$(sharedlibdir)
+ 
+ clean:
+ 	rm -f $(LIB) $(RPCS) $(OBJS) $(YACCSRC) *.output *~
+--- autofs-5.1.6.orig/modules/Makefile	2020-12-12 18:25:57.882000000 +0800
++++ autofs-5.1.6/modules/Makefile	2020-12-12 18:26:11.939000000 +0800
+@@ -110,7 +110,7 @@
+ 
+ parse_amd.so: parse_amd.c amd_parse.tab.o amd_tok.o
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) -o parse_amd.so \
+-		parse_amd.c amd_parse.tab.o amd_tok.o $(LDFLAGS) $(LIBS) $(AUTOFS_LIB)
++		parse_amd.c amd_parse.tab.o amd_tok.o $(LDFLAGS) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) parse_amd.so
+ 
+ #
+@@ -118,17 +118,17 @@
+ #
+ lookup_yp.so: lookup_yp.c
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) $(NSLCFLAGS) -o lookup_yp.so \
+-		lookup_yp.c $(LDFLAGS) $(LIBS) $(NSLLIB) $(AUTOFS_LIB)
++		lookup_yp.c $(LDFLAGS) $(LIBS) $(NSLLIB) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) lookup_yp.so
+ 
+ lookup_nisplus.so: lookup_nisplus.c
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) $(NSLCFLAGS) -o lookup_nisplus.so \
+-		lookup_nisplus.c $(LDFLAGS) $(LIBS) $(NSLLIB) $(AUTOFS_LIB)
++		lookup_nisplus.c $(LDFLAGS) $(LIBS) $(NSLLIB) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) lookup_nisplus.so
+ 
+ lookup_hesiod.so: lookup_hesiod.c
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) $(HESIOD_FLAGS) -o lookup_hesiod.so \
+-		lookup_hesiod.c $(LDFLAGS) $(LIBHESIOD) $(LIBRESOLV) $(LIBS) $(AUTOFS_LIB)
++		lookup_hesiod.c $(LDFLAGS) $(LIBHESIOD) $(LIBRESOLV) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) lookup_hesiod.so
+ 
+ cyrus-sasl.o: cyrus-sasl.c
+@@ -140,11 +140,11 @@
+ lookup_ldap.so: lookup_ldap.c dclist.o base64.o $(SASL_OBJ)
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) $(LDAP_FLAGS) -o lookup_ldap.so \
+ 		lookup_ldap.c dclist.o base64.o $(SASL_OBJ) \
+-		$(LDFLAGS) $(LIBLDAP) $(LIBRESOLV) $(LIBS) $(AUTOFS_LIB)
++		$(LDFLAGS) $(LIBLDAP) $(LIBRESOLV) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) lookup_ldap.so
+ 
+ mount_nfs.so: mount_nfs.c replicated.o
+ 	$(CC) $(SOLDFLAGS) $(CFLAGS) -o mount_nfs.so \
+-		mount_nfs.c replicated.o $(LDFLAGS) $(LIBS) $(AUTOFS_LIB)
++		mount_nfs.c replicated.o $(LDFLAGS) $(LIBS) $(AUTOFS_LIB_LINK)
+ 	$(STRIP) mount_nfs.so
+ 
