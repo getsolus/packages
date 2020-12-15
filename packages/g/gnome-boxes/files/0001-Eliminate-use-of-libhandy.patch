@@ -1,0 +1,284 @@
+From b756ada7991b74c7ba8a7f837221a1c1a9ce183f Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Tue, 15 Dec 2020 20:15:05 +0200
+Subject: [PATCH 1/1] Eliminate use of libhandy.
+
+This commit eliminates the use of libhandy by reverting Welcome Screen usage to longer use HdyPaginator / whatever Hdy classes get used after.
+---
+ .gitmodules                      |  6 +--
+ data/gtk-style.css               |  4 +-
+ data/ui/welcome-tutorial-page.ui |  1 -
+ data/ui/welcome-tutorial.ui      | 14 +++---
+ src/main.vala                    |  2 -
+ src/meson.build                  | 13 ------
+ src/welcome-tutorial-page.vala   |  3 +-
+ src/welcome-tutorial.vala        | 73 +++++++++++---------------------
+ 8 files changed, 33 insertions(+), 83 deletions(-)
+
+diff --git a/.gitmodules b/.gitmodules
+index 7744bc3a..b7e80c17 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -4,8 +4,4 @@
+ 
+ [submodule "subprojects/libovf-glib"]
+ 	path = subprojects/libovf-glib
+-	url = https://gitlab.gnome.org/felipeborges/libovf-glib.git
+-
+-[submodule "subprojects/libhandy"]
+-	path = subprojects/libhandy
+-	url = https://gitlab.gnome.org/GNOME/libhandy.git
++	url = https://gitlab.gnome.org/felipeborges/libovf-glib.git
+\ No newline at end of file
+diff --git a/data/gtk-style.css b/data/gtk-style.css
+index e3d0cc85..ae24b066 100644
+--- a/data/gtk-style.css
++++ b/data/gtk-style.css
+@@ -134,8 +134,6 @@ separator {
+     background-position: center 15%;
+ }
+ 
+-.welcome-tutorial,
+-.welcome-tutorial-title-label,
+-.welcome-tutorial-description-label {
++.welcome-tutorial-title-label, .welcome-tutorial-description-label {
+     color: white;
+ }
+diff --git a/data/ui/welcome-tutorial-page.ui b/data/ui/welcome-tutorial-page.ui
+index 2f8b22f6..ec2fdcae 100644
+--- a/data/ui/welcome-tutorial-page.ui
++++ b/data/ui/welcome-tutorial-page.ui
+@@ -4,7 +4,6 @@
+     <property name="visible">True</property>
+     <property name="orientation">vertical</property>
+     <property name="spacing">10</property>
+-    <property name="expand">True</property>
+     <signal name="map" handler="load_css"/>
+     <style>
+       <class name="tutorial-page"/>
+diff --git a/data/ui/welcome-tutorial.ui b/data/ui/welcome-tutorial.ui
+index d47a1e8b..63157cb6 100644
+--- a/data/ui/welcome-tutorial.ui
++++ b/data/ui/welcome-tutorial.ui
+@@ -8,9 +8,6 @@
+     <property name="height-request">600</property>
+     <property name="width-request">710</property>
+     <signal name="delete-event" handler="gtk_widget_hide_on_delete"/>
+-    <style>
+-      <class name="welcome-tutorial"/>
+-    </style>
+ 
+     <child internal-child="vbox">
+       <object class="GtkBox">
+@@ -23,12 +20,11 @@
+             <property name="expand">True</property>
+ 
+             <child>
+-              <object class="HdyPaginator" id="paginator">
++              <object class="GtkStack" id="stack">
+                 <property name="visible">True</property>
+-                <property name="animation-duration">400</property>
+-                <property name="indicator-style">dots</property>
+-                <property name="margin-bottom">12</property>
+-                <signal name="notify::position" handler="on_position_changed"/>
++                <property name="transition-duration">400</property>
++                <property name="transition-type">slide-left-right</property>
++                <signal name="notify::visible-child" handler="on_stack_page_changed"/>
+ 
+                 <child>
+                   <object class="BoxesWelcomeTutorialPage">
+@@ -76,7 +72,7 @@
+ 
+                 <child>
+                   <object class="GtkButton" id="go_back_button">
+-                    <property name="visible">True</property>
++                    <property name="visible">False</property>
+                     <property name="can-focus">True</property>
+                     <property name="valign">center</property>
+                     <signal name="clicked" handler="on_back_button_clicked"/>
+diff --git a/src/main.vala b/src/main.vala
+index 5182ad4d..ff7e14f3 100644
+--- a/src/main.vala
++++ b/src/main.vala
+@@ -79,8 +79,6 @@ public int main (string[] args) {
+         error (err.message);
+     }
+ 
+-    Hdy.init (ref args);
+-
+     var app = new Boxes.App ();
+ 
+     var exit_status = app.run (args);
+diff --git a/src/meson.build b/src/meson.build
+index 82490288..7319fe41 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -26,7 +26,6 @@ c_args = [
+   '-DGETTEXT_PACKAGE="gnome-boxes"',
+   '-DCACHEDIR="/var/cache/"',
+   '-DG_LOG_DOMAIN="Boxes"',
+-  '-DHANDY_USE_UNSTABLE_API=1',
+ ]
+ 
+ if get_option ('buildtype').contains ('debug')
+@@ -165,7 +164,6 @@ if get_option('flatpak')
+   vala_args += '--define=FLATPAK'
+ 
+   dependencies += dependency ('govf-0.1')
+-  dependencies += dependency ('libhandy-0.0', version: '>= 0.0.11')
+ 
+   if get_option('rdp')
+     dependencies += dependency ('gtk-frdp-0.1')
+@@ -175,17 +173,6 @@ else
+     dependency ('gudev-1.0', version: '>= 165'),
+   ]
+ 
+-  libhandy = subproject(
+-    'libhandy',
+-    default_options: [
+-      'package_subdir=' + meson.project_name(),
+-      'examples=false',
+-      'glade_catalog=disabled',
+-      'tests=false',
+-    ]
+-  )
+-  dependencies += libhandy.get_variable('libhandy_vapi')
+-
+   if get_option('rdp')
+     gtk_frdp = subproject(
+       'gtk-frdp',
+diff --git a/src/welcome-tutorial-page.vala b/src/welcome-tutorial-page.vala
+index c710408a..547a2014 100644
+--- a/src/welcome-tutorial-page.vala
++++ b/src/welcome-tutorial-page.vala
+@@ -33,9 +33,10 @@ private void load_css () {
+         var provider = new CssProvider ();
+         var css = """
+           .tutorial-page {
++            background-color: %s;
+             background-image: url("resource://%s");
+           }
+-        """.printf (image);
++        """.printf (color.to_string (), image);
+ 
+         try {
+             provider.load_from_data (css);
+diff --git a/src/welcome-tutorial.vala b/src/welcome-tutorial.vala
+index 1cf1c7d0..be753f31 100644
+--- a/src/welcome-tutorial.vala
++++ b/src/welcome-tutorial.vala
+@@ -1,87 +1,62 @@
+ // This file is part of GNOME Boxes. License: LGPLv2+
+ using Gtk;
+-using Hdy;
+ 
+ [GtkTemplate (ui = "/org/gnome/Boxes/ui/welcome-tutorial.ui")]
+ private class Boxes.WelcomeTutorial : Gtk.Dialog {
+     [GtkChild]
+-    private Paginator paginator;
++    private Stack stack;
+     [GtkChild]
+     private Button go_back_button;
+     [GtkChild]
+     private Button go_next_button;
+ 
+-    private GLib.List<unowned WelcomeTutorialPage> pages;
+-    private CssProvider provider;
++    private GLib.List<unowned Widget> pages;
+ 
+-    construct {
+-        use_header_bar = 1;
++    private uint _visible_page_idx = 0;
++    private uint visible_page_idx {
++        set {
++            _visible_page_idx = value;
+ 
+-        pages = new GLib.List<unowned WelcomeTutorialPage> ();
+-        foreach (var page in paginator.get_children ()) {
+-            assert (page is WelcomeTutorialPage);
+-            pages.append (page as WelcomeTutorialPage);
++            stack.set_visible_child (pages.nth_data (visible_page_idx));
+         }
++        get {
++            return _visible_page_idx;
++        }
++    }
++
++    construct {
++        use_header_bar = 1;
+ 
+-        provider = new CssProvider ();
+-        get_style_context ().add_provider (provider,
+-                                           STYLE_PROVIDER_PRIORITY_APPLICATION);
++        pages = stack.get_children ();
+ 
+-        on_position_changed ();
++        on_stack_page_changed ();
+     }
+ 
+     public WelcomeTutorial (AppWindow app_window) {
+         set_transient_for (app_window);
+     }
+ 
+-    private void set_background_color (Gdk.RGBA color) {
+-        var css = """
+-          .welcome-tutorial {
+-            background-color: %s;
+-          }
+-        """.printf (color.to_string ());
+-
+-        provider.load_from_data (css);
+-    }
+-
+     [GtkCallback]
+-    private void on_position_changed () {
++    private void on_stack_page_changed () {
+         var n_pages = pages.length ();
+-        var position = paginator.position;
+ 
+-        // Toggle button's visibility
+-        go_back_button.opacity = double.min (position, 1);
+-        go_next_button.opacity = double.max (0, n_pages - 1 - position);
++        var topbar = get_header_bar () as Gtk.HeaderBar;
++        topbar.subtitle = _("%u/%u").printf (visible_page_idx + 1, n_pages);
+ 
+-        var color1 = pages.nth_data ((uint) Math.floor (position)).color;
+-        var color2 = pages.nth_data ((uint) Math.ceil (position)).color;
+-        var progress = position % 1;
++        // Toggle button's visibility
++        go_back_button.visible = (visible_page_idx > 0);
++        go_next_button.visible = (visible_page_idx < pages.length () - 1);
+ 
+-        Gdk.RGBA rgba = {
+-            red:   color1.red   * (1 - progress) + color2.red   * progress,
+-            green: color1.green * (1 - progress) + color2.green * progress,
+-            blue:  color1.blue  * (1 - progress) + color2.blue  * progress,
+-            alpha: 1
+-        };
+-        set_background_color (rgba);
+     }
+ 
+     [GtkCallback]
+     private void on_next_button_clicked () {
+-        var index = (int) Math.round (paginator.position) + 1;
+-        if (index >= pages.length ())
+-            return;
+-
+-        paginator.scroll_to (pages.nth_data (index));
++        visible_page_idx += 1;
+ 
+     }
+ 
+     [GtkCallback]
+     private void on_back_button_clicked () {
+-        var index = (int) Math.round (paginator.position) - 1;
+-        if (index < 0)
+-            return;
+-
+-        paginator.scroll_to (pages.nth_data (index));
++        visible_page_idx -= 1;
+     }
+ }
+-- 
+2.29.2
+
