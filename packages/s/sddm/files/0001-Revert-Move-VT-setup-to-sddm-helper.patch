@@ -1,0 +1,226 @@
+From f5667ab648da60d8eddde700716e6867ab89e9f2 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Fri, 18 Dec 2020 13:20:45 +0200
+Subject: [PATCH 1/1] Revert "Move VT setup to sddm-helper"
+
+This reverts commit d8e5d5a1690590849dc508a6b178abee12f8bfc6.
+---
+ src/common/Session.cpp                         | 10 ++++++++++
+ src/common/Session.h                           |  4 ++++
+ src/daemon/CMakeLists.txt                      |  4 ++--
+ src/daemon/Display.cpp                         | 18 +++++++++++++++---
+ src/{common => daemon}/VirtualTerminal.cpp     |  2 --
+ src/{common => daemon}/VirtualTerminal.h       |  0
+ .../VirtualTerminal_FreeBSD.cpp                |  0
+ src/helper/CMakeLists.txt                      |  8 --------
+ src/helper/HelperApp.cpp                       |  6 ------
+ src/helper/UserSession.cpp                     |  6 +-----
+ 10 files changed, 32 insertions(+), 26 deletions(-)
+ rename src/{common => daemon}/VirtualTerminal.cpp (99%)
+ rename src/{common => daemon}/VirtualTerminal.h (100%)
+ rename src/{common => daemon}/VirtualTerminal_FreeBSD.cpp (100%)
+
+diff --git a/src/common/Session.cpp b/src/common/Session.cpp
+index 3de28ef..1335f76 100644
+--- a/src/common/Session.cpp
++++ b/src/common/Session.cpp
+@@ -52,6 +52,16 @@ namespace SDDM {
+         return m_type;
+     }
+ 
++    int Session::vt() const
++    {
++        return m_vt;
++    }
++
++    void Session::setVt(int vt)
++    {
++        m_vt = vt;
++    }
++
+     QString Session::xdgSessionType() const
+     {
+         return m_xdgSessionType;
+diff --git a/src/common/Session.h b/src/common/Session.h
+index 9fd86cd..d285a3f 100644
+--- a/src/common/Session.h
++++ b/src/common/Session.h
+@@ -42,6 +42,9 @@ namespace SDDM {
+ 
+         Type type() const;
+ 
++        int vt() const;
++        void setVt(int vt);
++
+         QString xdgSessionType() const;
+ 
+         QDir directory() const;
+@@ -66,6 +69,7 @@ namespace SDDM {
+     private:
+         bool m_valid;
+         Type m_type;
++        int m_vt;
+         QDir m_dir;
+         QString m_name;
+         QString m_fileName;
+diff --git a/src/daemon/CMakeLists.txt b/src/daemon/CMakeLists.txt
+index 86d014b..5c4e5f1 100644
+--- a/src/daemon/CMakeLists.txt
++++ b/src/daemon/CMakeLists.txt
+@@ -34,9 +34,9 @@ set(DAEMON_SOURCES
+ # Different implementations of the VT switching code
+ # (where the FreeBSD version does nothing).
+ if(${CMAKE_SYSTEM} MATCHES "FreeBSD")
+-    list(APPEND DAEMON_SOURCES ${CMAKE_SOURCE_DIR}/src/common/VirtualTerminal_FreeBSD.cpp)
++    list(APPEND DAEMON_SOURCES VirtualTerminal_FreeBSD.cpp)
+ else()
+-    list(APPEND DAEMON_SOURCES ${CMAKE_SOURCE_DIR}/src/common/VirtualTerminal.cpp)
++    list(APPEND DAEMON_SOURCES VirtualTerminal.cpp)
+ endif()
+ 
+ qt5_add_dbus_adaptor(DAEMON_SOURCES "${CMAKE_SOURCE_DIR}/data/interfaces/org.freedesktop.DisplayManager.xml"          "DisplayManager.h" SDDM::DisplayManager)
+diff --git a/src/daemon/Display.cpp b/src/daemon/Display.cpp
+index b95f6e5..bd91446 100644
+--- a/src/daemon/Display.cpp
++++ b/src/daemon/Display.cpp
+@@ -30,6 +30,7 @@
+ #include "Greeter.h"
+ #include "Utils.h"
+ #include "SignalHandler.h"
++#include "VirtualTerminal.h"
+ 
+ #include <QDebug>
+ #include <QFile>
+@@ -309,10 +310,14 @@ namespace SDDM {
+ 
+         QProcessEnvironment env;
+ 
++        // create new VT for Wayland sessions otherwise use greeter vt
+         if (seat()->name() == QLatin1String("seat0")) {
+-            // Use the greeter VT, for wayland sessions the helper overwrites this
+-            env.insert(QStringLiteral("XDG_VTNR"), QString::number(terminalId()));
+-        }
++            int vt = terminalId();
++            if (session.xdgSessionType() == QLatin1String("wayland"))
++                vt = VirtualTerminal::setUpNewVt();
++            m_lastSession.setVt(vt);
++            env.insert(QStringLiteral("XDG_VTNR"), QString::number(vt));
++	}
+ 
+         env.insert(QStringLiteral("PATH"), mainConfig.Users.DefaultPath.get());
+         if (session.xdgSessionType() == QLatin1String("x11"))
+@@ -358,6 +363,13 @@ namespace SDDM {
+                 stateConfig.Last.Session.setDefault();
+             stateConfig.save();
+ 
++            // switch to the new VT for Wayland sessions
++            if (seat()->name() == QLatin1String("seat0")) {
++                if (m_lastSession.xdgSessionType() == QLatin1String("wayland"))
++                    // set vt_auto to false, so handle the vt switch yourself (VT_PROCESS)
++                    VirtualTerminal::jumpToVt(m_lastSession.vt(), false);
++            }
++
+             if (m_socket)
+                 emit loginSucceeded(m_socket);
+         } else if (m_socket) {
+diff --git a/src/common/VirtualTerminal.cpp b/src/daemon/VirtualTerminal.cpp
+similarity index 99%
+rename from src/common/VirtualTerminal.cpp
+rename to src/daemon/VirtualTerminal.cpp
+index 3ce6aff..196e387 100644
+--- a/src/common/VirtualTerminal.cpp
++++ b/src/daemon/VirtualTerminal.cpp
+@@ -187,8 +187,6 @@ out:
+                 qWarning("Couldn't finalize jump to VT %d: %s", vt, strerror(errno));
+ 
+             close(activeVtFd);
+-            if (vtFd != -1)
+-                close(vtFd);
+         }
+     }
+ }
+diff --git a/src/common/VirtualTerminal.h b/src/daemon/VirtualTerminal.h
+similarity index 100%
+rename from src/common/VirtualTerminal.h
+rename to src/daemon/VirtualTerminal.h
+diff --git a/src/common/VirtualTerminal_FreeBSD.cpp b/src/daemon/VirtualTerminal_FreeBSD.cpp
+similarity index 100%
+rename from src/common/VirtualTerminal_FreeBSD.cpp
+rename to src/daemon/VirtualTerminal_FreeBSD.cpp
+diff --git a/src/helper/CMakeLists.txt b/src/helper/CMakeLists.txt
+index 8914ea7..9fe9278 100644
+--- a/src/helper/CMakeLists.txt
++++ b/src/helper/CMakeLists.txt
+@@ -15,14 +15,6 @@ set(HELPER_SOURCES
+     UserSession.cpp
+ )
+ 
+-# Different implementations of the VT switching code
+-# (where the FreeBSD version does nothing).
+-if(${CMAKE_SYSTEM} MATCHES "FreeBSD")
+-    list(APPEND HELPER_SOURCES ${CMAKE_SOURCE_DIR}/src/common/VirtualTerminal_FreeBSD.cpp)
+-else()
+-    list(APPEND HELPER_SOURCES ${CMAKE_SOURCE_DIR}/src/common/VirtualTerminal.cpp)
+-endif()
+-
+ if(PAM_FOUND)
+     set(HELPER_SOURCES
+         ${HELPER_SOURCES}
+diff --git a/src/helper/HelperApp.cpp b/src/helper/HelperApp.cpp
+index 672359a..6649951 100644
+--- a/src/helper/HelperApp.cpp
++++ b/src/helper/HelperApp.cpp
+@@ -24,7 +24,6 @@
+ #include "SafeDataStream.h"
+ 
+ #include "MessageHandler.h"
+-#include "VirtualTerminal.h"
+ 
+ #include <QtCore/QTimer>
+ #include <QtCore/QFile>
+@@ -151,11 +150,6 @@ namespace SDDM {
+ 
+         if (!m_session->path().isEmpty()) {
+             env.insert(m_session->processEnvironment());
+-            // Allocate a new VT for the wayland session
+-            if(env.value(QStringLiteral("XDG_SESSION_TYPE")) == QLatin1String("wayland")) {
+-                int vtNumber = VirtualTerminal::setUpNewVt();
+-                env.insert(QStringLiteral("XDG_VTNR"), QString::number(vtNumber));
+-            }
+             m_session->setProcessEnvironment(env);
+ 
+             if (!m_backend->openSession()) {
+diff --git a/src/helper/UserSession.cpp b/src/helper/UserSession.cpp
+index dbf39fc..5b08edc 100644
+--- a/src/helper/UserSession.cpp
++++ b/src/helper/UserSession.cpp
+@@ -22,7 +22,6 @@
+ #include "Configuration.h"
+ #include "UserSession.h"
+ #include "HelperApp.h"
+-#include "VirtualTerminal.h"
+ 
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+@@ -80,8 +79,7 @@ namespace SDDM {
+         // that it stays open without races
+         if (sessionType == QLatin1String("wayland")) {
+             // open VT and get the fd
+-            int vtNumber = processEnvironment().value(QStringLiteral("XDG_VTNR")).toInt();
+-            QString ttyString = QStringLiteral("/dev/tty%1").arg(vtNumber);
++            QString ttyString = QStringLiteral("/dev/tty%1").arg(processEnvironment().value(QStringLiteral("XDG_VTNR")));
+             int vtFd = ::open(qPrintable(ttyString), O_RDWR | O_NOCTTY);
+ 
+             // when this is true we'll take control of the tty
+@@ -111,8 +109,6 @@ namespace SDDM {
+                     exit(Auth::HELPER_OTHER_ERROR);
+                 }
+             }
+-
+-            VirtualTerminal::jumpToVt(vtNumber, false);
+         }
+ 
+ #ifdef Q_OS_LINUX
+-- 
+2.29.2
+
