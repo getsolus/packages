@@ -1,6 +1,6 @@
 name       : firefox
 version    : '84.0'
-release    : 206
+release    : 207
 source     :
     - https://ftp.mozilla.org/pub/firefox/releases/84.0/source/firefox-84.0.source.tar.xz : 23273ef0165b243f5d0908c38e7854d38070282c9b526e8d93b7503cd5f69138
     - https://getsol.us/sources/mozilla/firefox-84.0-langpacks.tar.xz : 90709b5b165e2c8f41a9643b3993d2d5728051d3c93f1d777c4425dd3005b10e
@@ -11,7 +11,7 @@ component  : network.web.browser
 summary    : Firefox web browser
 description: |
     Mozilla Firefox is an open-source web browser, designed for standards compliance, performance and portability. Its functionality can be enhanced via a plethora of extensions.
-clang      : no
+clang      : yes
 builddeps  :
     - pkgconfig(alsa)
     - pkgconfig(dbus-glib-1)
@@ -41,6 +41,7 @@ environment: |
     export MOZ_NOSPAM=1
     export MACH_USE_SYSTEM_PYTHON=1
     export MOZBUILD_STATE_PATH=$PWD
+    export LDFLAGS="${LDFLAGS/--copy-dt-needed-entries/}" # not supported by lld
 setup      : |
     cp $pkgfiles/{google-safebrowsing,mozilla}-api-key .
     cp $pkgfiles/config .mozconfig
@@ -49,7 +50,25 @@ setup      : |
     echo "ac_add_options --with-google-safebrowsing-api-keyfile=${workdir}/google-safebrowsing-api-key" >> .mozconfig
     ./mach configure
 build      : |
-    xvfb-run -a -n 55 -s "-screen 0 1024x768x24 -ac +extension GLX +render -noreset" ./mach build
+    # Instrument build
+    echo "ac_add_options --enable-profile-generate=cross" >> .mozconfig
+    ./mach build
+
+    # Package and run automated benchmarks for profiling
+    ./mach package
+    LLVM_PROFDATA=llvm-profdata JARLOG_FILE="$PWD/jarlog" xvfb-run -s "-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
+    ./mach python build/pgo/profileserver.py
+
+    # Clean for rebuild
+    ./mach clobber
+
+    # Profile use build and enable lto
+    sed -i '/--enable-profile-generate=cross/d' .mozconfig
+    echo "ac_add_options --enable-lto=cross" >> .mozconfig
+    echo "ac_add_options --enable-profile-use=cross" >> .mozconfig
+    echo "ac_add_options --with-pgo-profile-path=${PWD@Q}/merged.profdata" >> .mozconfig
+    echo "ac_add_options --with-pgo-jarlog=${PWD@Q}/jarlog" >> .mozconfig
+    ./mach build
     ./mach buildsymbols
 install    : |
     # Install locales first
