@@ -1,0 +1,398 @@
+diff --git a/.travis.yml b/.travis.yml
+index a28c454..3c3ce1a 100644
+--- a/.travis.yml
++++ b/.travis.yml
+@@ -21,12 +21,8 @@ matrix:
+         - env: ARGS="" SKIP_DOCTESTS=false
+         - env: ARGS="--resolver lts" SKIP_DOCTESTS=false
+         - env: ARGS="--resolver nightly" SKIP_DOCTESTS=false
+-        - env: ARGS="--resolver lts-10" SKIP_DOCTESTS=false
+-        - env: ARGS="--resolver lts-9" SKIP_DOCTESTS=true
+-        - env: ARGS="--resolver lts-8" SKIP_DOCTESTS=true
+-        - env: ARGS="--resolver lts-7" SKIP_DOCTESTS=true
+-        - env: ARGS="--resolver lts-6" SKIP_DOCTESTS=true
+-        - env: ARGS="--resolver lts-5" SKIP_DOCTESTS=true
++        - env: ARGS="--resolver lts-13" SKIP_DOCTESTS=false
++        - env: ARGS="--resolver lts-12" SKIP_DOCTESTS=false
+ 
+ before_install:
+     # Download and unpack the stack executable
+diff --git a/app/Main.hs b/app/Main.hs
+index dbcfdaf..593c299 100644
+--- a/app/Main.hs
++++ b/app/Main.hs
+@@ -7,7 +7,6 @@ import           Control.Concurrent.Async
+ import           Control.Lens.Compat
+ import           Control.Monad.Reader
+ import           Data.Maybe
+-import           Data.Monoid
+ import           Data.Ratio
+ import           Data.Sequence                      (Seq)
+ import qualified Data.Sequence                      as S
+diff --git a/src/Vgrep/Ansi.hs b/src/Vgrep/Ansi.hs
+index 29546f0..18f9044 100644
+--- a/src/Vgrep/Ansi.hs
++++ b/src/Vgrep/Ansi.hs
+@@ -31,8 +31,10 @@ import Vgrep.Ansi.Vty.Attributes
+ -- combined with 'combineStyles'. The given 'Vty.Attr' is used as style for the
+ -- root of the 'Formatted' tree.
+ --
+--- >>> renderAnsi Vty.defAttr (bare "Text")
+--- HorizText "Text"@(Attr {attrStyle = Default, attrForeColor = Default, attrBackColor = Default, attrURL = Default},4,4)
++-- >>> import Graphics.Vty.Image.Internal (Image (HorizText, attr))
++-- >>> let HorizText { attr = attr } = renderAnsi Vty.defAttr (bare "Text")
++-- >>> attr
++-- Attr {attrStyle = Default, attrForeColor = Default, attrBackColor = Default, attrURL = Default}
+ --
+ renderAnsi :: Attr -> AnsiFormatted -> Vty.Image
+ renderAnsi attr = \case
+diff --git a/src/Vgrep/Ansi/Parser.hs b/src/Vgrep/Ansi/Parser.hs
+index f603e23..1053206 100644
+--- a/src/Vgrep/Ansi/Parser.hs
++++ b/src/Vgrep/Ansi/Parser.hs
+@@ -10,7 +10,6 @@ import           Control.Applicative
+ import           Data.Attoparsec.Text
+ import           Data.Bits
+ import           Data.Functor
+-import           Data.Monoid
+ import           Data.Text               (Text)
+ import qualified Data.Text               as T
+ import           Graphics.Vty.Attributes (Attr)
+diff --git a/src/Vgrep/Ansi/Type.hs b/src/Vgrep/Ansi/Type.hs
+index 7459edd..5cf209a 100644
+--- a/src/Vgrep/Ansi/Type.hs
++++ b/src/Vgrep/Ansi/Type.hs
+@@ -48,9 +48,11 @@ instance Functor Formatted where
+         Format l a t -> Format l (f a) (fmap f t)
+         Cat l ts     -> Cat l (map (fmap f) ts)
+ 
+-instance (Eq attr, Monoid attr) => Monoid (Formatted attr) where
++instance (Eq attr, Semigroup attr) => Semigroup (Formatted attr) where
++    (<>) = fuse
++
++instance (Eq attr, Semigroup attr) => Monoid (Formatted attr) where
+     mempty = Empty
+-    mappend = fuse
+ 
+ 
+ -- | Type alias for Text formatted with 'Attr' from "Graphics.Vty".
+@@ -120,7 +122,7 @@ cat' = \case
+ -- >>> format (Just ()) (bare "Left") `fuse` format (Just ()) (bare "Right")
+ -- Format 9 (Just ()) (Text 9 "LeftRight")
+ --
+-fuse :: (Eq attr, Monoid attr) => Formatted attr -> Formatted attr -> Formatted attr
++fuse :: (Eq attr, Semigroup attr) => Formatted attr -> Formatted attr -> Formatted attr
+ fuse left right = case (left, right) of
+     (Empty,           formatted)    -> formatted
+     (formatted,       Empty)        -> formatted
+diff --git a/src/Vgrep/Environment/Config/Monoid.hs b/src/Vgrep/Environment/Config/Monoid.hs
+index 9fdb359..edbeb31 100644
+--- a/src/Vgrep/Environment/Config/Monoid.hs
++++ b/src/Vgrep/Environment/Config/Monoid.hs
+@@ -30,9 +30,11 @@ data ConfigMonoid = ConfigMonoid
+     , _mkeybindings :: KeybindingsMonoid
+     } deriving (Eq, Show, Generic)
+ 
++instance Semigroup ConfigMonoid where
++    (<>) = mappenddefault
++
+ instance Monoid ConfigMonoid where
+     mempty  = memptydefault
+-    mappend = mappenddefault
+ 
+ 
+ -- | A 'Monoid' for reading partial 'Vgrep.Environment.Config.Colors'
+@@ -58,9 +60,11 @@ data ColorsMonoid = ColorsMonoid
+     , _mselected      :: First Attr
+     } deriving (Eq, Show, Generic)
+ 
++instance Semigroup ColorsMonoid where
++    (<>) = mappenddefault
++
+ instance Monoid ColorsMonoid where
+     mempty = memptydefault
+-    mappend = mappenddefault
+ 
+ 
+ -- | A 'Monoid' for reading a partial 'Vgrep.Environment.Config.Keybindings'
+@@ -91,6 +95,8 @@ data KeybindingsMonoid = KeybindingsMonoid
+     , _mglobalKeybindings  :: Maybe KeybindingMap
+     } deriving (Eq, Show, Generic)
+ 
++instance Semigroup KeybindingsMonoid where
++    (<>) = mappenddefault
++
+ instance Monoid KeybindingsMonoid where
+     mempty = memptydefault
+-    mappend = mappenddefault
+diff --git a/src/Vgrep/Environment/Config/Sources.hs b/src/Vgrep/Environment/Config/Sources.hs
+index 333b965..333ebc1 100644
+--- a/src/Vgrep/Environment/Config/Sources.hs
++++ b/src/Vgrep/Environment/Config/Sources.hs
+@@ -5,4 +5,3 @@ module Vgrep.Environment.Config.Sources
+ 
+ import Vgrep.Environment.Config.Sources.Env  (editorConfigFromEnv)
+ import Vgrep.Environment.Config.Sources.File (configFromFile)
+-
+diff --git a/src/Vgrep/Environment/Config/Sources/File.hs b/src/Vgrep/Environment/Config/Sources/File.hs
+index 6b23cce..9554d11 100644
+--- a/src/Vgrep/Environment/Config/Sources/File.hs
++++ b/src/Vgrep/Environment/Config/Sources/File.hs
+@@ -44,8 +44,8 @@ import qualified Vgrep.Key                       as Key
+ import           Vgrep.KeybindingMap
+ 
+ -- $setup
+--- >>> import Data.List (isInfixOf)
+--- >>> import Data.Yaml.Aeson (decodeEither, ParseException)
++-- >>> import Data.Either (isLeft)
++-- >>> import Data.Yaml.Aeson (decodeEither', ParseException(..))
+ 
+ 
+ {- |
+@@ -167,38 +167,38 @@ A JSON-parsable data type for 'Vty.Attr'.
+ 
+ JSON example:
+ 
+->>> decodeEither "{\"fore-color\": \"black\", \"style\": \"standout\"}" :: Either String Attr
++>>> decodeEither' "{\"fore-color\": \"black\", \"style\": \"standout\"}" :: Either ParseException Attr
+ Right (Attr {foreColor = Just Black, backColor = Nothing, style = Just Standout})
+ 
+ JSON example without quotes:
+->>> decodeEither "{fore-color: black, style: standout}" :: Either String Attr
++>>> decodeEither' "{fore-color: black, style: standout}" :: Either ParseException Attr
+ Right (Attr {foreColor = Just Black, backColor = Nothing, style = Just Standout})
+ 
+ YAML example:
+ 
+ >>> :{
+->>> decodeEither
++>>> decodeEither'
+ >>>   $  "fore-color: \"blue\"\n"
+ >>>   <> "back-color: \"bright-blue\"\n"
+ >>>   <> "style: \"reverse-video\"\n"
+->>>   :: Either String Attr
++>>>   :: Either ParseException Attr
+ >>> :}
+ Right (Attr {foreColor = Just Blue, backColor = Just BrightBlue, style = Just ReverseVideo})
+ 
+ YAML example without quotes:
+ 
+ >>> :{
+->>> decodeEither
++>>> decodeEither'
+ >>>   $  "fore-color: blue\n"
+ >>>   <> "back-color: bright-blue\n"
+ >>>   <> "style: reverse-video\n"
+->>>   :: Either String Attr
++>>>   :: Either ParseException Attr
+ >>> :}
+ Right (Attr {foreColor = Just Blue, backColor = Just BrightBlue, style = Just ReverseVideo})
+ 
+ An empty JSON/YAML object yields the default colors:
+ 
+->>> decodeEither "{}" :: Either String Attr
++>>> decodeEither' "{}" :: Either ParseException Attr
+ Right (Attr {foreColor = Nothing, backColor = Nothing, style = Nothing})
+ -}
+ data Attr = Attr
+@@ -223,18 +223,17 @@ attrToVty Attr{..} = foldAttrs
+ {- |
+ A JSON-parsable data type for 'Vty.Color'.
+ 
+->>> decodeEither "[\"black\",\"red\",\"bright-black\"]" :: Either String [Color]
++>>> decodeEither' "[\"black\",\"red\",\"bright-black\"]" :: Either ParseException [Color]
+ Right [Black,Red,BrightBlack]
+ 
+ Also works without quotes:
+ 
+->>> decodeEither "[black,red,bright-black]" :: Either String [Color]
++>>> decodeEither' "[black,red,bright-black]" :: Either ParseException [Color]
+ Right [Black,Red,BrightBlack]
+ 
+ Fails with error message if the 'Color' cannot be parsed:
+ 
+->>> let Left err = decodeEither "foo" :: Either String Color
+->>> "The key \"foo\" was not found" `isInfixOf` err
++>>> isLeft (decodeEither' "foo" :: Either ParseException Color)
+ True
+ -}
+ data Color
+@@ -282,18 +281,17 @@ colorToVty = \case
+ {- |
+ A JSON-parsable data type for 'Vty.Style'.
+ 
+->>> decodeEither "[\"standout\", \"underline\", \"bold\"]" :: Either String [Style]
++>>> decodeEither' "[\"standout\", \"underline\", \"bold\"]" :: Either ParseException [Style]
+ Right [Standout,Underline,Bold]
+ 
+ Also works without quotes:
+ 
+->>> decodeEither "[standout, underline, bold]" :: Either String [Style]
++>>> decodeEither' "[standout, underline, bold]" :: Either ParseException [Style]
+ Right [Standout,Underline,Bold]
+ 
+ Fails with error message if the 'Style' cannot be parsed:
+ 
+->>> let Left err = decodeEither "foo" :: Either String Style
+->>> "The key \"foo\" was not found" `isInfixOf` err
++>>> isLeft (decodeEither' "foo" :: Either ParseException Color)
+ True
+ -}
+ data Style
+diff --git a/src/Vgrep/Event.hs b/src/Vgrep/Event.hs
+index a4c5260..9e48efc 100644
+--- a/src/Vgrep/Event.hs
++++ b/src/Vgrep/Event.hs
+@@ -58,10 +58,12 @@ data Next a
+ 
+ -- | The first event handler that triggers (i. e. does not return 'Skip')
+ -- handles the event.
++instance Semigroup (Next a) where
++    Skip        <> next       = next
++    next        <> _other     = next
++
+ instance Monoid (Next a) where
+     mempty = Skip
+-    Skip        `mappend` next       = next
+-    next        `mappend` _other     = next
+ 
+ instance Functor Next where
+     fmap f = \case Skip        -> Skip
+@@ -77,10 +79,12 @@ data Redraw
+     -- ^ The state has not changed or the change would not be visible, so
+     -- refreshing the screen is not required.
+ 
++instance Semigroup Redraw where
++    Unchanged <> Unchanged = Unchanged
++    _         <> _         = Redraw
++
+ instance Monoid Redraw where
+     mempty = Unchanged
+-    Unchanged `mappend` Unchanged = Unchanged
+-    _         `mappend` _         = Redraw
+ 
+ 
+ data Interrupt
+diff --git a/src/Vgrep/KeybindingMap.hs b/src/Vgrep/KeybindingMap.hs
+index 2cbc34d..e2ec783 100644
+--- a/src/Vgrep/KeybindingMap.hs
++++ b/src/Vgrep/KeybindingMap.hs
+@@ -8,7 +8,7 @@ import qualified Vgrep.Key       as Key
+ 
+ 
+ newtype KeybindingMap = KeybindingMap { unKeybindingMap :: Map Key.Chord Command }
+-  deriving (Show, Eq, Monoid)
++  deriving (Show, Eq, Semigroup, Monoid)
+ 
+ lookup :: Key.Chord -> KeybindingMap -> Maybe Command
+ lookup chord (KeybindingMap m) = M.lookup chord m
+diff --git a/src/Vgrep/Parser.hs b/src/Vgrep/Parser.hs
+index c025ea1..3f10f74 100644
+--- a/src/Vgrep/Parser.hs
++++ b/src/Vgrep/Parser.hs
+@@ -21,7 +21,7 @@ import Vgrep.Results     (File (..), FileLineReference (..), LineReference (..))
+ -- | Parses lines of 'Text', skipping lines that are not valid @grep@
+ -- output.
+ parseGrepOutput :: [Text] -> [FileLineReference]
+-parseGrepOutput = catMaybes . fmap parseLine
++parseGrepOutput = mapMaybe parseLine
+ 
+ -- | Parses a line of @grep@ output. Returns 'Nothing' if the line cannot
+ -- be parsed.
+diff --git a/src/Vgrep/Widget/Results.hs b/src/Vgrep/Widget/Results.hs
+index 7d0c16a..cb8c595 100644
+--- a/src/Vgrep/Widget/Results.hs
++++ b/src/Vgrep/Widget/Results.hs
+@@ -31,7 +31,6 @@ import           Control.Lens.Compat
+ import           Control.Monad.State.Extended
+ import           Data.Foldable
+ import           Data.Maybe
+-import           Data.Monoid
+ import           Data.Text                    (Text)
+ import qualified Data.Text                    as T
+ import           Graphics.Vty.Attributes
+diff --git a/stack.yaml b/stack.yaml
+index 5c7a416..b6c35ea 100644
+--- a/stack.yaml
++++ b/stack.yaml
+@@ -1,7 +1,7 @@
+ # For more information, see: https://github.com/commercialhaskell/stack/blob/release/doc/yaml_configuration.md
+ 
+ # Specifies the GHC version and set of packages available (e.g., lts-3.5, nightly-2015-09-21, ghc-7.10.2)
+-resolver: lts-10.7
++resolver: lts-13.25
+ 
+ # Local packages, usually specified by relative directory name
+ packages:
+@@ -13,6 +13,7 @@ extra-deps:
+   # This is olny for tooling, so does not affect
+   # dependency management.
+   - stylish-haskell-0.6.1.0
++  - cabal-file-th-0.2.6
+ 
+ # Override default flag values for local packages and extra-deps
+ flags: {}
+diff --git a/test/Test/Case.hs b/test/Test/Case.hs
+index 5abe9bb..49c697a 100644
+--- a/test/Test/Case.hs
++++ b/test/Test/Case.hs
+@@ -57,10 +57,10 @@ runTestCase = \case
+         pure . monadic (`runVgrepForTest` (initialState, initialEnv)) . void $ do
+             monitor (counterexample (show initialState))
+             monitor (counterexample (show initialEnv))
+-            before <- use invariant
++            invariantBefore <- use invariant
+             void testCase
+-            after <- use invariant
+-            stop (after === before)
++            invariantAfter <- use invariant
++            stop (invariantAfter === invariantBefore)
+ 
+ 
+ runTestCases :: TestName -> [TestCase] -> TestTree
+diff --git a/test/Vgrep/Widget/Results/Testable.hs b/test/Vgrep/Widget/Results/Testable.hs
+index bf9e976..883743a 100644
+--- a/test/Vgrep/Widget/Results/Testable.hs
++++ b/test/Vgrep/Widget/Results/Testable.hs
+@@ -5,7 +5,6 @@ module Vgrep.Widget.Results.Testable
+     , module Vgrep.Widget.Results.Internal
+     ) where
+ 
+-import           Control.Monad
+ import qualified Data.List       as List
+ import qualified Data.Sequence   as Seq
+ import           Data.Text       (Text)
+@@ -29,7 +28,10 @@ instance Arbitrary Results where
+ generateResults :: Gen Results
+ generateResults = sized $ \n -> do
+     streamOfResults <- arbitraryGrepResults
+-    [numAs, numBs, numDs, numEs] <- replicateM 4 (choose (0, n))
++    numAs <- choose (0, n)
++    numBs <- choose (0, n)
++    numDs <- choose (0, n)
++    numEs <- choose (0, n)
+     let (as,  as') = splitAt numAs streamOfResults
+         (bs,  bs') = splitAt numBs as'
+         ([c], cs') = splitAt 1     bs'
+diff --git a/vgrep.cabal b/vgrep.cabal
+index 843dfdd..37ab258 100644
+--- a/vgrep.cabal
++++ b/vgrep.cabal
+@@ -1,7 +1,7 @@
+ name:                vgrep
+ version:             0.2.2.0
+ synopsis:            A pager for grep
+-description:         
++description:
+   @vgrep@ is a pager for navigating through @grep@ output.
+   .
+   Usage:
+@@ -70,7 +70,7 @@ library
+                      , Vgrep.Widget.Results.Internal
+                      , Vgrep.Widget.Type
+   build-depends:       base >= 4.7 && < 5
+-                     , aeson              (>= 0.11 && < 1.3) || (>= 0.9 && < 0.10)
++                     , aeson              (>= 0.11 && < 1.6) || (>= 0.9 && < 0.10)
+                      , async              >= 2.0.2
+                      , attoparsec         >= 0.12.1.6
+                      , containers         >= 0.5.6.2
