@@ -1,0 +1,49 @@
+From d4930b7aaefb8050229f41d19da86d3ab5c8f04f Mon Sep 17 00:00:00 2001
+From: Tashfique Abdullah <tabdullah@amd.com>
+Date: Wed, 4 Nov 2020 18:51:53 -0500
+Subject: drm/amd/display: intermittent underflow observed when PIP is toggled
+ in Full screen
+
+[Why]
+The MPCC may change and request data when the pipes are switching from 2
+to 1 or 1 to 2. During the switch there is a possibility of underflow
+and flicker/missing data.
+
+[How]
+During VBlank the MPCC won't request data. The trick is to delay and
+wait on VBlank, ONLY when pipes are either turning on or off, right
+before MPCC is reset for the pipes.
+
+Signed-off-by: Tashfique Abdullah <tabdullah@amd.com>
+Reviewed-by: Aric Cyr <Aric.Cyr@amd.com>
+Acked-by: Rodrigo Siqueira <Rodrigo.Siqueira@amd.com>
+Signed-off-by: Alex Deucher <alexander.deucher@amd.com>
+---
+ drivers/gpu/drm/amd/display/dc/dcn20/dcn20_hwseq.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+(limited to 'drivers/gpu/drm/amd/display/dc/dcn20')
+
+diff --git a/drivers/gpu/drm/amd/display/dc/dcn20/dcn20_hwseq.c b/drivers/gpu/drm/amd/display/dc/dcn20/dcn20_hwseq.c
+index b9c20e30d99d..abcb06044e6e 100644
+--- a/drivers/gpu/drm/amd/display/dc/dcn20/dcn20_hwseq.c
++++ b/drivers/gpu/drm/amd/display/dc/dcn20/dcn20_hwseq.c
+@@ -1695,6 +1695,15 @@ void dcn20_program_front_end_for_ctx(
+ 				&& context->res_ctx.pipe_ctx[i].stream)
+ 			hws->funcs.blank_pixel_data(dc, &context->res_ctx.pipe_ctx[i], true);
+ 
++	/* wait for outstanding pending changes before adding or removing planes */
++	for (i = 0; i < dc->res_pool->pipe_count; i++) {
++		if (context->res_ctx.pipe_ctx[i].update_flags.bits.disable ||
++				context->res_ctx.pipe_ctx[i].update_flags.bits.enable) {
++			dc->hwss.wait_for_pending_cleared(dc, context);
++			break;
++		}
++	}
++
+ 	/* Disconnect mpcc */
+ 	for (i = 0; i < dc->res_pool->pipe_count; i++)
+ 		if (context->res_ctx.pipe_ctx[i].update_flags.bits.disable
+-- 
+cgit v1.2.1
+
