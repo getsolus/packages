@@ -7,7 +7,7 @@ import datetime
 import time
 
 DAY = 86400  # 86400 seconds in a day
-PERIOD = 120 * DAY  # 31 days is old
+PERIOD = 365 * DAY
 
 class HistoryTeacher:
 
