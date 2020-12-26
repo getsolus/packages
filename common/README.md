@@ -1,3 +1,7 @@
+# common 
+
+See [https://getsol.us/articles/packaging/building-a-package/en/#setting-up-common] for documentation.
+
 Getting setup
 ------------
 
