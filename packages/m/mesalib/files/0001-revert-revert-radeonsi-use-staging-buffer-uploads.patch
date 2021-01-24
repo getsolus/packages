@@ -1,0 +1,49 @@
+From a5e0a2e101bcda0132185a82c3e8c9b4c90ce94c Mon Sep 17 00:00:00 2001
+From: Pierre-Eric Pelloux-Prayer <pierre-eric.pelloux-prayer@amd.com>
+Date: Mon, 16 Nov 2020 15:29:15 +0100
+Subject: [PATCH] Revert "Revert "radeonsi: use staging buffer uploads for most
+ VRAM buffers""
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+This reverts commit af0435cbfe61632407ce135fbea9cab6fe1e4fb6.
+
+This optimization is useful for some applications (eg: issue 3759), so re-enable it.
+
+The next 2 commits will address 2 short comings of this optimization.
+
+Closes: https://gitlab.freedesktop.org/mesa/mesa/-/issues/3759
+Reviewed-by: Marek Olšák <marek.olsak@amd.com>
+Part-of: <https://gitlab.freedesktop.org/mesa/mesa/-/merge_requests/7098>
+---
+ src/gallium/drivers/radeonsi/si_buffer.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/gallium/drivers/radeonsi/si_buffer.c b/src/gallium/drivers/radeonsi/si_buffer.c
+index 81ccd3242cf..6ae6c6f7643 100644
+--- a/src/gallium/drivers/radeonsi/si_buffer.c
++++ b/src/gallium/drivers/radeonsi/si_buffer.c
+@@ -204,8 +204,18 @@ void si_init_resource_fields(struct si_screen *sscreen, struct si_resource *res,
+    if (res->domains & RADEON_DOMAIN_VRAM) {
+       res->vram_usage = size;
+ 
++      /* We don't want to evict buffers from VRAM by mapping them for CPU access,
++       * because they might never be moved back again. If a buffer is large enough,
++       * upload data by copying from a temporary GTT buffer. 8K might not seem much,
++       * but there can be 100000 buffers.
++       *
++       * This tweak improves performance for viewperf.
++       */
++      const unsigned min_size = 8196; /* tuned to minimize mapped VRAM */
++      const unsigned max_staging_uploads = 1; /* number of uploads before mapping directly */
++
+       res->max_forced_staging_uploads = res->b.max_forced_staging_uploads =
+-         sscreen->info.has_dedicated_vram && size >= sscreen->info.vram_vis_size / 4 ? 1 : 0;
++         sscreen->info.has_dedicated_vram && size >= min_size ? max_staging_uploads : 0;
+    } else if (res->domains & RADEON_DOMAIN_GTT) {
+       res->gart_usage = size;
+    }
+-- 
+GitLab
+
