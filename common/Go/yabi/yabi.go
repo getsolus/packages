@@ -87,7 +87,7 @@ func AddPackage(r abi.Report, path string) {
 			tarFile.Close()
 			log.Fatalf("Failed to read file '%s', reason: %s\n", h.Name, err)
 		}
-		if err = r.AddFile(bytes.NewReader(raw), name); err != nil && err != io.EOF {
+		if err = r.AddFile(bytes.NewReader(raw), filepath.Base(h.Name)); err != nil && err != io.EOF {
 			tarFile.Close()
 			log.Fatalf("Failed to add file '%s', reason: %s\n", h.Name, err)
 		}
@@ -116,10 +116,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to resolve symbols, reason: %s\n", err)
 	}
-	log.Errorln("Failed to find libraries:")
-	for _, lib := range missing {
-		log.Errorln("\t" + lib)
-	}
+    if len(missing) > 0 {
+	    log.Errorln("Failed to find libraries:")
+    	for _, lib := range missing {
+	    	log.Errorln("\t" + lib)
+	    }
+    }
 	if err := r.Save(); err != nil {
 		log.Fatalf("Failed to save ABI reports, reason: %s\n", err)
 	}
