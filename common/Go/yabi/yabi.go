@@ -112,8 +112,13 @@ func main() {
 	for _, eopkg := range os.Args[1:] {
 		AddPackage(r, eopkg)
 	}
-	if err := r.Resolve(); err != nil {
+	missing, err := r.Resolve()
+	if err != nil {
 		log.Fatalf("Failed to resolve symbols, reason: %s\n", err)
+	}
+	log.Errorln("Failed to find libraries:")
+	for _, lib := range missing {
+		log.Errorln("\t" + lib)
 	}
 	if err := r.Save(); err != nil {
 		log.Fatalf("Failed to save ABI reports, reason: %s\n", err)
