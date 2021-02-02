@@ -71,13 +71,8 @@ func AddPackage(r abi.Report, path string) {
 			h, err = files.Next()
 			continue
 		}
-		// check for executable bit to ignore other file types
-		if h.Mode&0111 == 0 {
-			h, err = files.Next()
-			continue
-		}
 		// ignore statically linked archives or debug symbols
-		if strings.HasSuffix(h.Name, ".la") || strings.HasSuffix(h.Name, ".a") || strings.HasSuffix(h.Name, ".debug") {
+		if strings.HasSuffix(h.Name, ".o") ||strings.HasSuffix(h.Name, ".la") || strings.HasSuffix(h.Name, ".a") || strings.HasSuffix(h.Name, ".debug") || strings.HasSuffix(h.Name, ".debuginfo") {
 			h, err = files.Next()
 			continue
 		}
