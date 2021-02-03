@@ -128,6 +128,12 @@ When doing major version updates, create a phab task with associated diff stack 
 
 - Run `sudo testparm -v` and check for anomalies in the default config
 - Run `sudo systemctl enable --now smb ; smbclient -N -L localhost` and check that the service runs and that it is possible to connect to the smb daemon
--- Look for `smbd` and ports 139 and 445 in `sudo ss -plantu`
-- Rebuild current `gvfs` and `kio-extras` *(especially important if there were removals in abi_symbols)*, reboot and ensure that anonymous and authenticated user access works in the Dolphin and Nautilus file managers
-- Rebuild `ffmpeg`, `vlc` and `kodi` *(especially important if there were removals in abi_symbols)* and ensure that smb:// URI playback works in `mpv`, `vlc` and `kodi` (note that vlc can be temperamental in this regard -- see T8538)
+  - Look for `smbd` and ports 139 and 445 in `sudo ss -plantu`
+- Rebuild current `gvfs` and `kio-extras` (especially important if there were removals in abi_symbols)
+  - Reboot and ensure that anonymous and authenticated user access works in the Dolphin (kio) and Nautilus (gvfs) file managers
+- Rebuild `ffmpeg`, `vlc` and `kodi` (especially important if there were removals in abi_symbols)
+  - Ensure that smb:// URI playback works in
+    - `kodi`
+    - `mpv` (used by GNOME MPV in Budgie and GNOME Shell)
+    - `smplayer` (used by KDE)
+    - `vlc` (used by MATE); note that vlc can be temperamental in this regard -- see T8538
