@@ -76,7 +76,6 @@ func AddPackage(r abi.Report, path string) {
 			h, err = files.Next()
 			continue
 		}
-		log.Debugf("Processing tar entry '%s'\n", h.Name)
 		var raw []byte
 		if raw, err = ioutil.ReadAll(files); err != nil {
 			tarFile.Close()
@@ -86,6 +85,7 @@ func AddPackage(r abi.Report, path string) {
 			tarFile.Close()
 			log.Fatalf("Failed to add file '%s', reason: %s\n", h.Name, err)
 		}
+		log.Debugf("Processed tar entry '%s'\n", h.Name)
 		h, err = files.Next()
 	}
 	if err != nil && err != io.EOF {
@@ -102,7 +102,7 @@ func main() {
 		os.Exit(1)
 	}
 	log.SetFormat(format.Min)
-	log.SetLevel(level.Debug)
+	log.SetLevel(level.Info)
 	r := make(abi.Report)
 	for _, eopkg := range os.Args[1:] {
 		AddPackage(r, eopkg)
