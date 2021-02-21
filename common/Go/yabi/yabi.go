@@ -117,7 +117,7 @@ func main() {
 	    	log.Errorln("\t" + lib)
 	    }
     }
-	if err := r.Save(); err != nil {
+	if err := r.Save("."); err != nil {
 		log.Fatalf("Failed to save ABI reports, reason: %s\n", err)
 	}
 }
