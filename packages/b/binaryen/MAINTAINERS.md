@@ -2,4 +2,4 @@ This file is used to indicate responsibility for the maintenance of this package
 
 - Martin Reboredo
   - IRC: YakoYako
-  - Email: gc1000ll@gmail.com
+  - Email: yakoyoku@gmail.com
