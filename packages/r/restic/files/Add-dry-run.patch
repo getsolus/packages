@@ -1,0 +1,1079 @@
+From eab21d8c3cf3e532a36228341d7e52adab31eb93 Mon Sep 17 00:00:00 2001
+From: Ryan Hitchman <hitchmanr@gmail.com>
+Date: Wed, 12 Jun 2019 20:39:13 -0700
+Subject: [PATCH 1/5] backup: add --dry-run/-n flag to show what would happen.
+
+This can be used to check how large a backup is or validate exclusions.
+It does not actually write any data to the underlying backend. This is
+implemented as a simple overlay backend that accepts writes without
+forwarding them, passes through reads, and generally does the minimal
+necessary to pretend that progress is actually happening.
+
+Fixes #1542
+
+Example usage:
+
+$ restic -vv --dry-run . | grep add
+new       /changelog/unreleased/issue-1542, saved in 0.000s (350 B added)
+modified  /cmd/restic/cmd_backup.go, saved in 0.000s (16.543 KiB added)
+modified  /cmd/restic/global.go, saved in 0.000s (0 B added)
+new       /internal/backend/dry/dry_backend_test.go, saved in 0.000s (3.866 KiB added)
+new       /internal/backend/dry/dry_backend.go, saved in 0.000s (3.744 KiB added)
+modified  /internal/backend/test/tests.go, saved in 0.000s (0 B added)
+modified  /internal/repository/repository.go, saved in 0.000s (20.707 KiB added)
+modified  /internal/ui/backup.go, saved in 0.000s (9.110 KiB added)
+modified  /internal/ui/jsonstatus/status.go, saved in 0.001s (11.055 KiB added)
+modified  /restic, saved in 0.131s (25.542 MiB added)
+Would add to the repo: 25.892 MiB
+---
+ changelog/unreleased/issue-1542             |   9 +
+ cmd/restic/cmd_backup.go                    |  10 +-
+ cmd/restic/integration_test.go              |  17 +-
+ doc/040_backup.rst                          |  17 ++
+ internal/backend/dryrun/dry_backend.go      | 188 ++++++++++++++++++++
+ internal/backend/dryrun/dry_backend_test.go | 142 +++++++++++++++
+ internal/repository/repository.go           |   6 +
+ internal/ui/backup.go                       |  11 +-
+ internal/ui/json/backup.go                  |   8 +
+ 9 files changed, 405 insertions(+), 3 deletions(-)
+ create mode 100644 changelog/unreleased/issue-1542
+ create mode 100644 internal/backend/dryrun/dry_backend.go
+ create mode 100644 internal/backend/dryrun/dry_backend_test.go
+
+diff --git a/changelog/unreleased/issue-1542 b/changelog/unreleased/issue-1542
+new file mode 100644
+index 000000000..4db090d37
+--- /dev/null
++++ b/changelog/unreleased/issue-1542
+@@ -0,0 +1,9 @@
++Enhancement: Add --dry-run/-n option to backup command.
++
++We added a new --dry-run/-n option to backup, which performs all the normal
++steps of a backup without actually writing data. Passing -vv will log
++information about files that would be added, allowing fast verification of
++backup options without any unnecessary write activity.
++
++https://github.com/restic/restic/issues/1542
++https://github.com/restic/restic/pull/2308
+diff --git a/cmd/restic/cmd_backup.go b/cmd/restic/cmd_backup.go
+index bd8b4da8c..ec33cd5c0 100644
+--- a/cmd/restic/cmd_backup.go
++++ b/cmd/restic/cmd_backup.go
+@@ -92,6 +92,7 @@ type BackupOptions struct {
+ 	IgnoreInode             bool
+ 	IgnoreCtime             bool
+ 	UseFsSnapshot           bool
++	DryRun                  bool
+ }
+ 
+ var backupOptions BackupOptions
+@@ -135,6 +136,7 @@ func init() {
+ 	if runtime.GOOS == "windows" {
+ 		f.BoolVar(&backupOptions.UseFsSnapshot, "use-fs-snapshot", false, "use filesystem snapshot where possible (currently only Windows VSS)")
+ 	}
++	f.BoolVarP(&backupOptions.DryRun, "dry-run", "n", false, "do not write anything, just print what would be done")
+ }
+ 
+ // filterExisting returns a slice of all existing items, or an error if no
+@@ -535,6 +537,7 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
+ 		Run(ctx context.Context) error
+ 		Error(item string, fi os.FileInfo, err error) error
+ 		Finish(snapshotID restic.ID)
++		SetDryRun()
+ 
+ 		// ui.StdioWrapper
+ 		Stdout() io.WriteCloser
+@@ -554,6 +557,11 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
+ 		p = ui.NewBackup(term, gopts.verbosity)
+ 	}
+ 
++	if opts.DryRun {
++		repo.SetDryRun()
++		p.SetDryRun()
++	}
++
+ 	// use the terminal for stdout/stderr
+ 	prevStdout, prevStderr := gopts.stdout, gopts.stderr
+ 	defer func() {
+@@ -720,7 +728,7 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
+ 
+ 	// Report finished execution
+ 	p.Finish(id)
+-	if !gopts.JSON {
++	if !gopts.JSON && !opts.DryRun {
+ 		p.P("snapshot %s saved\n", id.Str())
+ 	}
+ 	if !success {
+diff --git a/cmd/restic/integration_test.go b/cmd/restic/integration_test.go
+index 7d198d336..af1a2f896 100644
+--- a/cmd/restic/integration_test.go
++++ b/cmd/restic/integration_test.go
+@@ -297,10 +297,25 @@ func testBackup(t *testing.T, useFsSnapshot bool) {
+ 
+ 	testSetupBackupData(t, env)
+ 	opts := BackupOptions{UseFsSnapshot: useFsSnapshot}
++	rtest.SetupTarTestFixture(t, env.testdata, datafile)
++	opts := BackupOptions{}
++	dryOpts := BackupOptions{DryRun: true}
++
++	// dry run before first backup
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
++	snapshotIDs := testRunList(t, "snapshots", env.gopts)
++	rtest.Assert(t, len(snapshotIDs) == 0,
++		"expected no snapshot, got %v", snapshotIDs)
+ 
+ 	// first backup
+ 	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, opts, env.gopts)
+-	snapshotIDs := testRunList(t, "snapshots", env.gopts)
++	snapshotIDs = testRunList(t, "snapshots", env.gopts)
++	rtest.Assert(t, len(snapshotIDs) == 1,
++		"expected one snapshot, got %v", snapshotIDs)
++
++	// dry run between backups
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
++	snapshotIDs = testRunList(t, "snapshots", env.gopts)
+ 	rtest.Assert(t, len(snapshotIDs) == 1,
+ 		"expected one snapshot, got %v", snapshotIDs)
+ 
+diff --git a/doc/040_backup.rst b/doc/040_backup.rst
+index b79e2b70b..d1e4c168f 100644
+--- a/doc/040_backup.rst
++++ b/doc/040_backup.rst
+@@ -187,6 +187,23 @@ On **Windows**, a file is considered unchanged when its path and modification
+ time match, and only ``--force`` has any effect. The other options are
+ recognized but ignored.
+ 
++Dry Runs
++********
++
++You can perform a backup in dry run mode to see what would happen without
++modifying the repo.
++
++-  ``--dry-run``/``-n`` do not write anything, just print what would be done
++
++Combined with ``--verbose``, you can see a list of changes:
++
++.. code-block:: console
++
++    $ restic -r /srv/restic-repo backup ~/work --dry-run -vv | grep added
++    modified  /plan.txt, saved in 0.000s (9.110 KiB added)
++    modified  /archive.tar.gz, saved in 0.140s (25.542 MiB added)
++    Would be added to the repo: 25.551 MiB
++
+ Excluding Files
+ ***************
+ 
+diff --git a/internal/backend/dryrun/dry_backend.go b/internal/backend/dryrun/dry_backend.go
+new file mode 100644
+index 000000000..add7c4b45
+--- /dev/null
++++ b/internal/backend/dryrun/dry_backend.go
+@@ -0,0 +1,188 @@
++package dryrun
++
++import (
++	"context"
++	"io"
++	"io/ioutil"
++	"sync"
++
++	"github.com/restic/restic/internal/errors"
++	"github.com/restic/restic/internal/restic"
++
++	"github.com/restic/restic/internal/debug"
++)
++
++type sizeMap map[restic.Handle]int
++
++var errNotFound = errors.New("not found")
++
++// Backend passes reads through to an underlying layer and only records
++// metadata about writes. This is used for `backup --dry-run`.
++// It is directly derivted from the mem backend.
++type Backend struct {
++	be   restic.Backend
++	data sizeMap
++	m    sync.Mutex
++}
++
++// New returns a new backend that saves all data in a map in memory.
++func New(be restic.Backend) *Backend {
++	b := &Backend{
++		be:   be,
++		data: make(sizeMap),
++	}
++
++	debug.Log("created new dry backend")
++
++	return b
++}
++
++// Test returns whether a file exists.
++func (be *Backend) Test(ctx context.Context, h restic.Handle) (bool, error) {
++	be.m.Lock()
++	defer be.m.Unlock()
++
++	debug.Log("Test %v", h)
++
++	if _, ok := be.data[h]; ok {
++		return true, nil
++	}
++
++	return be.be.Test(ctx, h)
++}
++
++// IsNotExist returns true if the file does not exist.
++func (be *Backend) IsNotExist(err error) bool {
++	return errors.Cause(err) == errNotFound || be.be.IsNotExist(err)
++}
++
++// Save adds new Data to the backend.
++func (be *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
++	if err := h.Valid(); err != nil {
++		return err
++	}
++
++	be.m.Lock()
++	defer be.m.Unlock()
++
++	if h.Type == restic.ConfigFile {
++		h.Name = ""
++	}
++
++	if _, ok := be.data[h]; ok {
++		return errors.New("file already exists")
++	}
++
++	buf, err := ioutil.ReadAll(rd)
++	if err != nil {
++		return err
++	}
++
++	be.data[h] = len(buf)
++	debug.Log("faked saving %v bytes at %v", len(buf), h)
++
++	return nil
++}
++
++// Load runs fn with a reader that yields the contents of the file at h at the
++// given offset.
++func (be *Backend) Load(ctx context.Context, h restic.Handle, length int, offset int64, fn func(rd io.Reader) error) error {
++	be.m.Lock()
++	defer be.m.Unlock()
++
++	if _, ok := be.data[h]; ok {
++		return errors.New("can't read file saved on dry backend")
++	}
++	return be.be.Load(ctx, h, length, offset, fn)
++}
++
++// Stat returns information about a file in the backend.
++func (be *Backend) Stat(ctx context.Context, h restic.Handle) (restic.FileInfo, error) {
++	if err := h.Valid(); err != nil {
++		return restic.FileInfo{}, err
++	}
++
++	be.m.Lock()
++	defer be.m.Unlock()
++
++	if h.Type == restic.ConfigFile {
++		h.Name = ""
++	}
++
++	debug.Log("stat %v", h)
++
++	s, ok := be.data[h]
++	if !ok {
++		return be.be.Stat(ctx, h)
++	}
++
++	return restic.FileInfo{Size: int64(s), Name: h.Name}, nil
++}
++
++// Remove deletes a file from the backend.
++func (be *Backend) Remove(ctx context.Context, h restic.Handle) error {
++	be.m.Lock()
++	defer be.m.Unlock()
++
++	debug.Log("Remove %v", h)
++
++	if _, ok := be.data[h]; !ok {
++		return errNotFound
++	}
++
++	delete(be.data, h)
++
++	return nil
++}
++
++// List returns a channel which yields entries from the backend.
++func (be *Backend) List(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
++	entries := []restic.FileInfo{}
++	be.m.Lock()
++	for entry, size := range be.data {
++		if entry.Type != t {
++			continue
++		}
++		entries = append(entries, restic.FileInfo{
++			Name: entry.Name,
++			Size: int64(size),
++		})
++	}
++	be.m.Unlock()
++
++	for _, entry := range entries {
++		if ctx.Err() != nil {
++			return ctx.Err()
++		}
++
++		err := fn(entry)
++		if err != nil {
++			return err
++		}
++
++		if ctx.Err() != nil {
++			return ctx.Err()
++		}
++	}
++
++	if ctx.Err() != nil {
++		return ctx.Err()
++	}
++
++	return be.be.List(ctx, t, fn)
++}
++
++// Location returns the location of the backend (RAM).
++func (be *Backend) Location() string {
++	return "DRY:" + be.be.Location()
++}
++
++// Delete removes all data in the backend.
++func (be *Backend) Delete(ctx context.Context) error {
++	return errors.New("dry-run doesn't support Delete()")
++}
++
++// Close closes the backend.
++func (be *Backend) Close() error {
++	return be.be.Close()
++}
+diff --git a/internal/backend/dryrun/dry_backend_test.go b/internal/backend/dryrun/dry_backend_test.go
+new file mode 100644
+index 000000000..f62703866
+--- /dev/null
++++ b/internal/backend/dryrun/dry_backend_test.go
+@@ -0,0 +1,142 @@
++package dryrun_test
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"io/ioutil"
++	"sort"
++	"strings"
++	"testing"
++
++	"github.com/restic/restic/internal/restic"
++
++	"github.com/restic/restic/internal/backend/dryrun"
++	"github.com/restic/restic/internal/backend/mem"
++)
++
++// make sure that Backend implements backend.Backend
++var _ restic.Backend = &dryrun.Backend{}
++
++func newBackends() (*dryrun.Backend, restic.Backend) {
++	m := mem.New()
++	return dryrun.New(m), m
++}
++
++func TestDry(t *testing.T) {
++	d, m := newBackends()
++	m.Save(context.TODO(), restic.Handle{}, restic.NewByteReader([]byte("foo")))
++
++	ctx := context.TODO()
++
++	// Since the dry backend is a mostly write-only overlay, the standard backend test suite
++	// won't pass. Instead, perform a series of operations over the backend, testing the state
++	// at each step.
++	steps := []struct {
++		be      restic.Backend
++		op      string
++		fname   string
++		content string
++		wantErr string
++	}{
++		{d, "loc", "", "DRY:RAM", ""},
++		{d, "delete", "", "", "doesn't support"},
++		{d, "stat", "a", "", "not found"},
++		{d, "list", "", "", ""},
++		{d, "save", "", "", "invalid"},
++		{d, "test", "a", "", ""},
++		{m, "save", "a", "baz", ""},
++		{d, "save", "b", "foob", ""},
++		{d, "save", "b", "asdf", "already exists"},
++		{d, "test", "a", "1", ""},
++		{d, "test", "b", "1", ""},
++		{d, "stat", "", "", "invalid"},
++		{d, "stat", "a", "a 3", ""},
++		{d, "stat", "b", "b 4", ""},
++		{d, "load", "a", "baz", ""},
++		{d, "load", "b", "", "can't read file"},
++		{d, "list", "", "a b", ""},
++		{d, "remove", "c", "", "not found"},
++		{d, "remove", "b", "", ""},
++		{d, "stat", "b", "", "not found"},
++		{d, "list", "", "a", ""},
++		{d, "close", "", "", ""},
++		{d, "close", "", "", ""},
++	}
++
++	for i, step := range steps {
++		var err error
++		var boolRes bool
++
++		handle := restic.Handle{Type: restic.DataFile, Name: step.fname}
++		switch step.op {
++		case "save":
++			err = step.be.Save(ctx, handle, restic.NewByteReader([]byte(step.content)))
++		case "test":
++			boolRes, err = step.be.Test(ctx, handle)
++			if boolRes != (step.content != "") {
++				t.Errorf("%d. Test(%q) = %v, want %v", i, step.fname, boolRes, step.content != "")
++			}
++		case "list":
++			fileList := []string{}
++			err = step.be.List(ctx, restic.DataFile, func(fi restic.FileInfo) error {
++				for _, n := range fileList {
++					if n == fi.Name {
++						return nil
++					}
++				}
++				fileList = append(fileList, fi.Name)
++				return nil
++			})
++			sort.Strings(fileList)
++			files := strings.Join(fileList, " ")
++			if files != step.content {
++				t.Errorf("%d. List = %q, want %q", i, files, step.content)
++			}
++		case "loc":
++			loc := step.be.Location()
++			if loc != step.content {
++				t.Errorf("%d. Location = %q, want %q", i, loc, step.content)
++			}
++		case "delete":
++			err = step.be.Delete(ctx)
++		case "remove":
++			err = step.be.Remove(ctx, handle)
++		case "stat":
++			var fi restic.FileInfo
++			fi, err = step.be.Stat(ctx, handle)
++			if err == nil {
++				fis := fmt.Sprintf("%s %d", fi.Name, fi.Size)
++				if fis != step.content {
++					t.Errorf("%d. Stat = %q, want %q", i, fis, step.content)
++				}
++			}
++		case "load":
++			data := ""
++			err = step.be.Load(ctx, handle, 100, 0, func(rd io.Reader) error {
++				buf, err := ioutil.ReadAll(rd)
++				data = string(buf)
++				return err
++			})
++			if data != step.content {
++				t.Errorf("%d. Load = %q, want %q", i, data, step.content)
++			}
++		case "close":
++			err = step.be.Close()
++		default:
++			t.Fatalf("%d. unknown step operation %q", i, step.op)
++		}
++		if step.wantErr != "" {
++			if err == nil {
++				t.Errorf("%d. %s error = nil, want %q", i, step.op, step.wantErr)
++			} else if !strings.Contains(err.Error(), step.wantErr) {
++				t.Errorf("%d. %s error = %q, doesn't contain %q", i, step.op, err, step.wantErr)
++			} else if step.wantErr == "not found" && !step.be.IsNotExist(err) {
++				t.Errorf("%d. IsNotExist(%s error) = false, want true", i, step.op)
++			}
++
++		} else if err != nil {
++			t.Errorf("%d. %s error = %q, want nil", i, step.op, err)
++		}
++	}
++}
+diff --git a/internal/repository/repository.go b/internal/repository/repository.go
+index a13a0d784..4344fff2d 100644
+--- a/internal/repository/repository.go
++++ b/internal/repository/repository.go
+@@ -10,6 +10,7 @@ import (
+ 	"sync"
+ 
+ 	"github.com/restic/chunker"
++	"github.com/restic/restic/internal/backend/dryrun"
+ 	"github.com/restic/restic/internal/cache"
+ 	"github.com/restic/restic/internal/crypto"
+ 	"github.com/restic/restic/internal/debug"
+@@ -72,6 +73,11 @@ func (r *Repository) UseCache(c *cache.Cache) {
+ 	r.be = c.Wrap(r.be)
+ }
+ 
++// SetDryRun sets the repo backend into dry-run mode.
++func (r *Repository) SetDryRun() {
++	r.be = dryrun.New(r.be)
++}
++
+ // PrefixLength returns the number of bytes required so that all prefixes of
+ // all IDs of type t are unique.
+ func (r *Repository) PrefixLength(ctx context.Context, t restic.FileType) (int, error) {
+diff --git a/internal/ui/backup.go b/internal/ui/backup.go
+index 313eebf7b..59f85487f 100644
+--- a/internal/ui/backup.go
++++ b/internal/ui/backup.go
+@@ -35,6 +35,7 @@ type Backup struct {
+ 	start time.Time
+ 
+ 	totalBytes uint64
++	dry        bool // true if writes are faked
+ 
+ 	totalCh     chan counter
+ 	processedCh chan counter
+@@ -385,7 +386,11 @@ func (b *Backup) Finish(snapshotID restic.ID) {
+ 	b.P("Dirs:        %5d new, %5d changed, %5d unmodified\n", b.summary.Dirs.New, b.summary.Dirs.Changed, b.summary.Dirs.Unchanged)
+ 	b.V("Data Blobs:  %5d new\n", b.summary.ItemStats.DataBlobs)
+ 	b.V("Tree Blobs:  %5d new\n", b.summary.ItemStats.TreeBlobs)
+-	b.P("Added to the repo: %-5s\n", formatBytes(b.summary.ItemStats.DataSize+b.summary.ItemStats.TreeSize))
++	verb := "Added"
++	if b.dry {
++		verb = "Would add"
++	}
++	b.P("%s to the repo: %-5s\n", verb, formatBytes(b.summary.ItemStats.DataSize+b.summary.ItemStats.TreeSize))
+ 	b.P("\n")
+ 	b.P("processed %v files, %v in %s",
+ 		b.summary.Files.New+b.summary.Files.Changed+b.summary.Files.Unchanged,
+@@ -399,3 +404,7 @@ func (b *Backup) Finish(snapshotID restic.ID) {
+ func (b *Backup) SetMinUpdatePause(d time.Duration) {
+ 	b.MinUpdatePause = d
+ }
++
++func (b *Backup) SetDryRun() {
++	b.dry = true
++}
+diff --git a/internal/ui/json/backup.go b/internal/ui/json/backup.go
+index b6a2ed03d..70bc23801 100644
+--- a/internal/ui/json/backup.go
++++ b/internal/ui/json/backup.go
+@@ -34,6 +34,7 @@ type Backup struct {
+ 	term  *termstatus.Terminal
+ 	v     uint
+ 	start time.Time
++	dry   bool
+ 
+ 	totalBytes uint64
+ 
+@@ -403,6 +404,7 @@ func (b *Backup) Finish(snapshotID restic.ID) {
+ 		TotalBytesProcessed: b.summary.ProcessedBytes,
+ 		TotalDuration:       time.Since(b.start).Seconds(),
+ 		SnapshotID:          snapshotID.Str(),
++		DryRun:              b.dry,
+ 	})
+ }
+ 
+@@ -412,6 +414,11 @@ func (b *Backup) SetMinUpdatePause(d time.Duration) {
+ 	b.MinUpdatePause = d
+ }
+ 
++// SetDryRun marks the backup as a "dry run".
++func (b *Backup) SetDryRun() {
++	b.dry = true
++}
++
+ type statusUpdate struct {
+ 	MessageType      string   `json:"message_type"` // "status"
+ 	SecondsElapsed   uint64   `json:"seconds_elapsed,omitempty"`
+@@ -457,4 +464,5 @@ type summaryOutput struct {
+ 	TotalBytesProcessed uint64  `json:"total_bytes_processed"`
+ 	TotalDuration       float64 `json:"total_duration"` // in seconds
+ 	SnapshotID          string  `json:"snapshot_id"`
++	DryRun              bool    `json:"dry_run,omitempty"`
+ }
+
+From b130f779d1156f65442d655a71919ce928af1eb4 Mon Sep 17 00:00:00 2001
+From: Alexander Weiss <alex@weissfam.de>
+Date: Tue, 23 Feb 2021 16:09:29 +0100
+Subject: [PATCH 2/5] Simplify dry run backend
+
+---
+ internal/backend/dryrun/dry_backend.go      | 164 +++-----------------
+ internal/backend/dryrun/dry_backend_test.go |  30 ++--
+ 2 files changed, 33 insertions(+), 161 deletions(-)
+
+diff --git a/internal/backend/dryrun/dry_backend.go b/internal/backend/dryrun/dry_backend.go
+index add7c4b45..26f417d5f 100644
+--- a/internal/backend/dryrun/dry_backend.go
++++ b/internal/backend/dryrun/dry_backend.go
+@@ -1,188 +1,60 @@
+ package dryrun
+ 
+ import (
++	"bufio"
+ 	"context"
+ 	"io"
+-	"io/ioutil"
+-	"sync"
+-
+-	"github.com/restic/restic/internal/errors"
+-	"github.com/restic/restic/internal/restic"
+ 
+ 	"github.com/restic/restic/internal/debug"
++	"github.com/restic/restic/internal/restic"
+ )
+ 
+-type sizeMap map[restic.Handle]int
+-
+-var errNotFound = errors.New("not found")
+-
+-// Backend passes reads through to an underlying layer and only records
+-// metadata about writes. This is used for `backup --dry-run`.
+-// It is directly derivted from the mem backend.
++// Backend passes reads through to an underlying layer and accepts writes, but
++// doesn't do anything. Also removes are ignored.
++// So in fact, this backend silently ignores all operations that would modify
++// the repo and does normal operations else.
++// This is used for `backup --dry-run`.
+ type Backend struct {
+-	be   restic.Backend
+-	data sizeMap
+-	m    sync.Mutex
++	restic.Backend
+ }
+ 
+ // New returns a new backend that saves all data in a map in memory.
+ func New(be restic.Backend) *Backend {
+-	b := &Backend{
+-		be:   be,
+-		data: make(sizeMap),
+-	}
+-
++	b := &Backend{Backend: be}
+ 	debug.Log("created new dry backend")
+-
+ 	return b
+ }
+ 
+-// Test returns whether a file exists.
+-func (be *Backend) Test(ctx context.Context, h restic.Handle) (bool, error) {
+-	be.m.Lock()
+-	defer be.m.Unlock()
+-
+-	debug.Log("Test %v", h)
+-
+-	if _, ok := be.data[h]; ok {
+-		return true, nil
+-	}
+-
+-	return be.be.Test(ctx, h)
+-}
+-
+-// IsNotExist returns true if the file does not exist.
+-func (be *Backend) IsNotExist(err error) bool {
+-	return errors.Cause(err) == errNotFound || be.be.IsNotExist(err)
+-}
+-
+ // Save adds new Data to the backend.
+ func (be *Backend) Save(ctx context.Context, h restic.Handle, rd restic.RewindReader) error {
+ 	if err := h.Valid(); err != nil {
+ 		return err
+ 	}
+ 
+-	be.m.Lock()
+-	defer be.m.Unlock()
+-
+-	if h.Type == restic.ConfigFile {
+-		h.Name = ""
+-	}
+-
+-	if _, ok := be.data[h]; ok {
+-		return errors.New("file already exists")
+-	}
+-
+-	buf, err := ioutil.ReadAll(rd)
+-	if err != nil {
++	// discard everything from rd, but count it
++	maxInt := int(^uint(0) >> 1)
++	bufRd := bufio.NewReader(rd)
++	length, err := bufRd.Discard(maxInt)
++	if err != io.EOF {
+ 		return err
+ 	}
+ 
+-	be.data[h] = len(buf)
+-	debug.Log("faked saving %v bytes at %v", len(buf), h)
++	debug.Log("faked saving %v bytes at %v", length, h)
+ 
+ 	return nil
+ }
+ 
+-// Load runs fn with a reader that yields the contents of the file at h at the
+-// given offset.
+-func (be *Backend) Load(ctx context.Context, h restic.Handle, length int, offset int64, fn func(rd io.Reader) error) error {
+-	be.m.Lock()
+-	defer be.m.Unlock()
+-
+-	if _, ok := be.data[h]; ok {
+-		return errors.New("can't read file saved on dry backend")
+-	}
+-	return be.be.Load(ctx, h, length, offset, fn)
+-}
+-
+-// Stat returns information about a file in the backend.
+-func (be *Backend) Stat(ctx context.Context, h restic.Handle) (restic.FileInfo, error) {
+-	if err := h.Valid(); err != nil {
+-		return restic.FileInfo{}, err
+-	}
+-
+-	be.m.Lock()
+-	defer be.m.Unlock()
+-
+-	if h.Type == restic.ConfigFile {
+-		h.Name = ""
+-	}
+-
+-	debug.Log("stat %v", h)
+-
+-	s, ok := be.data[h]
+-	if !ok {
+-		return be.be.Stat(ctx, h)
+-	}
+-
+-	return restic.FileInfo{Size: int64(s), Name: h.Name}, nil
+-}
+-
+ // Remove deletes a file from the backend.
+ func (be *Backend) Remove(ctx context.Context, h restic.Handle) error {
+-	be.m.Lock()
+-	defer be.m.Unlock()
+-
+-	debug.Log("Remove %v", h)
+-
+-	if _, ok := be.data[h]; !ok {
+-		return errNotFound
+-	}
+-
+-	delete(be.data, h)
+-
+ 	return nil
+ }
+ 
+-// List returns a channel which yields entries from the backend.
+-func (be *Backend) List(ctx context.Context, t restic.FileType, fn func(restic.FileInfo) error) error {
+-	entries := []restic.FileInfo{}
+-	be.m.Lock()
+-	for entry, size := range be.data {
+-		if entry.Type != t {
+-			continue
+-		}
+-		entries = append(entries, restic.FileInfo{
+-			Name: entry.Name,
+-			Size: int64(size),
+-		})
+-	}
+-	be.m.Unlock()
+-
+-	for _, entry := range entries {
+-		if ctx.Err() != nil {
+-			return ctx.Err()
+-		}
+-
+-		err := fn(entry)
+-		if err != nil {
+-			return err
+-		}
+-
+-		if ctx.Err() != nil {
+-			return ctx.Err()
+-		}
+-	}
+-
+-	if ctx.Err() != nil {
+-		return ctx.Err()
+-	}
+-
+-	return be.be.List(ctx, t, fn)
+-}
+-
+-// Location returns the location of the backend (RAM).
++// Location returns the location of the backend.
+ func (be *Backend) Location() string {
+-	return "DRY:" + be.be.Location()
++	return "DRY:" + be.Backend.Location()
+ }
+ 
+ // Delete removes all data in the backend.
+ func (be *Backend) Delete(ctx context.Context) error {
+-	return errors.New("dry-run doesn't support Delete()")
+-}
+-
+-// Close closes the backend.
+-func (be *Backend) Close() error {
+-	return be.be.Close()
++	return nil
+ }
+diff --git a/internal/backend/dryrun/dry_backend_test.go b/internal/backend/dryrun/dry_backend_test.go
+index f62703866..648c63c7a 100644
+--- a/internal/backend/dryrun/dry_backend_test.go
++++ b/internal/backend/dryrun/dry_backend_test.go
+@@ -24,11 +24,9 @@ func newBackends() (*dryrun.Backend, restic.Backend) {
+ }
+ 
+ func TestDry(t *testing.T) {
+-	d, m := newBackends()
+-	m.Save(context.TODO(), restic.Handle{}, restic.NewByteReader([]byte("foo")))
+-
+ 	ctx := context.TODO()
+ 
++	d, m := newBackends()
+ 	// Since the dry backend is a mostly write-only overlay, the standard backend test suite
+ 	// won't pass. Instead, perform a series of operations over the backend, testing the state
+ 	// at each step.
+@@ -40,26 +38,28 @@ func TestDry(t *testing.T) {
+ 		wantErr string
+ 	}{
+ 		{d, "loc", "", "DRY:RAM", ""},
+-		{d, "delete", "", "", "doesn't support"},
++		{d, "delete", "", "", ""},
+ 		{d, "stat", "a", "", "not found"},
+ 		{d, "list", "", "", ""},
+ 		{d, "save", "", "", "invalid"},
+ 		{d, "test", "a", "", ""},
+-		{m, "save", "a", "baz", ""},
+-		{d, "save", "b", "foob", ""},
+-		{d, "save", "b", "asdf", "already exists"},
++		{m, "save", "a", "baz", ""},  // save a directly to the mem backend
++		{d, "save", "b", "foob", ""}, // b is not saved
++		{d, "save", "b", "xxx", ""},  // no error as b is not saved
+ 		{d, "test", "a", "1", ""},
+-		{d, "test", "b", "1", ""},
++		{d, "test", "b", "", ""},
+ 		{d, "stat", "", "", "invalid"},
+ 		{d, "stat", "a", "a 3", ""},
+-		{d, "stat", "b", "b 4", ""},
+ 		{d, "load", "a", "baz", ""},
+-		{d, "load", "b", "", "can't read file"},
+-		{d, "list", "", "a b", ""},
+-		{d, "remove", "c", "", "not found"},
+-		{d, "remove", "b", "", ""},
++		{d, "load", "b", "", "not found"},
++		{d, "list", "", "a", ""},
++		{d, "remove", "c", "", ""},
+ 		{d, "stat", "b", "", "not found"},
+ 		{d, "list", "", "a", ""},
++		{d, "remove", "a", "", ""}, // a is in fact not removed
++		{d, "list", "", "a", ""},
++		{m, "remove", "a", "", ""}, // remove a from the mem backend
++		{d, "list", "", "", ""},
+ 		{d, "close", "", "", ""},
+ 		{d, "close", "", "", ""},
+ 	}
+@@ -68,7 +68,7 @@ func TestDry(t *testing.T) {
+ 		var err error
+ 		var boolRes bool
+ 
+-		handle := restic.Handle{Type: restic.DataFile, Name: step.fname}
++		handle := restic.Handle{Type: restic.PackFile, Name: step.fname}
+ 		switch step.op {
+ 		case "save":
+ 			err = step.be.Save(ctx, handle, restic.NewByteReader([]byte(step.content)))
+@@ -79,7 +79,7 @@ func TestDry(t *testing.T) {
+ 			}
+ 		case "list":
+ 			fileList := []string{}
+-			err = step.be.List(ctx, restic.DataFile, func(fi restic.FileInfo) error {
++			err = step.be.List(ctx, restic.PackFile, func(fi restic.FileInfo) error {
+ 				for _, n := range fileList {
+ 					if n == fi.Name {
+ 						return nil
+
+From c05b9bd60a1ed0760594c46295795594535bb1ca Mon Sep 17 00:00:00 2001
+From: Alexander Weiss <alex@weissfam.de>
+Date: Tue, 23 Feb 2021 19:56:41 +0100
+Subject: [PATCH 3/5] Separate dry run tests
+
+---
+ cmd/restic/integration_test.go | 68 ++++++++++++++++++++++++++--------
+ 1 file changed, 52 insertions(+), 16 deletions(-)
+
+diff --git a/cmd/restic/integration_test.go b/cmd/restic/integration_test.go
+index af1a2f896..e84f00e71 100644
+--- a/cmd/restic/integration_test.go
++++ b/cmd/restic/integration_test.go
+@@ -297,25 +297,10 @@ func testBackup(t *testing.T, useFsSnapshot bool) {
+ 
+ 	testSetupBackupData(t, env)
+ 	opts := BackupOptions{UseFsSnapshot: useFsSnapshot}
+-	rtest.SetupTarTestFixture(t, env.testdata, datafile)
+-	opts := BackupOptions{}
+-	dryOpts := BackupOptions{DryRun: true}
+-
+-	// dry run before first backup
+-	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
+-	snapshotIDs := testRunList(t, "snapshots", env.gopts)
+-	rtest.Assert(t, len(snapshotIDs) == 0,
+-		"expected no snapshot, got %v", snapshotIDs)
+ 
+ 	// first backup
+ 	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, opts, env.gopts)
+-	snapshotIDs = testRunList(t, "snapshots", env.gopts)
+-	rtest.Assert(t, len(snapshotIDs) == 1,
+-		"expected one snapshot, got %v", snapshotIDs)
+-
+-	// dry run between backups
+-	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
+-	snapshotIDs = testRunList(t, "snapshots", env.gopts)
++	snapshotIDs := testRunList(t, "snapshots", env.gopts)
+ 	rtest.Assert(t, len(snapshotIDs) == 1,
+ 		"expected one snapshot, got %v", snapshotIDs)
+ 
+@@ -360,6 +345,57 @@ func testBackup(t *testing.T, useFsSnapshot bool) {
+ 	testRunCheck(t, env.gopts)
+ }
+ 
++func TestDryRunBackup(t *testing.T) {
++	env, cleanup := withTestEnvironment(t)
++	defer cleanup()
++
++	testSetupBackupData(t, env)
++	opts := BackupOptions{}
++	dryOpts := BackupOptions{DryRun: true}
++
++	// dry run before first backup
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
++	snapshotIDs := testRunList(t, "snapshots", env.gopts)
++	rtest.Assert(t, len(snapshotIDs) == 0,
++		"expected no snapshot, got %v", snapshotIDs)
++	packIDs := testRunList(t, "packs", env.gopts)
++	rtest.Assert(t, len(packIDs) == 0,
++		"expected no data, got %v", snapshotIDs)
++	indexIDs := testRunList(t, "index", env.gopts)
++	rtest.Assert(t, len(indexIDs) == 0,
++		"expected no index, got %v", snapshotIDs)
++
++	// first backup
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, opts, env.gopts)
++	snapshotIDs = testRunList(t, "snapshots", env.gopts)
++	packIDs = testRunList(t, "packs", env.gopts)
++	indexIDs = testRunList(t, "index", env.gopts)
++
++	// dry run between backups
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
++	snapshotIDsAfter := testRunList(t, "snapshots", env.gopts)
++	rtest.Equals(t, snapshotIDs, snapshotIDsAfter)
++	dataIDsAfter := testRunList(t, "packs", env.gopts)
++	rtest.Equals(t, packIDs, dataIDsAfter)
++	indexIDsAfter := testRunList(t, "index", env.gopts)
++	rtest.Equals(t, indexIDs, indexIDsAfter)
++
++	// second backup, implicit incremental
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, opts, env.gopts)
++	snapshotIDs = testRunList(t, "snapshots", env.gopts)
++	packIDs = testRunList(t, "packs", env.gopts)
++	indexIDs = testRunList(t, "index", env.gopts)
++
++	// another dry run
++	testRunBackup(t, filepath.Dir(env.testdata), []string{"testdata"}, dryOpts, env.gopts)
++	snapshotIDsAfter = testRunList(t, "snapshots", env.gopts)
++	rtest.Equals(t, snapshotIDs, snapshotIDsAfter)
++	dataIDsAfter = testRunList(t, "packs", env.gopts)
++	rtest.Equals(t, packIDs, dataIDsAfter)
++	indexIDsAfter = testRunList(t, "index", env.gopts)
++	rtest.Equals(t, indexIDs, indexIDsAfter)
++}
++
+ func TestBackupNonExistingFile(t *testing.T) {
+ 	env, cleanup := withTestEnvironment(t)
+ 	defer cleanup()
+
+From 6ec422c369620cbc927d54934a06711921f618c9 Mon Sep 17 00:00:00 2001
+From: erin <erin@builds.systems>
+Date: Sat, 2 Jan 2021 09:00:06 -0800
+Subject: [PATCH 4/5] resolve rawtaz's review comments
+
+make majority of suggestions from review by @rawtaz verbatim, with one clarification on my part in changelog
+---
+ changelog/unreleased/issue-1542 | 11 ++++++-----
+ cmd/restic/cmd_backup.go        |  2 +-
+ doc/040_backup.rst              |  2 +-
+ 3 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/changelog/unreleased/issue-1542 b/changelog/unreleased/issue-1542
+index 4db090d37..963e8ccb0 100644
+--- a/changelog/unreleased/issue-1542
++++ b/changelog/unreleased/issue-1542
+@@ -1,9 +1,10 @@
+-Enhancement: Add --dry-run/-n option to backup command.
++Enhancement: Add --dry-run/-n option to backup command
+ 
+-We added a new --dry-run/-n option to backup, which performs all the normal
+-steps of a backup without actually writing data. Passing -vv will log
+-information about files that would be added, allowing fast verification of
+-backup options without any unnecessary write activity.
++We added a new --dry-run/-n option to the backup command, which performs
++all the normal steps of a backup without actually writing any changes to
++the repository. Passing -vv will log information about files that would
++be added, allowing verification of source and exclusion backup options
++without committing changes to the repository.
+ 
+ https://github.com/restic/restic/issues/1542
+ https://github.com/restic/restic/pull/2308
+diff --git a/cmd/restic/cmd_backup.go b/cmd/restic/cmd_backup.go
+index ec33cd5c0..ce3b4b874 100644
+--- a/cmd/restic/cmd_backup.go
++++ b/cmd/restic/cmd_backup.go
+@@ -133,10 +133,10 @@ func init() {
+ 	f.BoolVar(&backupOptions.WithAtime, "with-atime", false, "store the atime for all files and directories")
+ 	f.BoolVar(&backupOptions.IgnoreInode, "ignore-inode", false, "ignore inode number changes when checking for modified files")
+ 	f.BoolVar(&backupOptions.IgnoreCtime, "ignore-ctime", false, "ignore ctime changes when checking for modified files")
++	f.BoolVarP(&backupOptions.DryRun, "dry-run", "n", false, "do not upload or write any data, just show what would be done")
+ 	if runtime.GOOS == "windows" {
+ 		f.BoolVar(&backupOptions.UseFsSnapshot, "use-fs-snapshot", false, "use filesystem snapshot where possible (currently only Windows VSS)")
+ 	}
+-	f.BoolVarP(&backupOptions.DryRun, "dry-run", "n", false, "do not write anything, just print what would be done")
+ }
+ 
+ // filterExisting returns a slice of all existing items, or an error if no
+diff --git a/doc/040_backup.rst b/doc/040_backup.rst
+index d1e4c168f..67914e95d 100644
+--- a/doc/040_backup.rst
++++ b/doc/040_backup.rst
+@@ -199,7 +199,7 @@ Combined with ``--verbose``, you can see a list of changes:
+ 
+ .. code-block:: console
+ 
+-    $ restic -r /srv/restic-repo backup ~/work --dry-run -vv | grep added
++    $ restic -r /srv/restic-repo backup ~/work --dry-run -vv | grep "added)$"
+     modified  /plan.txt, saved in 0.000s (9.110 KiB added)
+     modified  /archive.tar.gz, saved in 0.140s (25.542 MiB added)
+     Would be added to the repo: 25.551 MiB
+
+From 4271da63db380d466282abaf6f484b70ce253c59 Mon Sep 17 00:00:00 2001
+From: Alexander Weiss <alex@weissfam.de>
+Date: Tue, 23 Feb 2021 20:10:08 +0100
+Subject: [PATCH 5/5] Adapt changelog
+
+---
+ changelog/unreleased/issue-1542 | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/changelog/unreleased/issue-1542 b/changelog/unreleased/issue-1542
+index 963e8ccb0..31807ed73 100644
+--- a/changelog/unreleased/issue-1542
++++ b/changelog/unreleased/issue-1542
+@@ -8,3 +8,5 @@ without committing changes to the repository.
+ 
+ https://github.com/restic/restic/issues/1542
+ https://github.com/restic/restic/pull/2308
++https://github.com/restic/restic/pull/3210
++https://github.com/restic/restic/pull/3300
