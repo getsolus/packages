@@ -20,7 +20,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -103,13 +102,25 @@ func main() {
 			break
 		}
 	}
-	dirs, err := ioutil.ReadDir(".")
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		panic(err.Error())
 	}
 	stdin := bufio.NewReader(os.Stdin)
 	remove := false
 	done := false
+	fmt.Printf("The following repos (directories) will be removed:\n\n")
+	var removals []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if !repos[entry.Name()] {
+			fmt.Println(entry.Name())
+			removals = append(removals, entry.Name())
+		}
+	}
+	fmt.Println()
 	for !done {
 		fmt.Println("Would you like to remove of all non-active repos? (yes/no)")
 		ans, err := stdin.ReadString('\n')
@@ -127,20 +138,15 @@ func main() {
 			fmt.Printf("'%s' is not a valid answer", ans)
 		}
 	}
-	for _, dir := range dirs {
-		if !dir.IsDir() {
-			continue
-		}
-		if !repos[dir.Name()] {
-			fmt.Printf("Repository '%s' is not active\n", dir.Name())
-			if remove {
-				fmt.Printf("Removing repository '%s'...", dir.Name())
-				if err := os.RemoveAll("./" + dir.Name()); err != nil {
-					fmt.Printf("FAILED: %s\n", err.Error())
-				} else {
-					fmt.Println("DONE")
-				}
-			}
+	if !remove {
+		os.Exit(0)
+	}
+	for _, dir := range removals {
+		fmt.Printf("Removing repository '%s'...", dir)
+		if err := os.RemoveAll("./" + dir); err != nil {
+			fmt.Printf("FAILED: %s\n", err.Error())
+		} else {
+			fmt.Println("DONE")
 		}
 	}
 }
