@@ -1,9 +1,10 @@
 name       : docker
-version    : 19.03.14
-release    : 30
+version    : 20.10.5
+release    : 31
 source     :
-    - https://github.com/docker/docker-ce/archive/v19.03.14.tar.gz : 0b8838b0da1f1368fc1a0809a2ed11840bd7d58df1f090e668de209faddcef7c
-    - git|https://github.com/docker/libnetwork.git : 55e924b8a84231a065879156c0de95aefc5f5435
+    - https://github.com/moby/moby/archive/v20.10.5.tar.gz : bcf651d75e5c80421e8cd3b0d47f3425e01047cf67aef0eda83b68776905a583
+    - git|https://github.com/docker/cli : 897293c7c7dada402c38783013026bfd49416501
+    - git|https://github.com/docker/libnetwork.git : fa125a3512ee0f6187721c88582bf8c4378bd4d7
     - git|https://github.com/krallin/tini.git : v0.19.0
 license    : Apache-2.0
 component  : virt
@@ -23,24 +24,24 @@ rundeps    :
     - containerd
     - dnsmasq
     - runc
+environment: |
+    export AUTO_GOPATH=1
+    export DOCKER_GITCOMMIT="363e9a88a11be517d9e8c65c998ff56f774eb4dc"
+    export GITCOMMIT="363e9a88a11be517d9e8c65c998ff56f774eb4dc"
+    export GO111MODULE=auto
+    export GOPATH="${workdir}"
+    unset LDFLAGS
 build      : |
     mkdir -p src/github.com/docker
-    export GOPATH=`pwd`
-    unset LDFLAGS
 
     # Build proxy
     ln -sv $sources/libnetwork.git src/github.com/docker/libnetwork
-    go build -o docker-proxy github.com/docker/libnetwork/cmd/proxy
+    go build -o $workdir/docker-proxy github.com/docker/libnetwork/cmd/proxy
     rm -v src/github.com/docker/libnetwork
 
     # Build daemon
     export VERSION=${version}-ce
-    pushd components/engine
-    export DOCKER_GITCOMMIT="4484c46d9d1a2d10b8fc662923ad586daeedb04f"
-    export GITCOMMIT="4484c46d9d1a2d10b8fc662923ad586daeedb04f"
-    export AUTO_GOPATH=1
     ./hack/make.sh dynbinary
-    popd
 
     # Build docker-init
     mkdir -p src/github.com/krallin/tini
@@ -51,27 +52,26 @@ build      : |
     popd
 
     # Build CLI
-    ln -sv `pwd`/components/cli src/github.com/docker
-    pushd components/cli
+    mkdir -p src/github.com/docker/cli
+    cp -R $sources/cli.git/* src/github.com/docker/cli/
+    pushd src/github.com/docker/cli/
     ./scripts/build/dynbinary
     popd
 
     # Build manpages
-    components/cli/man/md2man-all.sh
+    pushd src/github.com/docker/cli
+    ./man/md2man-all.sh
+    popd
 install    : |
     # Required directories
     install -Ddm00755 $installdir/usr/bin
     install -Ddm00755 $installdir/%libdir%/systemd/system
 
     # Install docker client
-    pushd components/cli
-    install -m00755 build/docker-linux-amd64 $installdir/usr/bin/docker
-    popd
+    install -m00755 src/github.com/docker/cli/build/docker-linux-amd64 $installdir/usr/bin/docker
 
     # Main docker daemon
-    pushd components/engine
     install -m00755 bundles/dynbinary-daemon/dockerd-${version}-ce $installdir/usr/bin/dockerd
-    popd
 
     # Now install docker-init
     install -m00755 $workdir/src/github.com/krallin/tini/tini-static $installdir/usr/bin/docker-init
@@ -80,8 +80,8 @@ install    : |
     install -m00755 $workdir/docker-proxy $installdir/usr/bin/docker-proxy
 
     # Now install systemd units
-    install -m00644 components/engine/contrib/init/systemd/docker.service $installdir/%libdir%/systemd/system/.
-    install -m00644 components/engine/contrib/init/systemd/docker.socket $installdir/%libdir%/systemd/system/.
+    install -m00644 contrib/init/systemd/docker.service $installdir/%libdir%/systemd/system/.
+    install -m00644 contrib/init/systemd/docker.socket $installdir/%libdir%/systemd/system/.
 
     # Enable socket activation by default
     install -Ddm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
@@ -97,10 +97,12 @@ install    : |
     ln -s runc $installdir/usr/bin/docker-runc
 
     # Install completions
-    install -Dm00644 components/cli/contrib/completion/bash/docker $installdir/usr/share/bash-completion/completions/docker
-    install -Dm00644 components/cli/contrib/completion/zsh/_docker $installdir/usr/share/zsh/site-functions/_docker
+    pushd src/github.com/docker/cli
+    install -Dm00644 contrib/completion/bash/docker $installdir/usr/share/bash-completion/completions/docker
+    install -Dm00644 contrib/completion/zsh/_docker $installdir/usr/share/zsh/site-functions/_docker
 
     # Install manpages
     for i in 1 5 8; do
-      install -Dm00644 components/cli/man/man$i/*.$i -t $installdir/usr/share/man/man$i
+      install -Dm00644 man/man$i/*.$i -t $installdir/usr/share/man/man$i
     done
+    popd
