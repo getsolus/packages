@@ -1,0 +1,160 @@
+From ced5a4c5d59819f9cb8f7c3e7d7cd45f74c48290 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Thu, 18 Mar 2021 07:07:45 +0200
+Subject: [PATCH 1/1] Remove /lib/firmware from being required for mount.
+
+Mostly applicable to CUDA (which isn't supported to begin with).
+
+Originally added in [a6e691c0255012d8ceae19d4c6f93804a7be955f](https://github.com/snapcore/snapd/commit/a6e691c0255012d8ceae19d4c6f93804a7be955f).
+
+Additionally removed /etc/apparmor from being mounted. Only problematic when using apparmor 3.x or the Docker plug (we have docker, just use that), creates permission issues otherwise.
+---
+ cmd/snap-confine/mount-support.c          |  6 ------
+ cmd/snap-confine/snap-confine.apparmor.in |  7 ------
+ interfaces/apparmor/template.go           | 26 +++--------------------
+ interfaces/builtin/multipass_support.go   |  1 -
+ snap/validate_test.go                     |  2 --
+ 5 files changed, 3 insertions(+), 39 deletions(-)
+
+diff --git a/cmd/snap-confine/mount-support.c b/cmd/snap-confine/mount-support.c
+index 7f4a80a51f..7b5c4ed96b 100644
+--- a/cmd/snap-confine/mount-support.c
++++ b/cmd/snap-confine/mount-support.c
+@@ -323,11 +323,6 @@ static void sc_bootstrap_mount_namespace(const struct sc_mount_config *config)
+ 		//  - https://bugzilla.opensuse.org/show_bug.cgi?id=1028568
+ 		const char *dirs_from_core[] = {
+ 			"/etc/alternatives", "/etc/ssl", "/etc/nsswitch.conf",
+-			// Some specifc and privileged interfaces (e.g docker-support) give
+-			// access to apparmor_parser from the base snap which at a minimum
+-			// needs to use matching configuration from the base snap instead
+-			// of from the users host system.
+-			"/etc/apparmor", "/etc/apparmor.d",
+ 			NULL
+ 		};
+ 		for (const char **dirs = dirs_from_core; *dirs != NULL; dirs++) {
+@@ -656,7 +651,6 @@ void sc_populate_mount_ns(struct sc_apparmor *apparmor, int snap_update_ns_fd,
+ 			{"/var/tmp"},	// to get access to the other temporary directory
+ 			{"/run"},	// to get /run with sockets and what not
+ 			{"/lib/modules",.is_optional = true},	// access to the modules of the running kernel
+-			{"/lib/firmware",.is_optional = true},	// access to the firmware of the running kernel
+ 			{"/usr/src"},	// FIXME: move to SecurityMounts in system-trace interface
+ 			{"/var/log"},	// FIXME: move to SecurityMounts in log-observe interface
+ #ifdef MERGED_USR
+diff --git a/cmd/snap-confine/snap-confine.apparmor.in b/cmd/snap-confine/snap-confine.apparmor.in
+index f6c5a080ac..fc4f76a1f4 100644
+--- a/cmd/snap-confine/snap-confine.apparmor.in
++++ b/cmd/snap-confine/snap-confine.apparmor.in
+@@ -193,9 +193,6 @@
+     mount options=(rw rbind) {,/usr}/lib{,32,64,x32}/modules/ -> /tmp/snap.rootfs_*{,/usr}/lib/modules/,
+     mount options=(rw rslave) -> /tmp/snap.rootfs_*{,/usr}/lib/modules/,
+ 
+-    mount options=(rw rbind) {,/usr}/lib{,32,64,x32}/firmware/ -> /tmp/snap.rootfs_*{,/usr}/lib/firmware/,
+-    mount options=(rw rslave) -> /tmp/snap.rootfs_*{,/usr}/lib/firmware/,
+-
+     mount options=(rw rbind) /var/log/ -> /tmp/snap.rootfs_*/var/log/,
+     # /var/volatile is the default volatile location on Yocto/Poky, typically used with read-only rootfs setups
+     mount options=(rw rbind) /var/volatile/log/ -> /tmp/snap.rootfs_*/var/log/,
+@@ -223,8 +220,6 @@
+     mount options=(rw bind) @SNAP_MOUNT_DIR@/*/*/etc/alternatives/ -> /tmp/snap.rootfs_*/etc/alternatives/,
+     mount options=(rw bind) @SNAP_MOUNT_DIR@/*/*/etc/ssl/ -> /tmp/snap.rootfs_*/etc/ssl/,
+     mount options=(rw bind) @SNAP_MOUNT_DIR@/*/*/etc/nsswitch.conf -> /tmp/snap.rootfs_*/etc/nsswitch.conf,
+-    mount options=(rw bind) @SNAP_MOUNT_DIR@/*/*/etc/apparmor/ -> /tmp/snap.rootfs_*/etc/apparmor/,
+-    mount options=(rw bind) @SNAP_MOUNT_DIR@/*/*/etc/apparmor.d/ -> /tmp/snap.rootfs_*/etc/apparmor.d/,
+ 
+     # /etc/alternatives (core/legacy mode)
+     mount options=(rw bind) /etc/alternatives/ -> /tmp/snap.rootfs_*/etc/alternatives/,
+@@ -233,8 +228,6 @@
+     mount options=(rw slave) -> /tmp/snap.rootfs_*/etc/alternatives/,
+     mount options=(rw slave) -> /tmp/snap.rootfs_*/etc/ssl/,
+     mount options=(rw slave) -> /tmp/snap.rootfs_*/etc/nsswitch.conf,
+-    mount options=(rw slave) -> /tmp/snap.rootfs_*/etc/apparmor/,
+-    mount options=(rw slave) -> /tmp/snap.rootfs_*/etc/apparmor.d/,
+ 
+     # the /snap directory
+     mount options=(rw rbind) @SNAP_MOUNT_DIR@/ -> /tmp/snap.rootfs_*/snap/,
+diff --git a/interfaces/apparmor/template.go b/interfaces/apparmor/template.go
+index 187423e4d0..2adcd449b1 100644
+--- a/interfaces/apparmor/template.go
++++ b/interfaces/apparmor/template.go
+@@ -35,7 +35,7 @@ package apparmor
+ // - /etc
+ // - /home
+ // - /lib/modules and /usr/lib/modules
+-// - /lib/firmware and /usr/lib/firmware
++// - /usr/lib/firmware
+ // - /mnt, /media and /run/media
+ // - /proc
+ // - /root
+@@ -647,21 +647,11 @@ var defaultOtherBaseTemplateRules = `
+ 
+   # /lib - the mount setup may bind mount to:
+   #
+-  # - /lib/firmware
+   # - /lib/modules
+   #
+-  # Everything but /lib/firmware and /lib/modules
++  # Everything but /lib/modules
+   /lib/ r,
+-  /lib/[^fm]** mrklix,
+-  /lib/{f[^i],m[^o]}** mrklix,
+-  /lib/{fi[^r],mo[^d]}** mrklix,
+-  /lib/{fir[^m],mod[^u]}** mrklix,
+-  /lib/{firm[^w],modu[^l]}** mrklix,
+-  /lib/{firmw[^a],modul[^e]}** mrklix,
+-  /lib/{firmwa[^r],module[^s]}** mrklix,
+   /lib/modules[^/]** mrklix,
+-  /lib/firmwar[^e]** mrklix,
+-  /lib/firmware[^/]** mrklix,
+ 
+   # /lib64, etc
+   /lib[^/]** mrklix,
+@@ -683,20 +673,10 @@ var defaultOtherBaseTemplateRules = `
+   /usr/{l[^i],s[^r]}** mrklix,
+   /usr/{li[^b],sr[^c]}** mrklix,
+   /usr/{lib,src}[^/]** mrklix,
+-  # Everything in /usr/lib except /usr/lib/firmware, /usr/lib/modules and
++  # Everything in /usr/lib except /usr/lib/modules and
+   # /usr/lib/snapd, which are handled elsewhere.
+   /usr/lib/ r,
+-  /usr/lib/[^fms]** mrklix,
+-  /usr/lib/{f[^i],m[^o],s[^n]}** mrklix,
+-  /usr/lib/{fi[^r],mo[^d],sn[^a]}** mrklix,
+-  /usr/lib/{fir[^m],mod[^u],sna[^p]}** mrklix,
+-  /usr/lib/{firm[^w],modu[^l],snap[^d]}** mrklix,
+-  /usr/lib/snapd[^/]** mrklix,
+-  /usr/lib/{firmw[^a],modul[^e]}** mrklix,
+-  /usr/lib/{firmwa[^r],module[^s]}** mrklix,
+   /usr/lib/modules[^/]** mrklix,
+-  /usr/lib/firmwar[^e]** mrklix,
+-  /usr/lib/firmware[^/]** mrklix,
+ 
+   # /var - the mount setup may bind mount in:
+   #
+diff --git a/interfaces/builtin/multipass_support.go b/interfaces/builtin/multipass_support.go
+index 55eac32d29..95dd4fb2a8 100644
+--- a/interfaces/builtin/multipass_support.go
++++ b/interfaces/builtin/multipass_support.go
+@@ -57,7 +57,6 @@ const multipassSupportConnectedPlugAppArmor = `
+ # Description: this policy intentionally allows the Multipass daemon to configure AppArmor
+ # as Multipass generates AppArmor profiles for the utility processes it spawns.
+ /sbin/apparmor_parser ixr,
+-/etc/apparmor{,.d}/{,**} r,
+ /sys/kernel/security/apparmor/{,**} r,
+ /sys/kernel/security/apparmor/.remove w,
+ /sys/kernel/security/apparmor/.replace w,
+diff --git a/snap/validate_test.go b/snap/validate_test.go
+index 46f387f039..015e684e22 100644
+--- a/snap/validate_test.go
++++ b/snap/validate_test.go
+@@ -956,8 +956,6 @@ func (s *ValidateSuite) TestValidateLayout(c *C) {
+ 		ErrorMatches, `layout "/var/lib/snapd" in an off-limits area`)
+ 	c.Check(ValidateLayout(&Layout{Snap: si, Path: "/var/lib/snapd/hostfs", Type: "tmpfs"}, nil),
+ 		ErrorMatches, `layout "/var/lib/snapd/hostfs" in an off-limits area`)
+-	c.Check(ValidateLayout(&Layout{Snap: si, Path: "/lib/firmware", Type: "tmpfs"}, nil),
+-		ErrorMatches, `layout "/lib/firmware" in an off-limits area`)
+ 	c.Check(ValidateLayout(&Layout{Snap: si, Path: "/lib/modules", Type: "tmpfs"}, nil),
+ 		ErrorMatches, `layout "/lib/modules" in an off-limits area`)
+ 	c.Check(ValidateLayout(&Layout{Snap: si, Path: "/tmp", Type: "tmpfs"}, nil),
+-- 
+2.30.2
+

@@ -1,0 +1,338 @@
+From 5b4782cfc98f331c4784ff24c33d836b9a1f441a Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Thu, 18 Mar 2021 07:45:28 +0200
+Subject: [PATCH 1/1] Revert "cmd/snap-confine: discard mount namespace when
+ base snap changes"
+
+This reverts commit 705a47c0e8ddfecdf5a51d7747b9fb2a26242934.
+---
+ cmd/snap-confine/ns-support.c             | 146 +++-------------------
+ cmd/snap-confine/ns-support.h             |   2 -
+ cmd/snap-confine/snap-confine.apparmor.in |   2 -
+ cmd/snap-confine/snap-confine.c           |   2 -
+ cmd/snap-discard-ns/snap-discard-ns.c     |  10 +-
+ packaging/ubuntu-14.04/snapd.postrm       |   2 +-
+ packaging/ubuntu-16.04/snapd.postrm       |   2 +-
+ tests/lib/reset.sh                        |   2 +-
+ tests/main/snap-discard-ns/task.yaml      |   1 -
+ 9 files changed, 24 insertions(+), 145 deletions(-)
+
+diff --git a/cmd/snap-confine/ns-support.c b/cmd/snap-confine/ns-support.c
+index 3e99521b31..d0c1bd56f0 100644
+--- a/cmd/snap-confine/ns-support.c
++++ b/cmd/snap-confine/ns-support.c
+@@ -309,66 +309,9 @@ enum sc_discard_vote {
+ 	 * discarded. This happens when the base snap has not changed.
+ 	 **/
+ 	SC_DISCARD_NO = 1,
+-	/**
+-	 * SC_DISCARD_SHOULD indicates that the mount namespace should be discarded
+-	 * but may be reused if it is still inhabited by processes. This only
+-	 * happens when the base snap revision changes but the name of the base
+-	 * snap is the same as before.
+-	 **/
+-	SC_DISCARD_SHOULD = 2,
+-	/**
+-	 * SC_DISCARD_MUST indicates that the mount namespace must be discarded
+-	 * even if it still inhabited by processes. This only happens when the name
+-	 * of the base snap changes.
+-	 **/
+-	SC_DISCARD_MUST = 3,
++	SC_DISCARD_YES = 2,
+ };
+ 
+-/**
+- * is_base_transition returns true if a base transition is occurring.
+- *
+- * The function inspects /run/snapd/ns/snap.$SNAP_INSTANCE_NAME.info as well
+- * as the invocation parameters of snap-confine. If the base snap name, as
+- * encoded in the info file and as described by the invocation parameters
+- * differ then a base transition is occurring. If the info file is absent or
+- * does not record the name of the base snap then transition cannot be
+- * detected.
+-**/
+-static bool is_base_transition(const sc_invocation * inv)
+-{
+-	char info_path[PATH_MAX] = { 0 };
+-	sc_must_snprintf(info_path,
+-			 sizeof info_path,
+-			 "/run/snapd/ns/snap.%s.info", inv->snap_instance);
+-
+-	FILE *stream SC_CLEANUP(sc_cleanup_file) = NULL;
+-	stream = fopen(info_path, "r");
+-	if (stream == NULL && errno == ENOENT) {
+-		// If the info file is absent then we cannot decide if a transition had
+-		// occurred. For people upgrading from snap-confine without the info
+-		// file, that is the best we can do.
+-		return false;
+-	}
+-	if (stream == NULL) {
+-		die("cannot open %s", info_path);
+-	}
+-
+-	char *base_snap_name SC_CLEANUP(sc_cleanup_string) = NULL;
+-	sc_error *err = NULL;
+-	if (sc_infofile_get_key
+-	    (stream, "base-snap-name", &base_snap_name, &err) < 0) {
+-		sc_die_on_error(err);
+-	}
+-
+-	if (base_snap_name == NULL) {
+-		// If the info file doesn't record the name of the base snap then,
+-		// again, we cannot decide if a transition had occurred.
+-		return false;
+-	}
+-
+-	return !sc_streq(inv->orig_base_snap_name, base_snap_name);
+-}
+-
+ // The namespace may be stale. To check this we must actually switch into it
+ // but then we use up our setns call (the kernel misbehaves if we setns twice).
+ // To work around this we'll fork a child and use it to probe. The child will
+@@ -450,25 +393,15 @@ static int sc_inspect_and_maybe_discard_stale_ns(int mnt_fd,
+ 		// pivot_root) and the base snap is again mounted (2nd time) by
+ 		// systemd. This makes us end up in a situation where the outer base
+ 		// snap will never match the rootfs inside the mount namespace.
+-		if (inv->is_normal_mode
+-		    && should_discard_current_ns(base_snap_dev)) {
+-			value = SC_DISCARD_SHOULD;
+-			value_str = "should";
++		bool should_discard =
++		    inv->is_normal_mode ?
++		    should_discard_current_ns(base_snap_dev) : false;
+ 
+-		}
+-		// If the base snap changed, we must discard the mount namespace and
+-		// start over to allow the newly started process to see the requested
+-		// base snap. Due to the TODO above always perform explicit transition
+-		// check to protect against LP:#1819875 and LP:#1861901
+-		if (is_base_transition(inv)) {
+-			// The base snap has changed. We must discard ...
+-			value = SC_DISCARD_MUST;
+-			value_str = "must";
+-		}
+-		// Send this back to the parent: 3 - force discard 2 - prefer discard, 1 - keep.
++		// Send this back to the parent: 2 - discard, 1 - keep.
+ 		// Note that we cannot just use 0 and 1 because of the semantics of eventfd(2).
+-		if (eventfd_write(event_fd, value) < 0) {
+-			die("cannot send information to %s preserved mount namespace", value_str);
++		if (eventfd_write(event_fd, should_discard ?
++				  SC_DISCARD_YES : SC_DISCARD_NO) < 0) {
++			die("cannot send information to %s preserved mount namespace", should_discard ? "discard" : "keep");
+ 		}
+ 		// Exit, we're done.
+ 		exit(0);
+@@ -495,30 +428,19 @@ static int sc_inspect_and_maybe_discard_stale_ns(int mnt_fd,
+ 		die("support process for mount namespace inspection exited abnormally");
+ 	}
+ 	// If the namespace is up-to-date then we are done.
+-	switch (value) {
+-	case SC_DISCARD_NO:
+-		debug("preserved mount is not stale, reusing");
++	if (value == SC_DISCARD_NO) {
++		debug("preserved mount namespace can be reused");
++		return 0;
++	}
++	// The namespace is stale, let's check if we can discard it.
++	if (sc_cgroup_freezer_occupied(inv->snap_instance)) {
++		// Some processes are still using the namespace so we cannot discard it
++		// as that would fracture the view that the set of processes inside
++		// have on what is mounted.
++		debug("preserved mount namespace is stale but occupied");
+ 		return 0;
+-	case SC_DISCARD_SHOULD:
+-		if (sc_cgroup_is_v2()) {
+-			debug
+-			    ("WARNING: cgroup v2 detected, preserved mount namespace process presence check unsupported, discarding");
+-			break;
+-		}
+-		if (sc_cgroup_freezer_occupied(inv->snap_instance)) {
+-			// Some processes are still using the namespace so we cannot discard it
+-			// as that would fracture the view that the set of processes inside
+-			// have on what is mounted.
+-			debug
+-			    ("preserved mount namespace is stale but occupied, reusing");
+-			return 0;
+-		}
+-		break;
+-	case SC_DISCARD_MUST:
+-		debug
+-		    ("preserved mount namespace is stale and base snap has changed, discarding");
+-		break;
+ 	}
++	// The namespace is both stale and empty. We can discard it now.
+ 	sc_call_snap_discard_ns(snap_discard_ns_fd, inv->snap_instance);
+ 	return EAGAIN;
+ }
+@@ -885,33 +807,3 @@ void sc_wait_for_helper(struct sc_mount_ns *group)
+ 	sc_message_capture_helper(group, HELPER_CMD_EXIT);
+ 	sc_wait_for_capture_helper(group);
+ }
+-
+-void sc_store_ns_info(const sc_invocation * inv)
+-{
+-	FILE *stream SC_CLEANUP(sc_cleanup_file) = NULL;
+-	char info_path[PATH_MAX] = { 0 };
+-	sc_must_snprintf(info_path, sizeof info_path,
+-			 "/run/snapd/ns/snap.%s.info", inv->snap_instance);
+-	int fd = -1;
+-	fd = open(info_path,
+-		  O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0644);
+-	if (fd < 0) {
+-		die("cannot open %s", info_path);
+-	}
+-	if (fchown(fd, 0, 0) < 0) {
+-		die("cannot chown %s to root.root", info_path);
+-	}
+-	// The stream now owns the file descriptor.
+-	stream = fdopen(fd, "w");
+-	if (stream == NULL) {
+-		die("cannot get stream from file descriptor");
+-	}
+-	fprintf(stream, "base-snap-name=%s\n", inv->orig_base_snap_name);
+-	if (ferror(stream) != 0) {
+-		die("I/O error when writing to %s", info_path);
+-	}
+-	if (fflush(stream) == EOF) {
+-		die("cannot flush %s", info_path);
+-	}
+-	debug("saved mount namespace meta-data to %s", info_path);
+-}
+diff --git a/cmd/snap-confine/ns-support.h b/cmd/snap-confine/ns-support.h
+index 1adfe21e9f..fab459139c 100644
+--- a/cmd/snap-confine/ns-support.h
++++ b/cmd/snap-confine/ns-support.h
+@@ -148,6 +148,4 @@ void sc_preserve_populated_per_user_mount_ns(struct sc_mount_ns *group);
+  **/
+ void sc_wait_for_helper(struct sc_mount_ns *group);
+ 
+-void sc_store_ns_info(const sc_invocation * inv);
+-
+ #endif
+diff --git a/cmd/snap-confine/snap-confine.apparmor.in b/cmd/snap-confine/snap-confine.apparmor.in
+index fc4f76a1f4..b271c71e30 100644
+--- a/cmd/snap-confine/snap-confine.apparmor.in
++++ b/cmd/snap-confine/snap-confine.apparmor.in
+@@ -387,8 +387,6 @@
+     # Allow snap-confine to unmount stale mount namespaces.
+     umount /run/snapd/ns/*.mnt,
+     /run/snapd/ns/snap.*.fstab w,
+-    # Allow snap-confine to read and write mount namespace information files.
+-    /run/snapd/ns/snap.*.info rw,
+     # Required to correctly unmount bound mount namespace.
+     # See LP: #1735459 for details.
+     umount /,
+diff --git a/cmd/snap-confine/snap-confine.c b/cmd/snap-confine/snap-confine.c
+index a9f59cf8ca..ef152e5fe1 100644
+--- a/cmd/snap-confine/snap-confine.c
++++ b/cmd/snap-confine/snap-confine.c
+@@ -674,8 +674,6 @@ static void enter_non_classic_execution_environment(sc_invocation * inv,
+ 		}
+ 		sc_populate_mount_ns(aa, snap_update_ns_fd, inv, real_gid,
+ 				     saved_gid);
+-		sc_store_ns_info(inv);
+-
+ 		/* Preserve the mount namespace. */
+ 		sc_preserve_populated_mount_ns(group);
+ 	}
+diff --git a/cmd/snap-discard-ns/snap-discard-ns.c b/cmd/snap-discard-ns/snap-discard-ns.c
+index 0779d74aa4..c90293a0e8 100644
+--- a/cmd/snap-discard-ns/snap-discard-ns.c
++++ b/cmd/snap-discard-ns/snap-discard-ns.c
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (C) 2015-2019 Canonical Ltd
++ * Copyright (C) 2015-2018 Canonical Ltd
+  *
+  * This program is free software: you can redistribute it and/or modify
+  * it under the terms of the GNU General Public License version 3 as
+@@ -103,21 +103,16 @@ int main(int argc, char** argv) {
+      * - "snap.$SNAP_INSTANCE_NAME.fstab"
+      * - "snap.$SNAP_INSTANCE_NAME.[0-9]+.user-fstab"
+      *
+-     * Mount namespace information files:
+-     * - "snap.$SNAP_INSTANCE_NAME.info"
+-     *
+      * Use PATH_MAX as the size of each buffer since those can store any file
+      * name. */
+     char sys_fstab_pattern[PATH_MAX];
+     char usr_fstab_pattern[PATH_MAX];
+     char sys_mnt_pattern[PATH_MAX];
+     char usr_mnt_pattern[PATH_MAX];
+-    char sys_info_pattern[PATH_MAX];
+     sc_must_snprintf(sys_fstab_pattern, sizeof sys_fstab_pattern, "snap\\.%s\\.fstab", snap_instance_name);
+     sc_must_snprintf(usr_fstab_pattern, sizeof usr_fstab_pattern, "snap\\.%s\\.*\\.user-fstab", snap_instance_name);
+     sc_must_snprintf(sys_mnt_pattern, sizeof sys_mnt_pattern, "%s\\.mnt", snap_instance_name);
+     sc_must_snprintf(usr_mnt_pattern, sizeof usr_mnt_pattern, "%s\\.*\\.mnt", snap_instance_name);
+-    sc_must_snprintf(sys_info_pattern, sizeof sys_info_pattern, "snap\\.%s\\.info", snap_instance_name);
+ 
+     DIR* ns_dir = fdopendir(ns_dir_fd);
+     if (ns_dir == NULL) {
+@@ -150,12 +145,11 @@ int main(int argc, char** argv) {
+             const char* pattern;
+             bool unmount;
+         };
+-        struct variant variants[] = {
++        struct variant variants[4] = {
+             {.pattern = sys_mnt_pattern, .unmount = true},
+             {.pattern = usr_mnt_pattern, .unmount = true},
+             {.pattern = sys_fstab_pattern},
+             {.pattern = usr_fstab_pattern},
+-            {.pattern = sys_info_pattern},
+         };
+         for (size_t i = 0; i < sizeof variants / sizeof *variants; ++i) {
+             struct variant* v = &variants[i];
+diff --git a/packaging/ubuntu-14.04/snapd.postrm b/packaging/ubuntu-14.04/snapd.postrm
+index 08bff23a93..9c85462f18 100644
+--- a/packaging/ubuntu-14.04/snapd.postrm
++++ b/packaging/ubuntu-14.04/snapd.postrm
+@@ -113,7 +113,7 @@ if [ "$1" = "purge" ]; then
+                 rm -f "$mnt"
+             done
+         fi
+-        find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' -o -name '*.info' \) -delete
++        find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' \) -delete
+         umount -l /run/snapd/ns/ || true
+     fi
+ 
+diff --git a/packaging/ubuntu-16.04/snapd.postrm b/packaging/ubuntu-16.04/snapd.postrm
+index 6f348c33e6..f892eedf27 100644
+--- a/packaging/ubuntu-16.04/snapd.postrm
++++ b/packaging/ubuntu-16.04/snapd.postrm
+@@ -123,7 +123,7 @@ if [ "$1" = "purge" ]; then
+                 rm -f "$mnt"
+             done
+         fi
+-        find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' -o -name '*.info' \) -delete
++        find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' \) -delete
+         umount -l /run/snapd/ns/ || true
+     fi
+ 
+diff --git a/tests/lib/reset.sh b/tests/lib/reset.sh
+index 440afd7800..879cadb290 100755
+--- a/tests/lib/reset.sh
++++ b/tests/lib/reset.sh
+@@ -188,7 +188,7 @@ if [ -d /run/snapd/ns ]; then
+         umount -l "$mnt" || true
+         rm -f "$mnt"
+     done
+-    find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' -o -name '*.info' \) -delete
++    find /run/snapd/ns/ \( -name '*.fstab' -o -name '*.user-fstab' \) -delete
+ fi
+ 
+ if [ "$REMOTE_STORE" = staging ] && [ "$1" = "--store" ]; then
+diff --git a/tests/main/snap-discard-ns/task.yaml b/tests/main/snap-discard-ns/task.yaml
+index a41d42c5a1..880a58b3b5 100644
+--- a/tests/main/snap-discard-ns/task.yaml
++++ b/tests/main/snap-discard-ns/task.yaml
+@@ -37,7 +37,6 @@ execute: |
+     snapd.tool exec snap-discard-ns test-snapd-tools
+     test ! -e /run/snapd/ns/test-snapd-tools.mnt
+     test ! -e /run/snapd/ns/test-snapd-tools.1000.mnt
+-    test ! -e /run/snapd/ns/snap.test-snapd-tools.info
+ 
+     echo "We can fake a current mount profile and see that it is removed too"
+     test-snapd-tools.success
+-- 
+2.30.2
+
