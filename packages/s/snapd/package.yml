@@ -1,7 +1,7 @@
 name       : snapd
 version    : 2.49.1
 homepage   : https://snapcraft.io/
-release    : 59
+release    : 60
 source     :
     - https://github.com/snapcore/snapd/releases/download/2.49.1/snapd_2.49.1.vendor.tar.xz : c1a0c19420594dee222779fd2c8472a65173291b445727a6bd1bbc83f79d1687
 license    : GPL-3.0-only
@@ -31,17 +31,18 @@ environment: |
     export CGO_LDFLAGS="${LDFLAGS}"
     export GO111MODULE=off
     export import_path=github.com/snapcore/snapd
-    export go_binaries=(snap snapctl snap-failure snap-seccomp snap-update-ns snap-exec snapd)
+    export go_binaries=(snap snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure)
     export static_binaries=(snap-update-ns snap-exec snapctl)
     export bincommands=(snap)
-    export dcommands=(snapctl snapd snap-exec snap-update-ns snap-seccomp)
+    export dcommands=(snapctl snapd snap-exec snap-update-ns snap-seccomp snap-failure)
 setup      : |
     mkdir -p src/github.com/snapcore
     ln -s `pwd` src/github.com/snapcore/snapd
 
     pushd src/${import_path}
     ./mkversion.sh "$version"
-    
+
+    %patch -p1 < $pkgfiles/0001-Force-usage-of-sudo-over-runuser-on-Solus.patch
     %patch -p1 < $pkgfiles/0002-Support-avx2-library-paths.patch
 
     # Temporarily disable apparmor due to numerous issues. See T9638
@@ -57,10 +58,10 @@ build      : |
     %make -C src/${import_path}/cmd
 
     for snapvar in ${go_binaries[@]}; do
-        GOPATH="`pwd`" go build -o bin/$snapvar -buildmode=pie --ldflags "-extldflags '$LDFLAGS'" ${import_path}/cmd/$snapvar
+        GOPATH="`pwd`" go build -o bin/$snapvar -buildmode=default --ldflags "-extldflags '$LDFLAGS'" ${import_path}/cmd/$snapvar
     done
     for staticpath in ${static_binaries[@]} ; do
-        GOPATH="`pwd`" go build -o bin/$staticpath -buildmode=pie --ldflags "-extldflags '$LDFLAGS -static'" ${import_path}/cmd/$staticpath
+        GOPATH="`pwd`" go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" ${import_path}/cmd/$staticpath
     done
 install    : |
     %make_install -C src/${import_path}/cmd
@@ -77,9 +78,10 @@ install    : |
 
     # Move into the base dir so we can install stuff
     pushd src/${import_path}
-    %make_install -C data/systemd \
+    %make_install -C data/ \
+            DBUSSERVICESDIR=/usr/share/dbus-1/services \
             LIBEXECDIR="%libdir%" \
-            SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system"
+            SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system" \
             SNAP_MOUNT_DIR=/snap
 
     # empty usr/src directory (i.e. linux-lts-headers linux-current-headers) to
