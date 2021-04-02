@@ -1,0 +1,91 @@
+From 2aa35e4c8a9d9c632e411df83d43ec27f4ddf718 Mon Sep 17 00:00:00 2001
+From: Mamoru TASAKA <mtasaka@fedoraproject.org>
+Date: Sun, 21 Mar 2021 21:52:10 +0900
+Subject: [PATCH 1/2] load_icon_themes_from_dir: never reuse GKeyFile object
+
+As written on:
+https://developer.gnome.org/glib/stable/glib-Key-value-file-parser.html#g-key-file-load-from-file
+an empty GKeyFile object must be passed to g_key_file_load_from_file .
+---
+ src/icon-theme.c | 8 ++++----
+ src/icon-theme.h | 2 +-
+ src/utils.c      | 4 +---
+ 3 files changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/src/icon-theme.c b/src/icon-theme.c
+index 7fba616..ea1db83 100644
+--- a/src/icon-theme.c
++++ b/src/icon-theme.c
+@@ -46,7 +46,7 @@ static void icon_theme_free(IconTheme* theme)
+     g_slice_free(IconTheme, theme);
+ }
+ 
+-void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir, GKeyFile* kf)
++void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir)
+ {
+     /* NOTE:
+      * 1. theoratically, base_dir is identical to theme_dir
+@@ -75,6 +75,7 @@ void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir, GKey
+                 IconTheme* theme = g_slice_new0(IconTheme);
+                 char* index_theme;
+                 char* cursor_subdir;
++                GKeyFile* kf = g_key_file_new();
+ 
+                 theme->name = g_strdup(name);
+                 index_theme = g_build_filename(theme_dir, name, "index.theme", NULL);
+@@ -97,6 +98,7 @@ void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir, GKey
+                 else
+                     theme->disp_name = theme->name;
+                 g_free(index_theme);
++                g_key_file_free(kf);
+ 
+                 cursor_subdir = g_build_filename(theme_dir, name, "cursors", NULL);
+                 /* it contains a cursor theme */
+@@ -119,13 +121,11 @@ static void load_icon_themes()
+ {
+     int n, i;
+     gtk_icon_theme_get_search_path(gtk_icon_theme_get_default(), &icon_theme_dirs, &n);
+-    GKeyFile* kf = g_key_file_new();
+     for(i = 0; i < n; ++i)
+     {
+-        load_icon_themes_from_dir(icon_theme_dirs[i], icon_theme_dirs[i], kf);
++        load_icon_themes_from_dir(icon_theme_dirs[i], icon_theme_dirs[i]);
+         /* g_debug("icon_theme_dirs[%d] = %s", i, icon_theme_dirs[i]); */
+     }
+-    g_key_file_free(kf);
+ }
+ 
+ 
+diff --git a/src/icon-theme.h b/src/icon-theme.h
+index 7ba2ac1..45a104d 100644
+--- a/src/icon-theme.h
++++ b/src/icon-theme.h
+@@ -40,7 +40,7 @@ typedef struct
+ }IconTheme;
+ 
+ void icon_theme_init(GtkBuilder* b);
+-void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir, GKeyFile* kf);
++void load_icon_themes_from_dir(const char* base_dir, const char* theme_dir);
+ 
+ gint icon_theme_cmp_name(IconTheme* t, const char* name);
+ gint icon_theme_cmp_disp_name(IconTheme* t1, IconTheme* t2);
+diff --git a/src/utils.c b/src/utils.c
+index 09d356d..4f3af10 100644
+--- a/src/utils.c
++++ b/src/utils.c
+@@ -159,11 +159,9 @@ _failed:
+         {
+             /* move files in tmp_dir to user_icons_dir */
+             GDir* dir;
+-            GKeyFile* kf = g_key_file_new();
+ 
+             /* convert the themes in the dir to IconTheme structs and add them to app.icon_themes list */
+-            load_icon_themes_from_dir(user_icons_dir, tmp_dir, kf);
+-            g_key_file_free(kf);
++            load_icon_themes_from_dir(user_icons_dir, tmp_dir);
+ 
+             /* now really move this themes to $XDG_DATA_HOME/icons dir and also update the GUI */
+             dir = g_dir_open(tmp_dir, 0, NULL);
+-- 
+2.30.2
+
