@@ -1,0 +1,107 @@
+From 752ca5547d87dcffcaec314452f2511dc386fb16 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20Dre=C3=9Fler?= <verdre@v0yd.nl>
+Date: Mon, 12 Apr 2021 20:49:10 +0200
+Subject: [PATCH] st: Only use clutter_actor_invalidate_paint_volume() if the
+ API exists
+
+With commits fab39bbea5d9a7a0330a1be548f8ee26cd7e3131 and
+62e40a13506b4481a50944be886b36566c464dc0 we started depending on a new
+ClutterActor API: clutter_actor_invalidate_paint_volume()
+
+Given that this commit was applied to the 40 stable release, it broke
+ABI compatibility with mutter, which is something we guarantee between
+stable releases. So use GModule to dynamically find the symbol in our
+loaded libraries. If it exists, use it and invalidate the paint volume.
+If it doesn't exist, libmutter is still at version 40.0 and we don't
+need to invalidate the paint volume.
+
+This also adds a dependency on gmodule. We need to link against gmodule
+to use g_module_open() and g_module_symbol() APIs.
+---
+ meson.build          |  1 +
+ src/st/meson.build   |  2 +-
+ src/st/st-viewport.c | 16 +++++++++++++++-
+ src/st/st-widget.c   | 14 +++++++++++++-
+ 4 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 14b75c1c9f..359fa2a35d 100644
+--- a/meson.build
++++ b/meson.build
+@@ -81,6 +81,7 @@ gi_dep = dependency('gobject-introspection-1.0', version: gi_req)
+ gio_dep = dependency('gio-2.0', version: gio_req)
+ gio_unix_dep = dependency('gio-unix-2.0', version: gio_req)
+ gjs_dep = dependency('gjs-1.0', version: gjs_req)
++gmodule_dep = dependency('gmodule-2.0')
+ gtk_dep = dependency('gtk+-3.0', version: gtk_req)
+ libxml_dep = dependency('libxml-2.0')
+ clutter_dep = dependency(clutter_pc, version: mutter_req)
+diff --git a/src/st/meson.build b/src/st/meson.build
+index 6b88af2952..a74581ff8a 100644
+--- a/src/st/meson.build
++++ b/src/st/meson.build
+@@ -180,7 +180,7 @@ st_cflags = [
+ libst = shared_library('st-1.0',
+   sources: st_gir_sources + st_nogir_sources + croco_sources,
+   c_args: st_cflags,
+-  dependencies: [clutter_dep, gtk_dep, mutter_dep, libxml_dep, m_dep],
++  dependencies: [clutter_dep, gmodule_dep, gtk_dep, mutter_dep, libxml_dep, m_dep],
+   build_rpath: mutter_typelibdir,
+   install_rpath: mutter_typelibdir,
+   install_dir: pkglibdir,
+diff --git a/src/st/st-viewport.c b/src/st/st-viewport.c
+index 96b703b14f..8aaaad54ac 100644
+--- a/src/st/st-viewport.c
++++ b/src/st/st-viewport.c
+@@ -80,8 +80,22 @@ adjustment_value_notify_cb (StAdjustment *adjustment,
+                             GParamSpec   *pspec,
+                             StViewport   *viewport)
+ {
++  static gboolean invalidate_paint_volume_valid = FALSE;
++  static void (* invalidate_paint_volume) (ClutterActor *) = NULL;
++
+   clutter_actor_invalidate_transform (CLUTTER_ACTOR (viewport));
+-  clutter_actor_invalidate_paint_volume (CLUTTER_ACTOR (viewport));
++
++  if (!invalidate_paint_volume_valid)
++    {
++      g_module_symbol (g_module_open (NULL, G_MODULE_BIND_LAZY),
++                       "clutter_actor_invalidate_paint_volume",
++                       (gpointer *)&invalidate_paint_volume);
++      invalidate_paint_volume_valid = TRUE;
++    }
++
++  if (invalidate_paint_volume)
++    invalidate_paint_volume (CLUTTER_ACTOR (viewport));
++
+   clutter_actor_queue_relayout (CLUTTER_ACTOR (viewport));
+ }
+ 
+diff --git a/src/st/st-widget.c b/src/st/st-widget.c
+index 47a84c5c2d..05a2dd134b 100644
+--- a/src/st/st-widget.c
++++ b/src/st/st-widget.c
+@@ -1722,7 +1722,19 @@ st_widget_recompute_style (StWidget    *widget,
+ 
+   if (!paint_equal)
+     {
+-      clutter_actor_invalidate_paint_volume (CLUTTER_ACTOR (widget));
++      static gboolean invalidate_paint_volume_valid = FALSE;
++      static void (* invalidate_paint_volume) (ClutterActor *) = NULL;
++
++      if (!invalidate_paint_volume_valid)
++        {
++          g_module_symbol (g_module_open (NULL, G_MODULE_BIND_LAZY),
++                           "clutter_actor_invalidate_paint_volume",
++                           (gpointer *)&invalidate_paint_volume);
++          invalidate_paint_volume_valid = TRUE;
++        }
++
++      if (invalidate_paint_volume)
++        invalidate_paint_volume (CLUTTER_ACTOR (widget));
+ 
+       next_paint_state (widget);
+ 
+-- 
+GitLab
+
