@@ -1,0 +1,243 @@
+From 3096878940c27d8f2cd7a71a9d0a153591b2d490 Mon Sep 17 00:00:00 2001
+From: Ashkan Aliabadi <ashkanaliabadi@fb.com>
+Date: Sat, 6 Feb 2021 15:48:33 -0800
+Subject: [PATCH 1/2] [Vulkan]: Fix build warnings-treated-as-error on Linux.
+
+[ghstack-poisoned]
+---
+ aten/src/ATen/native/vulkan/api/Pipeline.h | 4 ++--
+ aten/src/ATen/native/vulkan/api/Resource.h | 2 +-
+ aten/src/ATen/native/vulkan/api/Shader.h   | 4 ++--
+ aten/src/ATen/native/vulkan/ops/Tensor.h   | 2 ++
+ 4 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/aten/src/ATen/native/vulkan/api/Pipeline.h b/aten/src/ATen/native/vulkan/api/Pipeline.h
+index 794193d8a161..5ac4e1f34e68 100644
+--- a/aten/src/ATen/native/vulkan/api/Pipeline.h
++++ b/aten/src/ATen/native/vulkan/api/Pipeline.h
+@@ -72,7 +72,7 @@ struct Pipeline final {
+ 
+       typedef Layout::Descriptor Descriptor;
+       typedef VK_DELETER(PipelineLayout) Deleter;
+-      typedef Handle<VkPipelineLayout, Deleter> Handle;
++      typedef api::Handle<VkPipelineLayout, Deleter> Handle;
+ 
+       struct Hasher {
+         size_t operator()(const Descriptor& descriptor) const;
+@@ -131,7 +131,7 @@ struct Pipeline final {
+ 
+     typedef Pipeline::Descriptor Descriptor;
+     typedef VK_DELETER(Pipeline) Deleter;
+-    typedef Handle<VkPipeline, Deleter> Handle;
++    typedef api::Handle<VkPipeline, Deleter> Handle;
+ 
+     struct Hasher {
+       size_t operator()(const Descriptor& descriptor) const;
+diff --git a/aten/src/ATen/native/vulkan/api/Resource.h b/aten/src/ATen/native/vulkan/api/Resource.h
+index 19a7df3d04d2..0726c3215d1f 100644
+--- a/aten/src/ATen/native/vulkan/api/Resource.h
++++ b/aten/src/ATen/native/vulkan/api/Resource.h
+@@ -168,7 +168,7 @@ struct Resource final {
+ 
+         typedef Sampler::Descriptor Descriptor;
+         typedef VK_DELETER(Sampler) Deleter;
+-        typedef Handle<VkSampler, Deleter> Handle;
++        typedef api::Handle<VkSampler, Deleter> Handle;
+ 
+         struct Hasher {
+           size_t operator()(const Descriptor& descriptor) const;
+diff --git a/aten/src/ATen/native/vulkan/api/Shader.h b/aten/src/ATen/native/vulkan/api/Shader.h
+index 815d534e2a3d..edec81f4feab 100644
+--- a/aten/src/ATen/native/vulkan/api/Shader.h
++++ b/aten/src/ATen/native/vulkan/api/Shader.h
+@@ -65,7 +65,7 @@ struct Shader final {
+ 
+       typedef Layout::Descriptor Descriptor;
+       typedef VK_DELETER(DescriptorSetLayout) Deleter;
+-      typedef Handle<VkDescriptorSetLayout, Deleter> Handle;
++      typedef api::Handle<VkDescriptorSetLayout, Deleter> Handle;
+ 
+       struct Hasher {
+         size_t operator()(const Descriptor& descriptor) const;
+@@ -156,7 +156,7 @@ struct Shader final {
+ 
+     typedef Shader::Descriptor Descriptor;
+     typedef VK_DELETER(ShaderModule) Deleter;
+-    typedef Handle<VkShaderModule, Deleter> Handle;
++    typedef api::Handle<VkShaderModule, Deleter> Handle;
+ 
+     struct Hasher {
+       size_t operator()(const Descriptor& descriptor) const;
+diff --git a/aten/src/ATen/native/vulkan/ops/Tensor.h b/aten/src/ATen/native/vulkan/ops/Tensor.h
+index f404988b420b..f469c643ddae 100644
+--- a/aten/src/ATen/native/vulkan/ops/Tensor.h
++++ b/aten/src/ATen/native/vulkan/ops/Tensor.h
+@@ -389,6 +389,8 @@ class vTensor final {
+   std::shared_ptr<View> view_;
+ 
+  private:
++  friend class View::State;
++
+   // Debug
+   friend std::ostream& operator<<(
+       std::ostream&,
+
+From a8c2deb8f0bfe744fbbe8d63d3bb683c293df4bd Mon Sep 17 00:00:00 2001
+From: Ashkan Aliabadi <ashkanaliabadi@fb.com>
+Date: Sat, 6 Feb 2021 16:26:41 -0800
+Subject: [PATCH 2/2] Update on "[Vulkan]: Fix build warnings-treated-as-error
+ on Linux."
+
+[ghstack-poisoned]
+---
+ .../src/ATen/native/vulkan/api/Descriptor.cpp |  2 +-
+ aten/src/ATen/native/vulkan/ops/Tensor.cpp    | 32 +++++++++----------
+ aten/src/ATen/native/vulkan/ops/Tensor.h      | 14 +++++---
+ 3 files changed, 27 insertions(+), 21 deletions(-)
+
+diff --git a/aten/src/ATen/native/vulkan/api/Descriptor.cpp b/aten/src/ATen/native/vulkan/api/Descriptor.cpp
+index c65c276518fc..a12ce6fc05af 100644
+--- a/aten/src/ATen/native/vulkan/api/Descriptor.cpp
++++ b/aten/src/ATen/native/vulkan/api/Descriptor.cpp
+@@ -180,7 +180,7 @@ Descriptor::Set& Descriptor::Set::bind(
+       "This descriptor set is in an invalid state! "
+       "Potential reason: This descriptor set is moved from.");
+ 
+-  update({
++  update(Item{
+       binding,
+       shader_layout_signature_[binding],
+       {
+diff --git a/aten/src/ATen/native/vulkan/ops/Tensor.cpp b/aten/src/ATen/native/vulkan/ops/Tensor.cpp
+index 6e50f5db7068..b7b1640fc585 100644
+--- a/aten/src/ATen/native/vulkan/ops/Tensor.cpp
++++ b/aten/src/ATen/native/vulkan/ops/Tensor.cpp
+@@ -8,6 +8,10 @@ namespace {
+ 
+ using namespace api::utils;
+ 
++uvec3 image_extents(IntArrayRef);
++bool requires_image(IntArrayRef);
++bool requires_staging(const api::Adapter*);
++
+ VkFormat vk_format(const caffe2::TypeMeta dtype) {
+   switch (c10::typeMetaToScalarType(dtype)) {
+     case kFloat:
+@@ -154,13 +158,7 @@ VkDeviceSize buffer_bytes(
+     const caffe2::TypeMeta dtype) {
+   VkDeviceSize size = c10::elementSize(c10::typeMetaToScalarType(dtype));
+ 
+-  // Forward declaration
+-  bool requires_image(IntArrayRef);
+-
+   if (requires_image(sizes)) {
+-    // Forward declaration
+-    uvec3 image_extents(IntArrayRef);
+-
+     const uvec3 extents = image_extents(sizes);
+     size *= extents.data[0u] * extents.data[1u] * (4u * extents.data[2u]);
+   }
+@@ -187,9 +185,6 @@ vTensor::Buffer allocate_buffer(
+   TORCH_CHECK(!sizes.empty(), "Invalid Vulkan tensor size!");
+   verify(options);
+ 
+-  // Forward declaration
+-  bool requires_staging(const api::Adapter*);
+-
+   const VkFlags usage =
+       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+       VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+@@ -1090,6 +1085,12 @@ vTensor::View::State::State(
+   }
+ }
+ 
++#ifdef VULKAN_TENSOR_DEBUG
++std::ostream& operator<<(
++    std::ostream&,
++    const vTensor::View::State::Bundle&);
++#endif /* VULKAN_TENSOR_DEBUG */
++
+ vTensor::View::State::Transition
+ vTensor::View::State::transition(const Bundle bundle) {
+   const Bundle from = bundle_;
+@@ -1107,15 +1108,10 @@ vTensor::View::State::transition(const Bundle bundle) {
+     to.image = bundle.image;
+   }
+ 
+-#ifdef DEBUG
+-  // Forward declaration
+-  std::ostream& operator<<(
+-      std::ostream&,
+-      const View::State::Bundle&);
+-
++#ifdef VULKAN_TENSOR_DEBUG
+   std::cout << "From:" << std::endl << from << std::endl;
+   std::cout << "To:" << std::endl << to << std::endl;
+-#endif /* DEBUG */
++#endif /* VULKAN_TENSOR_DEBUG */
+ 
+   return Transition{
+     from,
+@@ -1146,6 +1142,8 @@ void verify(const TensorOptions& options) {
+ // Debug
+ //
+ 
++#ifdef VULKAN_TENSOR_DEBUG
++
+ namespace {
+ 
+ // Considering that VkAccessFlags is a weak typedef of a built-in data type, we
+@@ -1307,6 +1305,8 @@ std::ostream& operator<<(
+   return stream;
+ }
+ 
++#endif /* VULKAN_TENSOR_DEBUG */
++
+ } // namespace ops
+ } // namespace vulkan
+ } // namespace native
+diff --git a/aten/src/ATen/native/vulkan/ops/Tensor.h b/aten/src/ATen/native/vulkan/ops/Tensor.h
+index f469c643ddae..3aabddf19dd8 100644
+--- a/aten/src/ATen/native/vulkan/ops/Tensor.h
++++ b/aten/src/ATen/native/vulkan/ops/Tensor.h
+@@ -324,6 +324,11 @@ class vTensor final {
+       Component::Flags available_;
+       Component::Flags dirty_;
+       Bundle bundle_;
++
++     private:
++     #ifdef VULKAN_TENSOR_DEBUG
++      friend class View;
++     #endif /* VULKAN_TENSOR_DEBUG */
+     };
+ 
+     typedef State::Component Component;
+@@ -362,10 +367,12 @@ class vTensor final {
+     c10::SmallVector<int64_t, 6u> strides_;
+ 
+    private:
+-    // Debug
++   #ifdef VULKAN_TENSOR_DEBUG
++    friend class vTensor;
+     friend std::ostream& operator<<(
+       std::ostream&,
+       const View::State::Bundle&);
++   #endif /* VULKAN_TENSOR_DEBUG */
+   };
+ 
+   // Even at the cost of a heap allocation plus the resulting negative impact
+@@ -389,12 +396,11 @@ class vTensor final {
+   std::shared_ptr<View> view_;
+ 
+  private:
+-  friend class View::State;
+-
+-  // Debug
++ #ifdef VULKAN_TENSOR_DEBUG
+   friend std::ostream& operator<<(
+       std::ostream&,
+       const View::State::Bundle&);
++ #endif /* VULKAN_TENSOR_DEBUG */
+ };
+ 
+ const vTensor& convert(const Tensor& tensor);

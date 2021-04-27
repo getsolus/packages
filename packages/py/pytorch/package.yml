@@ -1,8 +1,8 @@
 name       : pytorch
-version    : 1.3.1
-release    : 7
+version    : 1.8.1
+release    : 8
 source     :
-    - git|https://github.com/pytorch/pytorch : v1.3.1
+    - git|https://github.com/pytorch/pytorch : v1.8.1
 license    : BSD-3-Clause
 component  :
     - programming.python
@@ -13,40 +13,67 @@ summary    :
 description: |
     PyTorch is an optimized tensor library for deep learning using GPUs and CPUs.
 patterns   :
-    - ^libtorch :
-        - /usr/include
+    - ^libtorch:
         - /usr/lib64
+    - ^libtorch-devel:
+        - /usr/lib64/cmake
+        - /usr/include
 optimize   :
     - speed
 avx2       : yes
+clang      : yes
 builddeps  :
     - pkgconfig(eigen3)
-    - pkgconfig(gflags)
+    - pkgconfig(fftw3)
+    - pkgconfig(hiredis)
     - pkgconfig(libavcodec)
     - pkgconfig(libglog)
+    - pkgconfig(libuv)
     - pkgconfig(libzmq)
     - pkgconfig(ompi)
     - pkgconfig(openblas)
-    - pkgconfig(opencv)
+    - pkgconfig(opencv4)
     - pkgconfig(protobuf)
     - pkgconfig(python3)
+    - pkgconfig(rocksdb)
+    - pkgconfig(shaderc)
+    - intel-tbb-devel
     - leveldb-devel
     - lmdb-devel
     - numpy
+    # onednn-devel # FIXME: If you have more RAM than I do please test if you don't get a ZIP64 Extensions requirement
     - pybind11
-    - python-typing
+    - python-typing-extensions
     - pyyaml
-    - snappy-devel
+    - vulkan-headers
 rundeps    :
     - numpy
     - python-cffi
+    - python-typing-extensions
     - pyyaml
     - ^libtorch :
         - pybind11
+    - ^libtorch-devel :
+        - ffmpeg-devel
+        - gflags-devel
+        - glog-devel
+        - libtorch
 replaces   :
-    - ^libtorch :
+    - ^libtorch-devel :
         - pytorch-devel
+environment: |
+    # Good luck while debugging
+    export CFLAGS="${CFLAGS/-g3/-gline-tables-only}"
+    export CXXFLAGS="${CXXFLAGS/-g3/-gline-tables-only}"
+setup      : |
+    %patch -p1 < $pkgfiles/0001-Fix-build-warnings-treated-as-error-on-Linux.patch
+    %patch -p1 < $pkgfiles/I-flag-instead-of-isystem.patch
+    %patch -p1 < $pkgfiles/system-libuv.patch
+    %patch -p1 < $pkgfiles/system-rocksdb.patch
+    %patch -p1 < $pkgfiles/system-zstd.patch
+    echo %version% > version.txt
 build      : |
+    #export MAX_JOBS=4 # Set it in case your computer starts chocking horribly
     %python3_setup --cmake-only
     pushd ../py3build
     %cmake build \
@@ -55,14 +82,23 @@ build      : |
         -DBUILD_BINARY=ON \
         -DBUILD_CUSTOM_PROTOBUF=OFF \
         -DBUILD_TEST=OFF \
-        -DUSE_FFMPEG=ON -DUSE_LEVELDB=ON \
+        -DHAVE_SOVERSION=ON \
+        -DUSE_FFTW=ON \
+        -DUSE_FFMPEG=ON \
+        -DUSE_LEVELDB=ON \
+        -DUSE_LIBUV=ON \
         -DUSE_LMDB=ON \
         -DUSE_MKLDNN=OFF \
         -DUSE_OPENCV=ON \
         -DUSE_GFLAGS=ON \
         -DUSE_GLOG=ON \
         -DUSE_SYSTEM_EIGEN_INSTALL=ON \
-        -DUSE_ZMQ=ON
+        -DUSE_REDIS=ON \
+        -DUSE_ROCKSDB=ON \
+        -DUSE_TBB=ON \
+        -DUSE_VULKAN=ON \
+        -DUSE_ZMQ=ON \
+        -DUSE_ZSTD=ON
     python3 setup.py build
     popd
 install    : |
@@ -72,6 +108,15 @@ install    : |
     install -dm00755 $installdir/%libdir%
     TORCH_PATH=$(python3 -c "import site; print(site.getsitepackages()[0])")/torch
     mv $installdir/$TORCH_PATH/lib/* $installdir/%libdir%
+
+    TORCH_SONAME=$(echo %version% | perl -ne 'print $1 if /(\d+\.\d+)/;')
+    pushd $installdir/usr/lib64
+    for lib in lib*.so.%version%; do
+        so=${lib//.%version%/}
+        ln -sf $lib $installdir/usr/lib64/$so
+        ln -sf $lib $installdir/usr/lib64/$so.$TORCH_SONAME
+    done
+    popd
 
     if [ ! -z "${AVX2BUILD}" ]; then
         rm -rf $installdir/usr/lib/python*
