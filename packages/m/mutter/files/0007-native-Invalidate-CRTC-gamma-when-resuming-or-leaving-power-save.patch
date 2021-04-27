@@ -1,0 +1,149 @@
+From 49ff5b30491771dd14e651463ce0957fea824c13 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jonas=20=C3=85dahl?= <jadahl@gmail.com>
+Date: Wed, 21 Apr 2021 10:44:13 +0200
+Subject: [PATCH] native: Invalidate CRTC gamma when resuming or leaving power
+ save
+
+With atomic mode setting, commits don't work when CRTCs aren't enabled,
+which they aren't when we're power saving. This means the gamma state
+fails to being update. To fix night light and for whatever other reason
+gamma ramps was changed during power saving by marking the CRTC gamma
+state as invalid when leaving power saving, as well as when resuming.
+This means that the next frame will append the CRTC gamma state to the
+KMS commit.
+
+Closes: https://gitlab.gnome.org/GNOME/mutter/-/issues/1755
+---
+ .../native/meta-monitor-manager-native.c      | 75 ++++++++++++-------
+ src/backends/native/meta-renderer-native.c    |  9 +++
+ 2 files changed, 56 insertions(+), 28 deletions(-)
+
+diff --git a/src/backends/native/meta-monitor-manager-native.c b/src/backends/native/meta-monitor-manager-native.c
+index 82cf0373ea..fd5e7784ff 100644
+--- a/src/backends/native/meta-monitor-manager-native.c
++++ b/src/backends/native/meta-monitor-manager-native.c
+@@ -153,38 +153,44 @@ meta_monitor_manager_native_set_power_save_mode (MetaMonitorManager *manager,
+   MetaKms *kms = meta_backend_native_get_kms (backend_native);
+   GList *l;
+ 
+-  switch (mode)
+-    {
+-    case META_POWER_SAVE_ON:
+-    case META_POWER_SAVE_UNSUPPORTED:
+-      /* This will be handled on mode set. */
+-      return;
+-    case META_POWER_SAVE_STANDBY:
+-    case META_POWER_SAVE_SUSPEND:
+-    case META_POWER_SAVE_OFF:
+-      break;
+-    }
+-
+   for (l = meta_backend_get_gpus (backend); l; l = l->next)
+     {
+       MetaGpuKms *gpu_kms = l->data;
+-      MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
+-      MetaKmsUpdate *kms_update;
+-      MetaKmsUpdateFlag flags;
+-      g_autoptr (MetaKmsFeedback) kms_feedback = NULL;
+-
+-      kms_update = meta_kms_ensure_pending_update (kms, kms_device);
+-      meta_kms_update_set_power_save (kms_update);
+-
+-      flags = META_KMS_UPDATE_FLAG_NONE;
+-      kms_feedback = meta_kms_post_pending_update_sync (kms,
+-                                                        kms_device,
+-                                                        flags);
+-      if (meta_kms_feedback_get_result (kms_feedback) !=
+-          META_KMS_FEEDBACK_PASSED)
++
++      switch (mode)
+         {
+-          g_warning ("Failed to enter power saving mode: %s",
+-                     meta_kms_feedback_get_error (kms_feedback)->message);
++        case META_POWER_SAVE_ON:
++        case META_POWER_SAVE_UNSUPPORTED:
++          {
++            g_list_foreach (meta_gpu_get_crtcs (META_GPU (gpu_kms)),
++                            (GFunc) meta_crtc_kms_invalidate_gamma,
++                            NULL);
++            break;
++          }
++        case META_POWER_SAVE_STANDBY:
++        case META_POWER_SAVE_SUSPEND:
++        case META_POWER_SAVE_OFF:
++          {
++            MetaKmsDevice *kms_device = meta_gpu_kms_get_kms_device (gpu_kms);
++            MetaKmsUpdate *kms_update;
++            MetaKmsUpdateFlag flags;
++            g_autoptr (MetaKmsFeedback) kms_feedback = NULL;
++
++            kms_update = meta_kms_ensure_pending_update (kms, kms_device);
++            meta_kms_update_set_power_save (kms_update);
++
++            flags = META_KMS_UPDATE_FLAG_NONE;
++            kms_feedback = meta_kms_post_pending_update_sync (kms,
++                                                              kms_device,
++                                                              flags);
++            if (meta_kms_feedback_get_result (kms_feedback) !=
++                META_KMS_FEEDBACK_PASSED)
++              {
++                g_warning ("Failed to enter power saving mode: %s",
++                           meta_kms_feedback_get_error (kms_feedback)->message);
++              }
++            break;
++          }
+         }
+     }
+ }
+@@ -540,7 +546,20 @@ meta_monitor_manager_native_pause (MetaMonitorManagerNative *manager_native)
+ void
+ meta_monitor_manager_native_resume (MetaMonitorManagerNative *manager_native)
+ {
++  MetaMonitorManager *manager = META_MONITOR_MANAGER (manager_native);
++  MetaBackend *backend = meta_monitor_manager_get_backend (manager);
++  GList *l;
++
+   meta_monitor_manager_native_connect_hotplug_handler (manager_native);
++
++  for (l = meta_backend_get_gpus (backend); l; l = l->next)
++    {
++      MetaGpu *gpu = l->data;
++
++      g_list_foreach (meta_gpu_get_crtcs (gpu),
++                      (GFunc) meta_crtc_kms_invalidate_gamma,
++                      NULL);
++    }
+ }
+ 
+ static gboolean
+diff --git a/src/backends/native/meta-renderer-native.c b/src/backends/native/meta-renderer-native.c
+index 668e3635d2..9898b9f646 100644
+--- a/src/backends/native/meta-renderer-native.c
++++ b/src/backends/native/meta-renderer-native.c
+@@ -1167,7 +1167,12 @@ meta_renderer_native_prepare_frame (MetaRendererNative *renderer_native,
+                                     MetaRendererView   *view,
+                                     ClutterFrame       *frame)
+ {
++  MetaRenderer *renderer = META_RENDERER (renderer_native);
++  MetaBackend *backend = meta_renderer_get_backend (renderer);
++  MetaMonitorManager *monitor_manager =
++    meta_backend_get_monitor_manager (backend);
+   MetaCrtc *crtc = meta_renderer_view_get_crtc (view);
++  MetaPowerSave power_save_mode;
+   MetaCrtcKms *crtc_kms;
+   MetaKmsCrtc *kms_crtc;
+   MetaKmsDevice *kms_device;
+@@ -1175,6 +1180,10 @@ meta_renderer_native_prepare_frame (MetaRendererNative *renderer_native,
+   if (!META_IS_CRTC_KMS (crtc))
+     return;
+ 
++  power_save_mode = meta_monitor_manager_get_power_save_mode (monitor_manager);
++  if (power_save_mode != META_POWER_SAVE_ON)
++    return;
++
+   crtc_kms = META_CRTC_KMS (crtc);
+   kms_crtc = meta_crtc_kms_get_kms_crtc (META_CRTC_KMS (crtc));
+   kms_device = meta_kms_crtc_get_device (kms_crtc);
+-- 
+GitLab
+
