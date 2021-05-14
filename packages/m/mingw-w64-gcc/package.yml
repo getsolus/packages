@@ -1,9 +1,9 @@
 name       : mingw-w64-gcc
-version    : 9.2.0
-release    : 2
+version    : 10.3.0
+release    : 3
 source     :
-    - ftp://gcc.gnu.org/pub/gcc/releases/gcc-9.2.0/gcc-9.2.0.tar.xz : ea6ef08f121239da5695f76c9b33637a118dcf63e24164422231917fa61fb206
-    - http://isl.gforge.inria.fr/isl-0.22.1.tar.bz2 : 1a668ef92eb181a7c021e8531a3ca89fd71aa1b3744db56f68365ab0a224c5cd
+    - ftp://gcc.gnu.org/pub/gcc/releases/gcc-10.3.0/gcc-10.3.0.tar.xz : 64f404c1a650f27fc33da242e1f2df54952e3963a49e06e73f6940f3223ac344
+    - https://sourceforge.net/projects/mingw-w64/files/mingw-w64/mingw-w64-release/mingw-w64-v8.0.0.tar.bz2 : 44c740ea6ab3924bc3aa169bad11ad3c5766c5c8459e3126d44eabb8735a5762
 license    : GPL-3.0-or-later
 homepage   : https://gcc.gnu.org/
 component  : programming
@@ -16,94 +16,80 @@ strip      : no
 patterns   :
     - 32bit:
         - /usr/share/mingw-w64/bin/i686-w64-mingw32-*
-        - /usr/share/mingw-w64/i686-w64-mingw32/*
-        - /usr/share/mingw-w64/lib/gcc/i686-w64-mingw32/*
+        - /usr/share/mingw-w64/i686-w64-mingw32
+        - /usr/share/mingw-w64/lib/gcc/i686-w64-mingw32
         - /usr/share/info/i686-w64-mingw32-*
         - /usr/share/man/man1/i686-w64-mingw32-*
 builddeps  :
-    - mingw-w64-32bit
+    - mingw-w64-binutils-32bit
 rundeps    :
-    - mingw-w64
+    - mingw-w64-binutils
     - 32bit:
-        - mingw-w64-32bit
+        - mingw-w64-binutils-32bit
 environment: |
-    export CFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -g2 -O2 -pipe -fPIC -Wformat -Wformat-security -D_FORTIFY_SOURCE=2 -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
-    export CXXFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -g2 -O2 -pipe -fPIC -D_FORTIFY_SOURCE=2 -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wall -Wno-error -Wp,-D_REENTRANT"
+    export CFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
+    export CXXFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
     export LDFLAGS_FOR_TARGET="-Wl,--copy-dt-needed-entries -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,--sort-common"
     export TARGET32=i686-w64-mingw32
     export TARGET64=x86_64-w64-mingw32
     export PREFIX=/usr/share/mingw-w64
     export PATH=$PATH:$PREFIX/bin
 setup      : |
-    tar xf $sources/isl-0.22.1.tar.bz2
-    mv isl-0.22.1 isl
+    tar xjf $sources/mingw-w64-*.tar.bz2
+    mv mingw-w64* mingw-w64
 
-    _gcc_cfg() {
-        export _dw2_exceptions=""
-        if [ $1 == $TARGET64 ]; then
-            export _dw2="--disable-dw2-exceptions"
+    # Install the MinGW-w64 headers only
+    _headers_conf() {
+        ../mingw-w64/mingw-w64-headers/configure \
+            --host=$1 \
+            --prefix=$PREFIX/$1 \
+            --disable-werror \
+            --enable-secure-api \
+            --enable-sdk=all
+    }
+
+    mkdir headdir32 && pushd headdir32
+    _headers_conf $TARGET32
+    popd
+    mkdir headdir64 && pushd headdir64
+    _headers_conf $TARGET64
+    popd
+
+    %make_install -C headdir32
+    %make_install -C headdir64
+
+    _bootstrap_cfg() {
+        local _dw2_exceptions="--disable-dw2-exceptions"
+        if [ $1 == $TARGET32 ]; then
+            _dw2_exceptions="--disable-sjlj-exceptions --with-dwarf2"
         fi
         ../configure \
+            --with-pkgversion='Solus' \
+            --with-bugurl='https://dev.getsol.us/' \
             --target=$1 \
-            --prefix=$PREFIX \
+            --prefix=$installdir/$PREFIX \
             --enable-lto \
-            --enable-shared \
             --enable-static \
-            --disable-multilib \
-            --enable-threads=posix \
-            --enable-fully-dynamic-string \
-            --enable-libstdcxx-time=yes \
-            --enable-libstdcxx-filesystem-ts=yes \
             --with-system-zlib \
             --disable-nls \
-            --enable-cloog-backend=isl \
-            --enable-libgomp \
-            --enable-languages=c,c++,lto \
+            --disable-multilib \
+            --enable-version-specific-runtime-libs \
+            --enable-languages=c,lto \
             --enable-checking=release \
             $_dw2_exceptions
     }
 
     mkdir gccdir32 && pushd gccdir32
-    _gcc_cfg $TARGET32
+    _bootstrap_cfg $TARGET32
     popd
     mkdir gccdir64 && pushd gccdir64
-    _gcc_cfg $TARGET64
+    _bootstrap_cfg $TARGET64
     popd
 build      : |
-    %make -C gccdir32
-    %make -C gccdir64
+    %make all-gcc -C gccdir32
+    %make all-gcc -C gccdir64
 install    : |
-    mkdir -p $installdir/usr/share/info $installdir/usr/share/man
-
-    # Post installation strips and modifications, or the package bloats to 1.5GB
-    _post_install() {
-        pushd $installdir$PREFIX/bin
-        strip $1-*
-        ln -s $1-gcc $1-cc
-        popd
-        mkdir -p $installdir$PREFIX/$1/bin
-        pushd $installdir$PREFIX/$1/bin
-        mv $installdir$PREFIX/$1/lib/*.dll .
-        $1-strip --strip-unneeded *.dll
-        popd
-        pushd $installdir$PREFIX/$1/lib
-        $1-strip -g *.a
-        popd
-        pushd $installdir$PREFIX/libexec/gcc/$1/9.2.0
-        strip -g {cc1,cc1plus,collect2,lto1,lto-wrapper}
-        popd
-        pushd $installdir$PREFIX/share/info
-        for info in cpp cppinternals gcc gccinstall gccint libgomp libquadmath; do
-            mv $info.info $installdir/usr/share/info/$1-$info.info
-        done
-        popd
-    }
-
-    %make_install -C gccdir32
-    _post_install $TARGET32
-
-    %make_install -C gccdir64
-    _post_install $TARGET64
-
-    mv $installdir$PREFIX/share/man/man1 $installdir/usr/share/man
-    rm -rf $installdir$PREFIX/lib64 $installdir$PREFIX/share $installdir$PREFIX/include
+    %make install-strip-gcc -C gccdir32
+    %make install-strip-gcc -C gccdir64
+    rm -r $installdir$PREFIX/include
+    rm -r $installdir$PREFIX/share
