@@ -2,4 +2,5 @@ This file is used to indicate responsibility for the maintenance of this package
 
 - Algent Albrahimi
   - IRC: |algent|
+  - Matrix: @algent:matrix.org
   - Email: algent@protonmail.com
