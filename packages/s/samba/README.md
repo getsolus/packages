@@ -118,7 +118,6 @@ When doing major version updates, create a phab task with associated diff stack 
 - gvfs
 - kio-extras
 - kodi (this takes around 1 hour on my system)
-- mpd
 - python-pysmbc
 - vlc
 - kodi-platform (not listed by `eopkg-deps rev samba`, but still recommended due to kodi rebuild)
