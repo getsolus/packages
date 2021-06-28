@@ -1,30 +1,48 @@
+From 5f64e4480973c8d0d9843f376e141b0c305c033d Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Mon, 28 Jun 2021 21:49:51 +0300
+Subject: [PATCH 1/1] Enable kernel 5.13 support
+
+This patch additionally consolidates 5.11 and 5.12 work
+---
+ common/inc/nv-linux.h                   |  2 ++
+ conftest.sh                             | 15 ++++++++++++
+ nvidia-drm/nvidia-drm-crtc.c            | 19 ++++++++++++---
+ nvidia-drm/nvidia-drm-drv.c             | 16 +++++++++++++
+ nvidia-drm/nvidia-drm-gem-user-memory.c | 28 ++++++++++++++++++++++
+ nvidia-drm/nvidia-drm-gem.c             | 32 +++++++++++++++++++++++++
+ nvidia-drm/nvidia-drm-gem.h             | 16 +++++++++++++
+ nvidia/nv-caps.c                        |  8 ++++++-
+ nvidia/nvidia.Kbuild                    |  1 +
+ 9 files changed, 133 insertions(+), 4 deletions(-)
+
 diff --git a/common/inc/nv-linux.h b/common/inc/nv-linux.h
-index db9706d..3ee157e 100644
+index 2c4bb10..dbdd24b 100644
 --- a/common/inc/nv-linux.h
 +++ b/common/inc/nv-linux.h
-@@ -117,7 +117,9 @@
-
+@@ -116,7 +116,9 @@
+ 
  #include <linux/moduleparam.h>      /* module_param()                   */
  #include <asm/tlbflush.h>           /* flush_tlb(), flush_tlb_all()     */
 +#if defined(NV_ASM_KMAP_TYPES_H_PRESENT)
  #include <asm/kmap_types.h>         /* page table entry lookup          */
 +#endif
-
+ 
  #include <linux/pci.h>              /* pci_find_class, etc              */
  #include <linux/interrupt.h>        /* tasklets, interrupt helpers      */
 diff --git a/conftest.sh b/conftest.sh
-index 282a911..c2d0fc3 100755
+index ae9e52f..6a445f2 100755
 --- a/conftest.sh
 +++ b/conftest.sh
-@@ -159,6 +159,7 @@ test_headers() {
+@@ -156,6 +156,7 @@ test_headers() {
+     FILES="$FILES sound/hdaudio.h"
      FILES="$FILES asm/pgtable_types.h"
-     FILES="$FILES linux/stringhash.h"
      FILES="$FILES linux/dma-map-ops.h"
 +    FILES="$FILES asm/kmap_types.h"
  
      translate_and_preprocess_header_files $FILES
  }
-@@ -1265,6 +1266,8 @@ compile_test() {
+@@ -1262,6 +1263,8 @@ compile_test() {
          drm_available)
              # Determine if the DRM subsystem is usable
              CODE="
@@ -33,7 +51,7 @@ index 282a911..c2d0fc3 100755
              #if defined(NV_DRM_DRMP_H_PRESENT)
              #include <drm/drmP.h>
              #endif
-@@ -1273,6 +1276,10 @@ compile_test() {
+@@ -1270,6 +1273,10 @@ compile_test() {
              #include <drm/drm_drv.h>
              #endif
  
@@ -44,7 +62,7 @@ index 282a911..c2d0fc3 100755
              #if defined(NV_DRM_DRM_PRIME_H_PRESENT)
              #include <drm/drm_prime.h>
              #endif
-@@ -1282,6 +1289,7 @@ compile_test() {
+@@ -1279,6 +1286,7 @@ compile_test() {
              #endif
  
              void conftest_drm_available(void) {
@@ -52,7 +70,7 @@ index 282a911..c2d0fc3 100755
                  struct drm_driver drv;
  
                  /* 2013-01-15 89177644a7b6306e6084a89eab7e290f4bfef397 */
-@@ -1291,6 +1299,13 @@ compile_test() {
+@@ -1288,6 +1296,13 @@ compile_test() {
                  drv.gem_prime_vunmap = 0;
                  (void)drm_gem_prime_import;
                  (void)drm_gem_prime_export;
@@ -67,19 +85,48 @@ index 282a911..c2d0fc3 100755
                  /* 2013-10-02 1bb72532ac260a2d3982b40bdd4c936d779d0d16 */
                  (void)drm_dev_alloc;
 diff --git a/nvidia-drm/nvidia-drm-crtc.c b/nvidia-drm/nvidia-drm-crtc.c
-index b966bb2..b104d13 100644
+index adc156f..03ac3f8 100644
 --- a/nvidia-drm/nvidia-drm-crtc.c
 +++ b/nvidia-drm/nvidia-drm-crtc.c
-@@ -42,6 +42,8 @@
- #include <drm/drm_atomic.h>
- #include <drm/drm_atomic_helper.h>
+@@ -44,6 +44,8 @@
+ #include <drm/drm_blend.h>
+ #endif
  
 +#include <linux/version.h>
 +
  static void nv_drm_plane_destroy(struct drm_plane *plane)
  {
      /* plane->state gets freed here */
-@@ -460,8 +462,14 @@ static int head_modeset_config_attach_connector(
+@@ -190,11 +192,12 @@ static bool __is_async_flip_requested(const struct drm_plane *plane,
+ }
+ 
+ static int nv_drm_plane_atomic_check(struct drm_plane *plane,
+-                                     struct drm_plane_state *plane_state)
++                                     struct drm_atomic_state *state)
+ {
+     int i;
+     struct drm_crtc *crtc;
+     struct drm_crtc_state *crtc_state;
++    struct drm_plane_state *plane_state = drm_atomic_get_new_plane_state(state, plane);
+     NvKmsKapiLayerType type;
+ 
+     if (NV_DRM_WARN(!drm_plane_type_to_nvkms_plane_type(plane->type, &type))) {
+@@ -239,12 +242,12 @@ done:
+ }
+ 
+ static void nv_drm_plane_atomic_update(struct drm_plane *plane,
+-                                       struct drm_plane_state *old_state)
++                                       struct drm_atomic_state *old_state)
+ {
+ }
+ 
+ static void nv_drm_plane_atomic_disable(struct drm_plane *plane,
+-                                        struct drm_plane_state *old_state)
++                                        struct drm_atomic_state *old_state)
+ {
+ }
+ 
+@@ -423,8 +426,14 @@ static int head_modeset_config_attach_connector(
   * will be discarded if ->atomic_check() fails.
   */
  static int nv_drm_crtc_atomic_check(struct drm_crtc *crtc,
@@ -94,7 +141,7 @@ index b966bb2..b104d13 100644
      struct nv_drm_crtc_state *nv_crtc_state = to_nv_crtc_state(crtc_state);
      struct NvKmsKapiHeadRequestedConfig *req_config =
          &nv_crtc_state->req_config;
-@@ -532,7 +540,11 @@ static void nv_drm_crtc_disable(struct drm_crtc *crtc)
+@@ -495,7 +504,11 @@ static void nv_drm_crtc_disable(struct drm_crtc *crtc)
  
  #ifdef NV_DRM_CRTC_HELPER_FUNCS_HAS_ATOMIC_ENABLE
  static void nv_drm_crtc_atomic_enable(struct drm_crtc *crtc,
@@ -107,7 +154,7 @@ index b966bb2..b104d13 100644
  
  }
 diff --git a/nvidia-drm/nvidia-drm-drv.c b/nvidia-drm/nvidia-drm-drv.c
-index ebfb5cd..e816f26 100644
+index 89e1752..1b96d68 100644
 --- a/nvidia-drm/nvidia-drm-drv.c
 +++ b/nvidia-drm/nvidia-drm-drv.c
 @@ -20,6 +20,7 @@
@@ -118,7 +165,7 @@ index ebfb5cd..e816f26 100644
  #include "nvidia-drm-conftest.h" /* NV_DRM_AVAILABLE and NV_DRM_DRM_GEM_H_PRESENT */
  
  #include "nvidia-drm-priv.h"
-@@ -755,12 +756,21 @@ static struct drm_driver nv_drm_driver = {
+@@ -779,12 +780,21 @@ static struct drm_driver nv_drm_driver = {
  
      .prime_handle_to_fd     = drm_gem_prime_handle_to_fd,
      .prime_fd_to_handle     = drm_gem_prime_fd_to_handle,
@@ -140,7 +187,7 @@ index ebfb5cd..e816f26 100644
  
  #if defined(NV_DRM_DRIVER_HAS_GEM_PRIME_RES_OBJ)
      .gem_prime_res_obj      = nv_drm_gem_prime_res_obj,
-@@ -784,12 +794,16 @@ static struct drm_driver nv_drm_driver = {
+@@ -808,12 +818,16 @@ static struct drm_driver nv_drm_driver = {
      .desc                   = "NVIDIA DRM driver",
      .date                   = "20160202",
  
@@ -157,8 +204,18 @@ index ebfb5cd..e816f26 100644
  };
  
  
+@@ -839,7 +853,9 @@ static void nv_drm_update_drm_driver_features(void)
+ 
+     nv_drm_driver.dumb_create      = nv_drm_dumb_create;
+     nv_drm_driver.dumb_map_offset  = nv_drm_dumb_map_offset;
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 12, 0))
+     nv_drm_driver.dumb_destroy     = drm_gem_dumb_destroy;
++#endif
+ #endif /* NV_DRM_ATOMIC_MODESET_AVAILABLE */
+ }
+ 
 diff --git a/nvidia-drm/nvidia-drm-gem-user-memory.c b/nvidia-drm/nvidia-drm-gem-user-memory.c
-index e554adc..4aa082b 100644
+index 2085609..f29b644 100644
 --- a/nvidia-drm/nvidia-drm-gem-user-memory.c
 +++ b/nvidia-drm/nvidia-drm-gem-user-memory.c
 @@ -20,6 +20,7 @@
@@ -169,7 +226,7 @@ index e554adc..4aa082b 100644
  #include "nvidia-drm-conftest.h"
  
  #if defined(NV_DRM_AVAILABLE)
-@@ -58,6 +59,7 @@ static struct sg_table *__nv_drm_gem_user_memory_prime_get_sg_table(
+@@ -67,6 +68,7 @@ static struct sg_table *__nv_drm_gem_user_memory_prime_get_sg_table(
                                      nv_user_memory->pages_count);
  }
  
@@ -177,7 +234,7 @@ index e554adc..4aa082b 100644
  static void *__nv_drm_gem_user_memory_prime_vmap(
      struct nv_drm_gem_object *nv_gem)
  {
-@@ -73,6 +75,28 @@ static void __nv_drm_gem_user_memory_prime_vunmap(
+@@ -82,6 +84,28 @@ static void __nv_drm_gem_user_memory_prime_vunmap(
  {
      nv_drm_vunmap(address);
  }
@@ -204,10 +261,22 @@ index e554adc..4aa082b 100644
 +}
 +#endif
  
- static int __nv_drm_gem_user_memory_mmap(struct nv_drm_gem_object *nv_gem,
-                                          struct vm_area_struct *vma)
+ static bool __nv_drm_gem_user_memory_adjust_mmap_flags(
+     struct nv_drm_gem_object *nv_gem,
+@@ -184,7 +208,11 @@ struct nv_drm_gem_user_memory *nv_drm_gem_user_memory_import_sg_table(
+         return NULL;
+     }
+ 
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 12, 0))
+     if (drm_prime_sg_to_page_addr_arrays(sgt, pages, NULL, pages_count) < 0) {
++#else
++    if (drm_prime_sg_to_page_array(sgt, pages, pages_count) < 0) {
++#endif
+         nv_drm_free(nv_user_memory);
+         nv_drm_free(pages);
+         return NULL;
 diff --git a/nvidia-drm/nvidia-drm-gem.c b/nvidia-drm/nvidia-drm-gem.c
-index a6b54f0..ca45362 100644
+index c691dbe..aed9e0a 100644
 --- a/nvidia-drm/nvidia-drm-gem.c
 +++ b/nvidia-drm/nvidia-drm-gem.c
 @@ -20,6 +20,7 @@
@@ -218,7 +287,7 @@ index a6b54f0..ca45362 100644
  #include "nvidia-drm-conftest.h"
  
  #if defined(NV_DRM_AVAILABLE)
-@@ -67,6 +68,13 @@ void nv_drm_gem_free(struct drm_gem_object *gem)
+@@ -62,6 +63,13 @@ void nv_drm_gem_free(struct drm_gem_object *gem)
  static struct drm_gem_object_funcs nv_drm_gem_funcs = {
      .free = nv_drm_gem_free,
      .get_sg_table = nv_drm_gem_prime_get_sg_table,
@@ -232,7 +301,7 @@ index a6b54f0..ca45362 100644
  };
  #endif
  
-@@ -141,6 +149,7 @@ struct sg_table *nv_drm_gem_prime_get_sg_table(struct drm_gem_object *gem)
+@@ -149,6 +157,7 @@ struct sg_table *nv_drm_gem_prime_get_sg_table(struct drm_gem_object *gem)
      return ERR_PTR(-ENOTSUPP);
  }
  
@@ -240,7 +309,7 @@ index a6b54f0..ca45362 100644
  void *nv_drm_gem_prime_vmap(struct drm_gem_object *gem)
  {
      struct nv_drm_gem_object *nv_gem = to_nv_gem_object(gem);
-@@ -160,6 +169,29 @@ void nv_drm_gem_prime_vunmap(struct drm_gem_object *gem, void *address)
+@@ -168,6 +177,29 @@ void nv_drm_gem_prime_vunmap(struct drm_gem_object *gem, void *address)
          nv_gem->ops->prime_vunmap(nv_gem, address);
      }
  }
@@ -271,7 +340,7 @@ index a6b54f0..ca45362 100644
  #if defined(NV_DRM_DRIVER_HAS_GEM_PRIME_RES_OBJ)
  nv_dma_resv_t* nv_drm_gem_prime_res_obj(struct drm_gem_object *obj)
 diff --git a/nvidia-drm/nvidia-drm-gem.h b/nvidia-drm/nvidia-drm-gem.h
-index 5c9f33d..24576e2 100644
+index 323b008..d8931e3 100644
 --- a/nvidia-drm/nvidia-drm-gem.h
 +++ b/nvidia-drm/nvidia-drm-gem.h
 @@ -23,6 +23,7 @@
@@ -297,10 +366,10 @@ index 5c9f33d..24576e2 100644
 +#endif
      struct drm_gem_object *(*prime_dup)(struct drm_device *dev,
                                          const struct nv_drm_gem_object *nv_gem_src);
-     int (*mmap)(struct nv_drm_gem_object *nv_gem, struct vm_area_struct *vma);
-@@ -188,9 +196,17 @@ struct drm_gem_object *nv_drm_gem_prime_import(struct drm_device *dev,
- 
- struct sg_table *nv_drm_gem_prime_get_sg_table(struct drm_gem_object *gem);
+     bool (*adjust_mmap_flags)(struct nv_drm_gem_object *nv_gem,
+@@ -191,9 +199,17 @@ struct drm_gem_object *nv_drm_gem_prime_import_sg_table(
+     struct dma_buf_attachment *attach,
+     struct sg_table *sgt);
  
 +#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 11, 0))
  void *nv_drm_gem_prime_vmap(struct drm_gem_object *gem);
@@ -317,10 +386,10 @@ index 5c9f33d..24576e2 100644
  #if defined(NV_DRM_DRIVER_HAS_GEM_PRIME_RES_OBJ)
  nv_dma_resv_t* nv_drm_gem_prime_res_obj(struct drm_gem_object *obj);
 diff --git a/nvidia/nv-caps.c b/nvidia/nv-caps.c
-index 90e866f..5cde194 100644
+index 7c6391c..aeaa65f 100644
 --- a/nvidia/nv-caps.c
 +++ b/nvidia/nv-caps.c
-@@ -37,8 +37,12 @@ MODULE_PARM_DESC(nv_cap_enable_devfs, "Enable (1) or disable (0) nv-caps " \
+@@ -36,8 +36,12 @@ MODULE_PARM_DESC(nv_cap_enable_devfs, "Enable (1) or disable (0) nv-caps " \
  
  extern int NVreg_ModifyDeviceFiles;
  
@@ -333,7 +402,7 @@ index 90e866f..5cde194 100644
  
  #define NV_CAP_DRV_MINOR_COUNT 8192
  
-@@ -586,7 +590,9 @@ void NV_API_CALL nv_cap_close_fd(int fd)
+@@ -628,7 +632,9 @@ void NV_API_CALL nv_cap_close_fd(int fd)
   * 2018-04-02 2ca2a09d6215 ("fs: add ksys_close() wrapper; remove in-kernel
   *  calls to sys_close()")
   */
@@ -345,11 +414,17 @@ index 90e866f..5cde194 100644
  #else
      sys_close(fd);
 diff --git a/nvidia/nvidia.Kbuild b/nvidia/nvidia.Kbuild
-index 90579de..c6f3614 100644
+index 071d746..b2a8e89 100644
 --- a/nvidia/nvidia.Kbuild
 +++ b/nvidia/nvidia.Kbuild
-@@ -172,3 +172,4 @@
+@@ -163,6 +163,7 @@ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_screen_info
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_nvhost_get_default_device
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_nvhost_syncpt_unit_interface_get_byte_offset
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_nvhost_syncpt_unit_interface_get_aperture
 +NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_close_fd
  
  NV_CONFTEST_TYPE_COMPILE_TESTS += acpi_op_remove
  NV_CONFTEST_TYPE_COMPILE_TESTS += outer_flush_all
+-- 
+2.32.0
+
