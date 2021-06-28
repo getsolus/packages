@@ -1,0 +1,64 @@
+From bf7a3ee04430dfe426eacf6ee587e2a069ba67ce Mon Sep 17 00:00:00 2001
+From: Vivek Goyal <vgoyal@redhat.com>
+Date: Tue, 18 May 2021 17:35:36 -0400
+Subject: [PATCH 18/22] virtiofsd: Simplify skip byte logic
+
+We need to skip bytes in two cases.
+
+a. Before we start reading into in_sg, we need to skip iov_len bytes
+   in the beginning which typically will have fuse_out_header.
+
+b. If preadv() does a short read, then we need to retry preadv() with
+   remainig bytes and skip the bytes preadv() read in short read.
+
+For case a, there is no reason that skipping logic be inside the while
+loop. Move it outside. And only retain logic "b" inside while loop.
+
+Also get rid of variable "skip_size". Looks like we can do without it.
+
+Reviewed-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+Reviewed-by: Connor Kuehl <ckuehl@redhat.com>
+Signed-off-by: Vivek Goyal <vgoyal@redhat.com>
+Message-Id: <20210518213538.693422-6-vgoyal@redhat.com>
+Signed-off-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+---
+ tools/virtiofsd/fuse_virtio.c | 14 ++++----------
+ 1 file changed, 4 insertions(+), 10 deletions(-)
+
+diff --git a/tools/virtiofsd/fuse_virtio.c b/tools/virtiofsd/fuse_virtio.c
+index ed5146d7a6..49c7dd788a 100644
+--- a/tools/virtiofsd/fuse_virtio.c
++++ b/tools/virtiofsd/fuse_virtio.c
+@@ -392,17 +392,11 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+     unsigned int in_sg_cpy_count = in_num;
+ 
+     /* skip over parts of in_sg that contained the header iov */
+-    size_t skip_size = iov_len;
++    iov_discard_front(&in_sg_ptr, &in_sg_cpy_count, iov_len);
+ 
+     do {
+-        if (skip_size != 0) {
+-            iov_discard_front(&in_sg_ptr, &in_sg_cpy_count, skip_size);
+-        }
+-
+-        fuse_log(FUSE_LOG_DEBUG,
+-                 "%s: after skip skip_size=%zd in_sg_cpy_count=%d "
+-                 "len remaining=%zd\n", __func__, skip_size, in_sg_cpy_count,
+-                 len);
++        fuse_log(FUSE_LOG_DEBUG, "%s: in_sg_cpy_count=%d len remaining=%zd\n",
++                 __func__, in_sg_cpy_count, len);
+ 
+         ret = preadv(buf->buf[0].fd, in_sg_ptr, in_sg_cpy_count,
+                      buf->buf[0].pos);
+@@ -421,7 +415,7 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+         if (ret < len && ret) {
+             fuse_log(FUSE_LOG_DEBUG, "%s: ret < len\n", __func__);
+             /* Skip over this much next time around */
+-            skip_size = ret;
++            iov_discard_front(&in_sg_ptr, &in_sg_cpy_count, ret);
+             buf->buf[0].pos += ret;
+             len -= ret;
+ 
+-- 
+2.32.0
+

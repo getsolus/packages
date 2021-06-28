@@ -1,0 +1,81 @@
+From 0106f6f234d6361bb99cabfa48a953c929a3ca90 Mon Sep 17 00:00:00 2001
+From: Vivek Goyal <vgoyal@redhat.com>
+Date: Tue, 18 May 2021 17:35:35 -0400
+Subject: [PATCH 17/22] virtiofsd: get rid of in_sg_left variable
+
+in_sg_left seems to be being used primarly for debugging purpose. It is
+keeping track of how many bytes are left in the scatter list we are
+reading into.
+
+We already have another variable "len" which keeps track how many bytes
+are left to be read. And in_sg_left is greater than or equal to len. We
+have already ensured that in the beginning of function.
+
+    if (in_len < tosend_len) {
+        fuse_log(FUSE_LOG_ERR, "%s: elem %d too small for data len %zd\n",
+                 __func__, elem->index, tosend_len);
+        ret = E2BIG;
+        goto err;
+    }
+
+So in_sg_left seems like a redundant variable. It probably was useful for
+debugging when code was being developed. Get rid of it. It helps simplify
+this function.
+
+Reviewed-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+Reviewed-by: Connor Kuehl <ckuehl@redhat.com>
+Signed-off-by: Vivek Goyal <vgoyal@redhat.com>
+Message-Id: <20210518213538.693422-5-vgoyal@redhat.com>
+Signed-off-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+---
+ tools/virtiofsd/fuse_virtio.c | 17 ++++++-----------
+ 1 file changed, 6 insertions(+), 11 deletions(-)
+
+diff --git a/tools/virtiofsd/fuse_virtio.c b/tools/virtiofsd/fuse_virtio.c
+index 09674f2e90..ed5146d7a6 100644
+--- a/tools/virtiofsd/fuse_virtio.c
++++ b/tools/virtiofsd/fuse_virtio.c
+@@ -394,20 +394,16 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+     /* skip over parts of in_sg that contained the header iov */
+     size_t skip_size = iov_len;
+ 
+-    size_t in_sg_left = 0;
+     do {
+         if (skip_size != 0) {
+             iov_discard_front(&in_sg_ptr, &in_sg_cpy_count, skip_size);
+         }
+ 
+-        int i;
+-        for (i = 0, in_sg_left = 0; i < in_sg_cpy_count; i++) {
+-            in_sg_left += in_sg_ptr[i].iov_len;
+-        }
+         fuse_log(FUSE_LOG_DEBUG,
+                  "%s: after skip skip_size=%zd in_sg_cpy_count=%d "
+-                 "in_sg_left=%zd\n",
+-                 __func__, skip_size, in_sg_cpy_count, in_sg_left);
++                 "len remaining=%zd\n", __func__, skip_size, in_sg_cpy_count,
++                 len);
++
+         ret = preadv(buf->buf[0].fd, in_sg_ptr, in_sg_cpy_count,
+                      buf->buf[0].pos);
+ 
+@@ -434,13 +430,12 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+         }
+         if (!ret) {
+             /* EOF case? */
+-            fuse_log(FUSE_LOG_DEBUG, "%s: !ret in_sg_left=%zd\n", __func__,
+-                     in_sg_left);
++            fuse_log(FUSE_LOG_DEBUG, "%s: !ret len remaining=%zd\n", __func__,
++                     len);
+             break;
+         }
+-        in_sg_left -= ret;
+         len -= ret;
+-    } while (in_sg_left);
++    } while (len);
+ 
+     /* Need to fix out->len on EOF */
+     if (len) {
+-- 
+2.32.0
+

@@ -1,0 +1,79 @@
+From b5fd59cf907df7fa2272426010c4d264682347f2 Mon Sep 17 00:00:00 2001
+From: Vivek Goyal <vgoyal@redhat.com>
+Date: Tue, 18 May 2021 17:35:38 -0400
+Subject: [PATCH 20/22] virtiofsd: Set req->reply_sent right after sending
+ reply
+
+There is no reason to set it in label "err". We should be able to set
+it right after sending reply. It is easier to read.
+
+Also got rid of label "err" because now only thing it was doing was
+return a code. We can return from the error location itself and no
+need to first jump to label "err".
+
+Reviewed-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+Reviewed-by: Connor Kuehl <ckuehl@redhat.com>
+Signed-off-by: Vivek Goyal <vgoyal@redhat.com>
+Message-Id: <20210518213538.693422-8-vgoyal@redhat.com>
+Signed-off-by: Dr. David Alan Gilbert <dgilbert@redhat.com>
+---
+ tools/virtiofsd/fuse_virtio.c | 19 +++++--------------
+ 1 file changed, 5 insertions(+), 14 deletions(-)
+
+diff --git a/tools/virtiofsd/fuse_virtio.c b/tools/virtiofsd/fuse_virtio.c
+index 99f91c9d87..fa4aff9b0e 100644
+--- a/tools/virtiofsd/fuse_virtio.c
++++ b/tools/virtiofsd/fuse_virtio.c
+@@ -366,14 +366,12 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+     if (in_len < sizeof(struct fuse_out_header)) {
+         fuse_log(FUSE_LOG_ERR, "%s: elem %d too short for out_header\n",
+                  __func__, elem->index);
+-        ret = E2BIG;
+-        goto err;
++        return E2BIG;
+     }
+     if (in_len < tosend_len) {
+         fuse_log(FUSE_LOG_ERR, "%s: elem %d too small for data len %zd\n",
+                  __func__, elem->index, tosend_len);
+-        ret = E2BIG;
+-        goto err;
++        return E2BIG;
+     }
+ 
+     /* TODO: Limit to 'len' */
+@@ -408,7 +406,7 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+             }
+             fuse_log(FUSE_LOG_DEBUG, "%s: preadv failed (%m) len=%zd\n",
+                      __func__, len);
+-            goto err;
++            return ret;
+         }
+ 
+         if (!ret) {
+@@ -438,21 +436,14 @@ int virtio_send_data_iov(struct fuse_session *se, struct fuse_chan *ch,
+         out_sg->len = tosend_len;
+     }
+ 
+-    ret = 0;
+-
+     vu_dispatch_rdlock(qi->virtio_dev);
+     pthread_mutex_lock(&qi->vq_lock);
+     vu_queue_push(dev, q, elem, tosend_len);
+     vu_queue_notify(dev, q);
+     pthread_mutex_unlock(&qi->vq_lock);
+     vu_dispatch_unlock(qi->virtio_dev);
+-
+-err:
+-    if (ret == 0) {
+-        req->reply_sent = true;
+-    }
+-
+-    return ret;
++    req->reply_sent = true;
++    return 0;
+ }
+ 
+ static __thread bool clone_fs_called;
+-- 
+2.32.0
+
