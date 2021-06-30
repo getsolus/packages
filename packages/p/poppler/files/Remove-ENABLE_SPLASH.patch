@@ -1,0 +1,933 @@
+From ce0bd9bf6f41fb058519c99128205da569d83b7c Mon Sep 17 00:00:00 2001
+From: Hubert Figuiere <hub@figuiere.net>
+Date: Wed, 16 Jun 2021 20:50:49 +0000
+Subject: [PATCH] Remove ENABLE_SPLASH and HAVE_SPLASH (always true)
+
+---
+ CMakeLists.txt                 | 117 ++++++++++++++-------------------
+ INSTALL                        |   2 +-
+ cpp/poppler-page-renderer.cpp  |  18 +----
+ poppler/PSOutputDev.cc         |  37 +++--------
+ poppler/PSOutputDev.h          |  10 +--
+ poppler/Stream.cc              |   6 +-
+ poppler/Stream.h               |   4 --
+ poppler/poppler-config.h.cmake |   5 --
+ qt5/src/poppler-document.cc    |   2 -
+ qt5/src/poppler-page.cc        |  12 ++--
+ qt5/src/poppler-private.h      |   4 +-
+ qt6/src/poppler-document.cc    |   2 -
+ qt6/src/poppler-page.cc        |  12 ++--
+ qt6/src/poppler-private.h      |   4 +-
+ test/CMakeLists.txt            |  22 +++----
+ utils/CMakeLists.txt           |  26 ++++----
+ utils/pdftohtml.cc             |  19 +-----
+ utils/pdftops.cc               |  24 ++-----
+ 18 files changed, 102 insertions(+), 224 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 51676ec8d..62fcc5296 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -57,8 +57,7 @@ option(BUILD_QT5_TESTS "Whether to compile the Qt5 test programs." ON)
+ option(BUILD_QT6_TESTS "Whether to compile the Qt6 test programs." ON)
+ option(BUILD_CPP_TESTS "Whether to compile the CPP test programs." ON)
+ option(BUILD_MANUAL_TESTS "Whether to compile manual test programs." ON)
+-option(ENABLE_SPLASH "Build the Splash graphics backend." ON)
+-option(ENABLE_BOOST "Use boost (when Splash is built)." ON)
++option(ENABLE_BOOST "Use boost (for Splash backend performance)." ON)
+ option(ENABLE_UTILS "Compile poppler command line utils." ON)
+ option(ENABLE_CPP "Compile poppler cpp wrapper." ON)
+ option(ENABLE_GLIB "Compile poppler glib wrapper." ON)
+@@ -181,17 +180,14 @@ if (ENABLE_QT6)
+   endif()
+ endif()
+ 
+-# Check for rendering backends (Splash included unless disabled)
+-set(HAVE_SPLASH ${ENABLE_SPLASH})
++# Check for Cairo rendering backend
+ macro_optional_find_package(Cairo ${CAIRO_VERSION})
+ 
+-if(ENABLE_SPLASH)
+-  find_package(Boost 1.58.0)
+-  if(Boost_FOUND)
+-    set(USE_BOOST_HEADERS ON)
+-  elseif(ENABLE_BOOST)
+-    message(FATAL_ERROR "-- Boost recommended for Splash. Use ENABLE_BOOST=OFF to skip.")
+-  endif()
++find_package(Boost 1.58.0)
++if(Boost_FOUND)
++  set(USE_BOOST_HEADERS ON)
++elseif(ENABLE_BOOST)
++  message(FATAL_ERROR "-- Boost recommended for Splash. Use ENABLE_BOOST=OFF to skip.")
+ endif()
+ 
+ if(CAIRO_FOUND)
+@@ -442,29 +438,25 @@ set(poppler_SRCS
+   poppler/Rendition.cc
+   poppler/CertificateInfo.cc
+   poppler/BBoxOutputDev.cc
++  poppler/SplashOutputDev.cc
++  splash/Splash.cc
++  splash/SplashBitmap.cc
++  splash/SplashClip.cc
++  splash/SplashFTFont.cc
++  splash/SplashFTFontEngine.cc
++  splash/SplashFTFontFile.cc
++  splash/SplashFont.cc
++  splash/SplashFontEngine.cc
++  splash/SplashFontFile.cc
++  splash/SplashFontFileID.cc
++  splash/SplashPath.cc
++  splash/SplashPattern.cc
++  splash/SplashScreen.cc
++  splash/SplashState.cc
++  splash/SplashXPath.cc
++  splash/SplashXPathScanner.cc
+ )
+ set(poppler_LIBS ${FREETYPE_LIBRARIES})
+-if(ENABLE_SPLASH)
+-  set(poppler_SRCS ${poppler_SRCS}
+-    poppler/SplashOutputDev.cc
+-    splash/Splash.cc
+-    splash/SplashBitmap.cc
+-    splash/SplashClip.cc
+-    splash/SplashFTFont.cc
+-    splash/SplashFTFontEngine.cc
+-    splash/SplashFTFontFile.cc
+-    splash/SplashFont.cc
+-    splash/SplashFontEngine.cc
+-    splash/SplashFontFile.cc
+-    splash/SplashFontFileID.cc
+-    splash/SplashPath.cc
+-    splash/SplashPattern.cc
+-    splash/SplashScreen.cc
+-    splash/SplashState.cc
+-    splash/SplashXPath.cc
+-    splash/SplashXPathScanner.cc
+-  )
+-endif()
+ if(FONTCONFIG_FOUND)
+   set(poppler_LIBS ${poppler_LIBS} ${FONTCONFIG_LIBRARIES})
+ endif()
+@@ -662,6 +654,7 @@ if(ENABLE_UNSTABLE_API_ABI_HEADERS)
+     poppler/Sound.h
+     ${CMAKE_CURRENT_BINARY_DIR}/poppler_private_export.h
+     ${CMAKE_CURRENT_BINARY_DIR}/poppler/poppler-config.h
++    poppler/SplashOutputDev.h
+     DESTINATION include/poppler)
+   install(FILES
+     goo/GooTimer.h
+@@ -713,33 +706,28 @@ if(ENABLE_UNSTABLE_API_ABI_HEADERS)
+       poppler/JPXStream.h
+       DESTINATION include/poppler)
+   endif()
+-  if(ENABLE_SPLASH)
+-    install(FILES
+-      poppler/SplashOutputDev.h
+-      DESTINATION include/poppler)
+-    install(FILES
+-      splash/Splash.h
+-      splash/SplashBitmap.h
+-      splash/SplashClip.h
+-      splash/SplashErrorCodes.h
+-      splash/SplashFTFont.h
+-      splash/SplashFTFontEngine.h
+-      splash/SplashFTFontFile.h
+-      splash/SplashFont.h
+-      splash/SplashFontEngine.h
+-      splash/SplashFontFile.h
+-      splash/SplashFontFileID.h
+-      splash/SplashGlyphBitmap.h
+-      splash/SplashMath.h
+-      splash/SplashPath.h
+-      splash/SplashPattern.h
+-      splash/SplashScreen.h
+-      splash/SplashState.h
+-      splash/SplashTypes.h
+-      splash/SplashXPath.h
+-      splash/SplashXPathScanner.h
+-      DESTINATION include/poppler/splash)
+-  endif()
++  install(FILES
++    splash/Splash.h
++    splash/SplashBitmap.h
++    splash/SplashClip.h
++    splash/SplashErrorCodes.h
++    splash/SplashFTFont.h
++    splash/SplashFTFontEngine.h
++    splash/SplashFTFontFile.h
++    splash/SplashFont.h
++    splash/SplashFontEngine.h
++    splash/SplashFontFile.h
++    splash/SplashFontFileID.h
++    splash/SplashGlyphBitmap.h
++    splash/SplashMath.h
++    splash/SplashPath.h
++    splash/SplashPattern.h
++    splash/SplashScreen.h
++    splash/SplashState.h
++    splash/SplashTypes.h
++    splash/SplashXPath.h
++    splash/SplashXPathScanner.h
++    DESTINATION include/poppler/splash)
+   if(CAIRO_FOUND)
+     install(FILES
+       poppler/CairoFontEngine.h
+@@ -794,10 +782,7 @@ endif()
+ # Summarize build options & display warnings for user
+ message("Building Poppler with support for:")
+ show_end_message("font configuration" ${font_configuration})
+-show_end_message_yesno("splash output" ENABLE_SPLASH)
+-if(ENABLE_SPLASH)
+-  show_end_message_yesno("  use boost" ENABLE_BOOST)
+-endif()
++show_end_message_yesno("use boost (Splash)" ENABLE_BOOST)
+ show_end_message_yesno("cairo output" CAIRO_FOUND)
+ show_end_message_yesno("qt5 wrapper" ENABLE_QT5)
+ show_end_message_yesno("qt6 wrapper" ENABLE_QT6)
+@@ -818,10 +803,6 @@ show_end_message_yesno("command line utils" ENABLE_UTILS)
+ show_end_message_yesno("fuzz target" ENABLE_FUZZER)
+ show_end_message("test data dir" ${TESTDATADIR})
+ 
+-if(NOT ENABLE_SPLASH AND NOT CAIRO_FOUND)
+-  message("Warning: There is no rendering backend enabled")
+-endif()
+-
+ if(NOT ENABLE_LIBJPEG AND HAVE_DCT_DECODER)
+   message("Warning: Using libjpeg is recommended. The internal DCT decoder is unmaintained.")
+ endif()
+@@ -842,7 +823,7 @@ if(NOT HAVE_JPX_DECODER)
+   message("Warning: You're not compiling any JPX decoder. Some files will fail to display properly.")
+ endif()
+ 
+-if(ENABLE_SPLASH AND NOT ENABLE_BOOST)
++if(NOT ENABLE_BOOST)
+   message("Warning: Use of boost is recommended for better performance.")
+ endif()
+ 
+diff --git a/INSTALL b/INSTALL
+index 99ac15f79..8bdda8430 100644
+--- a/INSTALL
++++ b/INSTALL
+@@ -44,7 +44,7 @@ Optional Features
+ 
+ eg
+ 
+-  -DENABLE_SPLASH=ON -DBUILD_GTK_TESTS=OFF
++  -DENABLE_LIBCURL=ON -DBUILD_GTK_TESTS=OFF
+ 
+ A list of all options can be display with the commmand:
+ 
+diff --git a/cpp/poppler-page-renderer.cpp b/cpp/poppler-page-renderer.cpp
+index 0ef41f8ba..5a2ac4392 100644
+--- a/cpp/poppler-page-renderer.cpp
++++ b/cpp/poppler-page-renderer.cpp
+@@ -33,10 +33,8 @@
+ #include <poppler-config.h>
+ 
+ #include "PDFDoc.h"
+-#if defined(HAVE_SPLASH)
+-#    include "SplashOutputDev.h"
+-#    include "splash/SplashBitmap.h"
+-#endif
++#include "SplashOutputDev.h"
++#include "splash/SplashBitmap.h"
+ 
+ using namespace poppler;
+ 
+@@ -45,10 +43,8 @@ class poppler::page_renderer_private
+ public:
+     page_renderer_private() : paper_color(0xffffffff), hints(0), image_format(image::format_enum::format_argb32), line_mode(page_renderer::line_mode_enum::line_default) { }
+ 
+-#if defined(HAVE_SPLASH)
+     static bool conv_color_mode(image::format_enum mode, SplashColorMode &splash_mode);
+     static bool conv_line_mode(page_renderer::line_mode_enum mode, SplashThinLineMode &splash_mode);
+-#endif
+ 
+     argb paper_color;
+     unsigned int hints;
+@@ -56,7 +52,6 @@ public:
+     page_renderer::line_mode_enum line_mode;
+ };
+ 
+-#if defined(HAVE_SPLASH)
+ bool page_renderer_private::conv_color_mode(image::format_enum mode, SplashColorMode &splash_mode)
+ {
+     switch (mode) {
+@@ -98,7 +93,6 @@ bool page_renderer_private::conv_line_mode(page_renderer::line_mode_enum mode, S
+     }
+     return true;
+ }
+-#endif
+ 
+ /**
+  \class poppler::page_renderer poppler-page-renderer.h "poppler/cpp/poppler-renderer.h"
+@@ -263,7 +257,6 @@ image page_renderer::render_page(const page *p, double xres, double yres, int x,
+         return image();
+     }
+ 
+-#if defined(HAVE_SPLASH)
+     page_private *pp = page_private::get(p);
+     PDFDoc *pdfdoc = pp->doc->doc;
+ 
+@@ -293,9 +286,6 @@ image page_renderer::render_page(const page *p, double xres, double yres, int x,
+ 
+     const image img(reinterpret_cast<char *>(data_ptr), bw, bh, d->image_format);
+     return img.copy();
+-#else
+-    return image();
+-#endif
+ }
+ 
+ /**
+@@ -308,9 +298,5 @@ image page_renderer::render_page(const page *p, double xres, double yres, int x,
+  */
+ bool page_renderer::can_render()
+ {
+-#if defined(HAVE_SPLASH)
+     return true;
+-#else
+-    return false;
+-#endif
+ }
+diff --git a/poppler/PSOutputDev.cc b/poppler/PSOutputDev.cc
+index aeba5fcec..75bb18598 100644
+--- a/poppler/PSOutputDev.cc
++++ b/poppler/PSOutputDev.cc
+@@ -79,11 +79,9 @@
+ #include "PreScanOutputDev.h"
+ #include "FileSpec.h"
+ #include "CharCodeToUnicode.h"
+-#ifdef HAVE_SPLASH
+-#    include "splash/Splash.h"
+-#    include "splash/SplashBitmap.h"
+-#    include "SplashOutputDev.h"
+-#endif
++#include "splash/Splash.h"
++#include "splash/SplashBitmap.h"
++#include "SplashOutputDev.h"
+ #include "PSOutputDev.h"
+ #include "PDFDoc.h"
+ 
+@@ -1263,9 +1261,7 @@ void PSOutputDev::init(PSOutputFunc outputFuncA, void *outputStreamA, PSFileType
+     clipLLX0 = clipLLY0 = 0;
+     clipURX0 = clipURY0 = -1;
+ 
+-#ifdef HAVE_SPLASH
+     processColorFormatSpecified = false;
+-#endif
+ 
+     // initialize sequential page number
+     seqPage = 1;
+@@ -1387,7 +1383,6 @@ void PSOutputDev::postInit()
+     numTilingPatterns = 0;
+     nextFunc = 0;
+ 
+-#ifdef HAVE_SPLASH
+     // set some default process color format if none is set
+     if (!processColorFormatSpecified) {
+         if (level == psLevel1) {
+@@ -1395,7 +1390,7 @@ void PSOutputDev::postInit()
+         } else if (level == psLevel1Sep || level == psLevel2Sep || level == psLevel3Sep || globalParams->getOverprintPreview()) {
+             processColorFormat = splashModeCMYK8;
+         }
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+         else if (getDisplayProfile()) {
+             auto processcolorspace = cmsGetColorSpace(getDisplayProfile().get());
+             if (processcolorspace == cmsSigCmykData) {
+@@ -1406,7 +1401,7 @@ void PSOutputDev::postInit()
+                 processColorFormat = splashModeRGB8;
+             }
+         }
+-#    endif
++#endif
+         else {
+             processColorFormat = splashModeRGB8;
+         }
+@@ -1424,7 +1419,7 @@ void PSOutputDev::postInit()
+               " Resetting processColorFormat to CMYK8.");
+         processColorFormat = splashModeCMYK8;
+     }
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+     if (getDisplayProfile()) {
+         auto processcolorspace = cmsGetColorSpace(getDisplayProfile().get());
+         if (processColorFormat == splashModeCMYK8) {
+@@ -1441,7 +1436,6 @@ void PSOutputDev::postInit()
+             }
+         }
+     }
+-#    endif
+ #endif
+ 
+     // initialize embedded font resource comment list
+@@ -3136,7 +3130,6 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+ {
+     PreScanOutputDev *scan;
+     bool rasterize;
+-#ifdef HAVE_SPLASH
+     bool useFlate, useLZW;
+     SplashOutputDev *splashOut;
+     SplashColor paperColor;
+@@ -3156,7 +3149,6 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+     bool isOptimizedGray;
+     bool overprint;
+     SplashColorMode internalColorFormat;
+-#endif
+ 
+     if (!postInitDone) {
+         postInit();
+@@ -3175,7 +3167,6 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+         return true;
+     }
+ 
+-#ifdef HAVE_SPLASH
+     // get the rasterization parameters
+     useFlate = getEnableFlate() && level >= psLevel3;
+     useLZW = getEnableLZW();
+@@ -3223,12 +3214,12 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+     splashOut = new SplashOutputDev(internalColorFormat, 1, false, paperColor, false, splashThinLineDefault, overprint);
+     splashOut->setFontAntialias(rasterAntialias);
+     splashOut->setVectorAntialias(rasterAntialias);
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+     splashOut->setDisplayProfile(getDisplayProfile());
+     splashOut->setDefaultGrayProfile(getDefaultGrayProfile());
+     splashOut->setDefaultRGBProfile(getDefaultRGBProfile());
+     splashOut->setDefaultCMYKProfile(getDefaultCMYKProfile());
+-#    endif
++#endif
+     splashOut->startDoc(doc);
+ 
+     // break the page into stripes
+@@ -3504,7 +3495,7 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+                 isOptimizedGray = false;
+             }
+             str0->reset();
+-#    ifdef ENABLE_ZLIB
++#ifdef ENABLE_ZLIB
+             if (useFlate) {
+                 if (isOptimizedGray && numComps == 4) {
+                     str = new FlateEncoder(new CMYKGrayEncoder(str0));
+@@ -3516,7 +3507,7 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+                     str = new FlateEncoder(str0);
+                 }
+             } else
+-#    endif
++#endif
+                     if (useLZW) {
+                 if (isOptimizedGray && numComps == 4) {
+                     str = new LZWEncoder(new CMYKGrayEncoder(str0));
+@@ -3619,14 +3610,6 @@ bool PSOutputDev::checkPageSlice(Page *page, double /*hDPI*/, double /*vDPI*/, i
+     endPage();
+ 
+     return false;
+-
+-#else // HAVE_SPLASH
+-
+-    error(errSyntaxWarning, -1,
+-          "PDF page uses transparency and PSOutputDev was built without"
+-          " the Splash rasterizer - output may not be correct");
+-    return true;
+-#endif // HAVE_SPLASH
+ }
+ 
+ void PSOutputDev::startPage(int pageNum, GfxState *state, XRef *xrefA)
+diff --git a/poppler/PSOutputDev.h b/poppler/PSOutputDev.h
+index 549d778d9..4a623bf34 100644
+--- a/poppler/PSOutputDev.h
++++ b/poppler/PSOutputDev.h
+@@ -51,9 +51,7 @@
+ #include <unordered_map>
+ #include <string>
+ 
+-#ifdef HAVE_SPLASH
+-#    include "splash/Splash.h"
+-#endif
++#include "splash/Splash.h"
+ 
+ class PDFDoc;
+ class XRef;
+@@ -309,10 +307,8 @@ public:
+     void setRasterResolution(double r) { rasterResolution = r; }
+     void setRasterMono(bool b)
+     {
+-#ifdef HAVE_SPLASH
+         processColorFormat = splashModeMono8;
+         processColorFormatSpecified = true;
+-#endif
+     }
+ 
+     void setUncompressPreloadedImages(bool b) { uncompressPreloadedImages = b; }
+@@ -349,13 +345,11 @@ public:
+     void setEnableLZW(bool b) { enableLZW = b; }
+     void setEnableFlate(bool b) { enableFlate = b; }
+ 
+-#ifdef HAVE_SPLASH
+     void setProcessColorFormat(SplashColorMode format)
+     {
+         processColorFormat = format;
+         processColorFormatSpecified = true;
+     }
+-#endif
+ 
+ private:
+     void init(PSOutputFunc outputFuncA, void *outputStreamA, PSFileType fileTypeA, char *psTitleA, PDFDoc *doc, const std::vector<int> &pages, PSOutMode modeA, int imgLLXA, int imgLLYA, int imgURXA, int imgURYA, bool manualCtrlA,
+@@ -524,10 +518,8 @@ private:
+     bool enableLZW; // enable LZW compression
+     bool enableFlate; // enable Flate compression
+ 
+-#ifdef HAVE_SPLASH
+     SplashColorMode processColorFormat;
+     bool processColorFormatSpecified;
+-#endif
+ 
+     std::unordered_set<std::string> iccEmitted; // contains ICCBased CSAs that have been emitted
+ 
+diff --git a/poppler/Stream.cc b/poppler/Stream.cc
+index cf2d1ed47..886601df6 100644
+--- a/poppler/Stream.cc
++++ b/poppler/Stream.cc
+@@ -69,9 +69,7 @@
+ #include "Stream-CCITT.h"
+ #include "CachedFile.h"
+ 
+-#ifdef HAVE_SPLASH
+-#    include "splash/SplashBitmap.h"
+-#endif
++#include "splash/SplashBitmap.h"
+ 
+ #ifdef ENABLE_LIBJPEG
+ #    include "DCTStream.h"
+@@ -5179,7 +5177,6 @@ bool RGBGrayEncoder::fillBuf()
+ // SplashBitmapCMYKEncoder
+ //------------------------------------------------------------------------
+ 
+-#ifdef HAVE_SPLASH
+ SplashBitmapCMYKEncoder::SplashBitmapCMYKEncoder(SplashBitmap *bitmapA) : bitmap(bitmapA)
+ {
+     width = (size_t)4 * bitmap->getWidth();
+@@ -5251,4 +5248,3 @@ void SplashBitmapCMYKEncoder::setPos(Goffset pos, int dir)
+         bufPtr = pos % width;
+     }
+ }
+-#endif
+diff --git a/poppler/Stream.h b/poppler/Stream.h
+index 97b91dc33..3669d46c4 100644
+--- a/poppler/Stream.h
++++ b/poppler/Stream.h
+@@ -49,9 +49,7 @@
+ class GooFile;
+ class BaseStream;
+ class CachedFile;
+-#ifdef HAVE_SPLASH
+ class SplashBitmap;
+-#endif
+ 
+ //------------------------------------------------------------------------
+ 
+@@ -1445,7 +1443,6 @@ private:
+ // pure CMYK colors. In particular for a DeviceN8 bitmap it redacts the spot colorants.
+ //------------------------------------------------------------------------
+ 
+-#ifdef HAVE_SPLASH
+ class SplashBitmapCMYKEncoder : public Stream
+ {
+ public:
+@@ -1485,6 +1482,5 @@ private:
+ 
+     bool fillBuf();
+ };
+-#endif
+ 
+ #endif
+diff --git a/poppler/poppler-config.h.cmake b/poppler/poppler-config.h.cmake
+index 9cd82b00f..a8c2b1d46 100644
+--- a/poppler/poppler-config.h.cmake
++++ b/poppler/poppler-config.h.cmake
+@@ -117,11 +117,6 @@
+ #cmakedefine USE_BOOST_HEADERS 1
+ #endif
+ 
+-/* Is splash backend available */
+-#ifndef HAVE_SPLASH
+-#cmakedefine HAVE_SPLASH 1
+-#endif
+-
+ //------------------------------------------------------------------------
+ // version
+ //------------------------------------------------------------------------
+diff --git a/qt5/src/poppler-document.cc b/qt5/src/poppler-document.cc
+index 574f24314..bd5a90a1a 100644
+--- a/qt5/src/poppler-document.cc
++++ b/qt5/src/poppler-document.cc
+@@ -692,9 +692,7 @@ Document::RenderBackend Document::renderBackend() const
+ QSet<Document::RenderBackend> Document::availableRenderBackends()
+ {
+     QSet<Document::RenderBackend> ret;
+-#if defined(HAVE_SPLASH)
+     ret << Document::SplashBackend;
+-#endif
+     ret << Document::QPainterBackend;
+     ret << Document::ArthurBackend; // For backward compatibility
+     return ret;
+diff --git a/qt5/src/poppler-page.cc b/qt5/src/poppler-page.cc
+index bae438b7c..c65e2acf9 100644
+--- a/qt5/src/poppler-page.cc
++++ b/qt5/src/poppler-page.cc
+@@ -61,10 +61,8 @@
+ #include <Link.h>
+ #include <QPainterOutputDev.h>
+ #include <Rendition.h>
+-#if defined(HAVE_SPLASH)
+-#    include <SplashOutputDev.h>
+-#    include <splash/SplashBitmap.h>
+-#endif
++#include <SplashOutputDev.h>
++#include <splash/SplashBitmap.h>
+ 
+ #include "poppler-private.h"
+ #include "poppler-page-transition-private.h"
+@@ -499,7 +497,6 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+     QImage img;
+     switch (m_page->parentDoc->m_backend) {
+     case Poppler::Document::SplashBackend: {
+-#if defined(HAVE_SPLASH)
+         SplashColor bgColor;
+         const bool overprintPreview = m_page->parentDoc->m_hints & Document::OverprintPreview ? true : false;
+         if (overprintPreview) {
+@@ -546,9 +543,9 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+         splash_output.setVectorAntialias(m_page->parentDoc->m_hints & Document::Antialiasing ? true : false);
+         splash_output.setFreeTypeHinting(m_page->parentDoc->m_hints & Document::TextHinting ? true : false, m_page->parentDoc->m_hints & Document::TextSlightHinting ? true : false);
+ 
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+         splash_output.setDisplayProfile(m_page->parentDoc->m_displayProfile);
+-#    endif
++#endif
+ 
+         splash_output.startDoc(m_page->parentDoc->doc);
+ 
+@@ -559,7 +556,6 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+                                                  (hideAnnotations) ? annotDisplayDecideCbk : nullAnnotCallBack, nullptr, true);
+ 
+         img = splash_output.getXBGRImage(true /* takeImageData */);
+-#endif
+         break;
+     }
+     case Poppler::Document::QPainterBackend: {
+diff --git a/qt5/src/poppler-private.h b/qt5/src/poppler-private.h
+index ed358bf55..73a766675 100644
+--- a/qt5/src/poppler-private.h
++++ b/qt5/src/poppler-private.h
+@@ -56,9 +56,7 @@
+ #include <FontInfo.h>
+ #include <OutputDev.h>
+ #include <Error.h>
+-#if defined(HAVE_SPLASH)
+-#    include <SplashOutputDev.h>
+-#endif
++#include <SplashOutputDev.h>
+ 
+ #include "poppler-qt5.h"
+ #include "poppler-embeddedfile-private.h"
+diff --git a/qt6/src/poppler-document.cc b/qt6/src/poppler-document.cc
+index 5f760b0e4..1fdd5e526 100644
+--- a/qt6/src/poppler-document.cc
++++ b/qt6/src/poppler-document.cc
+@@ -675,9 +675,7 @@ Document::RenderBackend Document::renderBackend() const
+ QSet<Document::RenderBackend> Document::availableRenderBackends()
+ {
+     QSet<Document::RenderBackend> ret;
+-#if defined(HAVE_SPLASH)
+     ret << Document::SplashBackend;
+-#endif
+     ret << Document::QPainterBackend;
+     return ret;
+ }
+diff --git a/qt6/src/poppler-page.cc b/qt6/src/poppler-page.cc
+index 23ef1ad93..f7b82b508 100644
+--- a/qt6/src/poppler-page.cc
++++ b/qt6/src/poppler-page.cc
+@@ -60,10 +60,8 @@
+ #include <Link.h>
+ #include <QPainterOutputDev.h>
+ #include <Rendition.h>
+-#if defined(HAVE_SPLASH)
+-#    include <SplashOutputDev.h>
+-#    include <splash/SplashBitmap.h>
+-#endif
++#include <SplashOutputDev.h>
++#include <splash/SplashBitmap.h>
+ 
+ #include "poppler-private.h"
+ #include "poppler-page-transition-private.h"
+@@ -498,7 +496,6 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+     QImage img;
+     switch (m_page->parentDoc->m_backend) {
+     case Poppler::Document::SplashBackend: {
+-#if defined(HAVE_SPLASH)
+         SplashColor bgColor;
+         const bool overprintPreview = m_page->parentDoc->m_hints & Document::OverprintPreview ? true : false;
+         if (overprintPreview) {
+@@ -545,9 +542,9 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+         splash_output.setVectorAntialias(m_page->parentDoc->m_hints & Document::Antialiasing ? true : false);
+         splash_output.setFreeTypeHinting(m_page->parentDoc->m_hints & Document::TextHinting ? true : false, m_page->parentDoc->m_hints & Document::TextSlightHinting ? true : false);
+ 
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+         splash_output.setDisplayProfile(m_page->parentDoc->m_displayProfile);
+-#    endif
++#endif
+ 
+         splash_output.startDoc(m_page->parentDoc->doc);
+ 
+@@ -558,7 +555,6 @@ QImage Page::renderToImage(double xres, double yres, int xPos, int yPos, int w,
+                                                  (hideAnnotations) ? annotDisplayDecideCbk : nullAnnotCallBack, nullptr, true);
+ 
+         img = splash_output.getXBGRImage(true /* takeImageData */);
+-#endif
+         break;
+     }
+     case Poppler::Document::QPainterBackend: {
+diff --git a/qt6/src/poppler-private.h b/qt6/src/poppler-private.h
+index 3b8e066fe..a9daf765b 100644
+--- a/qt6/src/poppler-private.h
++++ b/qt6/src/poppler-private.h
+@@ -56,9 +56,7 @@
+ #include <FontInfo.h>
+ #include <OutputDev.h>
+ #include <Error.h>
+-#if defined(HAVE_SPLASH)
+-#    include <SplashOutputDev.h>
+-#endif
++#include <SplashOutputDev.h>
+ 
+ #include "poppler-qt6.h"
+ #include "poppler-embeddedfile-private.h"
+diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
+index 09b2e67a4..b9251e04f 100644
+--- a/test/CMakeLists.txt
++++ b/test/CMakeLists.txt
+@@ -1,18 +1,14 @@
+ 
+-if (ENABLE_SPLASH)
+-
+-  if (HAVE_NANOSLEEP OR LIB_RT_HAS_NANOSLEEP)
+-    set (perf_test_SRCS
+-      perf-test.cc
+-      perf-test-preview-dummy.cc
+-    )
+-    add_executable(perf-test ${perf_test_SRCS})
+-    target_link_libraries(perf-test poppler)
+-    if (LIB_RT_HAS_NANOSLEEP)
+-      target_link_libraries(perf-test rt)
+-    endif ()
++if (HAVE_NANOSLEEP OR LIB_RT_HAS_NANOSLEEP)
++  set (perf_test_SRCS
++    perf-test.cc
++    perf-test-preview-dummy.cc
++  )
++  add_executable(perf-test ${perf_test_SRCS})
++  target_link_libraries(perf-test poppler)
++  if (LIB_RT_HAS_NANOSLEEP)
++    target_link_libraries(perf-test rt)
+   endif ()
+-
+ endif ()
+ 
+ if (GTK_FOUND)
+diff --git a/utils/CMakeLists.txt b/utils/CMakeLists.txt
+index 32fbcb48c..ce0ce166d 100644
+--- a/utils/CMakeLists.txt
++++ b/utils/CMakeLists.txt
+@@ -7,20 +7,18 @@ set(common_libs
+   poppler
+ )
+ 
+-if (ENABLE_SPLASH)
+-  # pdftoppm
+-  set(pdftoppm_SOURCES ${common_srcs}
+-    pdftoppm.cc
+-    sanitychecks.cc
+-  )
+-  add_executable(pdftoppm ${pdftoppm_SOURCES})
+-  target_link_libraries(pdftoppm ${common_libs})
+-  if(LCMS2_FOUND)
+-    target_link_libraries(pdftoppm ${LCMS2_LIBRARIES})
+-  endif()
+-  install(TARGETS pdftoppm DESTINATION bin)
+-  install(FILES pdftoppm.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+-endif ()
++# pdftoppm
++set(pdftoppm_SOURCES ${common_srcs}
++  pdftoppm.cc
++  sanitychecks.cc
++)
++add_executable(pdftoppm ${pdftoppm_SOURCES})
++target_link_libraries(pdftoppm ${common_libs})
++if(LCMS2_FOUND)
++  target_link_libraries(pdftoppm ${LCMS2_LIBRARIES})
++endif()
++install(TARGETS pdftoppm DESTINATION bin)
++install(FILES pdftoppm.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+ 
+ if (HAVE_CAIRO)
+   # pdftocairo
+diff --git a/utils/pdftohtml.cc b/utils/pdftohtml.cc
+index 483b211da..9e0f1230b 100644
+--- a/utils/pdftohtml.cc
++++ b/utils/pdftohtml.cc
+@@ -61,10 +61,8 @@
+ #include "PDFDoc.h"
+ #include "PDFDocFactory.h"
+ #include "HtmlOutputDev.h"
+-#ifdef HAVE_SPLASH
+-#    include "SplashOutputDev.h"
+-#    include "splash/SplashBitmap.h"
+-#endif
++#include "SplashOutputDev.h"
++#include "splash/SplashBitmap.h"
+ #include "GlobalParams.h"
+ #include "PDFDocEncoding.h"
+ #include "Error.h"
+@@ -138,7 +136,6 @@ static const ArgDesc argDesc[] = { { "-f", argInt, &firstPage, 0, "first page to
+                                    { "-fontfullname", argFlag, &fontFullName, 0, "outputs font full name" },
+                                    {} };
+ 
+-#ifdef HAVE_SPLASH
+ class SplashOutputDevNoText : public SplashOutputDev
+ {
+ public:
+@@ -156,8 +153,6 @@ public:
+ 
+ SplashOutputDevNoText::~SplashOutputDevNoText() = default;
+ 
+-#endif
+-
+ int main(int argc, char *argv[])
+ {
+     std::unique_ptr<PDFDoc> doc;
+@@ -166,9 +161,7 @@ int main(int argc, char *argv[])
+     GooString *author = nullptr, *keywords = nullptr, *subject = nullptr, *date = nullptr;
+     GooString *htmlFileName = nullptr;
+     HtmlOutputDev *htmlOut = nullptr;
+-#ifdef HAVE_SPLASH
+     SplashOutputDev *splashOut = nullptr;
+-#endif
+     bool doOutline;
+     bool ok;
+     GooString *ownerPW, *userPW;
+@@ -353,7 +346,6 @@ int main(int argc, char *argv[])
+     }
+ 
+     if ((complexMode || singleHtml) && !xml && !ignore) {
+-#ifdef HAVE_SPLASH
+         GooString *imgFileName = nullptr;
+         // White paper color
+         SplashColor color;
+@@ -387,13 +379,6 @@ int main(int argc, char *argv[])
+         }
+ 
+         delete splashOut;
+-#else
+-        fprintf(stderr, "Your pdftohtml was built without splash backend support. It is needed for the option you want to use.\n");
+-        delete htmlOut;
+-        delete htmlFileName;
+-        delete fileName;
+-        return -1;
+-#endif
+     }
+ 
+     if (htmlOut->isOk()) {
+diff --git a/utils/pdftops.cc b/utils/pdftops.cc
+index e77edde35..b055ec962 100644
+--- a/utils/pdftops.cc
++++ b/utils/pdftops.cc
+@@ -123,16 +123,12 @@ static bool quiet = false;
+ static bool printVersion = false;
+ static bool printHelp = false;
+ static bool overprint = false;
+-#ifdef HAVE_SPLASH
+ static GooString processcolorformatname;
+ static SplashColorMode processcolorformat;
+ static bool processcolorformatspecified = false;
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+ static GooString processcolorprofilename;
+ static GfxLCMSProfilePtr processcolorprofile;
+-#    endif
+-#endif
+-#ifdef USE_CMS
+ static GooString defaultgrayprofilename;
+ static GfxLCMSProfilePtr defaultgrayprofile;
+ static GooString defaultrgbprofilename;
+@@ -164,13 +160,9 @@ static const ArgDesc argDesc[] = { { "-f", argInt, &firstPage, 0, "first page to
+                                    { "-passfonts", argFlag, &fontPassthrough, 0, "don't substitute missing fonts" },
+                                    { "-aaRaster", argString, rasterAntialiasStr, sizeof(rasterAntialiasStr), "enable anti-aliasing on rasterization: yes, no" },
+                                    { "-rasterize", argString, forceRasterizeStr, sizeof(forceRasterizeStr), "control rasterization: always, never, whenneeded" },
+-#ifdef HAVE_SPLASH
+                                    { "-processcolorformat", argGooString, &processcolorformatname, 0, "color format that is used during rasterization and transparency reduction: MONO8, RGB8, CMYK8" },
+-#    ifdef USE_CMS
+-                                   { "-processcolorprofile", argGooString, &processcolorprofilename, 0, "ICC color profile to use as the process color profile during rasterization and transparency reduction" },
+-#    endif
+-#endif
+ #ifdef USE_CMS
++                                   { "-processcolorprofile", argGooString, &processcolorprofilename, 0, "ICC color profile to use as the process color profile during rasterization and transparency reduction" },
+                                    { "-defaultgrayprofile", argGooString, &defaultgrayprofilename, 0, "ICC color profile to use as the DefaultGray color space" },
+                                    { "-defaultrgbprofile", argGooString, &defaultrgbprofilename, 0, "ICC color profile to use as the DefaultRGB color space" },
+                                    { "-defaultcmykprofile", argGooString, &defaultcmykprofilename, 0, "ICC color profile to use as the DefaultCMYK color space" },
+@@ -288,7 +280,6 @@ int main(int argc, char *argv[])
+         globalParams->setErrQuiet(quiet);
+     }
+ 
+-#ifdef HAVE_SPLASH
+     if (!processcolorformatname.toStr().empty()) {
+         if (processcolorformatname.toStr() == "MONO8") {
+             processcolorformat = splashModeMono8;
+@@ -305,7 +296,7 @@ int main(int argc, char *argv[])
+         }
+     }
+ 
+-#    ifdef USE_CMS
++#ifdef USE_CMS
+     if (!processcolorprofilename.toStr().empty()) {
+         processcolorprofile = make_GfxLCMSProfilePtr(cmsOpenProfileFromFile(processcolorprofilename.c_str(), "r"));
+         if (!processcolorprofile) {
+@@ -344,7 +335,7 @@ int main(int argc, char *argv[])
+             }
+         }
+     }
+-#    endif
++#endif
+ 
+     if (processcolorformatspecified) {
+         if (level1 && processcolorformat != splashModeMono8) {
+@@ -355,7 +346,6 @@ int main(int argc, char *argv[])
+             goto err1;
+         }
+     }
+-#endif
+ 
+ #ifdef USE_CMS
+     if (!defaultgrayprofilename.toStr().empty()) {
+@@ -484,14 +474,10 @@ int main(int argc, char *argv[])
+     if (splashResolution > 0) {
+         psOut->setRasterResolution(splashResolution);
+     }
+-#ifdef HAVE_SPLASH
+     if (processcolorformatspecified)
+         psOut->setProcessColorFormat(processcolorformat);
+-#    ifdef USE_CMS
+-    psOut->setDisplayProfile(processcolorprofile);
+-#    endif
+-#endif
+ #ifdef USE_CMS
++    psOut->setDisplayProfile(processcolorprofile);
+     psOut->setDefaultGrayProfile(defaultgrayprofile);
+     psOut->setDefaultRGBProfile(defaultrgbprofile);
+     psOut->setDefaultCMYKProfile(defaultcmykprofile);
+-- 
+GitLab
+
