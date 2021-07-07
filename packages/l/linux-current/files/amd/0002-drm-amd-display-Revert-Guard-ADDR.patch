@@ -1,0 +1,107 @@
+From c003a438120b90e9dd0317e9e2b850c305fd6db3 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Wed, 7 Jul 2021 20:36:39 +0300
+Subject: drm/amd/display: Revert "Guard ASSR with internal display flag"
+
+This reverts commit 9127daa0a8d88a6e6452eb8b7c9be4c3f42a867e.
+
+[Why]
+1. Previous patch regresses on some embedded panels.
+2. Project coreboot doesn't support passing of internal display flag.
+
+[How]
+This reverts "Guard ASSR with internal display flag" commit.
+
+Fixes: 9127daa0a8d88a ("drm/amd/display: Guard ASSR with internal display flag")
+Bug: https://gitlab.freedesktop.org/drm/amd/-/issues/1620
+---
+ .../gpu/drm/amd/display/dc/core/dc_link_dp.c  | 58 ++++++-------------
+ 1 file changed, 17 insertions(+), 41 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/dc/core/dc_link_dp.c b/drivers/gpu/drm/amd/display/dc/core/dc_link_dp.c
+index 3ff3d9e90983..9e0a6fb64bd6 100644
+--- a/drivers/gpu/drm/amd/display/dc/core/dc_link_dp.c
++++ b/drivers/gpu/drm/amd/display/dc/core/dc_link_dp.c
+@@ -1646,42 +1646,6 @@ enum link_training_result dc_link_dp_perform_link_training(
+ 	return status;
+ }
+ 
+-static enum dp_panel_mode try_enable_assr(struct dc_stream_state *stream)
+-{
+-	struct dc_link *link = stream->link;
+-	enum dp_panel_mode panel_mode = dp_get_panel_mode(link);
+-#ifdef CONFIG_DRM_AMD_DC_HDCP
+-	struct cp_psp *cp_psp = &stream->ctx->cp_psp;
+-#endif
+-
+-	/* ASSR must be supported on the panel */
+-	if (panel_mode == DP_PANEL_MODE_DEFAULT)
+-		return panel_mode;
+-
+-	/* eDP or internal DP only */
+-	if (link->connector_signal != SIGNAL_TYPE_EDP &&
+-		!(link->connector_signal == SIGNAL_TYPE_DISPLAY_PORT &&
+-		 link->is_internal_display))
+-		return DP_PANEL_MODE_DEFAULT;
+-
+-#ifdef CONFIG_DRM_AMD_DC_HDCP
+-	if (cp_psp && cp_psp->funcs.enable_assr) {
+-		if (!cp_psp->funcs.enable_assr(cp_psp->handle, link)) {
+-			/* since eDP implies ASSR on, change panel
+-			 * mode to disable ASSR
+-			 */
+-			panel_mode = DP_PANEL_MODE_DEFAULT;
+-		}
+-	} else
+-		panel_mode = DP_PANEL_MODE_DEFAULT;
+-
+-#else
+-	/* turn off ASSR if the implementation is not compiled in */
+-	panel_mode = DP_PANEL_MODE_DEFAULT;
+-#endif
+-	return panel_mode;
+-}
+-
+ bool perform_link_training_with_retries(
+ 	const struct dc_link_settings *link_setting,
+ 	bool skip_video_pattern,
+@@ -1693,7 +1657,7 @@ bool perform_link_training_with_retries(
+ 	uint8_t delay_between_attempts = LINK_TRAINING_RETRY_DELAY;
+ 	struct dc_stream_state *stream = pipe_ctx->stream;
+ 	struct dc_link *link = stream->link;
+-	enum dp_panel_mode panel_mode;
++	enum dp_panel_mode panel_mode = dp_get_panel_mode(link);
+ 
+ 	/* We need to do this before the link training to ensure the idle pattern in SST
+ 	 * mode will be sent right after the link training
+@@ -1718,11 +1682,23 @@ bool perform_link_training_with_retries(
+ 			msleep(delay_dp_power_up_in_ms);
+ 		}
+ 
+-		panel_mode = try_enable_assr(stream);
++#ifdef CONFIG_DRM_AMD_DC_HDCP
++		if (panel_mode == DP_PANEL_MODE_EDP) {
++			struct cp_psp *cp_psp = &stream->ctx->cp_psp;
++
++			if (cp_psp && cp_psp->funcs.enable_assr) {
++				if (!cp_psp->funcs.enable_assr(cp_psp->handle, link)) {
++					/* since eDP implies ASSR on, change panel
++					 * mode to disable ASSR
++					 */
++					panel_mode = DP_PANEL_MODE_DEFAULT;
++				}
++			} else
++				panel_mode = DP_PANEL_MODE_DEFAULT;
++		}
++#endif
++
+ 		dp_set_panel_mode(link, panel_mode);
+-		DC_LOG_DETECTION_DP_CAPS("Link: %d ASSR enabled: %d\n",
+-			 link->link_index,
+-			 panel_mode != DP_PANEL_MODE_DEFAULT);
+ 
+ 		if (link->aux_access_disabled) {
+ 			dc_link_dp_perform_link_training_skip_aux(link, link_setting);
+-- 
+2.32.0
+
