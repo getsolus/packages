@@ -2,4 +2,5 @@ This file is used to indicate responsibility for the maintenance of this package
 	
 - Evan Maddock
   - IRC: EbonJaeger
+  - Matrix: @ebonjaeger:matrix.org
   - Email: maddock.evan@vivaldi.net
