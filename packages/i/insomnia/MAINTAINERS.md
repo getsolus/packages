@@ -4,5 +4,5 @@ This file is used to indicate responsibility for the maintenance of this package
   - IRC: JoshStrobl
   - Email: joshua@getsol.us
 - Julien Guillot
-  - IRC: Eressea
+  - IRC: nhvfc
   - Email: julienguillot@protonmail.com
