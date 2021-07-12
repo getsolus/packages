@@ -1,38 +1,67 @@
 name       : kotlin
-version    : 1.5.0
-release    : 2
+version    : 1.5.20
+release    : 16
 source     :
-    - https://github.com/JetBrains/kotlin/archive/refs/tags/v1.5.0.tar.gz : 8ad403d161138df39f26f39c546c8e55c3366d73e86ba67ec8fe00d920e69c11
+    - https://github.com/JetBrains/kotlin/archive/refs/tags/v1.5.20.tar.gz : c323a42846ca12d1df2c37604bd8372cb058187d06e507a5388f7afb18c2e3f3
+    - https://download.jetbrains.com/kotlin/native/x86_64-unknown-linux-gnu-gcc-8.3.0-glibc-2.19-kernel-4.9-2.tar.gz : a048397d50fb5a2bd6cc0f89d5a30e0b8ff0373ebff9c1d78ce1f1fb7f185a50
+    - https://download.jetbrains.com/kotlin/native/clang-llvm-8.0.0-linux-x86-64.tar.gz : a9ebf55170bdbe5e089dbf884e0bc52065b5b7bc52e9354415e25a36e10e56c5
+    - https://download.jetbrains.com/kotlin/native/libffi-3.2.1-2-linux-x86-64.tar.gz : 9d817bbca098a2fa0f1d5a8b9e57674c30d100bb4c6aeceff18d8acc5b9f382c
 license    : Apache-2.0
 component  : programming
 homepage   : https://kotlinlang.org/
-summary    : Statically typed multiplatform programming language
-description: |
-    Kotlin is a modern, concise, and safe programming language by JetBrains. It can run on the Java virtual machine, can be transpiled to JavaScript, and can be compiled to native binaries via LLVM. This package contains the JVM and JS compilers.
+summary    :
+    - Statically typed multiplatform programming language
+    - native : Standalone compiler toolchain for native Kotlin applications and libraries
+description:
+    - Kotlin is a modern, concise, and safe programming language by JetBrains. It can run on the Java virtual machine, can be transpiled to JavaScript, and can be compiled to native binaries via LLVM. This package contains the JVM and JS compilers.
+    - native : Kotlin/Native is a runtime implementation and native code generation facility for Kotlin using the LLVM toolchain. It's primarily designed to allow compilation for platforms where virtual machines are not desirable or possible (such as embedded targets), or where a developer wants to produce a reasonably-sized self-contained program without the need to ship an additional execution runtime.
+patterns   :
+    - native :
+        - /usr/bin/cinterop
+        - /usr/bin/generate-platform
+        - /usr/bin/jsinterop
+        - /usr/bin/klib
+        - /usr/bin/kotlinc-native
+        - /usr/bin/*konan*
+        - /usr/share/kotlin-native
 builddeps  :
     - openjdk-8
     - gradle
 rundeps    :
     - openjdk-11
 networking : yes
+environment: |
+    export KONAN_DATA_DIR="$workdir/.konan_home"
 setup      : |
-    %patch -p1 < $pkgfiles/fix-resolution-ambiguity-with-gradle-6-8.patch
+    # disable dependency verification so that the build can actually succeed
     rm -f $workdir/gradle/verification-metadata*.xml
+
+    # extract konan dependencies
+    mkdir -p $KONAN_DATA_DIR/dependencies/
+    for FILE in $(find $sources -type f -not -name "kotlin-native-*.tar.gz"); do
+        tar -xf $FILE -C $KONAN_DATA_DIR/dependencies/
+        echo $(basename -s .tar.gz $FILE) >> $KONAN_DATA_DIR/dependencies/.extracted
+    done
 build      : |
     export GRADLE_USER_HOME=$workdir/.gradle_home
+
     export JAVA_HOME="/usr/lib64/openjdk-11"
     export JDK_16="/usr/lib64/openjdk-8"
     export JDK_17="/usr/lib64/openjdk-8"
     export JDK_18="/usr/lib64/openjdk-8"
     export JDK_9="/usr/lib64/openjdk-11"
 
-    gradle dist \
+    gradle dist :kotlin-native:dist :kotlin-native:distPlatformLibs \
         --no-daemon \
         --parallel \
         --stacktrace \
         -PdeployVersion="%version%" \
-        -Pteamcity=true
+        -PcacheRedirectorEnabled=false \
+        -Pkotlin.native.enabled=true \
+        -Pteamcity=true \
+        -Ptest.disable_update=true
 install    : |
+    # install kotlin
     install -dm 00644 $installdir/usr/share/kotlin/lib
     install -Dm 00644 $workdir/dist/kotlinc/lib/* $installdir/usr/share/kotlin/lib
 
@@ -46,3 +75,18 @@ install    : |
     for FILE in $(basename -a $installdir/usr/share/kotlin/bin/*); do
         ln -s /usr/share/kotlin/bin/$FILE $installdir/usr/bin/$FILE
     done
+
+    # install kotlin-native
+    install -Dm 00755 kotlin-native/dist/bin/* -t $installdir/usr/share/kotlin-native/bin/
+    cp -r kotlin-native/dist/{klib,konan,tools} $installdir/usr/share/kotlin-native/
+
+    rm $installdir/usr/share/kotlin-native/bin/kotlinc # deprecated upstream, conflicts with real kotlinc
+
+    sed -i "2r $pkgfiles/java-shim.txt" $installdir/usr/share/kotlin-native/bin/run_konan
+
+    install -dm 00755 $installdir/usr/bin/
+    for FILE in $(basename -a $installdir/usr/share/kotlin-native/bin/*); do
+        ln -s /usr/share/kotlin-native/bin/$FILE $installdir/usr/bin/$FILE
+    done
+
+    find $installdir/usr/share/kotlin-native/ -type d -empty -delete
