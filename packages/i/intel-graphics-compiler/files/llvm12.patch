@@ -1,8 +1,27 @@
-From 2e3a306bca0ce980fdfb886d1b5408f2224536b5 Mon Sep 17 00:00:00 2001
-From: Campbell Jones <git@serebit.com>
-Date: Sat, 27 Mar 2021 15:22:52 -0400
-Subject: [PATCH] Resolve compatibility issues with llvm 11
+From 1c28c742daac3e2d2a3188716d913dd515f18acb Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Zolt=C3=A1n=20B=C3=B6sz=C3=B6rm=C3=A9nyi?=
+ <zboszor@gmail.com>
+Date: Mon, 26 Apr 2021 11:10:59 +0000
+Subject: [PATCH] Fix build with LLVM 12
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
+Removed TargetLibraryInfo.h include from AddressSpaceAliasAnalysis.cpp
+as this was causing treat-warning-as-error buildbreak,
+Added casts to fix warnings,
+Replaced ConstantPropagation and IPConstantPropagation passes with
+IPSCCP passes,
+reasoning here:
+https://lists.llvm.org/pipermail/llvm-dev/2020-July/143788.html
+
+Original pull-request:
+intel/intel-graphics-compiler#171
+
+Signed-off-by: Zoltán Böszörményi zboszor@gmail.com
+Co-authored-by: Pawel Szymichowski pawel.szymichowski@intel.com
+
+Co-authored-by: Zoltán Böszörményi zboszor@pr.hu
 ---
  .../LegalizeFunctionSignatures.cpp            |  2 +-
  IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp          | 22 ++++++------
@@ -27,7 +46,7 @@ Subject: [PATCH] Resolve compatibility issues with llvm 11
  .../CISACodeGen/RegisterPressureEstimate.hpp  |  3 +-
  IGC/Compiler/CISACodeGen/SLMConstProp.cpp     |  3 +-
  .../CISACodeGen/ScalarizerCodeGen.cpp         |  4 +--
- IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp    |  4 +++
+ IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp    | 10 ++++++
  .../CISACodeGen/Simd32Profitability.cpp       | 10 +++---
  IGC/Compiler/CISACodeGen/SimplifyConstant.cpp | 12 +++----
  IGC/Compiler/CISACodeGen/TypeDemote.cpp       |  3 +-
@@ -50,18 +69,12 @@ Subject: [PATCH] Resolve compatibility issues with llvm 11
  IGC/Compiler/Legalizer/TypeLegalizer.cpp      |  3 +-
  IGC/Compiler/Legalizer/TypeLegalizer.h        |  3 +-
  IGC/Compiler/LowPrecisionOptPass.cpp          |  2 +-
- .../IGCInstCombiner/4.0/InstCombineCalls.cpp  |  2 +-
- .../IGCInstCombiner/7.0/InstCombineCalls.cpp  |  2 +-
- .../IGCInstCombiner/7.0/InstCombineInternal.h |  2 +-
- .../7.0/InstCombineSimplifyDemanded.cpp       |  2 +-
- .../7.0/InstructionCombining.cpp              |  2 +-
- .../AddressSpaceAliasAnalysis.cpp             |  1 +
  .../AggregateArguments/AggregateArguments.cpp |  3 +-
  .../CorrectlyRoundedDivSqrt.cpp               |  3 +-
  .../DeviceEnqueueFuncs/TransformBlocks.cpp    |  4 +--
  .../Optimizer/OpenCLPasses/KernelArgs.cpp     |  3 +-
  .../OpenCLPrintf/OpenCLPrintfResolution.cpp   |  4 +--
- .../PrivateMemory/PrivateMemoryResolution.cpp |  9 ++---
+ .../PrivateMemory/PrivateMemoryResolution.cpp |  9 +++--
  .../ReplaceUnsupportedIntrinsics.cpp          |  4 +--
  .../OpenCLPasses/WIFuncs/WIFuncResolution.cpp |  2 +-
  .../Optimizer/PreCompiledFuncImport.cpp       |  4 +--
@@ -76,14 +89,14 @@ Subject: [PATCH] Resolve compatibility issues with llvm 11
  .../include/llvmWrapper/Support/TypeSize.h    |  6 +++-
  .../include/llvmWrapper/Transforms/Scalar.h   |  4 +--
  .../llvmWrapper/Transforms/Utils/LoopUtils.h  |  8 +++++
- IGC/common/igc_resourceDimTypes.h             |  6 +++-
- 73 files changed, 268 insertions(+), 208 deletions(-)
+ IGC/common/igc_resourceDimTypes.h             |  5 +++
+ 67 files changed, 269 insertions(+), 201 deletions(-)
 
 diff --git a/IGC/AdaptorCommon/LegalizeFunctionSignatures.cpp b/IGC/AdaptorCommon/LegalizeFunctionSignatures.cpp
-index 4046b4a..8ed3608 100644
+index 767f6b462b..fe0d578b9e 100644
 --- a/IGC/AdaptorCommon/LegalizeFunctionSignatures.cpp
 +++ b/IGC/AdaptorCommon/LegalizeFunctionSignatures.cpp
-@@ -156,7 +156,7 @@ inline Type* LegalizedIntVectorType(Module& M, const Type* const oldTy)
+@@ -140,7 +140,7 @@ inline Type* LegalizedIntVectorType(Module& M, const Type* const oldTy)
      else if (size <= 64) newSize = 64;
      else IGC_ASSERT_MESSAGE(0, "Currently don't support upscaling int sizes > 64 bits");
  
@@ -93,10 +106,10 @@ index 4046b4a..8ed3608 100644
  
  void LegalizeFunctionSignatures::FixFunctionSignatures()
 diff --git a/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp b/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
-index 41d1f2e..c4f9d1e 100644
+index fbdb12333b..c334ee3c50 100644
 --- a/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
 +++ b/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
-@@ -1576,7 +1576,7 @@ void SPIRVToLLVMDbgTran::transDbgInfo(SPIRVValue *SV, Value *V) {
+@@ -1577,7 +1577,7 @@ void SPIRVToLLVMDbgTran::transDbgInfo(SPIRVValue *SV, Value *V) {
              Line->getColumn(), scope, iat);
  
          if(scope && !isa<DIFile>(scope))
@@ -105,7 +118,7 @@ index 41d1f2e..c4f9d1e 100644
                  scope, iat));
      }
  }
-@@ -1925,7 +1925,7 @@ SPIRVToLLVM::transType(SPIRVType *T) {
+@@ -1929,7 +1929,7 @@ SPIRVToLLVM::transType(SPIRVType *T) {
          auto name = isSubgroupAvcINTELTypeOpCode(OC) ?
              OCLSubgroupINTELTypeOpCodeMap::rmap(OC) :
              BuiltinOpaqueGenericTypeOpCodeMap::rmap(OC);
@@ -114,7 +127,7 @@ index 41d1f2e..c4f9d1e 100644
          pST = pST ? pST : StructType::create(*Context, name);
  
          return mapType(T, PointerType::get(pST, getOCLOpaqueTypeAddrSpace(OC)));
-@@ -2403,7 +2403,7 @@ Value *SPIRVToLLVM::promoteBool(Value *pVal, BasicBlock *BB)
+@@ -2407,7 +2407,7 @@ Value *SPIRVToLLVM::promoteBool(Value *pVal, BasicBlock *BB)
  
      auto *PromoType = isa<VectorType>(pVal->getType()) ?
          cast<Type>(IGCLLVM::FixedVectorType::get(Type::getInt8Ty(pVal->getContext()),
@@ -123,7 +136,7 @@ index 41d1f2e..c4f9d1e 100644
          Type::getInt8Ty(pVal->getContext());
  
      if (auto *C = dyn_cast<Constant>(pVal))
-@@ -2445,7 +2445,7 @@ Value *SPIRVToLLVM::truncBool(Value *pVal, BasicBlock *BB)
+@@ -2449,7 +2449,7 @@ Value *SPIRVToLLVM::truncBool(Value *pVal, BasicBlock *BB)
  
      auto *TruncType = isa<VectorType>(pVal->getType()) ?
          cast<Type>(IGCLLVM::FixedVectorType::get(Type::getInt1Ty(pVal->getContext()),
@@ -132,7 +145,7 @@ index 41d1f2e..c4f9d1e 100644
          Type::getInt1Ty(pVal->getContext());
  
      if (auto *C = dyn_cast<Constant>(pVal))
-@@ -2491,7 +2491,7 @@ Type *SPIRVToLLVM::truncBoolType(SPIRVType *SPVType, Type *LLType)
+@@ -2495,7 +2495,7 @@ Type *SPIRVToLLVM::truncBoolType(SPIRVType *SPVType, Type *LLType)
  
      return isa<VectorType>(LLType) ?
          cast<Type>(IGCLLVM::FixedVectorType::get(Type::getInt1Ty(LLType->getContext()),
@@ -141,7 +154,7 @@ index 41d1f2e..c4f9d1e 100644
          Type::getInt1Ty(LLType->getContext());
  }
  
-@@ -2648,7 +2648,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
+@@ -2652,7 +2652,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
        {
          if(CV[i]->getType()->isVectorTy())
          {
@@ -150,7 +163,7 @@ index 41d1f2e..c4f9d1e 100644
            {
              Value *v = ExtractElementInst::Create( CV[i],ConstantInt::get( *Context,APInt( 32,j ) ),BCC->getName(),BB );
              elm1 = CreateCompositeConstruct( elm1,v,pos++ );
-@@ -3336,7 +3336,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
+@@ -3346,7 +3346,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
        auto Vector = transValue(BI->getOperand(0), F, BB);
        auto Scalar = transValue(BI->getOperand(1), F, BB);
  
@@ -159,7 +172,7 @@ index 41d1f2e..c4f9d1e 100644
        auto Undef   = UndefValue::get(VecType);
  
        auto ScalarVec = InsertElementInst::Create(Undef, Scalar,
-@@ -3361,7 +3361,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
+@@ -3371,7 +3371,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
            a->getType()->getScalarSizeInBits() - 1);
        auto *ShiftOp = isa<VectorType>(a->getType()) ?
            ConstantVector::getSplat(
@@ -168,7 +181,7 @@ index 41d1f2e..c4f9d1e 100644
            ShiftAmt;
  
        // OCL C:
-@@ -3705,15 +3705,15 @@ SPIRVToLLVM::transSPIRVBuiltinFromInst(SPIRVInstruction *BI, BasicBlock *BB) {
+@@ -3715,15 +3715,15 @@ SPIRVToLLVM::transSPIRVBuiltinFromInst(SPIRVInstruction *BI, BasicBlock *BB) {
                "",
                BB);
        }
@@ -188,7 +201,7 @@ index 41d1f2e..c4f9d1e 100644
  
            imageCoordinateWiden = new ShuffleVectorInst(
 diff --git a/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp b/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
-index 5782155..f4f0dee 100644
+index 57821556d3..f4f0dee5af 100644
 --- a/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
 +++ b/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
 @@ -93,7 +93,7 @@ saveLLVMModule(Module *M, const std::string &OutputFile) {
@@ -210,7 +223,7 @@ index 5782155..f4f0dee 100644
              return "v" + utostr(vecLen) + recursive_mangle(pEltType);
          }
 diff --git a/IGC/Compiler/CISACodeGen/AdvMemOpt.cpp b/IGC/Compiler/CISACodeGen/AdvMemOpt.cpp
-index 81acc6c..a612a47 100644
+index 81acc6ce6a..a612a4739a 100644
 --- a/IGC/Compiler/CISACodeGen/AdvMemOpt.cpp
 +++ b/IGC/Compiler/CISACodeGen/AdvMemOpt.cpp
 @@ -33,6 +33,7 @@ IN THE SOFTWARE.
@@ -231,7 +244,7 @@ index 81acc6c..a612a47 100644
          }
  
 diff --git a/IGC/Compiler/CISACodeGen/CShader.cpp b/IGC/Compiler/CISACodeGen/CShader.cpp
-index d46f040..d8f57cb 100644
+index 86b7bfe663..e55a36ef9f 100644
 --- a/IGC/Compiler/CISACodeGen/CShader.cpp
 +++ b/IGC/Compiler/CISACodeGen/CShader.cpp
 @@ -434,7 +434,7 @@ void CShader::CreateAliasVars()
@@ -243,7 +256,7 @@ index d46f040..d8f57cb 100644
                      Type* BTy = VTy ? VTy->getElementType() : Ty;
                      int nelts = (VTy ? (int)VTy->getNumElements() : 1);
  
-@@ -983,7 +983,7 @@ bool CShader::InsideDivergentCF(llvm::Instruction* inst)
+@@ -984,7 +984,7 @@ bool CShader::InsideDivergentCF(llvm::Instruction* inst)
  uint CShader::GetNbVectorElementAndMask(llvm::Value* val, uint32_t& mask)
  {
      llvm::Type* type = val->getType();
@@ -252,7 +265,7 @@ index d46f040..d8f57cb 100644
      mask = 0;
      // we don't process vector bigger than 31 elements as the mask has only 32bits
      // If we want to support longer vectors we need to extend the mask size
-@@ -1188,7 +1188,7 @@ uint32_t CShader::GetExtractMask(llvm::Value* vecVal)
+@@ -1189,7 +1189,7 @@ uint32_t CShader::GetExtractMask(llvm::Value* vecVal)
      {
          return it->second;
      }
@@ -261,7 +274,7 @@ index d46f040..d8f57cb 100644
      IGC_ASSERT_MESSAGE(numChannels <= 32, "Mask has 32 bits maximally!");
      return (1ULL << numChannels) - 1;
  }
-@@ -1196,7 +1196,7 @@ uint32_t CShader::GetExtractMask(llvm::Value* vecVal)
+@@ -1197,7 +1197,7 @@ uint32_t CShader::GetExtractMask(llvm::Value* vecVal)
  uint16_t CShader::AdjustExtractIndex(llvm::Value* vecVal, uint16_t index)
  {
      uint16_t result = index;
@@ -270,7 +283,7 @@ index d46f040..d8f57cb 100644
      {
          uint32_t mask = GetExtractMask(vecVal);
          for (uint i = 0; i < index; ++i)
-@@ -1613,7 +1613,7 @@ auto sizeToSIMDMode = [](uint32_t size)
+@@ -1614,7 +1614,7 @@ auto sizeToSIMDMode = [](uint32_t size)
  
  CVariable* CShader::GetConstant(llvm::Constant* C, CVariable* dstVar)
  {
@@ -279,7 +292,7 @@ index d46f040..d8f57cb 100644
      if (C && VTy)
      {   // Vector constant
          llvm::Type* eTy = VTy->getElementType();
-@@ -1838,7 +1838,7 @@ uint32_t CShader::GetNumElts(llvm::Type* type, bool isUniform)
+@@ -1839,7 +1839,7 @@ uint32_t CShader::GetNumElts(llvm::Type* type, bool isUniform)
      {
          IGC_ASSERT(type->getContainedType(0)->isIntegerTy() || type->getContainedType(0)->isFloatingPointTy());
  
@@ -289,7 +302,7 @@ index d46f040..d8f57cb 100644
      }
      return numElts;
 diff --git a/IGC/Compiler/CISACodeGen/ConstantCoalescing.cpp b/IGC/Compiler/CISACodeGen/ConstantCoalescing.cpp
-index 1efe116..47b7c6c 100644
+index 9a7b61834e..a9b75bc2f5 100644
 --- a/IGC/Compiler/CISACodeGen/ConstantCoalescing.cpp
 +++ b/IGC/Compiler/CISACodeGen/ConstantCoalescing.cpp
 @@ -224,7 +224,7 @@ static void checkInsertExtractMatch(InsertElementInst* insertInst, Value* base,
@@ -319,7 +332,7 @@ index 1efe116..47b7c6c 100644
              return false;
  
          MaxEltPlus = CheckVectorElementUses(I);
-@@ -1787,7 +1787,7 @@ void ConstantCoalescing::AdjustChunk(BufChunk* cov_chunk, uint start_adj, uint s
+@@ -1843,7 +1843,7 @@ void ConstantCoalescing::AdjustChunk(BufChunk* cov_chunk, uint start_adj, uint s
          WIAnalysis::WIDependancy loadDep = wiAns->whichDepend(cov_chunk->chunkIO);
          irBuilder->SetInsertPoint(cov_chunk->chunkIO->getNextNode());
          Value* vec = UndefValue::get(originalType);
@@ -328,7 +341,7 @@ index 1efe116..47b7c6c 100644
          {
              Value* channel = irBuilder->CreateExtractElement(
                  cov_chunk->chunkIO, irBuilder->getInt32(i + start_adj));
-@@ -1851,7 +1851,7 @@ void ConstantCoalescing::MoveExtracts(BufChunk* cov_chunk, Instruction* load, ui
+@@ -1907,7 +1907,7 @@ void ConstantCoalescing::MoveExtracts(BufChunk* cov_chunk, Instruction* load, ui
              irBuilder->SetInsertPoint(load->getNextNode());
              Type* vecType = load->getType();
              Value* vec = UndefValue::get(vecType);
@@ -337,7 +350,7 @@ index 1efe116..47b7c6c 100644
              {
                  Value* channel = irBuilder->CreateExtractElement(
                      cov_chunk->chunkIO, irBuilder->getInt32(i + start_adj));
-@@ -1915,7 +1915,7 @@ void ConstantCoalescing::EnlargeChunk(BufChunk* cov_chunk, uint size_adj)
+@@ -1971,7 +1971,7 @@ void ConstantCoalescing::EnlargeChunk(BufChunk* cov_chunk, uint size_adj)
          WIAnalysis::WIDependancy loadDep = wiAns->whichDepend(cov_chunk->chunkIO);
          irBuilder->SetInsertPoint(cov_chunk->chunkIO->getNextNode());
          Value* vec = UndefValue::get(originalType);
@@ -346,7 +359,7 @@ index 1efe116..47b7c6c 100644
          {
              Value* channel = irBuilder->CreateExtractElement(
                  cov_chunk->chunkIO, irBuilder->getInt32(i));
-@@ -2343,7 +2343,7 @@ void ConstantCoalescing::ReplaceLoadWithSamplerLoad(
+@@ -2408,7 +2408,7 @@ void ConstantCoalescing::ReplaceLoadWithSamplerLoad(
          if (dstTy->isVectorTy())
          {
              result = UndefValue::get(dstTy);
@@ -356,18 +369,18 @@ index 1efe116..47b7c6c 100644
                  Value* tmpData = ExtractFromSamplerData(cast<VectorType>(dstTy)->getElementType(), i);
                  result = irBuilder->CreateInsertElement(result, tmpData, irBuilder->getInt32(i));
 diff --git a/IGC/Compiler/CISACodeGen/DeSSA.cpp b/IGC/Compiler/CISACodeGen/DeSSA.cpp
-index f540dc1..6fab024 100644
+index b5d718cc6e..ce89fa53dd 100644
 --- a/IGC/Compiler/CISACodeGen/DeSSA.cpp
 +++ b/IGC/Compiler/CISACodeGen/DeSSA.cpp
-@@ -83,6 +83,7 @@ IN THE SOFTWARE.
- #include "Compiler/IGCPassSupport.h"
- #include "common/LLVMWarningsPush.hpp"
+@@ -85,6 +85,7 @@ IN THE SOFTWARE.
+ #include "llvmWrapper/IR/Instructions.h"
  #include <llvm/IR/InstIterator.h>
+ #include <llvm/IR/InlineAsm.h>
 +#include <llvmWrapper/IR/DerivedTypes.h>
  #include "common/LLVMWarningsPop.hpp"
  #include <algorithm>
  #include "Probe/Assertion.h"
-@@ -1284,7 +1285,7 @@ int DeSSA::checkInsertElementAlias(
+@@ -1319,7 +1320,7 @@ int DeSSA::checkInsertElementAlias(
      //
      // If found, return the actual vector size;
      // otherwise, return 0.
@@ -377,7 +390,7 @@ index f540dc1..6fab024 100644
      int nelts = (int)VTy->getNumElements();
      AllIEIs.resize(nelts, nullptr);
 diff --git a/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp b/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
-index 471de3e..6387e5b 100644
+index c68692f74e..318d290d81 100644
 --- a/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
 +++ b/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
 @@ -53,6 +53,7 @@ IN THE SOFTWARE.
@@ -386,9 +399,9 @@ index 471de3e..6387e5b 100644
  #include "llvmWrapper/IR/Instructions.h"
 +#include "llvmWrapper/IR/DerivedTypes.h"
  #include "llvm/Support/Path.h"
- #include "llvmWrapper/IR/Intrinsics.h"
- #include "common/LLVMWarningsPop.hpp"
-@@ -1187,7 +1188,7 @@ bool EmitPass::canRelocatePhiMov(
+ #include "llvm/Support/FormattedStream.h"
+ #include "llvm/IR/AssemblyAnnotationWriter.h"
+@@ -1229,7 +1230,7 @@ bool EmitPass::canRelocatePhiMov(
                  if (dst != src)
                  {
                      int numElt = 1;
@@ -397,7 +410,7 @@ index 471de3e..6387e5b 100644
                      {
                          numElt = int_cast<int>(vTy->getNumElements());
                      }
-@@ -1324,7 +1325,7 @@ void EmitPass::MovPhiSources(llvm::BasicBlock* aBB)
+@@ -1366,7 +1367,7 @@ void EmitPass::MovPhiSources(llvm::BasicBlock* aBB)
                          phiSrcDstList.push_back(phiInfo);
  
                          int numElt = 0;
@@ -406,7 +419,7 @@ index 471de3e..6387e5b 100644
                          {
                              numElt = int_cast<int>(vTy->getNumElements());
                          }
-@@ -5399,7 +5400,7 @@ void EmitPass::emitLegacySimdBlockWrite(llvm::Instruction* inst, llvm::Value* pt
+@@ -5455,7 +5456,7 @@ void EmitPass::emitLegacySimdBlockWrite(llvm::Instruction* inst, llvm::Value* pt
      bool useA64 = isA64Ptr(ptrType, m_currShader->GetContext());
  
      Type* Ty = dataPtr->getType();
@@ -415,7 +428,7 @@ index 471de3e..6387e5b 100644
      uint32_t nbElements = VTy ? int_cast<uint32_t>(VTy->getNumElements()) : 1;
  
      uint32_t typeSizeInBytes = Ty->getScalarSizeInBits() / 8;
-@@ -5645,7 +5646,7 @@ void EmitPass::emitLegacySimdBlockRead(llvm::Instruction* inst, llvm::Value* ptr
+@@ -5701,7 +5702,7 @@ void EmitPass::emitLegacySimdBlockRead(llvm::Instruction* inst, llvm::Value* ptr
      bool useA64 = isA64Ptr(ptrType, m_currShader->GetContext());
  
      Type* Ty = inst->getType();
@@ -424,7 +437,7 @@ index 471de3e..6387e5b 100644
      uint32_t nbElements = VTy ? int_cast<uint32_t>(VTy->getNumElements()) : 1;
  
      uint32_t typeSizeInBytes = Ty->getScalarSizeInBits() / 8;
-@@ -5937,7 +5938,7 @@ void EmitPass::emitMediaBlockIO(const llvm::GenIntrinsicInst* inst, bool isRead)
+@@ -5993,7 +5994,7 @@ void EmitPass::emitMediaBlockIO(const llvm::GenIntrinsicInst* inst, bool isRead)
          };
  
          uint nElts = isa<VectorType>(pDataType) ?
@@ -433,7 +446,7 @@ index 471de3e..6387e5b 100644
              1;
  
          // Now, do the copies.
-@@ -6027,7 +6028,7 @@ void EmitPass::emitSimdMediaBlockRead(llvm::Instruction* inst)
+@@ -6083,7 +6084,7 @@ void EmitPass::emitSimdMediaBlockRead(llvm::Instruction* inst)
      uint32_t nbElements = 1;
      if (inst->getType()->isVectorTy())
      {
@@ -442,7 +455,7 @@ index 471de3e..6387e5b 100644
      }
      IGC_ASSERT_MESSAGE(nbElements <= 8, "InValid Vector Size");
  
-@@ -6271,7 +6272,7 @@ void EmitPass::emitSimdMediaBlockWrite(llvm::Instruction* inst)
+@@ -6327,7 +6328,7 @@ void EmitPass::emitSimdMediaBlockWrite(llvm::Instruction* inst)
      uint32_t nbElements = 1;
      if (dataPtr->getType()->isVectorTy())
      {
@@ -451,7 +464,7 @@ index 471de3e..6387e5b 100644
      }
      IGC_ASSERT_MESSAGE(nbElements <= 8, "InValid Vector Size");
  
-@@ -9033,8 +9034,8 @@ void EmitPass::emitBitCast(llvm::BitCastInst* btCst)
+@@ -9139,8 +9140,8 @@ void EmitPass::emitBitCast(llvm::BitCastInst* btCst)
  {
      Type* srcType = btCst->getOperand(0)->getType();
      Type* dstType = btCst->getType();
@@ -462,7 +475,7 @@ index 471de3e..6387e5b 100644
  
      if (srcType->isPointerTy())
      {
-@@ -9480,7 +9481,7 @@ void EmitPass::emitLoad3DInner(LdRawIntrinsic* inst, ResourceDescriptor& resourc
+@@ -9587,7 +9588,7 @@ void EmitPass::emitLoad3DInner(LdRawIntrinsic* inst, ResourceDescriptor& resourc
      {
          IGC_ASSERT_MESSAGE(predDefSurface != ESURFACE_STATELESS, "scratch cannot be uniform");
          Type* loadType = inst->getType();
@@ -471,7 +484,7 @@ index 471de3e..6387e5b 100644
          if (predDefSurface == ESURFACE_SLM)
          {
              IGC_ASSERT(numElement <= 4);
-@@ -10809,7 +10810,7 @@ void EmitPass::emitInsert(llvm::Instruction* inst)
+@@ -10919,7 +10920,7 @@ void EmitPass::emitInsert(llvm::Instruction* inst)
              pVecVar = GetSymbol(pVec);
              if (pVecVar != pInstVar)
              {
@@ -480,7 +493,7 @@ index 471de3e..6387e5b 100644
              }
          }
      }
-@@ -14651,7 +14652,7 @@ bool EmitPass::isUniformStoreOCL(llvm::StoreInst* SI)
+@@ -14753,7 +14754,7 @@ bool EmitPass::isUniformStoreOCL(llvm::StoreInst* SI)
  
      Value* storeVal = SI->getValueOperand();
      Type* Ty = storeVal->getType();
@@ -489,7 +502,7 @@ index 471de3e..6387e5b 100644
      uint32_t elts = VTy ? int_cast<uint32_t>(VTy->getNumElements()) : 1;
      Type* eltTy = VTy ? VTy->getElementType() : Ty;
  
-@@ -14681,7 +14682,7 @@ void EmitPass::emitVectorBitCast(llvm::BitCastInst* BCI)
+@@ -14783,7 +14784,7 @@ void EmitPass::emitVectorBitCast(llvm::BitCastInst* BCI)
      if (srcTy->isVectorTy())
      {
          srcEltTy = cast<VectorType>(srcTy)->getElementType();
@@ -498,7 +511,7 @@ index 471de3e..6387e5b 100644
      }
      else
      {
-@@ -14691,7 +14692,7 @@ void EmitPass::emitVectorBitCast(llvm::BitCastInst* BCI)
+@@ -14793,7 +14794,7 @@ void EmitPass::emitVectorBitCast(llvm::BitCastInst* BCI)
      if (dstTy->isVectorTy())
      {
          dstEltTy = cast<VectorType>(dstTy)->getElementType();
@@ -507,7 +520,7 @@ index 471de3e..6387e5b 100644
      }
      else
      {
-@@ -15271,7 +15272,7 @@ void EmitPass::emitVectorLoad(LoadInst* inst, Value* offset, ConstantInt* immOff
+@@ -15372,7 +15373,7 @@ void EmitPass::emitVectorLoad(LoadInst* inst, Value* offset, ConstantInt* immOff
      }
  
      Type* Ty = inst->getType();
@@ -516,7 +529,7 @@ index 471de3e..6387e5b 100644
      Type* eltTy = VTy ? VTy->getElementType() : Ty;
      uint32_t eltBytes = GetScalarTypeSizeInRegister(eltTy);
      IGC_ASSERT_MESSAGE((eltBytes == 1) || (eltBytes == 2) || (eltBytes == 4) || (eltBytes == 8),
-@@ -15723,7 +15724,7 @@ void EmitPass::emitVectorStore(StoreInst* inst, Value* offset, ConstantInt* immO
+@@ -15824,7 +15825,7 @@ void EmitPass::emitVectorStore(StoreInst* inst, Value* offset, ConstantInt* immO
  
      Value* storedVal = inst->getValueOperand();
      Type* Ty = storedVal->getType();
@@ -525,7 +538,7 @@ index 471de3e..6387e5b 100644
      Type* eltTy = VTy ? VTy->getElementType() : Ty;
      uint32_t eltBytes = GetScalarTypeSizeInRegister(eltTy);
  
-@@ -16530,7 +16531,7 @@ void EmitPass::emitCopyAll(CVariable* Dst, CVariable* Src, llvm::Type* Ty)
+@@ -16628,7 +16629,7 @@ void EmitPass::emitCopyAll(CVariable* Dst, CVariable* Src, llvm::Type* Ty)
      }
      else if (Ty->isVectorTy())
      {
@@ -535,7 +548,7 @@ index 471de3e..6387e5b 100644
      }
      else
 diff --git a/IGC/Compiler/CISACodeGen/Emu64OpsPass.cpp b/IGC/Compiler/CISACodeGen/Emu64OpsPass.cpp
-index 28248f3..767b477 100644
+index 28248f3062..767b477af1 100644
 --- a/IGC/Compiler/CISACodeGen/Emu64OpsPass.cpp
 +++ b/IGC/Compiler/CISACodeGen/Emu64OpsPass.cpp
 @@ -1961,7 +1961,7 @@ bool InstExpander::visitExtractElement(ExtractElementInst& EEI) {
@@ -557,7 +570,7 @@ index 28248f3..767b477 100644
      // Re-calculate indices to Lo and Hi parts.
      Value* Idx = IEI.getOperand(2);
 diff --git a/IGC/Compiler/CISACodeGen/GenIRLowering.cpp b/IGC/Compiler/CISACodeGen/GenIRLowering.cpp
-index c74a2ac..78e8a4a 100644
+index c74a2ac6ef..78e8a4aa30 100644
 --- a/IGC/Compiler/CISACodeGen/GenIRLowering.cpp
 +++ b/IGC/Compiler/CISACodeGen/GenIRLowering.cpp
 @@ -453,7 +453,7 @@ Value* GEPLowering::getSExtOrTrunc(Value* Val, Type* NewTy) const {
@@ -579,7 +592,7 @@ index c74a2ac..78e8a4a 100644
                          for (uint32_t j = 0; j < (uint32_t)NewIdxVT->getNumElements(); j++) {
                              result = Builder->CreateInsertElement(result, PointerValue, Builder->getInt32(j));
 diff --git a/IGC/Compiler/CISACodeGen/GenSimplification.cpp b/IGC/Compiler/CISACodeGen/GenSimplification.cpp
-index 8c38f22..f432061 100644
+index 8c38f2292e..f432061e64 100644
 --- a/IGC/Compiler/CISACodeGen/GenSimplification.cpp
 +++ b/IGC/Compiler/CISACodeGen/GenSimplification.cpp
 @@ -35,6 +35,7 @@ IN THE SOFTWARE.
@@ -609,7 +622,7 @@ index 8c38f22..f432061 100644
          return;
  
 diff --git a/IGC/Compiler/CISACodeGen/GeometryShaderLowering.cpp b/IGC/Compiler/CISACodeGen/GeometryShaderLowering.cpp
-index e00e846..a60b989 100644
+index a5d6594820..32c4759fdb 100644
 --- a/IGC/Compiler/CISACodeGen/GeometryShaderLowering.cpp
 +++ b/IGC/Compiler/CISACodeGen/GeometryShaderLowering.cpp
 @@ -33,6 +33,7 @@ IN THE SOFTWARE.
@@ -630,7 +643,7 @@ index e00e846..a60b989 100644
              Value* vecElement = builder.CreateExtractElement(urbRead, builder.getInt32(i));
              vec = builder.CreateInsertElement(vec, vecElement, builder.getInt32(i));
 diff --git a/IGC/Compiler/CISACodeGen/LdShrink.cpp b/IGC/Compiler/CISACodeGen/LdShrink.cpp
-index d89fbd0..2df06df 100644
+index d89fbd0e82..2df06df2fd 100644
 --- a/IGC/Compiler/CISACodeGen/LdShrink.cpp
 +++ b/IGC/Compiler/CISACodeGen/LdShrink.cpp
 @@ -30,6 +30,7 @@ IN THE SOFTWARE.
@@ -666,10 +679,10 @@ index d89fbd0..2df06df 100644
      unsigned Mask = 0; // Maxmimally 32 elements.
  
 diff --git a/IGC/Compiler/CISACodeGen/LowerGEPForPrivMem.cpp b/IGC/Compiler/CISACodeGen/LowerGEPForPrivMem.cpp
-index d7883e3..5e509fd 100644
+index 43febc955a..d9c2fb3ad8 100644
 --- a/IGC/Compiler/CISACodeGen/LowerGEPForPrivMem.cpp
 +++ b/IGC/Compiler/CISACodeGen/LowerGEPForPrivMem.cpp
-@@ -644,7 +644,7 @@ void TransposeHelper::handleGEPInst(
+@@ -617,7 +617,7 @@ void TransposeHelper::handleGEPInst(
              }
              else
              {
@@ -678,7 +691,7 @@ index d7883e3..5e509fd 100644
              }
              T = cast<VectorType>(T)->getElementType();
          }
-@@ -666,7 +666,7 @@ void TransposeHelper::handleGEPInst(
+@@ -639,7 +639,7 @@ void TransposeHelper::handleGEPInst(
          }
          else if (T->isVectorTy())
          {
@@ -687,7 +700,7 @@ index d7883e3..5e509fd 100644
              T = cast<VectorType>(T)->getElementType();
          }
          else
-@@ -726,7 +726,7 @@ void TransposeHelperPromote::handleLoadInst(
+@@ -699,7 +699,7 @@ void TransposeHelperPromote::handleLoadInst(
      IRBuilder<> IRB(pLoad);
      IGC_ASSERT(nullptr != pLoad->getType());
      unsigned N = pLoad->getType()->isVectorTy()
@@ -696,7 +709,7 @@ index d7883e3..5e509fd 100644
          : 1;
      Value* Val = loadEltsFromVecAlloca(N, pVecAlloca, pScalarizedIdx, IRB, pLoad->getType()->getScalarType());
      pLoad->replaceAllUsesWith(Val);
-@@ -758,7 +758,7 @@ void TransposeHelperPromote::handleStoreInst(
+@@ -731,7 +731,7 @@ void TransposeHelperPromote::handleStoreInst(
          // %v1 = extractelement <2 x float> %v, i32 1
          // %w1 = insertelement <32 x float> %w0, float %v1, i32 %idx+1
          // store <32 x float> %w1, <32 x float>* %ptr1
@@ -706,7 +719,7 @@ index d7883e3..5e509fd 100644
              Value* VectorIdx = ConstantInt::get(pScalarizedIdx->getType(), i);
              auto Val = IRB.CreateExtractElement(pStoreVal, VectorIdx);
 diff --git a/IGC/Compiler/CISACodeGen/MemOpt.cpp b/IGC/Compiler/CISACodeGen/MemOpt.cpp
-index 0adb571..3ad8de6 100644
+index 027734c105..debb7e22ba 100644
 --- a/IGC/Compiler/CISACodeGen/MemOpt.cpp
 +++ b/IGC/Compiler/CISACodeGen/MemOpt.cpp
 @@ -125,7 +125,7 @@ namespace {
@@ -718,7 +731,7 @@ index 0adb571..3ad8de6 100644
          }
  
          MemoryLocation getLocation(Instruction* I) const {
-@@ -797,7 +797,7 @@ bool MemOpt::mergeLoad(LoadInst* LeadingLoad,
+@@ -798,7 +798,7 @@ bool MemOpt::mergeLoad(LoadInst* LeadingLoad,
          Pos = unsigned((std::get<1>(I) - FirstOffset) / LdScalarSize);
  
          if (Ty->isVectorTy()) {
@@ -727,7 +740,7 @@ index 0adb571..3ad8de6 100644
                  // This implies we're trying to extract an element from our new load
                  // with an index > the size of the new load.  If this happens,
                  // we'll generate correct code if it does since we don't remove the
-@@ -805,7 +805,7 @@ bool MemOpt::mergeLoad(LoadInst* LeadingLoad,
+@@ -806,7 +806,7 @@ bool MemOpt::mergeLoad(LoadInst* LeadingLoad,
                  continue;
              }
              Value* Val = UndefValue::get(Ty);
@@ -736,7 +749,7 @@ index 0adb571..3ad8de6 100644
                  Value* Ex = Builder.CreateExtractElement(NewLoad, Builder.getInt32(Pos + i));
                  Ex = createBitOrPointerCast(Ex, ScalarTy, Builder);
                  Val = Builder.CreateInsertElement(Val, Ex, Builder.getInt32(i));
-@@ -1083,7 +1083,7 @@ bool MemOpt::mergeStore(StoreInst* LeadingStore,
+@@ -1084,7 +1084,7 @@ bool MemOpt::mergeStore(StoreInst* LeadingStore,
          IGC_ASSERT(hasSameSize(ScalarTy, LeadingStoreScalarType));
  
          if (Ty->isVectorTy()) {
@@ -746,7 +759,7 @@ index 0adb571..3ad8de6 100644
                  Ex = createBitOrPointerCast(Ex, LeadingStoreScalarType, Builder);
                  NewStoreVal = Builder.CreateInsertElement(NewStoreVal, Ex,
 diff --git a/IGC/Compiler/CISACodeGen/MemOpt2.cpp b/IGC/Compiler/CISACodeGen/MemOpt2.cpp
-index 4b2628d..20115c7 100644
+index 4b2628d2b1..20115c73a3 100644
 --- a/IGC/Compiler/CISACodeGen/MemOpt2.cpp
 +++ b/IGC/Compiler/CISACodeGen/MemOpt2.cpp
 @@ -32,6 +32,7 @@ IN THE SOFTWARE.
@@ -776,10 +789,10 @@ index 4b2628d..20115c7 100644
                  return EltByte;
              // Check how that vector is used.
 diff --git a/IGC/Compiler/CISACodeGen/OpenCLKernelCodeGen.cpp b/IGC/Compiler/CISACodeGen/OpenCLKernelCodeGen.cpp
-index aedc824..1325c6a 100644
+index 8d6d7801db..349235a812 100644
 --- a/IGC/Compiler/CISACodeGen/OpenCLKernelCodeGen.cpp
 +++ b/IGC/Compiler/CISACodeGen/OpenCLKernelCodeGen.cpp
-@@ -410,7 +410,7 @@ namespace IGC
+@@ -425,7 +425,7 @@ namespace IGC
          unsigned int numElements = 1;
          if (baseType->isVectorTy())
          {
@@ -789,10 +802,10 @@ index aedc824..1325c6a 100644
          }
  
 diff --git a/IGC/Compiler/CISACodeGen/PatternMatchPass.cpp b/IGC/Compiler/CISACodeGen/PatternMatchPass.cpp
-index a2cea32..0129d7a 100644
+index 4397af09c7..484e8d5c43 100644
 --- a/IGC/Compiler/CISACodeGen/PatternMatchPass.cpp
 +++ b/IGC/Compiler/CISACodeGen/PatternMatchPass.cpp
-@@ -2930,8 +2930,8 @@ namespace IGC
+@@ -2959,8 +2959,8 @@ namespace IGC
                  llvm::Type* srcTy = bTInst->getOperand(0)->getType();
                  llvm::Type* dstTy = bTInst->getType();
  
@@ -804,10 +817,10 @@ index a2cea32..0129d7a 100644
                  if (srcNElts < dstNElts && srcTy->getScalarSizeInBits() < 64)
                  {
 diff --git a/IGC/Compiler/CISACodeGen/PushAnalysis.cpp b/IGC/Compiler/CISACodeGen/PushAnalysis.cpp
-index 3037162..7968eb4 100644
+index 410fc99c0e..e61db1ffae 100644
 --- a/IGC/Compiler/CISACodeGen/PushAnalysis.cpp
 +++ b/IGC/Compiler/CISACodeGen/PushAnalysis.cpp
-@@ -914,7 +914,7 @@ namespace IGC
+@@ -1003,7 +1003,7 @@ namespace IGC
  
          if (pTypeToPush->isVectorTy())
          {
@@ -816,7 +829,7 @@ index 3037162..7968eb4 100644
              pTypeToPush = cast<VectorType>(pTypeToPush)->getElementType();
              llvm::Type* pVecTy = IGCLLVM::FixedVectorType::get(pTypeToPush, num_elms);
              pReplacedInst = llvm::UndefValue::get(pVecTy);
-@@ -1117,7 +1117,7 @@ namespace IGC
+@@ -1194,7 +1194,7 @@ namespace IGC
          }
  
          unsigned num_elms =
@@ -826,7 +839,7 @@ index 3037162..7968eb4 100644
          llvm::Value* replaceVector = nullptr;
          unsigned int numberChannelReplaced = 0;
 diff --git a/IGC/Compiler/CISACodeGen/RegisterEstimator.cpp b/IGC/Compiler/CISACodeGen/RegisterEstimator.cpp
-index 95b937e..1c6544a 100644
+index 95b937e735..1c6544a489 100644
 --- a/IGC/Compiler/CISACodeGen/RegisterEstimator.cpp
 +++ b/IGC/Compiler/CISACodeGen/RegisterEstimator.cpp
 @@ -41,6 +41,7 @@ IN THE SOFTWARE.
@@ -847,7 +860,7 @@ index 95b937e..1c6544a 100644
          uint32_t nelts = VTy ? int_cast<uint32_t>(VTy->getNumElements()) : 1;
          uint32_t eltBits = (uint32_t)m_DL->getTypeSizeInBits(eltTy);
 diff --git a/IGC/Compiler/CISACodeGen/RegisterPressureEstimate.hpp b/IGC/Compiler/CISACodeGen/RegisterPressureEstimate.hpp
-index beac138..ceeafa4 100644
+index beac138d5a..ceeafa48fc 100644
 --- a/IGC/Compiler/CISACodeGen/RegisterPressureEstimate.hpp
 +++ b/IGC/Compiler/CISACodeGen/RegisterPressureEstimate.hpp
 @@ -42,6 +42,7 @@ See LRCENSE.TXT for details.
@@ -868,7 +881,7 @@ index beac138..ceeafa4 100644
              uint32_t nelts = VTy ? int_cast<uint32_t>(VTy->getNumElements()) : 1;
              uint32_t eltBits = (uint32_t)m_DL->getTypeSizeInBits(eltTy);
 diff --git a/IGC/Compiler/CISACodeGen/SLMConstProp.cpp b/IGC/Compiler/CISACodeGen/SLMConstProp.cpp
-index 962083f..26a7b8b 100644
+index 962083f453..26a7b8be21 100644
 --- a/IGC/Compiler/CISACodeGen/SLMConstProp.cpp
 +++ b/IGC/Compiler/CISACodeGen/SLMConstProp.cpp
 @@ -39,6 +39,7 @@ IN THE SOFTWARE.
@@ -889,7 +902,7 @@ index 962083f..26a7b8b 100644
          if (vTy->getNumElements() > 1)
          {
 diff --git a/IGC/Compiler/CISACodeGen/ScalarizerCodeGen.cpp b/IGC/Compiler/CISACodeGen/ScalarizerCodeGen.cpp
-index ce81641..32ab79c 100644
+index ce81641691..32ab79c1dd 100644
 --- a/IGC/Compiler/CISACodeGen/ScalarizerCodeGen.cpp
 +++ b/IGC/Compiler/CISACodeGen/ScalarizerCodeGen.cpp
 @@ -66,7 +66,7 @@ void ScalarizerCodeGen::visitBinaryOperator(llvm::BinaryOperator& I)
@@ -911,14 +924,16 @@ index ce81641..32ab79c 100644
                      Value* ieLogicOp = UndefValue::get(newType);
                      for (unsigned i = 0; i < newVecTypeNumEle; i++)
 diff --git a/IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp b/IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp
-index 17dbda5..fc2c374 100644
+index 563d95173c..3b974da405 100644
 --- a/IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp
 +++ b/IGC/Compiler/CISACodeGen/ShaderCodeGen.cpp
-@@ -633,12 +633,14 @@ static void AddLegalizationPasses(CodeGenContext& ctx, IGCPassManager& mpm, PSSi
+@@ -638,12 +638,17 @@ static void AddLegalizationPasses(CodeGenContext& ctx, IGCPassManager& mpm, PSSi
      {
          mpm.add(createPruneUnusedArgumentsPass());
  
-+#if LLVM_VERSION_MAJOR < 12
++#if LLVM_VERSION_MAJOR >= 12
++        mpm.add(createIPSCCPPass());
++#else
          if (IGC_GET_FLAG_VALUE(FunctionControl) == FLAG_FCALL_DEFAULT)
          {
              // Don't run IPConstantProp when debugging function calls, to avoid folding function arg/ret constants
@@ -926,14 +941,18 @@ index 17dbda5..fc2c374 100644
          }
          mpm.add(createConstantPropagationPass());
 +#endif
++
          mpm.add(createDeadCodeEliminationPass());
          mpm.add(createCFGSimplificationPass());
      }
-@@ -1531,8 +1533,10 @@ void OptimizeIR(CodeGenContext* const pContext)
+@@ -1541,8 +1546,13 @@ void OptimizeIR(CodeGenContext* const pContext)
              // possible which potentially allows late stage code sinking of
              // those calls by the instruction combiner.
              mpm.add(createPostOrderFunctionAttrsLegacyPass());
-+#if LLVM_VERSION_MAJOR < 12
++
++#if LLVM_VERSION_MAJOR >= 12
++            mpm.add(createIPSCCPPass());
++#else
              mpm.add(createConstantPropagationPass());
              mpm.add(createIPConstantPropagationPass());
 +#endif
@@ -941,7 +960,7 @@ index 17dbda5..fc2c374 100644
  
          // enable this only when Pooled EU is not supported
 diff --git a/IGC/Compiler/CISACodeGen/Simd32Profitability.cpp b/IGC/Compiler/CISACodeGen/Simd32Profitability.cpp
-index 87ba275..5393d4e 100644
+index 4760b3e792..3e22f3aa68 100644
 --- a/IGC/Compiler/CISACodeGen/Simd32Profitability.cpp
 +++ b/IGC/Compiler/CISACodeGen/Simd32Profitability.cpp
 @@ -28,8 +28,10 @@ IN THE SOFTWARE.
@@ -982,7 +1001,7 @@ index 87ba275..5393d4e 100644
      if (!VTy || VTy->getNumElements() != 3 ||
          !VTy->getElementType()->isIntegerTy(32))
          return false;
-@@ -994,7 +996,7 @@ static bool hasLongStridedLdStInLoop(Function* F, LoopInfo* LI, WIAnalysis* WI)
+@@ -998,7 +1000,7 @@ static bool hasLongStridedLdStInLoop(Function* F, LoopInfo* LI, WIAnalysis* WI)
      // Collect innermost simple loop.
      for (auto I = LI->begin(), E = LI->end(); I != E; ++I) {
          auto L = *I;
@@ -992,7 +1011,7 @@ index 87ba275..5393d4e 100644
          if (L->getNumBlocks() != 2)
              continue;
 diff --git a/IGC/Compiler/CISACodeGen/SimplifyConstant.cpp b/IGC/Compiler/CISACodeGen/SimplifyConstant.cpp
-index 73f472b..0069c4b 100644
+index 73f472b5b9..0069c4b1bb 100644
 --- a/IGC/Compiler/CISACodeGen/SimplifyConstant.cpp
 +++ b/IGC/Compiler/CISACodeGen/SimplifyConstant.cpp
 @@ -352,7 +352,7 @@ static unsigned getLegalVectorSize(unsigned N) {
@@ -1050,7 +1069,7 @@ index 73f472b..0069c4b 100644
          if (!checkSize(GV, AllocaType, IsSigned))
              continue;
 diff --git a/IGC/Compiler/CISACodeGen/TypeDemote.cpp b/IGC/Compiler/CISACodeGen/TypeDemote.cpp
-index eb7a7b6..b04a0f6 100644
+index eb7a7b6482..b04a0f6e51 100644
 --- a/IGC/Compiler/CISACodeGen/TypeDemote.cpp
 +++ b/IGC/Compiler/CISACodeGen/TypeDemote.cpp
 @@ -32,6 +32,7 @@ IN THE SOFTWARE.
@@ -1071,7 +1090,7 @@ index eb7a7b6..b04a0f6 100644
                  unsigned Bound = (N < 32) ? (1U << N) : UINT32_MAX;
                  if (VS <= Bound) {
 diff --git a/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.cpp b/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.cpp
-index 1cac7b1..12c4734 100644
+index 1cac7b1209..12c4734e96 100644
 --- a/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.cpp
 +++ b/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.cpp
 @@ -28,6 +28,7 @@ IN THE SOFTWARE.
@@ -1099,7 +1118,7 @@ index 1cac7b1..12c4734 100644
      }
  }
 diff --git a/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.hpp b/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.hpp
-index 56dac17..42081dc 100644
+index 56dac17e45..42081dcaa9 100644
 --- a/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.hpp
 +++ b/IGC/Compiler/CISACodeGen/VariableReuseAnalysis.hpp
 @@ -37,6 +37,7 @@ IN THE SOFTWARE.
@@ -1120,7 +1139,7 @@ index 56dac17..42081dc 100644
          }
  
 diff --git a/IGC/Compiler/CISACodeGen/VectorPreProcess.cpp b/IGC/Compiler/CISACodeGen/VectorPreProcess.cpp
-index 10812cb..cf066f6 100644
+index 022e0eb010..6edd19fa74 100644
 --- a/IGC/Compiler/CISACodeGen/VectorPreProcess.cpp
 +++ b/IGC/Compiler/CISACodeGen/VectorPreProcess.cpp
 @@ -500,7 +500,7 @@ void VectorPreProcess::replaceAllVectorUsesWithScalars(Instruction* VI, ValVecto
@@ -1204,7 +1223,7 @@ index 10812cb..cf066f6 100644
          if (N == MaxIndex + 1)
              return Inst;
  
-@@ -1384,7 +1384,7 @@ Instruction* VectorPreProcess::simplifyLoadStore(Instruction* Inst)
+@@ -1404,7 +1404,7 @@ Instruction* VectorPreProcess::simplifyLoadStore(Instruction* Inst)
      if (NBits < 32)
          return Inst;
  
@@ -1213,7 +1232,7 @@ index 10812cb..cf066f6 100644
      if (auto CV = dyn_cast<ConstantVector>(Val))
      {
          unsigned MaxIndex = 0;
-@@ -1553,7 +1553,7 @@ bool VectorPreProcess::runOnFunction(Function& F)
+@@ -1573,7 +1573,7 @@ bool VectorPreProcess::runOnFunction(Function& F)
                  for (uint32_t j = 0; j < svals.size(); ++j)
                  {
                      Type* Ty1 = svals[j]->getType();
@@ -1222,7 +1241,7 @@ index 10812cb..cf066f6 100644
                      if (VTy1) {
                          for (uint32_t k = 0; k < VTy1->getNumElements(); ++k)
                          {
-@@ -1602,7 +1602,7 @@ bool VectorPreProcess::runOnFunction(Function& F)
+@@ -1622,7 +1622,7 @@ bool VectorPreProcess::runOnFunction(Function& F)
                      // If this is a 3-element vector load, remove it
                      // from m_Vector3List as well.
                      if (isAbstractLoadInst(tInst) && tInst->getType()->isVectorTy() &&
@@ -1232,7 +1251,7 @@ index 10812cb..cf066f6 100644
                          InstWorkVector::iterator
                              tI = m_Vector3List.begin(),
 diff --git a/IGC/Compiler/CISACodeGen/VectorProcess.cpp b/IGC/Compiler/CISACodeGen/VectorProcess.cpp
-index 9f39cdc..cfe4532 100644
+index 9f39cdc0d7..cfe45321d2 100644
 --- a/IGC/Compiler/CISACodeGen/VectorProcess.cpp
 +++ b/IGC/Compiler/CISACodeGen/VectorProcess.cpp
 @@ -240,7 +240,7 @@ bool VectorProcess::reLayoutLoadStore(Instruction* Inst)
@@ -1254,10 +1273,10 @@ index 9f39cdc..cfe4532 100644
      const unsigned TBytes = nElts * eltSize;
  
 diff --git a/IGC/Compiler/CISACodeGen/helper.cpp b/IGC/Compiler/CISACodeGen/helper.cpp
-index 6854d2d..c6a84d7 100644
+index 5719fd3ab8..4dc83c9f1e 100644
 --- a/IGC/Compiler/CISACodeGen/helper.cpp
 +++ b/IGC/Compiler/CISACodeGen/helper.cpp
-@@ -1634,7 +1634,7 @@ namespace IGC
+@@ -1647,7 +1647,7 @@ namespace IGC
              {
                  instList[i] = builder.CreateExtractElement(val, static_cast<uint64_t>(0));
                  size_t iOld = i;
@@ -1266,7 +1285,7 @@ index 6854d2d..c6a84d7 100644
                  {
                      instList.insert(instList.begin()+ iOld +j, builder.CreateExtractElement(val, j));
                      i++;
-@@ -1667,7 +1667,7 @@ namespace IGC
+@@ -1680,7 +1680,7 @@ namespace IGC
              }
              break;
          case IGCLLVM::VectorTyID:
@@ -1275,7 +1294,7 @@ index 6854d2d..c6a84d7 100644
              for (unsigned i = 0; i < num; i++)
              {
                  ScalarizeAggregateMembers(builder, builder.CreateExtractElement(val, i), instList);
-@@ -1707,7 +1707,7 @@ namespace IGC
+@@ -1720,7 +1720,7 @@ namespace IGC
              }
              break;
          case IGCLLVM::VectorTyID:
@@ -1284,7 +1303,7 @@ index 6854d2d..c6a84d7 100644
              for (unsigned i = 0; i < num; i++)
              {
                  indices.push_back(builder.getInt32(i));
-@@ -1972,8 +1972,8 @@ namespace IGC
+@@ -1985,8 +1985,8 @@ namespace IGC
                  return false;
              }
  
@@ -1296,45 +1315,40 @@ index 6854d2d..c6a84d7 100644
              int s_nelts = sVTy ? (int)sVTy->getNumElements() : 1;
              if (d_nelts != s_nelts) {
 diff --git a/IGC/Compiler/ConvertMSAAPayloadTo16Bit.cpp b/IGC/Compiler/ConvertMSAAPayloadTo16Bit.cpp
-index cd7fc66..277f097 100644
+index 07817f05f7..15bbb0400e 100644
 --- a/IGC/Compiler/ConvertMSAAPayloadTo16Bit.cpp
 +++ b/IGC/Compiler/ConvertMSAAPayloadTo16Bit.cpp
-@@ -153,12 +153,12 @@ void ConvertMSAAPayloadTo16Bit::visitCallInst(CallInst& I)
-             // In OGL there are uses of ldmcs other then ldms, using vec4float type.
+@@ -153,15 +153,15 @@ void ConvertMSAAPayloadTo16Bit::visitCallInst(CallInst& I)
+             // There are uses of ldmcs other then ldms, using vector of int32 type.
              // Fix them to use newly created 16bit ldmcs.
              if (ldmcs->getType()->isVectorTy() &&
--                ldmcs->getType()->getVectorElementType()->isFloatTy())
+-                ldmcs->getType()->getVectorElementType() == m_builder->getInt32Ty())
 +                cast<IGCLLVM::FixedVectorType>(ldmcs->getType())->getElementType()->isFloatTy())
              {
                  m_builder->SetInsertPoint(ldmcs);
  
 -                uint ldmcsNumOfElements = ldmcs->getType()->getVectorNumElements();
--                uint new_mcs_callNumOfElements = new_mcs_call->getType()->getVectorNumElements();
-+                uint ldmcsNumOfElements = cast<IGCLLVM::FixedVectorType>(ldmcs->getType())->getNumElements();
-+                uint new_mcs_callNumOfElements = cast<IGCLLVM::FixedVectorType>(new_mcs_call->getType())->getNumElements();
+-                uint newLdmcsNumOfElements = new_mcs_call->getType()->getVectorNumElements();
++                uint ldmcsNumOfElements = (uint)cast<IGCLLVM::FixedVectorType>(ldmcs->getType())->getNumElements();
++                uint newLdmcsNumOfElements = (uint)cast<IGCLLVM::FixedVectorType>(new_mcs_call->getType())->getNumElements();
  
                  // vec of 16bit ints to vec of 32bit ints
-                 Type* new_mcs_callVecType = VectorType::get(m_builder->getInt32Ty(), new_mcs_callNumOfElements);
+-                Type* newLdmcsVecType = VectorType::get(m_builder->getInt32Ty(), newLdmcsNumOfElements);
++                Type* newLdmcsVecType = IGCLLVM::FixedVectorType::get(m_builder->getInt32Ty(), newLdmcsNumOfElements);
+                 Value* ldmcsExtendedToInt32 = m_builder->CreateSExt(new_mcs_call, newLdmcsVecType);
+ 
+                 // if ldmcs has fewer elements than new ldmcs, extend vector
 @@ -175,7 +175,7 @@ void ConvertMSAAPayloadTo16Bit::visitCallInst(CallInst& I)
                      }
                      auto* pMask = ConstantDataVector::get(I.getContext(), maskVals);
  
--                    newLdmcsSizedVector = m_builder->CreateShuffleVector(ldmcsExtendedToInt32, UndefValue::get(VectorType::get(m_builder->getInt32Ty(), ldmcsNumOfElements)), pMask);
-+                    newLdmcsSizedVector = m_builder->CreateShuffleVector(ldmcsExtendedToInt32, UndefValue::get(IGCLLVM::FixedVectorType::get(m_builder->getInt32Ty(), ldmcsNumOfElements)), pMask);
+-                    ldmcsInt32CorrectlySized = m_builder->CreateShuffleVector(ldmcsExtendedToInt32, UndefValue::get(VectorType::get(m_builder->getInt32Ty(), ldmcsNumOfElements)), pMask);
++                    ldmcsInt32CorrectlySized = m_builder->CreateShuffleVector(ldmcsExtendedToInt32, UndefValue::get(IGCLLVM::FixedVectorType::get(m_builder->getInt32Ty(), ldmcsNumOfElements)), pMask);
                  }
                  else
                  {
-@@ -183,7 +183,7 @@ void ConvertMSAAPayloadTo16Bit::visitCallInst(CallInst& I)
-                 }
-                 IGC_ASSERT(newLdmcsSizedVector);
- 
--                Type* ldmcsFloatVecType = VectorType::get(m_builder->getFloatTy(), ldmcsNumOfElements);
-+                Type* ldmcsFloatVecType = IGCLLVM::FixedVectorType::get(m_builder->getFloatTy(), ldmcsNumOfElements);
-                 Value* ldmcsBitcastedToFloat = m_builder->CreateBitCast(ldmcsExtendedToInt32, ldmcsFloatVecType);
-                 ldmcs->replaceAllUsesWith(ldmcsBitcastedToFloat);
-             }
 diff --git a/IGC/Compiler/CustomSafeOptPass.cpp b/IGC/Compiler/CustomSafeOptPass.cpp
-index 9dc6594..cec63c3 100644
+index 83a6968d89..5752382ce5 100644
 --- a/IGC/Compiler/CustomSafeOptPass.cpp
 +++ b/IGC/Compiler/CustomSafeOptPass.cpp
 @@ -1372,7 +1372,7 @@ void IGC::CustomSafeOptPass::visitSampleBptr(llvm::SampleIntrinsic* sampleInst)
@@ -1441,7 +1455,7 @@ index 9dc6594..cec63c3 100644
      Type* eleType = vecTy->getElementType();
  
 diff --git a/IGC/Compiler/DebugInfo/ScalarVISAModule.cpp b/IGC/Compiler/DebugInfo/ScalarVISAModule.cpp
-index 885ad65..923f296 100644
+index 194696e75b..62440d6fdb 100644
 --- a/IGC/Compiler/DebugInfo/ScalarVISAModule.cpp
 +++ b/IGC/Compiler/DebugInfo/ScalarVISAModule.cpp
 @@ -32,6 +32,7 @@ IN THE SOFTWARE.
@@ -1452,7 +1466,7 @@ index 885ad65..923f296 100644
  #include "llvm/IR/Function.h"
  #include "llvm/IR/Module.h"
  #include "common/LLVMWarningsPop.hpp"
-@@ -581,7 +582,7 @@ ScalarVisaModule::GetVariableLocation(const llvm::Instruction* pInst) const
+@@ -583,7 +584,7 @@ ScalarVisaModule::GetVariableLocation(const llvm::Instruction* pInst) const
  
          if (pType->isVectorTy())
          {
@@ -1462,7 +1476,7 @@ index 885ad65..923f296 100644
          else if (!pVar->IsUniform())
          {
 diff --git a/IGC/Compiler/GenTTI.cpp b/IGC/Compiler/GenTTI.cpp
-index 34b21c7..53e3ec9 100644
+index b63eaeb0f0..e6b9120de9 100644
 --- a/IGC/Compiler/GenTTI.cpp
 +++ b/IGC/Compiler/GenTTI.cpp
 @@ -37,6 +37,7 @@ IN THE SOFTWARE.
@@ -1473,7 +1487,7 @@ index 34b21c7..53e3ec9 100644
  #include "common/LLVMWarningsPop.hpp"
  
  using namespace llvm;
-@@ -216,7 +217,7 @@ namespace llvm {
+@@ -224,7 +225,7 @@ namespace llvm {
  
          // Skip non-simple loop.
          if (L->getNumBlocks() != 1) {
@@ -1483,7 +1497,7 @@ index 34b21c7..53e3ec9 100644
                      unsigned Total = BB->size();
                      unsigned PHIs = 0;
 diff --git a/IGC/Compiler/GenUpdateCB.cpp b/IGC/Compiler/GenUpdateCB.cpp
-index 89b414b..9034066 100644
+index 9fb8362951..cbc25b484c 100644
 --- a/IGC/Compiler/GenUpdateCB.cpp
 +++ b/IGC/Compiler/GenUpdateCB.cpp
 @@ -24,6 +24,7 @@ IN THE SOFTWARE.
@@ -1504,7 +1518,7 @@ index 89b414b..9034066 100644
                      if (VectorUsedByConstExtractOnly(inst, extracts))
                      {
 diff --git a/IGC/Compiler/HandleFRemInstructions.cpp b/IGC/Compiler/HandleFRemInstructions.cpp
-index 94995a5..4523f3f 100644
+index 94995a56d8..4523f3f02d 100644
 --- a/IGC/Compiler/HandleFRemInstructions.cpp
 +++ b/IGC/Compiler/HandleFRemInstructions.cpp
 @@ -28,6 +28,7 @@ IN THE SOFTWARE.
@@ -1525,7 +1539,7 @@ index 94995a5..4523f3f 100644
          {
              VecStr = "v" + std::to_string(VecCount);
 diff --git a/IGC/Compiler/HandleLoadStoreInstructions.cpp b/IGC/Compiler/HandleLoadStoreInstructions.cpp
-index d18eec7..c553570 100644
+index d18eec7311..c5535701ad 100644
 --- a/IGC/Compiler/HandleLoadStoreInstructions.cpp
 +++ b/IGC/Compiler/HandleLoadStoreInstructions.cpp
 @@ -77,7 +77,7 @@ void HandleLoadStoreInstructions::visitLoadInst(llvm::LoadInst& I)
@@ -1547,10 +1561,10 @@ index d18eec7..c553570 100644
  
  
 diff --git a/IGC/Compiler/LegalizationPass.cpp b/IGC/Compiler/LegalizationPass.cpp
-index b651350..9524a49 100644
+index c76f3f0e1b..31e2079a9a 100644
 --- a/IGC/Compiler/LegalizationPass.cpp
 +++ b/IGC/Compiler/LegalizationPass.cpp
-@@ -670,7 +670,7 @@ void Legalization::visitBitCastInst(llvm::BitCastInst& I)
+@@ -671,7 +671,7 @@ void Legalization::visitBitCastInst(llvm::BitCastInst& I)
          if (!isa<TruncInst>(pZ->getOperand(0)))
              return;
  
@@ -1559,7 +1573,7 @@ index b651350..9524a49 100644
          if (pVecTy->getNumElements() != 3)
              return;
  
-@@ -765,7 +765,7 @@ void Legalization::visitSelectInst(SelectInst& I)
+@@ -766,7 +766,7 @@ void Legalization::visitSelectInst(SelectInst& I)
      }
      else if (I.getType()->isVectorTy())
      {
@@ -1568,7 +1582,7 @@ index b651350..9524a49 100644
          Value* newVec = UndefValue::get(I.getType());
          m_builder->SetInsertPoint(&I);
          for (unsigned int i = 0; i < vecSize; i++)
-@@ -1147,7 +1147,7 @@ void Legalization::visitStoreInst(StoreInst& I)
+@@ -1148,7 +1148,7 @@ void Legalization::visitStoreInst(StoreInst& I)
      if (ConstantDataVector * vec = dyn_cast<ConstantDataVector>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(vec->getType());
@@ -1577,7 +1591,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getElementAsConstant(i);
-@@ -1168,7 +1168,7 @@ void Legalization::visitStoreInst(StoreInst& I)
+@@ -1169,7 +1169,7 @@ void Legalization::visitStoreInst(StoreInst& I)
      else if (ConstantVector * vec = dyn_cast<ConstantVector>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(vec->getType());
@@ -1586,7 +1600,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getOperand(i);
-@@ -1189,7 +1189,7 @@ void Legalization::visitStoreInst(StoreInst& I)
+@@ -1190,7 +1190,7 @@ void Legalization::visitStoreInst(StoreInst& I)
      else if (ConstantAggregateZero * vec = dyn_cast<ConstantAggregateZero>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(vec->getType());
@@ -1595,7 +1609,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getElementValue(i);
-@@ -1340,7 +1340,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
+@@ -1341,7 +1341,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
      if (ConstantDataVector * vec = dyn_cast<ConstantDataVector>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(vec->getType());
@@ -1604,7 +1618,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getElementAsConstant(i);
-@@ -1360,7 +1360,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
+@@ -1361,7 +1361,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
      else if (ConstantVector * vec = dyn_cast<ConstantVector>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(I.getType());
@@ -1613,7 +1627,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getOperand(i);
-@@ -1380,7 +1380,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
+@@ -1381,7 +1381,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
      else if (ConstantAggregateZero * vec = dyn_cast<ConstantAggregateZero>(I.getOperand(0)))
      {
          Value* newVec = UndefValue::get(I.getType());
@@ -1622,7 +1636,7 @@ index b651350..9524a49 100644
          for (unsigned int i = 0; i < nbElement; i++)
          {
              Constant* cst = vec->getElementValue(i);
-@@ -1397,7 +1397,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
+@@ -1398,7 +1398,7 @@ void Legalization::visitInsertElementInst(InsertElementInst& I)
      else if (I.getOperand(1)->getType()->isIntegerTy(1))
      {
          // This promotes i1 insertelement to i32
@@ -1631,7 +1645,7 @@ index b651350..9524a49 100644
          Value* newVec = UndefValue::get(IGCLLVM::FixedVectorType::get(m_builder->getInt32Ty(), nbElement));
          PromoteInsertElement(&I, newVec);
      }
-@@ -1410,7 +1410,7 @@ void Legalization::visitShuffleVectorInst(ShuffleVectorInst& I)
+@@ -1411,7 +1411,7 @@ void Legalization::visitShuffleVectorInst(ShuffleVectorInst& I)
      // If the original vector is a constant, just use the scalar constant,
      // otherwise extract from the original vector.
  
@@ -1640,7 +1654,7 @@ index b651350..9524a49 100644
      Value* newVec = UndefValue::get(resType);
      Value* src0 = I.getOperand(0);
      Value* src1 = I.getOperand(1);
-@@ -1421,7 +1421,7 @@ void Legalization::visitShuffleVectorInst(ShuffleVectorInst& I)
+@@ -1422,7 +1422,7 @@ void Legalization::visitShuffleVectorInst(ShuffleVectorInst& I)
      Constant* mask = I.getShuffleMaskForBitcode();
  #endif
      // The two inputs are guaranteed to be of the same type
@@ -1649,7 +1663,7 @@ index b651350..9524a49 100644
      int inCount = int_cast<int>(inType->getNumElements());
      int inBase = 2;  // 2 means using undef
      // if inType == resType, use src0/src1 as the input
-@@ -1637,7 +1637,7 @@ Type* Legalization::LegalAllocaType(Type* type) const
+@@ -1638,7 +1638,7 @@ Type* Legalization::LegalAllocaType(Type* type) const
  #endif
          legalType = IGCLLVM::FixedVectorType::get(
              LegalAllocaType(cast<VectorType>(type)->getElementType()),
@@ -1658,7 +1672,7 @@ index b651350..9524a49 100644
          break;
      case Type::StructTyID:
          return LegalStructAllocaType(type);
-@@ -1937,7 +1937,7 @@ void Legalization::visitIntrinsicInst(llvm::IntrinsicInst& I)
+@@ -1938,7 +1938,7 @@ void Legalization::visitIntrinsicInst(llvm::IntrinsicInst& I)
          Value* newValue = nullptr;
          if (srcType->isVectorTy())
          {
@@ -1677,7 +1691,7 @@ index b651350..9524a49 100644
      if (!VTy || VTy->getNumElements() != 3 || !VTy->getElementType()->isIntegerTy(16))
          return;
 diff --git a/IGC/Compiler/Legalizer/InstPromoter.cpp b/IGC/Compiler/Legalizer/InstPromoter.cpp
-index bba1d96..63cbccb 100644
+index bba1d96d94..63cbccb53b 100644
 --- a/IGC/Compiler/Legalizer/InstPromoter.cpp
 +++ b/IGC/Compiler/Legalizer/InstPromoter.cpp
 @@ -25,6 +25,7 @@ IN THE SOFTWARE.
@@ -1702,7 +1716,7 @@ index bba1d96..63cbccb 100644
  
          Value* Mask = ConstantVector::get(Vals);
 diff --git a/IGC/Compiler/Legalizer/InstScalarizer.cpp b/IGC/Compiler/Legalizer/InstScalarizer.cpp
-index 3902f74..c8e18cc 100644
+index 3902f74071..c8e18cc5e7 100644
 --- a/IGC/Compiler/Legalizer/InstScalarizer.cpp
 +++ b/IGC/Compiler/Legalizer/InstScalarizer.cpp
 @@ -130,7 +130,7 @@ bool InstScalarizer::visitLoadInst(LoadInst& I) {
@@ -1733,7 +1747,7 @@ index 3902f74..c8e18cc 100644
      for (unsigned Elt = 0; Elt != NumElts; ++Elt) {
          if (Elt == Idx) {
 diff --git a/IGC/Compiler/Legalizer/PeepholeTypeLegalizer.cpp b/IGC/Compiler/Legalizer/PeepholeTypeLegalizer.cpp
-index 28f8ce8..778132c 100644
+index 28f8ce840f..778132c4f2 100644
 --- a/IGC/Compiler/Legalizer/PeepholeTypeLegalizer.cpp
 +++ b/IGC/Compiler/Legalizer/PeepholeTypeLegalizer.cpp
 @@ -162,7 +162,7 @@ void PeepholeTypeLegalizer::legalizePhiInstruction(Instruction& I)
@@ -1764,7 +1778,7 @@ index 28f8ce8..778132c 100644
  
          Value* vecRes = UndefValue::get(IGCLLVM::FixedVectorType::get(llvm::Type::getIntNTy(I.getContext(), promoteToInt), quotient));
 diff --git a/IGC/Compiler/Legalizer/TypeLegalizer.cpp b/IGC/Compiler/Legalizer/TypeLegalizer.cpp
-index f8f71d7..a46f42b 100644
+index f8f71d71dd..a46f42bd0d 100644
 --- a/IGC/Compiler/Legalizer/TypeLegalizer.cpp
 +++ b/IGC/Compiler/Legalizer/TypeLegalizer.cpp
 @@ -32,6 +32,7 @@ IN THE SOFTWARE.
@@ -1785,7 +1799,7 @@ index f8f71d7..a46f42b 100644
  
      return &TMI->second;
 diff --git a/IGC/Compiler/Legalizer/TypeLegalizer.h b/IGC/Compiler/Legalizer/TypeLegalizer.h
-index f3ce264..a6910d0 100644
+index f3ce264ce8..a6910d0876 100644
 --- a/IGC/Compiler/Legalizer/TypeLegalizer.h
 +++ b/IGC/Compiler/Legalizer/TypeLegalizer.h
 @@ -28,6 +28,7 @@ IN THE SOFTWARE.
@@ -1806,7 +1820,7 @@ index f3ce264..a6910d0 100644
                  const auto& ProfitLengths = getProfitLoadVectorLength(EltTy);
  
 diff --git a/IGC/Compiler/LowPrecisionOptPass.cpp b/IGC/Compiler/LowPrecisionOptPass.cpp
-index 6491271..1d1db94 100644
+index 0708bfae58..15272b8dfc 100644
 --- a/IGC/Compiler/LowPrecisionOptPass.cpp
 +++ b/IGC/Compiler/LowPrecisionOptPass.cpp
 @@ -252,7 +252,7 @@ bool LowPrecisionOpt::propagateSamplerType(llvm::GenIntrinsicInst& I)
@@ -1818,85 +1832,8 @@ index 6491271..1d1db94 100644
      llvm::SmallVector<llvm::Type*, 4> overloadTys;
      auto retTy = IGCLLVM::FixedVectorType::get(newDstType, int_cast<unsigned int>(oldTy->getNumElements()));
      overloadTys.push_back(retTy);
-diff --git a/IGC/Compiler/Optimizer/IGCInstCombiner/4.0/InstCombineCalls.cpp b/IGC/Compiler/Optimizer/IGCInstCombiner/4.0/InstCombineCalls.cpp
-index 62c1a64..81e91e8 100644
---- a/IGC/Compiler/Optimizer/IGCInstCombiner/4.0/InstCombineCalls.cpp
-+++ b/IGC/Compiler/Optimizer/IGCInstCombiner/4.0/InstCombineCalls.cpp
-@@ -464,7 +464,7 @@ static Value *simplifyX86varShift(const IntrinsicInst &II,
- 
-   auto Vec = II.getArgOperand(0);
-   auto VT = cast<VectorType>(II.getType());
--  auto SVT = VT->getVectorElementType();
-+  auto SVT = cast<IGCLLVM::FixedVectorType>(VT);
-   int NumElts = VT->getNumElements();
-   int BitWidth = SVT->getIntegerBitWidth();
- 
-diff --git a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineCalls.cpp b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineCalls.cpp
-index 8873790..5406bb8 100644
---- a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineCalls.cpp
-+++ b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineCalls.cpp
-@@ -456,7 +456,7 @@ static Value* simplifyX86varShift(const IntrinsicInst& II,
- 
-     auto Vec = II.getArgOperand(0);
-     auto VT = cast<VectorType>(II.getType());
--    auto SVT = VT->getVectorElementType();
-+    auto SVT = cast<IGCLLVM::FixedVectorType>(VT);
-     int NumElts = VT->getNumElements();
-     int BitWidth = SVT->getIntegerBitWidth();
- 
-diff --git a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineInternal.h b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineInternal.h
-index 2043f43..f6be5cb 100644
---- a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineInternal.h
-+++ b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineInternal.h
-@@ -248,7 +248,7 @@ namespace IGCombiner {
-         BinaryOperator::BinaryOps Opcode, Constant* In, bool IsRHSConstant) {
-         IGC_ASSERT_MESSAGE(In->getType()->isVectorTy(), "Not expecting scalars here");
- 
--        Type* EltTy = In->getType()->getVectorElementType();
-+        Type* EltTy = cast<IGCLLVM::FixedVectorType>(In->getType());
-         auto* SafeC = ConstantExpr::getBinOpIdentity(Opcode, EltTy, IsRHSConstant);
-         if (!SafeC) {
-             // TODO: Should this be available as a constant utility function? It is
-diff --git a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineSimplifyDemanded.cpp b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineSimplifyDemanded.cpp
-index 9bf0f72..ff9b080 100644
---- a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineSimplifyDemanded.cpp
-+++ b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstCombineSimplifyDemanded.cpp
-@@ -1022,7 +1022,7 @@ Value* InstCombiner::simplifyAMDGCNMemoryIntrinsicDemanded(IntrinsicInst* II,
- 
-     // Get the new return type overload of the intrinsic.
-     Module* M = II->getParent()->getParent()->getParent();
--    Type* EltTy = II->getType()->getVectorElementType();
-+    Type* EltTy = cast<IGCLLVM::FixedVectorType>(II->getType());
-     Type* NewTy = (NewNumElts == 1) ? EltTy : VectorType::get(EltTy, NewNumElts);
- 
-     OverloadTys[0] = NewTy;
-diff --git a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstructionCombining.cpp b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstructionCombining.cpp
-index 1e9b079..17e6faf 100644
---- a/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstructionCombining.cpp
-+++ b/IGC/Compiler/Optimizer/IGCInstCombiner/7.0/InstructionCombining.cpp
-@@ -2007,7 +2007,7 @@ Instruction* InstCombiner::visitGetElementPtrInst(GetElementPtrInst& GEP) {
-         // gep (bitcast <c x ty>* X to [c x ty]*), Y, Z --> gep X, Y, Z
-         // gep (bitcast [c x ty]* X to <c x ty>*), Y, Z --> gep X, Y, Z
-         auto areMatchingArrayAndVecTypes = [](Type* ArrTy, Type* VecTy) {
--            return ArrTy->getArrayElementType() == VecTy->getVectorElementType() &&
-+            return ArrTy->getArrayElementType() == cast<IGCLLVM::FixedVectorType>(VecTy); &&
-                 ArrTy->getArrayNumElements() == VecTy->getVectorNumElements();
-         };
-         if (GEP.getNumOperands() == 3 &&
-diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/AddressSpaceAliasAnalysis/AddressSpaceAliasAnalysis.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/AddressSpaceAliasAnalysis/AddressSpaceAliasAnalysis.cpp
-index 393b4b0..b6b779d 100644
---- a/IGC/Compiler/Optimizer/OpenCLPasses/AddressSpaceAliasAnalysis/AddressSpaceAliasAnalysis.cpp
-+++ b/IGC/Compiler/Optimizer/OpenCLPasses/AddressSpaceAliasAnalysis/AddressSpaceAliasAnalysis.cpp
-@@ -23,6 +23,7 @@ IN THE SOFTWARE.
- ============================= end_copyright_notice ===========================*/
- 
- #include "llvm/Config/llvm-config.h"
-+#include <llvm/Analysis/TargetLibraryInfo.h>
- #include "Compiler/Optimizer/OpenCLPasses/AddressSpaceAliasAnalysis/AddressSpaceAliasAnalysis.h"
- #include "Compiler/CodeGenPublic.h"
- #include "Compiler/IGCPassSupport.h"
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/AggregateArguments/AggregateArguments.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/AggregateArguments/AggregateArguments.cpp
-index 67535cf..3cdd297 100644
+index 67535cfcda..3cdd2975f7 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/AggregateArguments/AggregateArguments.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/AggregateArguments/AggregateArguments.cpp
 @@ -24,6 +24,7 @@ IN THE SOFTWARE.
@@ -1917,7 +1854,7 @@ index 67535cf..3cdd297 100644
          return vectorType->getNumElements();
      }
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/CorrectlyRoundedDivSqrt/CorrectlyRoundedDivSqrt.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/CorrectlyRoundedDivSqrt/CorrectlyRoundedDivSqrt.cpp
-index 2a9d749..79ed094 100644
+index 2a9d749959..79ed0948c0 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/CorrectlyRoundedDivSqrt/CorrectlyRoundedDivSqrt.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/CorrectlyRoundedDivSqrt/CorrectlyRoundedDivSqrt.cpp
 @@ -27,6 +27,7 @@ IN THE SOFTWARE.
@@ -1938,7 +1875,7 @@ index 2a9d749..79ed094 100644
          Divide = UndefValue::get(Ty);
          for (unsigned i = 0; i < VecLen; i++)
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
-index c5ff3ac..a3681b7 100644
+index 52a9b61355..5ad3ceda43 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
 @@ -952,7 +952,7 @@ namespace //Anonymous
@@ -1960,7 +1897,7 @@ index c5ff3ac..a3681b7 100644
                  }
                  default:
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
-index 6448463..7df7107 100644
+index 6448463d7d..7df7107961 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
 @@ -24,6 +24,7 @@ IN THE SOFTWARE.
@@ -1981,7 +1918,7 @@ index 6448463..7df7107 100644
          // Vector
          return int_cast<unsigned int>(vecType->getNumElements());
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/OpenCLPrintf/OpenCLPrintfResolution.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/OpenCLPrintf/OpenCLPrintfResolution.cpp
-index 4077485..9f375e1 100644
+index 407748533e..9f375e1cb7 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/OpenCLPrintf/OpenCLPrintfResolution.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/OpenCLPrintf/OpenCLPrintfResolution.cpp
 @@ -739,7 +739,7 @@ Value* OpenCLPrintfResolution::fixupPrintfArg(CallInst& printfCall, Value* arg,
@@ -2003,7 +1940,7 @@ index 4077485..9f375e1 100644
          }
          m_argDescriptors.push_back(SPrintfArgDescriptor(argDataType, arg, vecSize));
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryResolution.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryResolution.cpp
-index 3a95981..f997584 100644
+index 03a4583771..0bade5aa7c 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryResolution.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryResolution.cpp
 @@ -29,6 +29,7 @@ IN THE SOFTWARE.
@@ -2014,7 +1951,7 @@ index 3a95981..f997584 100644
  #include "common/LLVMWarningsPush.hpp"
  #include "llvm/Transforms/Utils/Local.h"
  #include "llvm/IR/DataLayout.h"
-@@ -604,7 +605,7 @@ public:
+@@ -614,7 +615,7 @@ class TransposeHelperPrivateMem : public TransposeHelper
              Type* scalarptrTy = PointerType::get(scalarType, pLoad->getPointerAddressSpace());
              IGC_ASSERT(scalarType->getPrimitiveSizeInBits() / 8 == elementSize);
              Value* vec = UndefValue::get(pLoad->getType());
@@ -2023,7 +1960,7 @@ index 3a95981..f997584 100644
              for (unsigned i = 0, e = (unsigned)pLoadVT->getNumElements(); i < e; ++i)
              {
                  Value* ptr = IRB.CreateIntToPtr(address, scalarptrTy);
-@@ -643,7 +644,7 @@ public:
+@@ -653,7 +654,7 @@ class TransposeHelperPrivateMem : public TransposeHelper
              IGC_ASSERT(scalarType->getPrimitiveSizeInBits() / 8 == elementSize);
              Value* vec = pStore->getValueOperand();
  
@@ -2032,7 +1969,7 @@ index 3a95981..f997584 100644
              for (unsigned i = 0; i < vecNumElts; ++i)
              {
                  Value* ptr = IRB.CreateIntToPtr(address, scalarptrTy);
-@@ -707,7 +708,7 @@ bool PrivateMemoryResolution::testTransposedMemory(const Type* pTmpType, const T
+@@ -717,7 +718,7 @@ bool PrivateMemoryResolution::testTransposedMemory(const Type* pTmpType, const T
          }
          else if(pTmpType->isVectorTy())
          {
@@ -2041,17 +1978,17 @@ index 3a95981..f997584 100644
              tmpAllocaSize *= pTmpVType->getNumElements();
              pTmpType = pTmpType->getContainedType(0);
              ok = (nullptr != pTmpType);
-@@ -815,7 +816,7 @@ bool PrivateMemoryResolution::resolveAllocaInstructions(bool privateOnStack)
+@@ -825,6 +826,8 @@ bool PrivateMemoryResolution::resolveAllocaInstructions(bool privateOnStack)
+ 
      // Construct an empty DebugLoc.
      IF_DEBUG_INFO(DebugLoc entryDebugLoc);
-     // Assign with the function location if available.
--    IF_DEBUG_INFO_IF(DISubprogram *subprogram = m_currFunction->getSubprogram(), entryDebugLoc = DebugLoc::get(subprogram->getLine(), 0, subprogram););
++    // Assign with the function location if available.
 +    IF_DEBUG_INFO_IF(DISubprogram *subprogram = m_currFunction->getSubprogram(), entryDebugLoc = DILocation::get(subprogram->getContext(), subprogram->getLine(), 0, subprogram););
      IF_DEBUG_INFO(entryBuilder.SetCurrentDebugLocation(entryDebugLoc));
  
      if (privateOnStack)
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/ReplaceUnsupportedIntrinsics/ReplaceUnsupportedIntrinsics.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/ReplaceUnsupportedIntrinsics/ReplaceUnsupportedIntrinsics.cpp
-index c8414ef..68491d4 100644
+index 1190330abc..bb2932d5da 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/ReplaceUnsupportedIntrinsics/ReplaceUnsupportedIntrinsics.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/ReplaceUnsupportedIntrinsics/ReplaceUnsupportedIntrinsics.cpp
 @@ -254,7 +254,7 @@ Instruction* ReplaceUnsupportedIntrinsics::insertLoop(Instruction* Loc, Value* L
@@ -2063,7 +2000,7 @@ index c8414ef..68491d4 100644
      Type* ETy = VTy ? VTy->getElementType() : Ty;
      uint32_t sBits = (unsigned int)ScalarVal->getType()->getPrimitiveSizeInBits();
      uint32_t nBits = (unsigned int)ETy->getPrimitiveSizeInBits();
-@@ -868,7 +868,7 @@ void ReplaceUnsupportedIntrinsics::replaceFunnelShift(IntrinsicInst* I) {
+@@ -915,7 +915,7 @@ void ReplaceUnsupportedIntrinsics::replaceFunnelShift(IntrinsicInst* I) {
      }
  
      Value* numBits = Builder.getIntN(sizeInBits, sizeInBits);
@@ -2073,20 +2010,20 @@ index c8414ef..68491d4 100644
      }
      auto shiftModulo = Builder.CreateURem(I->getArgOperand(2), numBits);
 diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/WIFuncs/WIFuncResolution.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/WIFuncs/WIFuncResolution.cpp
-index 7188cc5..c23c661 100644
+index c9fed6746b..1882a8cc1f 100644
 --- a/IGC/Compiler/Optimizer/OpenCLPasses/WIFuncs/WIFuncResolution.cpp
 +++ b/IGC/Compiler/Optimizer/OpenCLPasses/WIFuncs/WIFuncResolution.cpp
-@@ -303,7 +303,7 @@ static Value* BuildLoadInst(CallInst& CI, unsigned int Offset, Type* DataType)
+@@ -291,7 +291,7 @@ static Value* BuildLoadInst(CallInst& CI, unsigned int Offset, Type* DataType)
      auto Size = ElemByteSize;
      if (DataType->isVectorTy())
      {
 -        Size *= DataType->getVectorNumElements();
-+        Size *= cast<IGCLLVM::FixedVectorType>(DataType)->getNumElements();
++        Size *= (unsigned int)cast<IGCLLVM::FixedVectorType>(DataType)->getNumElements();
      }
      unsigned int AlignedOffset = (Offset / ElemByteSize) * ElemByteSize;
      unsigned int LoadByteSize = (Offset == AlignedOffset) ? Size : Size * 2;
 diff --git a/IGC/Compiler/Optimizer/PreCompiledFuncImport.cpp b/IGC/Compiler/Optimizer/PreCompiledFuncImport.cpp
-index 6ffecc6..19968e8 100644
+index 9a77ec5386..09efed958d 100644
 --- a/IGC/Compiler/Optimizer/PreCompiledFuncImport.cpp
 +++ b/IGC/Compiler/Optimizer/PreCompiledFuncImport.cpp
 @@ -341,7 +341,7 @@ bool PreCompiledFuncImport::preProcessDouble()
@@ -2098,7 +2035,7 @@ index 6ffecc6..19968e8 100644
                          fsub = llvm::UndefValue::get(Inst->getType());
  
                          for (uint32_t i = 0; i < vectorSize; ++i)
-@@ -937,7 +937,7 @@ void PreCompiledFuncImport::processDivide(BinaryOperator& inst, EmulatedFunction
+@@ -967,7 +967,7 @@ void PreCompiledFuncImport::processDivide(BinaryOperator& inst, EmulatedFunction
  
      Type* argumentType = inst.getOperand(0)->getType();
  
@@ -2108,10 +2045,10 @@ index 6ffecc6..19968e8 100644
          numElements = (unsigned)argumentVType->getNumElements();
      }
 diff --git a/IGC/Compiler/Optimizer/Scalarizer.cpp b/IGC/Compiler/Optimizer/Scalarizer.cpp
-index 6861367..bc2da94 100644
+index 09e1cc9858..3882f4140e 100644
 --- a/IGC/Compiler/Optimizer/Scalarizer.cpp
 +++ b/IGC/Compiler/Optimizer/Scalarizer.cpp
-@@ -401,7 +401,7 @@ void ScalarizeFunction::scalarizeInstruction(BinaryOperator* BI)
+@@ -419,7 +419,7 @@ void ScalarizeFunction::scalarizeInstruction(BinaryOperator* BI)
  {
      V_PRINT(scalarizer, "\t\tBinary instruction\n");
      IGC_ASSERT_MESSAGE(BI, "instruction type dynamic cast failed");
@@ -2120,7 +2057,7 @@ index 6861367..bc2da94 100644
      // Only need handling for vector binary ops
      if (!instType) return;
  
-@@ -461,7 +461,7 @@ void ScalarizeFunction::scalarizeInstruction(CmpInst* CI)
+@@ -479,7 +479,7 @@ void ScalarizeFunction::scalarizeInstruction(CmpInst* CI)
  {
      V_PRINT(scalarizer, "\t\tCompare instruction\n");
      IGC_ASSERT_MESSAGE(CI, "instruction type dynamic cast failed");
@@ -2129,7 +2066,7 @@ index 6861367..bc2da94 100644
      // Only need handling for vector compares
      if (!instType) return;
  
-@@ -509,13 +509,13 @@ void ScalarizeFunction::scalarizeInstruction(CastInst* CI)
+@@ -527,13 +527,13 @@ void ScalarizeFunction::scalarizeInstruction(CastInst* CI)
  {
      V_PRINT(scalarizer, "\t\tCast instruction\n");
      IGC_ASSERT_MESSAGE(CI, "instruction type dynamic cast failed");
@@ -2145,7 +2082,7 @@ index 6861367..bc2da94 100644
          if (!srcType || (instType->getNumElements() != srcType->getNumElements()))
          {
              return recoverNonScalarizableInst(CI);
-@@ -570,7 +570,7 @@ void ScalarizeFunction::scalarizeInstruction(PHINode* PI)
+@@ -588,7 +588,7 @@ void ScalarizeFunction::scalarizeInstruction(PHINode* PI)
  {
      V_PRINT(scalarizer, "\t\tPHI instruction\n");
      IGC_ASSERT_MESSAGE(PI, "instruction type dynamic cast failed");
@@ -2154,7 +2091,7 @@ index 6861367..bc2da94 100644
      // Only need handling for vector PHI
      if (!instType) return;
  
-@@ -681,7 +681,7 @@ void ScalarizeFunction::scalarizeInstruction(SelectInst* SI)
+@@ -699,7 +699,7 @@ void ScalarizeFunction::scalarizeInstruction(SelectInst* SI)
  {
      V_PRINT(scalarizer, "\t\tSelect instruction\n");
      IGC_ASSERT_MESSAGE(SI, "instruction type dynamic cast failed");
@@ -2163,7 +2100,7 @@ index 6861367..bc2da94 100644
      // Only need handling for vector select
      if (!instType) return;
  
-@@ -763,7 +763,7 @@ void ScalarizeFunction::scalarizeInstruction(ExtractElementInst* EI)
+@@ -781,7 +781,7 @@ void ScalarizeFunction::scalarizeInstruction(ExtractElementInst* EI)
  
      // Connect the "extracted" value to all its consumers
      uint64_t scalarIndex = cast<ConstantInt>(scalarIndexVal)->getZExtValue();
@@ -2172,7 +2109,7 @@ index 6861367..bc2da94 100644
      if (static_cast<unsigned int>(scalarIndex) < (unsigned)valueVType->getNumElements())
      {
          IGC_ASSERT_MESSAGE(NULL != operand[static_cast<unsigned int>(scalarIndex)], "SCM error");
-@@ -827,7 +827,7 @@ void ScalarizeFunction::scalarizeInstruction(InsertElementInst* II)
+@@ -845,7 +845,7 @@ void ScalarizeFunction::scalarizeInstruction(InsertElementInst* II)
      if (isa<UndefValue>(sourceVectorValue))
      {
          // Scalarize the undef value (generate a scalar undef)
@@ -2181,7 +2118,7 @@ index 6861367..bc2da94 100644
          IGC_ASSERT_MESSAGE(inputVectorType, "expected vector argument");
  
          UndefValue* undefVal = UndefValue::get(inputVectorType->getElementType());
-@@ -868,7 +868,7 @@ void ScalarizeFunction::scalarizeInstruction(ShuffleVectorInst* SI)
+@@ -886,7 +886,7 @@ void ScalarizeFunction::scalarizeInstruction(ShuffleVectorInst* SI)
      IGC_ASSERT(nullptr != sourceVector0Value);
      Value* sourceVector1Value = SI->getOperand(1);
      IGC_ASSERT(nullptr != sourceVector1Value);
@@ -2190,7 +2127,7 @@ index 6861367..bc2da94 100644
      IGC_ASSERT_MESSAGE(nullptr != inputType, "vector input error");
      IGC_ASSERT_MESSAGE(inputType == sourceVector1Value->getType(), "vector input error");
      unsigned sourceVectorWidth = int_cast<unsigned>(inputType->getNumElements());
-@@ -890,7 +890,7 @@ void ScalarizeFunction::scalarizeInstruction(ShuffleVectorInst* SI)
+@@ -908,7 +908,7 @@ void ScalarizeFunction::scalarizeInstruction(ShuffleVectorInst* SI)
  
      // Generate array for shuffled scalar values
      SmallVector<Value*, MAX_INPUT_VECTOR_WIDTH>newVector;
@@ -2199,7 +2136,7 @@ index 6861367..bc2da94 100644
  
      // Generate undef value, which may be needed as some scalar elements
      UndefValue* undef = UndefValue::get(inputType->getElementType());
-@@ -959,7 +959,7 @@ void ScalarizeFunction::scalarizeInstruction(GetElementPtrInst* GI)
+@@ -977,7 +977,7 @@ void ScalarizeFunction::scalarizeInstruction(GetElementPtrInst* GI)
  
      if (baseValue->getType()->isVectorTy())
      {
@@ -2208,7 +2145,7 @@ index 6861367..bc2da94 100644
          // Obtain the scalarized operands
          obtainScalarizedValues(operand1, NULL, baseValue, GI);
          ptrTy = dyn_cast<VectorType>(baseValue->getType())->getElementType();
-@@ -970,7 +970,7 @@ void ScalarizeFunction::scalarizeInstruction(GetElementPtrInst* GI)
+@@ -988,7 +988,7 @@ void ScalarizeFunction::scalarizeInstruction(GetElementPtrInst* GI)
      }
      if (indexValue->getType()->isVectorTy())
      {
@@ -2217,7 +2154,7 @@ index 6861367..bc2da94 100644
          // Obtain the scalarized operands
          obtainScalarizedValues(operand2, NULL, indexValue, GI);
      }
-@@ -1009,7 +1009,7 @@ void ScalarizeFunction::obtainScalarizedValues(SmallVectorImpl<Value*>& retValue
+@@ -1027,7 +1027,7 @@ void ScalarizeFunction::obtainScalarizedValues(SmallVectorImpl<Value*>& retValue
  {
      V_PRINT(scalarizer, "\t\t\tObtaining scalar value... " << *origValue << "\n");
  
@@ -2226,7 +2163,7 @@ index 6861367..bc2da94 100644
      IGC_ASSERT_MESSAGE(origType, "Value must have a vector type!");
      unsigned width = int_cast<unsigned>(origType->getNumElements());
  
-@@ -1171,7 +1171,7 @@ void ScalarizeFunction::obtainVectorValueWhichMightBeScalarizedImpl(Value* vecto
+@@ -1186,7 +1186,7 @@ void ScalarizeFunction::obtainVectorValueWhichMightBeScalarizedImpl(Value* vecto
      }
  
      Value* assembledVector = UndefValue::get(vectorVal->getType());
@@ -2235,7 +2172,7 @@ index 6861367..bc2da94 100644
      for (unsigned i = 0; i < width; i++)
      {
          IGC_ASSERT_MESSAGE(NULL != valueEntry->scalarValues[i], "SCM entry has NULL value");
-@@ -1231,7 +1231,7 @@ void ScalarizeFunction::updateSCMEntryWithValues(ScalarizeFunction::SCMEntry* en
+@@ -1246,7 +1246,7 @@ void ScalarizeFunction::updateSCMEntryWithValues(ScalarizeFunction::SCMEntry* en
      bool matchDbgLoc)
  {
      IGC_ASSERT_MESSAGE((origValue->getType()->isArrayTy() || origValue->getType()->isVectorTy()), "only Vector values are supported");
@@ -2244,7 +2181,7 @@ index 6861367..bc2da94 100644
  
      entry->isOriginalVectorRemoved = isOrigValueRemoved;
  
-@@ -1295,7 +1295,7 @@ void ScalarizeFunction::resolveDeferredInstructions()
+@@ -1316,7 +1316,7 @@ void ScalarizeFunction::resolveDeferredInstructions()
          Instruction* vectorInst = dyn_cast<Instruction>(current.unresolvedInst);
          IGC_ASSERT_MESSAGE(vectorInst, "DRL only handles unresolved instructions");
  
@@ -2254,7 +2191,7 @@ index 6861367..bc2da94 100644
          unsigned width = int_cast<unsigned>(currType->getNumElements());
  
 diff --git a/IGC/Compiler/Optimizer/ValueTracker.cpp b/IGC/Compiler/Optimizer/ValueTracker.cpp
-index c06f731..d8f0d38 100644
+index ac02746e3f..8c0619edcc 100644
 --- a/IGC/Compiler/Optimizer/ValueTracker.cpp
 +++ b/IGC/Compiler/Optimizer/ValueTracker.cpp
 @@ -178,7 +178,7 @@ Value* ValueTracker::handleExtractElement(ExtractElementInst* E)
@@ -2267,7 +2204,7 @@ index c06f731..d8f0d38 100644
                  I->getOperand(0) : I->getOperand(1);
          }
 diff --git a/IGC/Compiler/VerificationPass.cpp b/IGC/Compiler/VerificationPass.cpp
-index 98437d7..40d50f5 100644
+index 98437d79dd..40d50f5a19 100644
 --- a/IGC/Compiler/VerificationPass.cpp
 +++ b/IGC/Compiler/VerificationPass.cpp
 @@ -302,7 +302,7 @@ bool VerificationPass::verifyType(Type* type, Value* val)
@@ -2280,7 +2217,7 @@ index 98437d7..40d50f5 100644
          if (!m_IGC_IR_spec.vectorTypeSizes.count(typeSize))
          {
 diff --git a/IGC/DebugInfo/DebugInfoUtils.hpp b/IGC/DebugInfo/DebugInfoUtils.hpp
-index 7f2e288..88b30a7 100644
+index 7f2e288acd..88b30a75ff 100644
 --- a/IGC/DebugInfo/DebugInfoUtils.hpp
 +++ b/IGC/DebugInfo/DebugInfoUtils.hpp
 @@ -108,7 +108,7 @@ namespace IGC
@@ -2293,10 +2230,10 @@ index 7f2e288..88b30a7 100644
                  {
                      // Function has no DebugLoc so it is either internal
 diff --git a/IGC/DebugInfo/DwarfDebug.cpp b/IGC/DebugInfo/DwarfDebug.cpp
-index ed96424..a853a97 100644
+index e86ea69a5c..b251531b21 100644
 --- a/IGC/DebugInfo/DwarfDebug.cpp
 +++ b/IGC/DebugInfo/DwarfDebug.cpp
-@@ -2129,9 +2129,9 @@ static DebugLoc getFnDebugLoc(DebugLoc DL, const LLVMContext& Ctx)
+@@ -2168,9 +2168,9 @@ static DebugLoc getFnDebugLoc(DebugLoc DL, const LLVMContext& Ctx)
          // Check for number of operands since the compatibility is cheap here.
          if (SP->getNumOperands() > 19)
          {
@@ -2309,7 +2246,7 @@ index ed96424..a853a97 100644
  
      return DebugLoc();
 diff --git a/IGC/GenISAIntrinsics/GenIntrinsics.cpp b/IGC/GenISAIntrinsics/GenIntrinsics.cpp
-index 708cfda..772155b 100644
+index 708cfdaa6a..772155b214 100644
 --- a/IGC/GenISAIntrinsics/GenIntrinsics.cpp
 +++ b/IGC/GenISAIntrinsics/GenIntrinsics.cpp
 @@ -204,7 +204,7 @@ static Type *DecodeFixedType(ArrayRef<GenISAIntrinsic::IITDescriptor> &Infos,
@@ -2340,10 +2277,10 @@ index 708cfda..772155b 100644
    else if (Ty)
      Result += EVT::getEVT(Ty).getEVTString();
 diff --git a/IGC/LLVM3DBuilder/BuiltinsFrontendDefinitions.hpp b/IGC/LLVM3DBuilder/BuiltinsFrontendDefinitions.hpp
-index a89d63b..a1bc5d2 100644
+index af20473ff4..79f74d3301 100644
 --- a/IGC/LLVM3DBuilder/BuiltinsFrontendDefinitions.hpp
 +++ b/IGC/LLVM3DBuilder/BuiltinsFrontendDefinitions.hpp
-@@ -4929,7 +4929,7 @@ void LLVM3DBuilder<preserveNames, T, Inserter>::VectorToScalars(
+@@ -4989,7 +4989,7 @@ void LLVM3DBuilder<preserveNames, T, Inserter>::VectorToScalars(
      IGC_ASSERT(nullptr != vector->getType());
      IGC_ASSERT(vector->getType()->isVectorTy());
  
@@ -2353,7 +2290,7 @@ index a89d63b..a1bc5d2 100644
      IGC_ASSERT(count <= 4);
      IGC_ASSERT(count <= maxSize);
 diff --git a/IGC/WrapperLLVM/include/llvmWrapper/IR/DerivedTypes.h b/IGC/WrapperLLVM/include/llvmWrapper/IR/DerivedTypes.h
-index 8b67bdf..307eeaf 100644
+index 8b67bdf410..307eeaf907 100644
 --- a/IGC/WrapperLLVM/include/llvmWrapper/IR/DerivedTypes.h
 +++ b/IGC/WrapperLLVM/include/llvmWrapper/IR/DerivedTypes.h
 @@ -27,6 +27,7 @@ IN THE SOFTWARE.
@@ -2381,7 +2318,7 @@ index 8b67bdf..307eeaf 100644
  
  #endif
 diff --git a/IGC/WrapperLLVM/include/llvmWrapper/Support/TypeSize.h b/IGC/WrapperLLVM/include/llvmWrapper/Support/TypeSize.h
-index e8b5621..f5abae9 100644
+index e8b5621a58..f5abae93c2 100644
 --- a/IGC/WrapperLLVM/include/llvmWrapper/Support/TypeSize.h
 +++ b/IGC/WrapperLLVM/include/llvmWrapper/Support/TypeSize.h
 @@ -33,10 +33,14 @@ using namespace llvm;
@@ -2401,7 +2338,7 @@ index e8b5621..f5abae9 100644
  } // namespace IGCLLVM
  
 diff --git a/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Scalar.h b/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Scalar.h
-index df56f41..97c6273 100644
+index df56f417bd..97c627347c 100644
 --- a/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Scalar.h
 +++ b/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Scalar.h
 @@ -42,7 +42,7 @@ namespace IGCLLVM
@@ -2423,7 +2360,7 @@ index df56f41..97c6273 100644
  #error Not supported llvm version.
  #endif
 diff --git a/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Utils/LoopUtils.h b/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Utils/LoopUtils.h
-index 6868b09..78a5594 100644
+index 6868b09fbe..78a55949aa 100644
 --- a/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Utils/LoopUtils.h
 +++ b/IGC/WrapperLLVM/include/llvmWrapper/Transforms/Utils/LoopUtils.h
 @@ -39,6 +39,14 @@ namespace IGCLLVM
@@ -2442,22 +2379,19 @@ index 6868b09..78a5594 100644
  
  #endif
 diff --git a/IGC/common/igc_resourceDimTypes.h b/IGC/common/igc_resourceDimTypes.h
-index 6831b06..2d67596 100644
+index 6831b06c8e..d790330fb8 100644
 --- a/IGC/common/igc_resourceDimTypes.h
 +++ b/IGC/common/igc_resourceDimTypes.h
-@@ -66,6 +66,10 @@ namespace IGC
+@@ -66,6 +66,11 @@ namespace IGC
              resourceDimTypeId == DIM_2D_TYPE || resourceDimTypeId == DIM_2D_ARRAY_TYPE ||
              resourceDimTypeId == DIM_3D_TYPE || resourceDimTypeId == DIM_CUBE_TYPE || resourceDimTypeId == DIM_CUBE_ARRAY_TYPE));
  
 +#if LLVM_VERSION_MAJOR >= 12
-+        return llvm::StructType::getTypeByName(module.getContext(), ResourceDimensionTypeName[resourceDimTypeId]);
++        llvm::LLVMContext& llvmCtx = module.getContext();
++        return llvm::StructType::getTypeByName(llvmCtx, ResourceDimensionTypeName[resourceDimTypeId]);
 +#else
          return module.getTypeByName(ResourceDimensionTypeName[resourceDimTypeId]);
 +#endif
      }
--}
+ }
 \ No newline at end of file
-+}
--- 
-2.30.2
-
