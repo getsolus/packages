@@ -3,3 +3,7 @@ This file is used to indicate responsibility for the maintenance of this package
 - Campbell Jones
   - IRC: serebit
   - Email: dev@serebit.com
+- Martin Reboredo
+  - IRC: yakoyakoyokuyoku
+  - Email: yakoyoku@gmail.com
+  - Matrix: @yakoyakoyokuyoku:matrix.org
