@@ -1,69 +1,46 @@
-From 5cb02965853b2a06d301452d277b9ffd471aaa54 Mon Sep 17 00:00:00 2001
+From a43cba61243424a37edf36317f31bf894181dc7d Mon Sep 17 00:00:00 2001
 From: Joshua Strobl <joshua@streambits.io>
-Date: Mon, 28 Dec 2020 22:25:49 +0200
+Date: Wed, 28 Jul 2021 14:24:36 +0300
 Subject: [PATCH 1/1] Support a stateless configuration
 
 ---
- configure.ac             |  2 ++
- src/Makefile.am          |  6 +++---
- src/daemon/daemon-conf.c | 40 +++++++++++++++++++++++++++++++++++-----
- 3 files changed, 40 insertions(+), 8 deletions(-)
+ meson.build              |  2 ++
+ src/daemon/daemon-conf.c | 45 ++++++++++++++++++++++++++--------------
+ src/daemon/meson.build   | 12 +++++------
+ src/pulse/meson.build    |  2 +-
+ 4 files changed, 38 insertions(+), 23 deletions(-)
 
-diff --git a/configure.ac b/configure.ac
-index a519e63d7..1d6ea65df 100644
---- a/configure.ac
-+++ b/configure.ac
-@@ -1394,6 +1394,8 @@ AC_DEFINE(PA_SOEXT, [".so"], [Shared object extension])
+diff --git a/meson.build b/meson.build
+index d7e468cab..92302e56e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -82,6 +82,7 @@ endif
+ pkgconfigdir = join_paths(libdir, 'pkgconfig')
+ pulselibexecdir = join_paths(libexecdir, 'pulse')
+ pulsesysconfdir = join_paths(sysconfdir, 'pulse')
++pulsesystemdir = join_paths(datadir, 'pulseaudio')
  
- AC_SUBST(pulseconfdir, ["${sysconfdir}/pulse"])
- AX_DEFINE_DIR(PA_DEFAULT_CONFIG_DIR, pulseconfdir, [Location of configuration files])
-+AC_SUBST(pulsesystemdir, ["${datadir}/pulseaudio"])
-+AX_DEFINE_DIR(PA_SYSTEM_CONFIG_DIR, pulsesystemdir, [Location of default configuration files])
- 
- #### Mac OSX specific stuff #####
- 
-diff --git a/src/Makefile.am b/src/Makefile.am
-index bd764037b..bee53903a 100644
---- a/src/Makefile.am
-+++ b/src/Makefile.am
-@@ -25,14 +25,14 @@ pulseincludedir=$(includedir)/pulse
- pulsecoreincludedir=$(includedir)/pulsecore
- pulselibexecdir=$(libexecdir)/pulse
- if HAVE_X11
--xdgautostartdir=$(sysconfdir)/xdg/autostart
-+xdgautostartdir=$(datadir)/xdg/autostart
- endif
- if HAVE_ALSA
- alsaprofilesetsdir=$(alsadatadir)/profile-sets
- alsapathsdir=$(alsadatadir)/paths
- endif
- if HAVE_DBUS
--dbuspolicydir=$(sysconfdir)/dbus-1/system.d
-+dbuspolicydir=$(datadir)/dbus-1/system.d
- endif
- if HAVE_GSETTINGS
- gsettingsdataconvertdir=$(datadir)/GConf/gsettings
-@@ -113,7 +113,7 @@ EXTRA_DIST = \
- 		modules/gsettings/org.freedesktop.pulseaudio.gschema.xml \
- 		modules/gsettings/pulseaudio.convert
- 
--pulseconf_DATA = \
-+pulsesystem_DATA = \
- 		default.pa \
- 		system.pa \
- 		daemon.conf \
+ modlibexecdir = get_option('modlibexecdir')
+ if modlibexecdir == ''
+@@ -142,6 +143,7 @@ cdata.set_quoted('PA_SRCDIR', join_paths(meson.current_source_dir(), 'src'))
+ cdata.set_quoted('PA_BUILDDIR', meson.current_build_dir())
+ cdata.set_quoted('PA_SOEXT', '.so')
+ cdata.set_quoted('PA_DEFAULT_CONFIG_DIR', pulsesysconfdir)
++cdata.set_quoted('PA_SYSTEM_CONFIG_DIR', pulsesystemdir)
+ cdata.set('PA_DEFAULT_CONFIG_DIR_UNQUOTED', pulsesysconfdir)
+ cdata.set_quoted('PA_BINARY', join_paths(bindir, 'pulseaudio'))
+ cdata.set_quoted('PA_SYSTEM_RUNTIME_PATH', join_paths(localstatedir, 'run', 'pulse'))
 diff --git a/src/daemon/daemon-conf.c b/src/daemon/daemon-conf.c
-index bcf7329f1..0bcb85e57 100644
+index ffef554be..e1fb746b9 100644
 --- a/src/daemon/daemon-conf.c
 +++ b/src/daemon/daemon-conf.c
-@@ -51,9 +51,17 @@
+@@ -51,9 +51,16 @@
  #define DEFAULT_SCRIPT_FILE_USER PA_PATH_SEP "default.pa"
  #define DEFAULT_SYSTEM_SCRIPT_FILE PA_DEFAULT_CONFIG_DIR PA_PATH_SEP "system.pa"
  
 +/* Stateless .pa files */
-+#define DEFAULT_STATELESS_SCRIPT_FILE           PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "default.pa"
-+#define DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE    PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "system.pa"
-+
++#define DEFAULT_STATELESS_SCRIPT_FILE PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "default.pa"
++#define DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE PA_SYSTEM_CONFIG_DIR PA_PATH_SEP "system.pa"
 +
  #define DEFAULT_CONFIG_FILE PA_DEFAULT_CONFIG_DIR PA_PATH_SEP "daemon.conf"
  #define DEFAULT_CONFIG_FILE_USER PA_PATH_SEP "daemon.conf"
@@ -74,26 +51,35 @@ index bcf7329f1..0bcb85e57 100644
  #define ENV_SCRIPT_FILE "PULSE_SCRIPT"
  #define ENV_CONFIG_FILE "PULSE_CONFIG"
  #define ENV_DL_SEARCH_PATH "PULSE_DLPATH"
-@@ -665,9 +673,17 @@ int pa_daemon_conf_load(pa_daemon_conf *c, const char *filename) {
+@@ -665,21 +672,15 @@ int pa_daemon_conf_load(pa_daemon_conf *c, const char *filename) {
      pa_xfree(c->config_file);
      c->config_file = NULL;
  
+-    const char *default_config_file = DEFAULT_CONFIG_FILE;
+-#ifdef HAVE_RUNNING_FROM_BUILD_TREE
+-    if (pa_run_from_build_tree()) {
+-        pa_log_notice("Detected that we are run from the build tree, fixing default daemon.conf file path.");
+-#ifdef MESON_BUILD
+-        default_config_file = PA_BUILDDIR PA_PATH_SEP "src" PA_PATH_SEP "daemon" PA_PATH_SEP "daemon.conf";
+-#else
+-        default_config_file = PA_BUILDDIR PA_PATH_SEP "daemon.conf";
+-#endif // Endof #ifdef MESON_BUILD
+-    }
+-#endif // Endof #ifdef HAVE_RUNNING_FROM_BUILD_TREE
 +    const char *conf_path = NULL;
-+
 +    if (access(DEFAULT_CONFIG_FILE, F_OK) == 0)
 +        conf_path = DEFAULT_CONFIG_FILE;
 +    else
 +        conf_path = DEFAULT_STATELESS_CONFIG_FILE;
-+
-+
+ 
      f = filename ?
          pa_fopen_cloexec(c->config_file = pa_xstrdup(filename), "r") :
--        pa_open_config_file(DEFAULT_CONFIG_FILE, DEFAULT_CONFIG_FILE_USER, ENV_CONFIG_FILE, &c->config_file);
+-        pa_open_config_file(default_config_file, DEFAULT_CONFIG_FILE_USER, ENV_CONFIG_FILE, &c->config_file);
 +        pa_open_config_file(conf_path, DEFAULT_CONFIG_FILE_USER, ENV_CONFIG_FILE, &c->config_file);
  
      if (!f && errno != ENOENT) {
          pa_log_warn(_("Failed to open configuration file: %s"), pa_cstrerror(errno));
-@@ -723,9 +739,17 @@ const char *pa_daemon_conf_get_default_script_file(pa_daemon_conf *c) {
+@@ -735,9 +736,15 @@ const char *pa_daemon_conf_get_default_script_file(pa_daemon_conf *c) {
  
      if (!c->default_script_file) {
          if (c->system_instance)
@@ -102,18 +88,16 @@ index bcf7329f1..0bcb85e57 100644
 +                c->default_script_file = pa_find_config_file(DEFAULT_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE);
 +            else
 +                c->default_script_file = pa_find_config_file(DEFAULT_STATELESS_SYSTEM_SCRIPT_FILE, NULL, ENV_SCRIPT_FILE);
-+
          else
 -            c->default_script_file = pa_find_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
 +            if (access(DEFAULT_SCRIPT_FILE, F_OK) == 0)
 +                c->default_script_file = pa_find_config_file(DEFAULT_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
 +            else
 +                c->default_script_file = pa_find_config_file(DEFAULT_STATELESS_SCRIPT_FILE, DEFAULT_SCRIPT_FILE_USER, ENV_SCRIPT_FILE);
-+
      }
  
      return c->default_script_file;
-@@ -737,9 +761,15 @@ FILE *pa_daemon_conf_open_default_script_file(pa_daemon_conf *c) {
+@@ -749,9 +756,15 @@ FILE *pa_daemon_conf_open_default_script_file(pa_daemon_conf *c) {
  
      if (!c->default_script_file) {
          if (c->system_instance)
@@ -131,6 +115,72 @@ index bcf7329f1..0bcb85e57 100644
      } else
          f = pa_fopen_cloexec(c->default_script_file, "r");
  
+diff --git a/src/daemon/meson.build b/src/daemon/meson.build
+index 262e193b2..5738d1c8f 100644
+--- a/src/daemon/meson.build
++++ b/src/daemon/meson.build
+@@ -52,7 +52,7 @@ if x11_dep.found()
+     output : '00-pulseaudio-x11',
+     configuration : conf,
+     install : true,
+-    install_dir : join_paths(sysconfdir, 'xdg', 'Xwayland-session.d'),
++    install_dir : join_paths(datadir, 'xdg', 'Xwayland-session.d'),
+   )
+ 
+   desktop_file = i18n.merge_file(
+@@ -61,7 +61,7 @@ if x11_dep.found()
+     po_dir : po_dir,
+     type : 'desktop',
+     install : true,
+-    install_dir : join_paths(sysconfdir, 'xdg', 'autostart'),
++    install_dir : join_paths(datadir, 'xdg', 'autostart'),
+   )
+ 
+   desktop_utils = find_program('desktop-file-validate', required: false)
+@@ -93,7 +93,7 @@ custom_target('daemon.conf',
+   command : [m4, '@INPUT@'],
+   build_by_default : true,
+   install : true,
+-  install_dir : pulsesysconfdir,
++  install_dir : pulsesystemdir,
+ )
+ 
+ default_conf = configuration_data()
+@@ -117,7 +117,7 @@ custom_target('default.pa',
+   command : [m4, '@INPUT@'],
+   build_by_default : true,
+   install : true,
+-  install_dir : pulsesysconfdir,
++  install_dir : pulsesystemdir,
+ )
+ 
+ system_conf = configuration_data()
+@@ -136,12 +136,12 @@ custom_target('system.pa',
+   command : [m4, '@INPUT@'],
+   build_by_default : true,
+   install : true,
+-  install_dir : pulsesysconfdir,
++  install_dir : pulsesystemdir,
+ )
+ 
+ if dbus_dep.found()
+   install_data('pulseaudio-system.conf',
+-    install_dir : join_paths(sysconfdir, 'dbus-1', 'system.d')
++    install_dir : join_paths(datadir, 'dbus-1', 'system.d')
+   )
+ endif
+ 
+diff --git a/src/pulse/meson.build b/src/pulse/meson.build
+index c2128e087..a7ceea07b 100644
+--- a/src/pulse/meson.build
++++ b/src/pulse/meson.build
+@@ -134,5 +134,5 @@ client_conf_file = configure_file(
+   input : 'client.conf.in',
+   output : 'client.conf',
+   configuration : client_conf,
+-  install_dir : pulsesysconfdir,
++  install_dir : pulsesystemdir,
+ )
 -- 
-2.29.2
+2.32.0
 
