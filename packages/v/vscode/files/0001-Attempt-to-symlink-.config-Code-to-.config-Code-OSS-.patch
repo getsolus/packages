@@ -1,16 +1,16 @@
-From e736929acf096bfc81e5543966cfb33ea38df238 Mon Sep 17 00:00:00 2001
+From ce7771b811d830404315747a8ab9c304789e496d Mon Sep 17 00:00:00 2001
 From: Joshua Strobl <joshua@streambits.io>
-Date: Thu, 6 May 2021 11:18:33 +0300
+Date: Fri, 6 Aug 2021 15:13:39 +0300
 Subject: [PATCH 1/1] Attempt to symlink .config/Code to .config/Code - OSS if
  Code does not exist.
 
 This ensures some extensions that specifically check for Code will function. Additionally don't bother doing the platform checks. We're on Linux.
 ---
- .../platform/environment/node/userDataPath.js | 61 ++++++-------------
- 1 file changed, 17 insertions(+), 44 deletions(-)
+ .../platform/environment/node/userDataPath.js | 69 +++++--------------
+ 1 file changed, 19 insertions(+), 50 deletions(-)
 
 diff --git a/src/vs/platform/environment/node/userDataPath.js b/src/vs/platform/environment/node/userDataPath.js
-index b1c1fb26b5d..2b05b5c0361 100644
+index 1f7196c33e1..6cb7cb3fe16 100644
 --- a/src/vs/platform/environment/node/userDataPath.js
 +++ b/src/vs/platform/environment/node/userDataPath.js
 @@ -12,12 +12,13 @@
@@ -28,7 +28,7 @@ index b1c1fb26b5d..2b05b5c0361 100644
  
  		/**
  		 * @param {NativeParsedArgs} cliArgs
-@@ -47,48 +48,18 @@
+@@ -47,62 +48,29 @@
  		 * @returns {string}
  		 */
  		function doGetUserDataPath(cliArgs) {
@@ -39,38 +39,32 @@ index b1c1fb26b5d..2b05b5c0361 100644
 -				return path.join(portablePath, 'user-data');
 -			}
 -
--			// 2. Support explicit --user-data-dir
+-			// 2. Support global VSCODE_APPDATA environment variable
+-			let appDataPath = process.env['VSCODE_APPDATA'];
+-			if (appDataPath) {
+-				return path.join(appDataPath, productName);
+-			}
+-
+-			// With Electron>=13 --user-data-dir switch will be propagated to
+-			// all processes https://github.com/electron/electron/blob/1897b14af36a02e9aa7e4d814159303441548251/shell/browser/electron_browser_client.cc#L546-L553
+-			// Check VSCODE_PORTABLE and VSCODE_APPDATA before this case to get correct values.
+-			// 3. Support explicit --user-data-dir
 -			const cliPath = cliArgs['user-data-dir'];
 -			if (cliPath) {
 -				return cliPath;
 -			}
 -
--			// 3. Support global VSCODE_APPDATA environment variable
--			let appDataPath = process.env['VSCODE_APPDATA'];
--
 -			// 4. Otherwise check per platform
--			if (!appDataPath) {
--				switch (process.platform) {
--					case 'win32':
--						appDataPath = process.env['APPDATA'];
--						if (!appDataPath) {
--							const userProfile = process.env['USERPROFILE'];
--							if (typeof userProfile !== 'string') {
--								throw new Error('Windows: Unexpected undefined %USERPROFILE% environment variable');
--							}
--
--							appDataPath = path.join(userProfile, 'AppData', 'Roaming');
+-			switch (process.platform) {
+-				case 'win32':
+-					appDataPath = process.env['APPDATA'];
+-					if (!appDataPath) {
+-						const userProfile = process.env['USERPROFILE'];
+-						if (typeof userProfile !== 'string') {
+-							throw new Error('Windows: Unexpected undefined %USERPROFILE% environment variable');
 -						}
--						break;
--					case 'darwin':
--						appDataPath = path.join(os.homedir(), 'Library', 'Application Support');
--						break;
--					case 'linux':
--						appDataPath = process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config');
--						break;
--					default:
--						throw new Error('Platform not supported');
--				}
+-
+-						appDataPath = path.join(userProfile, 'AppData', 'Roaming');
 +			let appDataPath = process.env['VSCODE_APPDATA'] || process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config');
 +			let codePath = path.join(appDataPath, productName);
 +			if (productName == "Code - OSS") { // OSS equivelant
@@ -78,7 +72,16 @@ index b1c1fb26b5d..2b05b5c0361 100644
 +				fs.access(nonOSSPath, fs.constants.F_OK, (error) => { // Access the path
 +					if (error) { // File doesn't exist
 +						fs.symlinkSync(codePath, nonOSSPath); // Symlink Code - OSS to Code
-+					}
+ 					}
+-					break;
+-				case 'darwin':
+-					appDataPath = path.join(os.homedir(), 'Library', 'Application Support');
+-					break;
+-				case 'linux':
+-					appDataPath = process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config');
+-					break;
+-				default:
+-					throw new Error('Platform not supported');
 +				});
  			}
  
@@ -86,8 +89,12 @@ index b1c1fb26b5d..2b05b5c0361 100644
 +			return codePath;
  		}
  
- 		return {
-@@ -97,8 +68,9 @@
+-		return {
+-			getUserDataPath
+-		};
++        return {
++            getUserDataPath
++        };
  	}
  
  	if (typeof define === 'function') {
@@ -98,7 +105,7 @@ index b1c1fb26b5d..2b05b5c0361 100644
  			/** @type {typeof import('path')} */ path,
  			/** @type {typeof import('os')} */ os,
  			/** @type {typeof import('../../../base/common/network')} */ network,
-@@ -108,14 +80,15 @@
+@@ -112,14 +80,15 @@
  			const rootPath = resources.dirname(network.FileAccess.asFileUri('', require));
  			const pkg = require.__$__nodeRequire(resources.joinPath(rootPath, 'package.json').fsPath);
  
@@ -117,5 +124,5 @@ index b1c1fb26b5d..2b05b5c0361 100644
  		throw new Error('Unknown context');
  	}
 -- 
-2.30.2
+2.32.0
 
