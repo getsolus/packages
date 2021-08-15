@@ -1,59 +1,80 @@
 name       : julia
-version    : 1.5.3
-release    : 27
+version    : 1.6.2
+release    : 28
 source     :
-    - https://github.com/JuliaLang/julia/releases/download/v1.5.3/julia-1.5.3-full.tar.gz : fb69337ca037576758547c7eed9ae8f153a9c052318327b6b7f1917408c14d91
+    - https://github.com/JuliaLang/julia/releases/download/v1.6.2/julia-1.6.2-full.tar.gz : 01241120515cb9435b96179cf301fbd2c24d4405f252588108d13ceac0f41c0a
+homepage   : https://julialang.org/
 license    : MIT
 component  : programming
-summary    : The Julia Language - A fresh approach to technical computing.
+summary    : The Julia Language - A fresh approach to technical computing
 description: |
     Julia provides ease and expressiveness for high-level numerical computing, in the same way as languages such as R, MATLAB, and Python, but also supports general programming.
 builddeps  :
+    - pkgconfig(libcurl)
     - pkgconfig(libgit2)
     - pkgconfig(libpcre2-posix)
-    - pkgconfig(libssh2)
     - pkgconfig(libunwind)
     - pkgconfig(libutf8proc)
     - pkgconfig(openblas)
+    - pkgconfig(openlibm)
+    - llvm-devel
     - mbedtls-devel
+    - p7zip
+    - patchelf
     - suitesparse-devel
 rundeps    :
-    # Unfortunately Julia doesn't link against most of the libraries but calls them with `dlopen()`.
-    # It also requires unversioned sonames so we're pulling in the -devel variant.
-    # Some dependencies though are not listed because either dynlinked to or part of system.base.
-        - arpack-devel
-        - fftw-devel
-        - gmp-devel
-        - libgit2-devel
-        - mbedtls-devel
-        - mpfr-devel
-        - openblas-devel
-        - p7zip
-        - pcre2-devel
-        - suitesparse
-patterns   :
-    - docs : [/usr/share/doc]
+    # This package has to be rebuilt every time the soname of the library that is symlinked with changes.
+    - libgit2
+    - mbedtls
+    - openblas
+    - openlibm
+    - p7zip
+    - pcre2
+    - suitesparse
 networking : yes
+ccache     : no
+environment: |
+    export SOLUS_SYS_LIBS=(libLLVM.so libamd.so libatomic.so libbtf.so libcamd.so libccolamd.so libcholmod.so \
+        libcolamd.so libcurl.so libgfortran.so libgit2.so libgmp.so libgmpxx.so libgomp.so libklu.so libldl.so \
+        libmbedcrypto.so libmbedtls.so libmbedx509.so libmpfr.so libnghttp2.so libopenblas.so libopenlibm.so \
+        libpcre2-8.so libpthread.so libquadmath.so librbio.so libspqr.so libssh2.so libssp.so libstdc++.so \
+        libsuitesparseconfig.so libumfpack.so libunwind.so libz.so)
 setup      : |
     %patch -p1 < $pkgfiles/Do-not-rebuild-on-install.patch
-    sed /libcurl,CURL/d -i base/Makefile
+    %patch -p1 < $pkgfiles/avoid-hardcoded-libs.patch
+    %patch -p1 < $pkgfiles/correct-libjulia-rpath.patch
+    mkdir -p usr/lib
+    ln -s $(realpath /usr/lib64/libLLVM.so) usr/lib/libLLVM-11jl.so
+    ln -s $(realpath /usr/lib64/libopenblas.so) usr/lib/libopenblas64_.so
+    ln -s /usr/lib64/libgcc_s.so.1 usr/lib/libgcc_s.so.1
+    for lib in ${SOLUS_SYS_LIBS[@]}; do
+        ln -s $(realpath /usr/lib64/$lib) usr/lib/$lib
+    done
 build      : |
-    %make LIBBLASNAME=libopenblas \
+    %make \
+        JULIA_CPU_TARGET="generic;haswell,-rdrnd,clone_all" \
+        LIBBLASNAME=libopenblas \
         LIBLAPACKNAME=libopenblas \
         MARCH=x86-64 \
         USE_SYSTEM_ARPACK=1 \
         USE_SYSTEM_BLAS=1 \
+        USE_SYSTEM_CSL=1 \
         USE_SYSTEM_CURL=1 \
+        USE_SYSTEM_DSFMT=0 \
         USE_SYSTEM_FFTW=1 \
         USE_SYSTEM_GMP=1 \
         USE_SYSTEM_LAPACK=1 \
         USE_SYSTEM_LIBGIT2=1 \
         USE_SYSTEM_LIBSSH2=1 \
         USE_SYSTEM_LIBUNWIND=1 \
-        USE_SYSTEM_LLVM=0 \
+        USE_SYSTEM_LIBUV=0 \
+        USE_SYSTEM_LLVM=1 \
         USE_SYSTEM_MBEDTLS=1 \
         USE_SYSTEM_MPFR=1 \
+        USE_SYSTEM_NGHTTP2=1 \
+        USE_SYSTEM_OPENLIBM=1 \
         USE_SYSTEM_P7ZIP=1 \
+        USE_SYSTEM_PATCHELF=1 \
         USE_SYSTEM_PCRE=1 \
         USE_SYSTEM_SUITESPARSE=1 \
         USE_SYSTEM_UTF8PROC=1 \
@@ -61,7 +82,27 @@ build      : |
         VERBOSE=1 \
         release
 install    : |
+    rm -f usr/lib/{libgcc_s.so.1,libopenlibm.so}
+    ln -s /usr/lib64/libgcc_s.so.1 usr/lib/libgcc_s.so.1
+    ln -s  $(realpath /usr/lib64/libopenlibm.so) usr/lib/libopenlibm.so
+    ln -s /usr/bin/patchelf usr/tools/patchelf
+    ln -s /usr/bin/7z usr/bin/7z
+
     %make_install prefix=%PREFIX% libdir=%libdir% sysconfdir=/etc
 
     # The startup file is empty, and it's preferred to have it in $HOME.
     rm -rf $installdir/etc
+
+    rm -f $installdir/usr/lib64/julia/{libLLVM*.so,libgcc_s.so.1,libopenblas64_.so,libopenlibm.so}
+    rm -f $installdir/usr/libexec/7z
+    ln -s /usr/bin/7z $installdir/usr/libexec/7z
+    for lib in ${SOLUS_SYS_LIBS[@]}; do
+        rm -f $installdir/usr/lib64/julia/$lib
+        ln -s ../$(objdump -p /usr/lib64/$lib | grep SONAME | awk '{ print $2 };') $installdir/usr/lib64/julia/$lib
+    done
+    ln -s ../$(objdump -p /usr/lib64/libLLVM.so | grep SONAME | awk '{ print $2 };') $installdir/usr/lib64/julia/libLLVM-11jl.so
+    ln -s ../libgcc_s.so.1 $installdir/usr/lib64/julia/libgcc_s.so.1
+    ln -s ../$(objdump -p /usr/lib64/libopenblas.so | grep SONAME | awk '{ print $2 };') $installdir/usr/lib64/julia/libopenblas64_.so
+patterns   :
+    - docs :
+        - /usr/share/doc
