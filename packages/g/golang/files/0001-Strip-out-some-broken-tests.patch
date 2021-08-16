@@ -1,20 +1,22 @@
-From a4b0fc4bd3e1255c20cfbf31b6fa16479bd92c8b Mon Sep 17 00:00:00 2001
+From 792215797b06bd37989d53d7ab86171fa80d51d6 Mon Sep 17 00:00:00 2001
 From: Joshua Strobl <joshua@streambits.io>
-Date: Tue, 16 Feb 2021 23:24:08 +0200
-Subject: [PATCH 1/1] Strip out some broken tests.
+Date: Tue, 17 Aug 2021 00:30:58 +0300
+Subject: [PATCH 1/1] Strip out some broken tests
 
 Some tests are only assuming a single static string of PASS. In reality these tests will also return LD_PRELOAD issues because it assumes fakeroot. Additionally runtime pprof tests are failing as a result of too new of binutils.
 ---
  misc/cgo/test/cgo_test.go            |   1 -
- misc/cgo/testcshared/cshared_test.go |  60 ----
- src/cmd/vet/vet_test.go              | 411 ---------------------------
+ misc/cgo/testcshared/cshared_test.go |  89 ------
+ src/cmd/link/cgo_test.go             | 141 ---------
+ src/cmd/vet/vet_test.go              | 414 ---------------------------
  src/runtime/crash_cgo_test.go        |  85 ------
  src/runtime/gc_test.go               |  10 +-
- 5 files changed, 1 insertion(+), 566 deletions(-)
+ 6 files changed, 1 insertion(+), 739 deletions(-)
+ delete mode 100644 src/cmd/link/cgo_test.go
  delete mode 100644 src/cmd/vet/vet_test.go
 
 diff --git a/misc/cgo/test/cgo_test.go b/misc/cgo/test/cgo_test.go
-index f7a76d0..deb3019 100644
+index 143f23f..1a3f5e7 100644
 --- a/misc/cgo/test/cgo_test.go
 +++ b/misc/cgo/test/cgo_test.go
 @@ -16,7 +16,6 @@ func Test3250(t *testing.T)                  { test3250(t) }
@@ -26,10 +28,10 @@ index f7a76d0..deb3019 100644
  func Test5242(t *testing.T)                  { test5242(t) }
  func Test5337(t *testing.T)                  { test5337(t) }
 diff --git a/misc/cgo/testcshared/cshared_test.go b/misc/cgo/testcshared/cshared_test.go
-index 3a4886c..3b5311c 100644
+index 19ad8c7..e1b22e8 100644
 --- a/misc/cgo/testcshared/cshared_test.go
 +++ b/misc/cgo/testcshared/cshared_test.go
-@@ -337,26 +337,6 @@ func cleanupAndroid() {
+@@ -385,26 +385,6 @@ func cleanupAndroid() {
  	}
  }
  
@@ -56,10 +58,39 @@ index 3a4886c..3b5311c 100644
  func checkNumberOfExportedFunctionsWindows(t *testing.T, exportAllSymbols bool) {
  	const prog = `
  package main
-@@ -481,46 +461,6 @@ func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
- 	}
+@@ -500,75 +480,6 @@ func TestNumberOfExportedFunctions(t *testing.T) {
+ 	})
  }
  
+-// test1: shared library can be dynamically loaded and exported symbols are accessible.
+-func TestExportedSymbolsWithDynamicLoad(t *testing.T) {
+-	t.Parallel()
+-
+-	if GOOS == "windows" {
+-		t.Logf("Skipping on %s", GOOS)
+-		return
+-	}
+-
+-	cmd := "testp1"
+-	bin := cmdToRun(cmd)
+-
+-	createHeadersOnce(t)
+-
+-	if GOOS != "freebsd" {
+-		runCC(t, "-o", cmd, "main1.c", "-ldl")
+-	} else {
+-		runCC(t, "-o", cmd, "main1.c")
+-	}
+-	adbPush(t, cmd)
+-
+-	defer os.Remove(bin)
+-
+-	out := runExe(t, nil, bin, "./"+libgoname)
+-	if strings.TrimSpace(out) != "PASS" {
+-		t.Error(out)
+-	}
+-}
+-
 -// test2: tests libgo2 which does not export any functions.
 -func TestUnexportedSymbols(t *testing.T) {
 -	t.Parallel()
@@ -103,12 +134,159 @@ index 3a4886c..3b5311c 100644
  // test3: tests main.main is exported on android.
  func TestMainExportedOnAndroid(t *testing.T) {
  	t.Parallel()
+diff --git a/src/cmd/link/cgo_test.go b/src/cmd/link/cgo_test.go
+deleted file mode 100644
+index 26ab802..0000000
+--- a/src/cmd/link/cgo_test.go
++++ /dev/null
+@@ -1,141 +0,0 @@
+-// Copyright 2021 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-package main
+-
+-import (
+-	"bytes"
+-	"fmt"
+-	"internal/testenv"
+-	"os"
+-	"os/exec"
+-	"path/filepath"
+-	"testing"
+-)
+-
+-// Issues 43830, 46295
+-func TestCGOLTO(t *testing.T) {
+-	testenv.MustHaveCGO(t)
+-	testenv.MustHaveGoBuild(t)
+-
+-	t.Parallel()
+-
+-	for _, cc := range []string{"gcc", "clang"} {
+-		for test := 0; test < 2; test++ {
+-			t.Run(fmt.Sprintf("%s-%d", cc, test), func(t *testing.T) {
+-				testCGOLTO(t, cc, test)
+-			})
+-		}
+-	}
+-}
+-
+-const test1_main = `
+-package main
+-
+-/*
+-extern int myadd(int, int);
+-int c_add(int a, int b) {
+-	return myadd(a, b);
+-}
+-*/
+-import "C"
+-
+-func main() {
+-	println(C.c_add(1, 2))
+-}
+-`
+-
+-const test1_add = `
+-package main
+-
+-import "C"
+-
+-/* test */
+-
+-//export myadd
+-func myadd(a C.int, b C.int) C.int {
+-	return a + b
+-}
+-`
+-
+-const test2_main = `
+-package main
+-
+-import "fmt"
+-
+-/*
+-#include <stdio.h>
+-
+-void hello(void) {
+-  printf("hello\n");
+-}
+-*/
+-import "C"
+-
+-func main() {
+-	hello := C.hello
+-	fmt.Printf("%v\n", hello)
+-}
+-`
+-
+-func testCGOLTO(t *testing.T, cc string, test int) {
+-	t.Parallel()
+-
+-	if _, err := exec.LookPath(cc); err != nil {
+-		t.Skipf("no %s compiler", cc)
+-	}
+-
+-	dir := t.TempDir()
+-
+-	writeTempFile := func(name, contents string) {
+-		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0644); err != nil {
+-			t.Fatal(err)
+-		}
+-	}
+-
+-	writeTempFile("go.mod", "module cgolto\n")
+-
+-	switch test {
+-	case 0:
+-		writeTempFile("main.go", test1_main)
+-		writeTempFile("add.go", test1_add)
+-	case 1:
+-		writeTempFile("main.go", test2_main)
+-	default:
+-		t.Fatalf("bad case %d", test)
+-	}
+-
+-	cmd := exec.Command(testenv.GoToolPath(t), "build")
+-	cmd.Dir = dir
+-	cmd.Env = append(os.Environ(),
+-		"CC="+cc,
+-		"CGO_CFLAGS=-flto",
+-	)
+-
+-	t.Log("go build")
+-	out, err := cmd.CombinedOutput()
+-	t.Logf("%s", out)
+-
+-	if err != nil {
+-		t.Logf("go build failed: %v", err)
+-
+-		// Error messages we've seen indicating that LTO is not supported.
+-		// These errors come from GCC or clang, not Go.
+-		var noLTO = []string{
+-			`unrecognized command line option "-flto"`,
+-			"unable to pass LLVM bit-code files to linker",
+-			"file not recognized: File format not recognized",
+-			"LTO support has not been enabled",
+-			"linker command failed with exit code",
+-			"gcc: can't load library",
+-		}
+-		for _, msg := range noLTO {
+-			if bytes.Contains(out, []byte(msg)) {
+-				t.Skipf("C compiler %v does not support LTO", cc)
+-			}
+-		}
+-
+-		t.Error("failed")
+-	}
+-}
 diff --git a/src/cmd/vet/vet_test.go b/src/cmd/vet/vet_test.go
 deleted file mode 100644
-index d15d1ce..0000000
+index 50dd073..0000000
 --- a/src/cmd/vet/vet_test.go
 +++ /dev/null
-@@ -1,411 +0,0 @@
+@@ -1,414 +0,0 @@
 -// Copyright 2013 The Go Authors. All rights reserved.
 -// Use of this source code is governed by a BSD-style
 -// license that can be found in the LICENSE file.
@@ -445,8 +623,8 @@ index d15d1ce..0000000
 -}
 -
 -var (
--	errRx       = regexp.MustCompile(`// (?:GC_)?ERROR (.*)`)
--	errAutoRx   = regexp.MustCompile(`// (?:GC_)?ERRORAUTO (.*)`)
+-	errRx       = regexp.MustCompile(`// (?:GC_)?ERROR(NEXT)? (.*)`)
+-	errAutoRx   = regexp.MustCompile(`// (?:GC_)?ERRORAUTO(NEXT)? (.*)`)
 -	errQuotesRx = regexp.MustCompile(`"([^"]*)"`)
 -	lineRx      = regexp.MustCompile(`LINE(([+-])([0-9]+))?`)
 -)
@@ -475,7 +653,10 @@ index d15d1ce..0000000
 -		if m == nil {
 -			continue
 -		}
--		all := m[1]
+-		if m[1] == "NEXT" {
+-			lineNum++
+-		}
+-		all := m[2]
 -		mm := errQuotesRx.FindAllStringSubmatch(all, -1)
 -		if mm == nil {
 -			log.Fatalf("%s:%d: invalid errchk line: %s", file, lineNum, line)
@@ -521,10 +702,10 @@ index d15d1ce..0000000
 -	return
 -}
 diff --git a/src/runtime/crash_cgo_test.go b/src/runtime/crash_cgo_test.go
-index 140c170..0abb926 100644
+index 5729942..a6fe6c3 100644
 --- a/src/runtime/crash_cgo_test.go
 +++ b/src/runtime/crash_cgo_test.go
-@@ -10,7 +10,6 @@ import (
+@@ -11,7 +11,6 @@ import (
  	"bytes"
  	"fmt"
  	"internal/testenv"
@@ -532,7 +713,7 @@ index 140c170..0abb926 100644
  	"os/exec"
  	"runtime"
  	"strconv"
-@@ -281,90 +280,6 @@ func TestCgoTracebackContext(t *testing.T) {
+@@ -291,90 +290,6 @@ func TestCgoTracebackContextPreemption(t *testing.T) {
  	}
  }
  
@@ -624,7 +805,7 @@ index 140c170..0abb926 100644
  	if (runtime.GOOS != "linux" && runtime.GOOS != "freebsd") || runtime.GOARCH != "amd64" {
  		t.Skipf("not yet supported on %s/%s", runtime.GOOS, runtime.GOARCH)
 diff --git a/src/runtime/gc_test.go b/src/runtime/gc_test.go
-index 7870f31..e9197ad 100644
+index 5e7c6c5..d5c993e 100644
 --- a/src/runtime/gc_test.go
 +++ b/src/runtime/gc_test.go
 @@ -7,7 +7,6 @@ package runtime_test
@@ -652,5 +833,5 @@ index 7870f31..e9197ad 100644
  
  func TestGcDeepNesting(t *testing.T) {
 -- 
-2.30.0
+2.32.0
 
