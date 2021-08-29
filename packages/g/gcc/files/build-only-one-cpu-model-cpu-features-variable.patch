@@ -1,0 +1,219 @@
+From a0b4e09ab0102d9c0a5e6d603a080cb78600c40d Mon Sep 17 00:00:00 2001
+From: Ivan Sorokin <vanyacpp@gmail.com>
+Date: Mon, 3 May 2021 11:39:48 +0300
+Subject: [PATCH] x86: Build only one __cpu_model/__cpu_features2 variables
+
+GCC -O2 generated quite bad code for this function:
+
+bool
+f (void)
+{
+  return __builtin_cpu_supports("popcnt")
+	 && __builtin_cpu_supports("ssse3");
+}
+
+f:
+	movl	__cpu_model+12(%rip), %edx
+	movl	%edx, %eax
+	shrl	$6, %eax
+	andl	$1, %eax
+	andl	$4, %edx
+	movl	$0, %edx
+	cmove	%edx, %eax
+	ret
+
+The problem was caused by the fact that internally every invocation of
+__builtin_cpu_supports built a new variable __cpu_model and a new type
+__processor_model.  Because of this, GIMPLE level optimizers weren't able
+to CSE the loads of __cpu_model and optimize bit-operations properly.
+
+Improve GCC -O2 code generation by caching __cpu_model and__cpu_features2
+variables as well as their types:
+
+f:
+        movl    __cpu_model+12(%rip), %eax
+        andl    $68, %eax
+        cmpl    $68, %eax
+        sete    %al
+        ret
+
+2021-05-05  Ivan Sorokin <vanyacpp@gmail.com>
+	    H.J. Lu <hjl.tools@gmail.com>
+
+gcc/
+
+	PR target/91400
+	* config/i386/i386-builtins.c (ix86_cpu_model_type_node): New.
+	(ix86_cpu_model_var): Likewise.
+	(ix86_cpu_features2_type_node): Likewise.
+	(ix86_cpu_features2_var): Likewise.
+	(fold_builtin_cpu): Cache __cpu_model and __cpu_features2 with
+	their types.
+
+gcc/testsuite/
+
+	PR target/91400
+	* gcc.target/i386/pr91400-1.c: New test.
+	* gcc.target/i386/pr91400-2.c: Likewise.
+---
+ gcc/config/i386/i386-builtins.c           | 52 +++++++++++++++--------
+ gcc/testsuite/gcc.target/i386/pr91400-1.c | 14 ++++++
+ gcc/testsuite/gcc.target/i386/pr91400-2.c | 14 ++++++
+ 3 files changed, 63 insertions(+), 17 deletions(-)
+ create mode 100644 gcc/testsuite/gcc.target/i386/pr91400-1.c
+ create mode 100644 gcc/testsuite/gcc.target/i386/pr91400-2.c
+
+diff --git a/gcc/config/i386/i386-builtins.c b/gcc/config/i386/i386-builtins.c
+index b66911082ab..8036aedebac 100644
+--- a/gcc/config/i386/i386-builtins.c
++++ b/gcc/config/i386/i386-builtins.c
+@@ -2103,6 +2103,11 @@ make_var_decl (tree type, const char *name)
+   return new_decl;
+ }
+ 
++static GTY(()) tree ix86_cpu_model_type_node;
++static GTY(()) tree ix86_cpu_model_var;
++static GTY(()) tree ix86_cpu_features2_type_node;
++static GTY(()) tree ix86_cpu_features2_var;
++
+ /* FNDECL is a __builtin_cpu_is or a __builtin_cpu_supports call that is folded
+    into an integer defined in libgcc/config/i386/cpuinfo.c */
+ 
+@@ -2114,12 +2119,16 @@ fold_builtin_cpu (tree fndecl, tree *args)
+     = (enum ix86_builtins) DECL_MD_FUNCTION_CODE (fndecl);
+   tree param_string_cst = NULL;
+ 
+-  tree __processor_model_type = build_processor_model_struct ();
+-  tree __cpu_model_var = make_var_decl (__processor_model_type,
+-					"__cpu_model");
+-
+-
+-  varpool_node::add (__cpu_model_var);
++  if (ix86_cpu_model_var == nullptr)
++    {
++      /* Build a single __cpu_model variable for all references to
++	 __cpu_model so that GIMPLE level optimizers can CSE the loads
++	 of __cpu_model and optimize bit-operations properly.  */
++      ix86_cpu_model_type_node = build_processor_model_struct ();
++      ix86_cpu_model_var = make_var_decl (ix86_cpu_model_type_node,
++					  "__cpu_model");
++      varpool_node::add (ix86_cpu_model_var);
++    }
+ 
+   gcc_assert ((args != NULL) && (*args != NULL));
+ 
+@@ -2160,7 +2169,7 @@ fold_builtin_cpu (tree fndecl, tree *args)
+ 	  return integer_zero_node;
+ 	}
+ 
+-      field = TYPE_FIELDS (__processor_model_type);
++      field = TYPE_FIELDS (ix86_cpu_model_type_node);
+       field_val = processor_alias_table[i].model;
+ 
+       /* CPU types are stored in the next field.  */
+@@ -2179,7 +2188,7 @@ fold_builtin_cpu (tree fndecl, tree *args)
+ 	}
+ 
+       /* Get the appropriate field in __cpu_model.  */
+-      ref = build3 (COMPONENT_REF, TREE_TYPE (field), __cpu_model_var,
++      ref = build3 (COMPONENT_REF, TREE_TYPE (field), ix86_cpu_model_var,
+ 		    field, NULL_TREE);
+ 
+       /* Check the value.  */
+@@ -2212,13 +2221,22 @@ fold_builtin_cpu (tree fndecl, tree *args)
+ 
+       if (isa_names_table[i].feature >= 32)
+ 	{
+-	  tree index_type
+-	    = build_index_type (size_int (SIZE_OF_CPU_FEATURES));
+-	  tree type = build_array_type (unsigned_type_node, index_type);
+-	  tree __cpu_features2_var = make_var_decl (type,
+-						    "__cpu_features2");
++	  if (ix86_cpu_features2_var == nullptr)
++	    {
++	      /* Build a single __cpu_features2 variable for all
++		 references to __cpu_features2 so that GIMPLE level
++		 optimizers can CSE the loads of __cpu_features2 and
++		 optimize bit-operations properly.  */
++	      tree index_type
++		= build_index_type (size_int (SIZE_OF_CPU_FEATURES));
++	      ix86_cpu_features2_type_node
++		= build_array_type (unsigned_type_node, index_type);
++	      ix86_cpu_features2_var
++		= make_var_decl (ix86_cpu_features2_type_node,
++				 "__cpu_features2");
++	      varpool_node::add (ix86_cpu_features2_var);
++	    }
+ 
+-	  varpool_node::add (__cpu_features2_var);
+ 	  for (unsigned int j = 0; j < SIZE_OF_CPU_FEATURES; j++)
+ 	    if (isa_names_table[i].feature < (32 + 32 + j * 32))
+ 	      {
+@@ -2226,7 +2244,7 @@ fold_builtin_cpu (tree fndecl, tree *args)
+ 				    - (32 + j * 32)));
+ 		tree index = size_int (j);
+ 		array_elt = build4 (ARRAY_REF, unsigned_type_node,
+-				    __cpu_features2_var,
++				    ix86_cpu_features2_var,
+ 				    index, NULL_TREE, NULL_TREE);
+ 		/* Return __cpu_features2[index] & field_val  */
+ 		final = build2 (BIT_AND_EXPR, unsigned_type_node,
+@@ -2237,13 +2255,13 @@ fold_builtin_cpu (tree fndecl, tree *args)
+ 	      }
+ 	}
+ 
+-      field = TYPE_FIELDS (__processor_model_type);
++      field = TYPE_FIELDS (ix86_cpu_model_type_node);
+       /* Get the last field, which is __cpu_features.  */
+       while (DECL_CHAIN (field))
+         field = DECL_CHAIN (field);
+ 
+       /* Get the appropriate field: __cpu_model.__cpu_features  */
+-      ref = build3 (COMPONENT_REF, TREE_TYPE (field), __cpu_model_var,
++      ref = build3 (COMPONENT_REF, TREE_TYPE (field), ix86_cpu_model_var,
+ 		    field, NULL_TREE);
+ 
+       /* Access the 0th element of __cpu_features array.  */
+diff --git a/gcc/testsuite/gcc.target/i386/pr91400-1.c b/gcc/testsuite/gcc.target/i386/pr91400-1.c
+new file mode 100644
+index 00000000000..6124058dc1e
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/i386/pr91400-1.c
+@@ -0,0 +1,14 @@
++/* PR target/91400 */
++/* { dg-do compile } */
++/* { dg-options "-O2" } */
++/* { dg-final { scan-assembler-times "andl" 1 } } */
++/* { dg-final { scan-assembler-times "cmpl" 1 } } */
++/* { dg-final { scan-assembler-times "sete" 1 } } */
++/* { dg-final { scan-assembler-not "cmove" } } */
++
++_Bool
++f (void)
++{
++  return __builtin_cpu_supports("popcnt")
++	 && __builtin_cpu_supports("ssse3");
++}
+diff --git a/gcc/testsuite/gcc.target/i386/pr91400-2.c b/gcc/testsuite/gcc.target/i386/pr91400-2.c
+new file mode 100644
+index 00000000000..1af5a2f41cd
+--- /dev/null
++++ b/gcc/testsuite/gcc.target/i386/pr91400-2.c
+@@ -0,0 +1,14 @@
++/* PR target/91400 */
++/* { dg-do compile } */
++/* { dg-options "-O2" } */
++/* { dg-final { scan-assembler-times "andl" 1 } } */
++/* { dg-final { scan-assembler-times "cmpl" 1 } } */
++/* { dg-final { scan-assembler-times "sete" 1 } } */
++/* { dg-final { scan-assembler-not "cmove" } } */
++
++_Bool
++f (void)
++{
++  return __builtin_cpu_supports("avx512vnni")
++	 && __builtin_cpu_supports("3dnow");
++}
+-- 
+2.27.0
+
