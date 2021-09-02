@@ -1,0 +1,529 @@
+--- a/packages/async-rewriter2/src/async-writer-babel.ts
++++ b/packages/async-rewriter2/src/async-writer-babel.ts
+@@ -60,8 +60,10 @@ export default class AsyncWriter {
+         ]
+       ]);
+       return code;
+-    } catch (e) {
+-      e.message = e.message.replace('unknown: ', '');
++    } catch (e: any) {
++      if ('message' in e) {
++        e.message = e.message.replace('unknown: ', '');
++      }
+       throw e;
+     }
+   }
+--- a/packages/service-provider-server/src/cli-service-provider.ts
++++ b/packages/service-provider-server/src/cli-service-provider.ts
+@@ -210,7 +210,7 @@ async function resolveMongodbSrv(uri: st
+         resolve: require('resolve-mongodb-srv'),
+         osDns: require('os-dns-native')
+       };
+-    } catch (error) {
++    } catch (error: any) {
+       bus.emit('mongosh-sp:resolve-srv-error', { from: '', error, duringLoad: true });
+     }
+     if (resolveDnsHelpers !== undefined) {
+@@ -220,7 +220,7 @@ async function resolveMongodbSrv(uri: st
+         });
+         bus.emit('mongosh-sp:resolve-srv-succeeded', { from: uri, to: resolved });
+         return resolved;
+-      } catch (error) {
++      } catch (error: any) {
+         bus.emit('mongosh-sp:resolve-srv-error', { from: uri, error, duringLoad: false });
+         throw error;
+       }
+@@ -233,27 +233,27 @@ function detectAndLogMissingOptionalDepe
+   // These need to be literal require('string') calls for the bundler.
+   try {
+     require('saslprep');
+-  } catch (error) {
++  } catch (error: any) {
+     bus.emit('mongosh-sp:missing-optional-dependency', { name: 'saslprep', error });
+   }
+   try {
+     require('mongodb-client-encryption');
+-  } catch (error) {
++  } catch (error: any) {
+     bus.emit('mongosh-sp:missing-optional-dependency', { name: 'mongodb-client-encryption', error });
+   }
+   try {
+     require('os-dns-native');
+-  } catch (error) {
++  } catch (error: any) {
+     bus.emit('mongosh-sp:missing-optional-dependency', { name: 'os-dns-native', error });
+   }
+   try {
+     require('resolve-mongodb-srv');
+-  } catch (error) {
++  } catch (error: any) {
+     bus.emit('mongosh-sp:missing-optional-dependency', { name: 'resolve-mongodb-srv', error });
+   }
+   try {
+     require('kerberos');
+-  } catch (error) {
++  } catch (error: any) {
+     bus.emit('mongosh-sp:missing-optional-dependency', { name: 'kerberos', error });
+   }
+ }
+@@ -390,8 +390,8 @@ class CliServiceProvider extends Service
+       buildInfo = await this.runCommandWithCheck('admin', {
+         buildInfo: 1
+       }, this.baseCmdOptions);
+-    } catch (e) {
+-      if (e.message.includes('not supported for auto encryption')) {
++    } catch (e: any) {
++      if ('message' in e && e.message.includes('not supported for auto encryption')) {
+         const options = { ...this.currentClientOptions };
+         delete options.autoEncryption;
+         const unencrypted =
+--- a/packages/shell-api/src/collection.ts
++++ b/packages/shell-api/src/collection.ts
+@@ -506,13 +506,13 @@ export default class Collection extends
+       return {
+         ok: 1
+       };
+-    } catch (e) {
++    } catch (e: any) {
+       if (e.name === 'MongoError') {
+         return {
+           ok: 0,
+           errmsg: e.errmsg,
+           code: e.code,
+-          codeName: e.codeName
++          codeName: 'codeName' in e ? e.codeName : 'Unknown'
+         };
+       }
+ 
+@@ -1155,7 +1155,7 @@ export default class Collection extends
+           index: indexes,
+         },
+         await this._database._baseOptions());
+-    } catch (error) {
++    } catch (error: any) {
+       // If indexes is an array and we're failing because of that, we fall back to
+       // trying to drop all the indexes individually because that's what's supported
+       // on mongod 4.0. In the java-shell, error properties are unavailable,
+@@ -1325,7 +1325,7 @@ export default class Collection extends
+         this._name,
+         await this._database._baseOptions()
+       );
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'NamespaceNotFound') {
+         this._mongo._internalState.messageBus.emit(
+           'mongosh:warn',
+--- a/packages/shell-api/src/database.ts
++++ b/packages/shell-api/src/database.ts
+@@ -211,7 +211,7 @@ export default class Database extends Sh
+         cmd,
+         await this._baseOptions()
+       );
+-    } catch (e) {
++    } catch (e: any) {
+       return e;
+     }
+   }
+@@ -897,8 +897,8 @@ export default class Database extends Sh
+           hello: 1,
+         }
+       );
+-    } catch (err) {
+-      if (err.codeName === 'CommandNotFound') {
++    } catch (err: any) {
++      if ('codeName' in err && err.codeName === 'CommandNotFound') {
+         const result = await this.isMaster();
+         delete result.ismaster;
+         return result;
+@@ -990,8 +990,8 @@ export default class Database extends Sh
+     for (const c of colls) {
+       try {
+         result[c] = await this.getCollection(c).stats({ scale });
+-      } catch (error) {
+-        result[c] = { ok: 0, errmsg: error.message };
++      } catch (error: any) {
++        result[c] = { ok: 0, errmsg: 'message' in error ? error.message : 'unknown error' };
+       }
+     }
+     return new CommandResult('StatsResult', result);
+--- a/packages/shell-api/src/mongo.ts
++++ b/packages/shell-api/src/mongo.ts
+@@ -175,7 +175,7 @@ export default class Mongo extends Shell
+     const parentProvider = this._internalState.initialServiceProvider;
+     try {
+       this.__serviceProvider = await parentProvider.getNewConnection(this._uri, mongoClientOptions);
+-    } catch (e) {
++    } catch (e: any) {
+       // If the initial provider had TLS enabled, and we're not able to connect,
+       // and the new URL does not contain a SSL/TLS indicator, we add a notice
+       // about the fact that the behavior differs from the legacy shell here.
+@@ -228,7 +228,7 @@ export default class Mongo extends Shell
+       const previousDb = this._internalState.context.db;
+       previousDbName = previousDb?.getName?.();
+       previousDbMongo = previousDb?._mongo;
+-    } catch (e) {
++    } catch (e: any) {
+       if (e.code !== ShellApiErrors.NotConnected) {
+         throw e;
+       }
+--- a/packages/shell-api/src/replica-set.ts
++++ b/packages/shell-api/src/replica-set.ts
+@@ -62,7 +62,7 @@ export default class ReplicaSet extends
+         throw new MongoshRuntimeError('Documented returned from command replSetGetConfig does not contain \'config\'', CommonErrors.CommandFailed);
+       }
+       return result.config;
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound' || error.codeName === 'APIStrictError') {
+         const doc = await this._database.getSiblingDB('local').getCollection('system.replset').findOne() as ReplSetConfig | null;
+         if (doc === null) {
+@@ -132,15 +132,19 @@ export default class ReplicaSet extends
+         }
+         result = [ 'success', await runReconfig() ];
+         break;
+-      } catch (err) {
++      } catch (err: any) {
++        if (err !instanceof Error) {
++          err = Error('unknown error');
++        }
+         result = [ 'error', err ];
+       }
+     }
+ 
+-    if (result[0] === 'error') {
++    if (result[1] instanceof Error) {
+       throw result[1];
++    } else {
++      return result[1];
+     }
+-    return result[1];
+   }
+ 
+   /**
+--- a/packages/shell-api/src/shard.ts
++++ b/packages/shell-api/src/shard.ts
+@@ -60,7 +60,7 @@ export default class Shard extends Shell
+     }
+     try {
+       return await this._database._runAdminCommand(cmd);
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. Are you connected to mongos?`;
+       }
+@@ -126,7 +126,7 @@ export default class Shard extends Shell
+     const orderedCmd = options !== undefined ? { ...cmd, ...options } : cmd;
+     try {
+       return await this._database._runAdminCommand(orderedCmd);
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. Are you connected to mongos?`;
+       }
+@@ -173,7 +173,7 @@ export default class Shard extends Shell
+     this._emitShardApiCall('addShardTag', { shard, tag });
+     try {
+       return await this.addShardToZone(shard, tag);
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. This method aliases to addShardToZone which exists only for server versions > 3.4.`;
+       }
+@@ -210,7 +210,7 @@ export default class Shard extends Shell
+         max,
+         zone
+       );
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. This method aliases to updateZoneKeyRange which exists only for server versions > 3.4.`;
+       }
+@@ -235,7 +235,7 @@ export default class Shard extends Shell
+     this._emitShardApiCall('removeTagRange', { ns, min, max });
+     try {
+       return await this.updateZoneKeyRange(ns, min, max, null);
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. This method aliases to updateZoneKeyRange which exists only for server versions > 3.4.`;
+       }
+@@ -265,7 +265,7 @@ export default class Shard extends Shell
+     this._emitShardApiCall('removeTagRange', { shard, tag });
+     try {
+       return await this.removeShardFromZone(shard, tag);
+-    } catch (error) {
++    } catch (error: any) {
+       if (error.codeName === 'CommandNotFound') {
+         error.message = `${error.message}. This method aliases to removeShardFromZone which exists only for server versions > 3.4.`;
+       }
+--- a/packages/shell-api/src/shell-internal-state.ts
++++ b/packages/shell-api/src/shell-internal-state.ts
+@@ -244,7 +244,7 @@ export default class ShellInternalState
+   get currentServiceProvider(): ServiceProvider {
+     try {
+       return this.currentDb._mongo._serviceProvider;
+-    } catch (err) {
++    } catch (err: any) {
+       if (err.code === ShellApiErrors.NotConnected) {
+         return this.initialServiceProvider;
+       }
+@@ -323,7 +323,7 @@ export default class ShellInternalState
+         try {
+           const collectionNames = await this.currentDb._getCollectionNamesForCompletion();
+           return collectionNames.filter((name) => name.startsWith(collName));
+-        } catch (err) {
++        } catch (err: any) {
+           if (err.code === ShellApiErrors.NotConnected || err.codeName === 'Unauthorized') {
+             return [];
+           }
+@@ -334,7 +334,7 @@ export default class ShellInternalState
+         try {
+           const dbNames = await this.currentDb._mongo._getDatabaseNamesForCompletion();
+           return dbNames.filter((name) => name.startsWith(dbName));
+-        } catch (err) {
++        } catch (err: any) {
+           if (err.code === ShellApiErrors.NotConnected || err.codeName === 'Unauthorized') {
+             return [];
+           }
+--- a/packages/snippet-manager/src/snippet-manager.ts
++++ b/packages/snippet-manager/src/snippet-manager.ts
+@@ -243,7 +243,7 @@ export class SnippetManager implements S
+           let data;
+           try {
+             data = await unpackBSON<Omit<SnippetIndexFile, 'sourceURL'>>(rawData);
+-          } catch (err) {
++          } catch (err: any) {
+             this.messageBus.emit('mongosh-snippets:fetch-index-error', { action: 'parse-fetched', url, error: err.message });
+             throw new MongoshRuntimeError(`The specified index file ${url} could not be parsed: ${err.message}`);
+           }
+@@ -256,7 +256,7 @@ export class SnippetManager implements S
+         // If possible, write the result to disk for caching.
+         try {
+           await fs.writeFile(cachePath, await packBSON({ repoData }));
+-        } catch (err) {
++        } catch (err: any) {
+           this.messageBus.emit('mongosh-snippets:fetch-index-error', { action: 'save', error: err.message });
+         }
+       }
+@@ -298,7 +298,7 @@ export class SnippetManager implements S
+     let pjson = {};
+     try {
+       pjson = JSON.parse(await fs.readFile(path.join(this.installdir, 'package.json'), 'utf8'));
+-    } catch (err) {
++    } catch (err: any) {
+       this.messageBus.emit('mongosh-snippets:package-json-edit-error', { error: err.message });
+       if (err.code !== 'ENOENT') {
+         throw err;
+--- a/packages/cli-repl/src/arg-mapper.ts
++++ b/packages/cli-repl/src/arg-mapper.ts
+@@ -98,7 +98,7 @@ export function applyTlsCertificateSelec
+     const { passphrase, pfx } = exportCertificateAndPrivateKey(search);
+     nodeOptions.passphrase = passphrase;
+     nodeOptions.pfx = pfx;
+-  } catch (err) {
++  } catch (err: any) {
+     throw new MongoshInvalidInputError(`Could not resolve certificate specification '${selector}': ${err.message}`);
+   }
+ }
+--- a/packages/cli-repl/src/async-repl.ts
++++ b/packages/cli-repl/src/async-repl.ts
+@@ -167,7 +167,7 @@ export function start(opts: AsyncREPLOpt
+           process.nextTick(() => repl.emit('exit'));
+         }
+       }
+-    } catch (err) {
++    } catch (err: any) {
+       try {
+         if (isRecoverableError(input)) {
+           repl.emit(evalFinish, { input, success: false, err, recoverable: true } as EvalFinishEvent);
+@@ -175,14 +175,14 @@ export function start(opts: AsyncREPLOpt
+         }
+         repl.emit(evalFinish, { input, success: false, err, recoverable: false } as EvalFinishEvent);
+         return callback(err);
+-      } catch (callbackErr) {
++      } catch (callbackErr: any) {
+         return callback(wrapCallbackError(callbackErr));
+       }
+     }
+     try {
+       repl.emit(evalFinish, { input, success: true } as EvalFinishEvent);
+       return callback(null, result);
+-    } catch (callbackErr) {
++    } catch (callbackErr: any) {
+       return callback(wrapCallbackError(callbackErr));
+     }
+   };
+--- a/packages/cli-repl/src/cli-repl.ts
++++ b/packages/cli-repl/src/cli-repl.ts
+@@ -137,7 +137,7 @@ class CliRepl {
+ 
+     try {
+       await this.shellHomeDirectory.ensureExists();
+-    } catch (err) {
++    } catch (err: any) {
+       this.warnAboutInaccessibleFile(err);
+     }
+ 
+@@ -166,7 +166,7 @@ class CliRepl {
+ 
+     try {
+       this.config = await this.configDirectory.generateOrReadConfig(this.config);
+-    } catch (err) {
++    } catch (err: any) {
+       this.warnAboutInaccessibleFile(err);
+     }
+ 
+@@ -247,7 +247,7 @@ class CliRepl {
+       try {
+         this.bus.emit('mongosh:mongoshrc-load');
+         await this.mongoshRepl.loadExternalFile(mongoshrcPath);
+-      } catch (err) {
++      } catch (err: any) {
+         this.output.write(this.clr('Error while running ~/.mongoshrc.js:\n', ['bold', 'yellow']));
+         this.output.write(this.mongoshRepl.writer(err) + '\n');
+       }
+@@ -328,7 +328,7 @@ class CliRepl {
+     }
+     try {
+       await this.configDirectory.writeConfigFile(this.config);
+-    } catch (err) {
++    } catch (err: any) {
+       this.warnAboutInaccessibleFile(err, this.configDirectory.path());
+     }
+     return 'success';
+@@ -398,7 +398,7 @@ class CliRepl {
+       } finally {
+         this.output.write('\n');
+       }
+-    } catch (error) {
++    } catch (error: any) {
+       await this._fatalError(error);
+     }
+   }
+@@ -450,7 +450,7 @@ class CliRepl {
+   async startMongocryptd(): Promise<AutoEncryptionOptions['extraOptions']> {
+     try {
+       return await this.mongocryptdManager.start();
+-    } catch (e) {
++    } catch (e: any) {
+       if (e.code === 'ENOENT') {
+         throw new MongoshRuntimeError('Could not find a working mongocryptd - ensure your local installation works correctly. See the mongosh log file for additional information. Please also refer to the documentation: https://docs.mongodb.com/manual/reference/security-client-side-encryption-appendix/');
+       }
+--- a/packages/cli-repl/src/config-directory.ts
++++ b/packages/cli-repl/src/config-directory.ts
+@@ -67,7 +67,7 @@ export class ConfigManager<Config> exten
+     try {
+       try {
+         fd = await fs.open(this.path(), 'r');
+-      } catch (err) {
++      } catch (err: any) {
+         if (err.code !== 'ENOENT') {
+           this.emit('error', err);
+           throw err;
+--- a/packages/cli-repl/src/log-writer.ts
++++ b/packages/cli-repl/src/log-writer.ts
+@@ -215,7 +215,7 @@ export class MongoLogManager {
+         const toUnlink = path.join(dir, dirent.name);
+         try {
+           await fs.unlink(toUnlink);
+-        } catch (err) {
++        } catch (err: any) {
+           this._options.onerror(err, toUnlink);
+         }
+       }
+@@ -230,7 +230,7 @@ export class MongoLogManager {
+     try {
+       stream = createWriteStream(logFilePath, { mode: 0o600 });
+       await once(stream, 'ready');
+-    } catch (err) {
++    } catch (err: any) {
+       this._options.onwarn(err, logFilePath);
+       stream = new Writable({
+         write(chunk, enc, cb) {
+--- a/packages/cli-repl/src/mongocryptd-manager.ts
++++ b/packages/cli-repl/src/mongocryptd-manager.ts
+@@ -89,7 +89,7 @@ export class MongocryptdManager {
+         const logEntry = parseAnyLogEntry(line);
+         this.bus.emit('mongosh:mongocryptd-log', { pid, logEntry });
+         yield logEntry;
+-      } catch (error) {
++      } catch (error: any) {
+         this.bus.emit('mongosh:mongocryptd-error', { cause: 'parse', error });
+         break;
+       }
+@@ -133,7 +133,7 @@ export class MongocryptdManager {
+       this.bus.emit('mongosh:mongocryptd-tryspawn', { spawnPath, path: this.path });
+       try {
+         proc = this._spawnMongocryptdProcess(spawnPath);
+-      } catch (error) {
++      } catch (error: any) {
+         // Spawn can fail both synchronously and asynchronously.
+         // We log the error either way and just try the next one.
+         lastError = error;
+@@ -182,7 +182,7 @@ export class MongocryptdManager {
+           serverSelectionTimeoutMS: this.idleShutdownTimeoutSecs * 1000
+         }, {}, this.bus);
+         await sp.runCommandWithCheck('admin', { isMaster: 1 });
+-      } catch (error) {
++      } catch (error: any) {
+         this.bus.emit('mongosh:mongocryptd-error', { cause: 'ping', error });
+       } finally {
+         if (sp !== undefined) {
+@@ -208,7 +208,7 @@ export class MongocryptdManager {
+           let size = 0;
+           try {
+             size = (await fs.stat(path.join(dirent.name, 'mongocryptd.pid'))).size;
+-          } catch (err) {
++          } catch (err: any) {
+             if (err.code !== 'ENOENT') {
+               throw err;
+             }
+@@ -223,7 +223,7 @@ export class MongocryptdManager {
+           await fs.rmdir(dir, { recursive: true });
+         }
+       }
+-    } catch (error) {
++    } catch (error: any) {
+       this.bus.emit('mongosh:mongocryptd-error', { cause: 'cleanup', error });
+     }
+   }
+--- a/packages/cli-repl/src/mongosh-repl.ts
++++ b/packages/cli-repl/src/mongosh-repl.ts
+@@ -311,7 +311,7 @@ class MongoshNodeRepl implements Evaluat
+           originalHistory = null;
+         }
+       });
+-    } catch (err) {
++    } catch (err: any) {
+       // repl.setupHistory() only reports failure when something went wrong
+       // *after* the file was already opened for the first time. If the initial
+       // open fails, it will print a warning to the REPL and report success to us.
+@@ -378,7 +378,7 @@ class MongoshNodeRepl implements Evaluat
+       if (!result) {
+         throw new MongoshCommandFailed('adminCommand getLog unexpectedly returned no result');
+       }
+-    } catch (error) {
++    } catch (error: any) {
+       this.bus.emit('mongosh:error', error, 'repl');
+       return;
+     }
+@@ -714,7 +714,7 @@ function isErrorLike(value: any): boolea
+       (value.message !== undefined && typeof value.stack === 'string') ||
+       (value.code !== undefined && value.errmsg !== undefined)
+     );
+-  } catch (err) {
++  } catch (err: any) {
+     throw new MongoshInternalError(err?.message || String(err));
+   }
+ }
+--- a/packages/cli-repl/src/run.ts
++++ b/packages/cli-repl/src/run.ts
+@@ -97,7 +97,7 @@ import stream from 'stream';
+       });
+       await repl.start(driverUri, { appName, ...driverOptions });
+     }
+-  } catch (e) {
++  } catch (e: any) {
+     console.error(`${e.name}: ${e.message}`);
+     if (repl !== undefined) {
+       repl.bus.emit('mongosh:error', e, 'startup');
