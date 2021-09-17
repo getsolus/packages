@@ -1,0 +1,607 @@
+From bcb51e7266ee075e49c0ea7012170ac087ccbd67 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Fri, 17 Sep 2021 22:24:51 +0300
+Subject: [PATCH 7/9] Revert "compress-dialog: Add support for encrypted .zip"
+
+This reverts commit 156a68cf520a8d2e818a21c5ec6622cdeab5d3d9.
+---
+ data/org.gnome.nautilus.gschema.xml          |   1 -
+ meson.build                                  |   2 +-
+ src/nautilus-compress-dialog-controller.c    | 136 -------------------
+ src/nautilus-compress-dialog-controller.h    |   1 -
+ src/nautilus-file-operations.c               |   8 +-
+ src/nautilus-file-operations.h               |   1 -
+ src/nautilus-file-undo-operations.c          |   7 +-
+ src/nautilus-file-undo-operations.h          |   3 +-
+ src/nautilus-files-view.c                    |  10 --
+ src/nautilus-global-preferences.h            |   3 +-
+ src/resources/css/nautilus.css               |   9 --
+ src/resources/ui/nautilus-compress-dialog.ui |  57 --------
+ 12 files changed, 5 insertions(+), 233 deletions(-)
+
+diff --git a/data/org.gnome.nautilus.gschema.xml b/data/org.gnome.nautilus.gschema.xml
+index d0dde15b5..f0036dbc9 100644
+--- a/data/org.gnome.nautilus.gschema.xml
++++ b/data/org.gnome.nautilus.gschema.xml
+@@ -65,7 +65,6 @@
+     <value value="0" nick="zip"/>
+     <value value="1" nick="tar.xz"/>
+     <value value="2" nick="7z"/>
+-    <value value="3" nick="encrypted_zip"/>
+   </enum>
+ 
+   <schema path="/org/gnome/nautilus/" id="org.gnome.nautilus" gettext-domain="nautilus">
+diff --git a/meson.build b/meson.build
+index 4106bf299..8f5fdd403 100644
+--- a/meson.build
++++ b/meson.build
+@@ -117,7 +117,7 @@ gio = dependency('gio-2.0', version: glib_ver)
+ gio_unix = dependency('gio-unix-2.0', version: glib_ver)
+ glib = dependency('glib-2.0', version: glib_ver)
+ gmodule = dependency('gmodule-no-export-2.0', version: glib_ver)
+-gnome_autoar = dependency('gnome-autoar-0', version: '>= 0.4.0')
++gnome_autoar = dependency('gnome-autoar-0', version: '>= 0.3.0')
+ gnome_desktop = dependency('gnome-desktop-3.0', version: '>= 3.0.0')
+ gtk = dependency('gtk+-3.0', version: '>= 3.22.27')
+ libportal = []
+diff --git a/src/nautilus-compress-dialog-controller.c b/src/nautilus-compress-dialog-controller.c
+index e1ba5a803..154573c0f 100644
+--- a/src/nautilus-compress-dialog-controller.c
++++ b/src/nautilus-compress-dialog-controller.c
+@@ -32,24 +32,17 @@ struct _NautilusCompressDialogController
+     NautilusFileNameWidgetController parent_instance;
+ 
+     GtkWidget *compress_dialog;
+-    GtkWidget *activate_button;
+-    GtkWidget *error_label;
+     GtkWidget *name_entry;
+     GtkWidget *extension_stack;
+     GtkWidget *zip_label;
+-    GtkWidget *encrypted_zip_label;
+     GtkWidget *tar_xz_label;
+     GtkWidget *seven_zip_label;
+     GtkWidget *extension_popover;
+     GtkWidget *zip_checkmark;
+-    GtkWidget *encrypted_zip_checkmark;
+     GtkWidget *tar_xz_checkmark;
+     GtkWidget *seven_zip_checkmark;
+-    GtkWidget *passphrase_label;
+-    GtkWidget *passphrase_entry;
+ 
+     const char *extension;
+-    gchar *passphrase;
+ 
+     gulong response_handler_id;
+ };
+@@ -149,7 +142,6 @@ update_selected_format (NautilusCompressDialogController *self,
+     const char *extension;
+     GtkWidget *active_label;
+     GtkWidget *active_checkmark;
+-    gboolean show_passphrase = FALSE;
+ 
+     switch (format)
+     {
+@@ -161,15 +153,6 @@ update_selected_format (NautilusCompressDialogController *self,
+         }
+         break;
+ 
+-        case NAUTILUS_COMPRESSION_ENCRYPTED_ZIP:
+-        {
+-            extension = ".zip";
+-            active_label = self->encrypted_zip_label;
+-            active_checkmark = self->encrypted_zip_checkmark;
+-            show_passphrase = TRUE;
+-        }
+-        break;
+-
+         case NAUTILUS_COMPRESSION_TAR_XZ:
+         {
+             extension = ".tar.xz";
+@@ -195,26 +178,12 @@ update_selected_format (NautilusCompressDialogController *self,
+ 
+     self->extension = extension;
+ 
+-    gtk_widget_set_visible (self->passphrase_label, show_passphrase);
+-    gtk_widget_set_visible (self->passphrase_entry, show_passphrase);
+-    if (!show_passphrase)
+-    {
+-        gtk_entry_set_text (GTK_ENTRY (self->passphrase_entry), "");
+-        gtk_entry_set_visibility (GTK_ENTRY (self->passphrase_entry), FALSE);
+-        gtk_entry_set_icon_from_icon_name (GTK_ENTRY (self->passphrase_entry),
+-                                           GTK_ENTRY_ICON_SECONDARY,
+-                                           "view-conceal");
+-    }
+-
+     gtk_stack_set_visible_child (GTK_STACK (self->extension_stack),
+                                  active_label);
+ 
+     gtk_image_set_from_icon_name (GTK_IMAGE (self->zip_checkmark),
+                                   NULL,
+                                   GTK_ICON_SIZE_BUTTON);
+-    gtk_image_set_from_icon_name (GTK_IMAGE (self->encrypted_zip_checkmark),
+-                                  NULL,
+-                                  GTK_ICON_SIZE_BUTTON);
+     gtk_image_set_from_icon_name (GTK_IMAGE (self->tar_xz_checkmark),
+                                   NULL,
+                                   GTK_ICON_SIZE_BUTTON);
+@@ -231,7 +200,6 @@ update_selected_format (NautilusCompressDialogController *self,
+     /* Since the extension changes when the button is toggled, force a
+      * verification of the new file name by simulating an entry change
+      */
+-    gtk_widget_set_sensitive (self->activate_button, FALSE);
+     g_signal_emit_by_name (self->name_entry, "changed");
+ }
+ 
+@@ -248,19 +216,6 @@ zip_row_on_activated (HdyActionRow *row,
+                             NAUTILUS_COMPRESSION_ZIP);
+ }
+ 
+-static void
+-encrypted_zip_row_on_activated (HdyActionRow *row,
+-                                gpointer      user_data)
+-{
+-    NautilusCompressDialogController *controller;
+-
+-    controller = NAUTILUS_COMPRESS_DIALOG_CONTROLLER (user_data);
+-
+-    gtk_popover_popdown (GTK_POPOVER (controller->extension_popover));
+-    update_selected_format (controller,
+-                            NAUTILUS_COMPRESSION_ENCRYPTED_ZIP);
+-}
+-
+ static void
+ tar_xz_row_on_activated (HdyActionRow *row,
+                          gpointer      user_data)
+@@ -287,67 +242,6 @@ seven_zip_row_on_activated (HdyActionRow *row,
+                             NAUTILUS_COMPRESSION_7ZIP);
+ }
+ 
+-static void
+-passphrase_entry_on_changed (GtkEditable *editable,
+-                             gpointer     user_data)
+-{
+-    NautilusCompressDialogController *self;
+-    const gchar *error_message;
+-
+-    self = NAUTILUS_COMPRESS_DIALOG_CONTROLLER (user_data);
+-
+-    g_free (self->passphrase);
+-    self->passphrase = g_strdup (gtk_entry_get_text (GTK_ENTRY (self->passphrase_entry)));
+-
+-    /* Simulate a change of the name_entry to ensure the correct sensitivity of
+-     * the activate_button, but only if the name_entry is valid in order to
+-     * avoid changes of the error_revealer.
+-     */
+-    error_message = gtk_label_get_text (GTK_LABEL (self->error_label));
+-    if (error_message[0] == '\0')
+-    {
+-        gtk_widget_set_sensitive (self->activate_button, FALSE);
+-        g_signal_emit_by_name (self->name_entry, "changed");
+-    }
+-}
+-
+-static void
+-passphrase_entry_on_icon_press (GtkEntry             *entry,
+-                                GtkEntryIconPosition  icon_pos,
+-                                GdkEvent             *event,
+-                                gpointer              user_data)
+-{
+-    NautilusCompressDialogController *self;
+-    gboolean visibility;
+-
+-    self = NAUTILUS_COMPRESS_DIALOG_CONTROLLER (user_data);
+-    visibility = gtk_entry_get_visibility (GTK_ENTRY (self->passphrase_entry));
+-
+-    gtk_entry_set_icon_from_icon_name (GTK_ENTRY (self->passphrase_entry),
+-                                       GTK_ENTRY_ICON_SECONDARY,
+-                                       visibility ? "view-conceal" : "view-reveal");
+-    gtk_entry_set_visibility (GTK_ENTRY (self->passphrase_entry), !visibility);
+-}
+-
+-static void
+-activate_button_on_sensitive_notify (GObject    *gobject,
+-                                     GParamSpec *pspec,
+-                                     gpointer    user_data)
+-{
+-    NautilusCompressDialogController *self;
+-    NautilusCompressionFormat format;
+-
+-    self = NAUTILUS_COMPRESS_DIALOG_CONTROLLER (user_data);
+-    format = g_settings_get_enum (nautilus_compression_preferences,
+-                                  NAUTILUS_PREFERENCES_DEFAULT_COMPRESSION_FORMAT);
+-    if (format == NAUTILUS_COMPRESSION_ENCRYPTED_ZIP &&
+-        (self->passphrase == NULL || self->passphrase[0] == '\0'))
+-    {
+-        /* Reset sensitivity of the activate_button if password is not set. */
+-        gtk_widget_set_sensitive (self->activate_button, FALSE);
+-    }
+-}
+-
+ NautilusCompressDialogController *
+ nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+                                          NautilusDirectory *destination_directory,
+@@ -362,16 +256,12 @@ nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+     GtkWidget *activate_button;
+     GtkWidget *extension_stack;
+     GtkWidget *zip_label;
+-    GtkWidget *encrypted_zip_label;
+     GtkWidget *tar_xz_label;
+     GtkWidget *seven_zip_label;
+     GtkWidget *extension_popover;
+     GtkWidget *zip_checkmark;
+-    GtkWidget *encrypted_zip_checkmark;
+     GtkWidget *tar_xz_checkmark;
+     GtkWidget *seven_zip_checkmark;
+-    GtkWidget *passphrase_label;
+-    GtkWidget *passphrase_entry;
+     NautilusCompressionFormat format;
+ 
+     builder = gtk_builder_new_from_resource ("/org/gnome/nautilus/ui/nautilus-compress-dialog.ui");
+@@ -382,16 +272,12 @@ nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+     activate_button = GTK_WIDGET (gtk_builder_get_object (builder, "activate_button"));
+     extension_stack = GTK_WIDGET (gtk_builder_get_object (builder, "extension_stack"));
+     zip_label = GTK_WIDGET (gtk_builder_get_object (builder, "zip_label"));
+-    encrypted_zip_label = GTK_WIDGET (gtk_builder_get_object (builder, "encrypted_zip_label"));
+     tar_xz_label = GTK_WIDGET (gtk_builder_get_object (builder, "tar_xz_label"));
+     seven_zip_label = GTK_WIDGET (gtk_builder_get_object (builder, "seven_zip_label"));
+     extension_popover = GTK_WIDGET (gtk_builder_get_object (builder, "extension_popover"));
+     zip_checkmark = GTK_WIDGET (gtk_builder_get_object (builder, "zip_checkmark"));
+-    encrypted_zip_checkmark = GTK_WIDGET (gtk_builder_get_object (builder, "encrypted_zip_checkmark"));
+     tar_xz_checkmark = GTK_WIDGET (gtk_builder_get_object (builder, "tar_xz_checkmark"));
+     seven_zip_checkmark = GTK_WIDGET (gtk_builder_get_object (builder, "seven_zip_checkmark"));
+-    passphrase_label = GTK_WIDGET (gtk_builder_get_object (builder, "passphrase_label"));
+-    passphrase_entry = GTK_WIDGET (gtk_builder_get_object (builder, "passphrase_entry"));
+ 
+     gtk_window_set_transient_for (GTK_WINDOW (compress_dialog),
+                                   parent_window);
+@@ -404,22 +290,16 @@ nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+                          "containing-directory", destination_directory, NULL);
+ 
+     self->compress_dialog = compress_dialog;
+-    self->activate_button = activate_button;
+-    self->error_label = error_label;
+     self->extension_stack = extension_stack;
+     self->zip_label = zip_label;
+-    self->encrypted_zip_label = encrypted_zip_label;
+     self->tar_xz_label = tar_xz_label;
+     self->seven_zip_label = seven_zip_label;
+     self->name_entry = name_entry;
+     self->extension_popover = extension_popover;
+     self->zip_checkmark = zip_checkmark;
+-    self->encrypted_zip_checkmark = encrypted_zip_checkmark;
+     self->tar_xz_checkmark = tar_xz_checkmark;
+     self->seven_zip_checkmark = seven_zip_checkmark;
+     self->name_entry = name_entry;
+-    self->passphrase_label = passphrase_label;
+-    self->passphrase_entry = passphrase_entry;
+ 
+     self->response_handler_id = g_signal_connect (compress_dialog,
+                                                   "response",
+@@ -429,18 +309,10 @@ nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+     gtk_builder_add_callback_symbols (builder,
+                                       "zip_row_on_activated",
+                                       G_CALLBACK (zip_row_on_activated),
+-                                      "encrypted_zip_row_on_activated",
+-                                      G_CALLBACK (encrypted_zip_row_on_activated),
+                                       "tar_xz_row_on_activated",
+                                       G_CALLBACK (tar_xz_row_on_activated),
+                                       "seven_zip_row_on_activated",
+                                       G_CALLBACK (seven_zip_row_on_activated),
+-                                      "passphrase_entry_on_changed",
+-                                      G_CALLBACK (passphrase_entry_on_changed),
+-                                      "passphrase_entry_on_icon_press",
+-                                      G_CALLBACK (passphrase_entry_on_icon_press),
+-                                      "activate_button_on_sensitive_notify",
+-                                      G_CALLBACK (activate_button_on_sensitive_notify),
+                                       NULL);
+     gtk_builder_connect_signals (builder, self);
+ 
+@@ -478,8 +350,6 @@ nautilus_compress_dialog_controller_finalize (GObject *object)
+         self->compress_dialog = NULL;
+     }
+ 
+-    g_free (self->passphrase);
+-
+     G_OBJECT_CLASS (nautilus_compress_dialog_controller_parent_class)->finalize (object);
+ }
+ 
+@@ -494,9 +364,3 @@ nautilus_compress_dialog_controller_class_init (NautilusCompressDialogController
+     parent_class->get_new_name = nautilus_compress_dialog_controller_get_new_name;
+     parent_class->name_is_valid = nautilus_compress_dialog_controller_name_is_valid;
+ }
+-
+-const gchar *
+-nautilus_compress_dialog_controller_get_passphrase (NautilusCompressDialogController *self)
+-{
+-    return self->passphrase;
+-}
+diff --git a/src/nautilus-compress-dialog-controller.h b/src/nautilus-compress-dialog-controller.h
+index 6c96d68fa..2421b8115 100644
+--- a/src/nautilus-compress-dialog-controller.h
++++ b/src/nautilus-compress-dialog-controller.h
+@@ -31,4 +31,3 @@ G_DECLARE_FINAL_TYPE (NautilusCompressDialogController, nautilus_compress_dialog
+ NautilusCompressDialogController * nautilus_compress_dialog_controller_new (GtkWindow         *parent_window,
+                                                                             NautilusDirectory *destination_directory,
+                                                                             gchar             *initial_name);
+-const gchar * nautilus_compress_dialog_controller_get_passphrase (NautilusCompressDialogController *controller);
+diff --git a/src/nautilus-file-operations.c b/src/nautilus-file-operations.c
+index 7927bd504..0c0fa43e8 100644
+--- a/src/nautilus-file-operations.c
++++ b/src/nautilus-file-operations.c
+@@ -222,7 +222,6 @@ typedef struct
+ 
+     AutoarFormat format;
+     AutoarFilter filter;
+-    gchar *passphrase;
+ 
+     guint64 total_size;
+     guint total_files;
+@@ -8758,7 +8757,6 @@ compress_task_done (GObject      *source_object,
+ 
+     g_object_unref (compress_job->output_file);
+     g_list_free_full (compress_job->source_files, g_object_unref);
+-    g_free (compress_job->passphrase);
+ 
+     finalize_common ((CommonJob *) compress_job);
+ 
+@@ -9033,7 +9031,6 @@ compress_task_thread_func (GTask        *task,
+                                         compress_job->format,
+                                         compress_job->filter,
+                                         FALSE);
+-    autoar_compressor_set_passphrase (compressor, compress_job->passphrase);
+ 
+     autoar_compressor_set_output_is_dest (compressor, TRUE);
+ 
+@@ -9064,7 +9061,6 @@ nautilus_file_operations_compress (GList                          *files,
+                                    GFile                          *output,
+                                    AutoarFormat                    format,
+                                    AutoarFilter                    filter,
+-                                   const gchar                    *passphrase,
+                                    GtkWindow                      *parent_window,
+                                    NautilusFileOperationsDBusData *dbus_data,
+                                    NautilusCreateCallback          done_callback,
+@@ -9080,7 +9076,6 @@ nautilus_file_operations_compress (GList                          *files,
+     compress_job->output_file = g_object_ref (output);
+     compress_job->format = format;
+     compress_job->filter = filter;
+-    compress_job->passphrase = g_strdup (passphrase);
+     compress_job->done_callback = done_callback;
+     compress_job->done_callback_data = done_callback_data;
+ 
+@@ -9091,8 +9086,7 @@ nautilus_file_operations_compress (GList                          *files,
+         compress_job->common.undo_info = nautilus_file_undo_info_compress_new (files,
+                                                                                output,
+                                                                                format,
+-                                                                               filter,
+-                                                                               passphrase);
++                                                                               filter);
+     }
+ 
+     task = g_task_new (NULL, compress_job->common.cancellable,
+diff --git a/src/nautilus-file-operations.h b/src/nautilus-file-operations.h
+index 14d664f80..8236e0e06 100644
+--- a/src/nautilus-file-operations.h
++++ b/src/nautilus-file-operations.h
+@@ -159,7 +159,6 @@ void nautilus_file_operations_compress (GList                          *files,
+                                         GFile                          *output,
+                                         AutoarFormat                    format,
+                                         AutoarFilter                    filter,
+-                                        const gchar                    *passphrase,
+                                         GtkWindow                      *parent_window,
+                                         NautilusFileOperationsDBusData *dbus_data,
+                                         NautilusCreateCallback          done_callback,
+diff --git a/src/nautilus-file-undo-operations.c b/src/nautilus-file-undo-operations.c
+index 64f9ce76c..a6a3b2025 100644
+--- a/src/nautilus-file-undo-operations.c
++++ b/src/nautilus-file-undo-operations.c
+@@ -2495,7 +2495,6 @@ struct _NautilusFileUndoInfoCompress
+     GFile *output;
+     AutoarFormat format;
+     AutoarFilter filter;
+-    gchar *passphrase;
+ };
+ 
+ G_DEFINE_TYPE (NautilusFileUndoInfoCompress, nautilus_file_undo_info_compress, NAUTILUS_TYPE_FILE_UNDO_INFO)
+@@ -2563,7 +2562,6 @@ compress_redo_func (NautilusFileUndoInfo           *info,
+                                        self->output,
+                                        self->format,
+                                        self->filter,
+-                                       self->passphrase,
+                                        parent_window,
+                                        dbus_data,
+                                        compress_callback,
+@@ -2599,7 +2597,6 @@ nautilus_file_undo_info_compress_finalize (GObject *obj)
+ 
+     g_list_free_full (self->sources, g_object_unref);
+     g_clear_object (&self->output);
+-    g_free (self->passphrase);
+ 
+     G_OBJECT_CLASS (nautilus_file_undo_info_compress_parent_class)->finalize (obj);
+ }
+@@ -2621,8 +2618,7 @@ NautilusFileUndoInfo *
+ nautilus_file_undo_info_compress_new (GList        *sources,
+                                       GFile        *output,
+                                       AutoarFormat  format,
+-                                      AutoarFilter  filter,
+-                                      const gchar  *passphrase)
++                                      AutoarFilter  filter)
+ {
+     NautilusFileUndoInfoCompress *self;
+ 
+@@ -2635,7 +2631,6 @@ nautilus_file_undo_info_compress_new (GList        *sources,
+     self->output = g_object_ref (output);
+     self->format = format;
+     self->filter = filter;
+-    self->passphrase = g_strdup (passphrase);
+ 
+     return NAUTILUS_FILE_UNDO_INFO (self);
+ }
+diff --git a/src/nautilus-file-undo-operations.h b/src/nautilus-file-undo-operations.h
+index 09ae17cef..f96f2fe69 100644
+--- a/src/nautilus-file-undo-operations.h
++++ b/src/nautilus-file-undo-operations.h
+@@ -226,5 +226,4 @@ G_DECLARE_FINAL_TYPE (NautilusFileUndoInfoCompress, nautilus_file_undo_info_comp
+ NautilusFileUndoInfo * nautilus_file_undo_info_compress_new (GList        *sources,
+                                                              GFile        *output,
+                                                              AutoarFormat  format,
+-                                                             AutoarFilter  filter,
+-                                                             const gchar  *passphrase);
++                                                             AutoarFilter  filter);
+diff --git a/src/nautilus-files-view.c b/src/nautilus-files-view.c
+index 4e57ae61e..3823861a0 100644
+--- a/src/nautilus-files-view.c
++++ b/src/nautilus-files-view.c
+@@ -2254,7 +2254,6 @@ compress_dialog_controller_on_name_accepted (NautilusFileNameWidgetController *c
+     NautilusFilesViewPrivate *priv;
+     AutoarFormat format;
+     AutoarFilter filter;
+-    const gchar *passphrase = NULL;
+ 
+     view = NAUTILUS_FILES_VIEW (callback_data->view);
+     priv = nautilus_files_view_get_instance_private (view);
+@@ -2300,14 +2299,6 @@ compress_dialog_controller_on_name_accepted (NautilusFileNameWidgetController *c
+         }
+         break;
+ 
+-        case NAUTILUS_COMPRESSION_ENCRYPTED_ZIP:
+-        {
+-            format = AUTOAR_FORMAT_ZIP;
+-            filter = AUTOAR_FILTER_NONE;
+-            passphrase = nautilus_compress_dialog_controller_get_passphrase (priv->compress_controller);
+-        }
+-        break;
+-
+         case NAUTILUS_COMPRESSION_TAR_XZ:
+         {
+             format = AUTOAR_FORMAT_TAR;
+@@ -2331,7 +2322,6 @@ compress_dialog_controller_on_name_accepted (NautilusFileNameWidgetController *c
+     nautilus_file_operations_compress (source_files, output,
+                                        format,
+                                        filter,
+-                                       passphrase,
+                                        nautilus_files_view_get_containing_window (view),
+                                        NULL,
+                                        compress_done,
+diff --git a/src/nautilus-global-preferences.h b/src/nautilus-global-preferences.h
+index 6f098b6b8..3ef3eac4b 100644
+--- a/src/nautilus-global-preferences.h
++++ b/src/nautilus-global-preferences.h
+@@ -77,8 +77,7 @@ typedef enum
+ {
+         NAUTILUS_COMPRESSION_ZIP = 0,
+         NAUTILUS_COMPRESSION_TAR_XZ,
+-        NAUTILUS_COMPRESSION_7ZIP,
+-        NAUTILUS_COMPRESSION_ENCRYPTED_ZIP
++        NAUTILUS_COMPRESSION_7ZIP
+ } NautilusCompressionFormat;
+ 
+ /* Icon View */
+diff --git a/src/resources/css/nautilus.css b/src/resources/css/nautilus.css
+index ee25a36a8..2e46b7abe 100644
+--- a/src/resources/css/nautilus.css
++++ b/src/resources/css/nautilus.css
+@@ -3,12 +3,3 @@
+     padding-left: 5px;
+     padding-right: 5px;
+ }
+-
+-label.encrypted_zip,
+-row.encrypted_zip label.title {
+-    background-image: -gtk-icontheme('system-lock-screen-symbolic');
+-    background-position: right center;
+-    background-repeat: no-repeat;
+-    background-size: 16px 16px;
+-    padding-right: 24px;
+-}
+diff --git a/src/resources/ui/nautilus-compress-dialog.ui b/src/resources/ui/nautilus-compress-dialog.ui
+index a57765eed..b36539294 100644
+--- a/src/resources/ui/nautilus-compress-dialog.ui
++++ b/src/resources/ui/nautilus-compress-dialog.ui
+@@ -28,26 +28,6 @@
+             </child>
+           </object>
+         </child>
+-        <child>
+-          <object class="HdyActionRow" id="encrypted_zip_row">
+-            <property name="visible">True</property>
+-            <property name="activatable">True</property>
+-            <property name="title" translatable="no">.zip</property>
+-            <property name="subtitle" translatable="yes">Password protected .zip, must be installed on Windows and Mac.</property>
+-            <signal name="activated" handler="encrypted_zip_row_on_activated"/>
+-            <style>
+-              <class name="encrypted_zip"/>
+-            </style>
+-            <child>
+-              <object class="GtkImage" id="encrypted_zip_checkmark">
+-                <property name="visible">True</property>
+-                <property name="width-request">16</property>
+-                <property name="margin-start">12</property>
+-                <property name="margin-end">12</property>
+-              </object>
+-            </child>
+-          </object>
+-        </child>
+         <child>
+           <object class="HdyActionRow">
+             <property name="visible">True</property>
+@@ -149,15 +129,6 @@
+                             <property name="xalign">0</property>
+                           </object>
+                         </child>
+-                        <child>
+-                          <object class="GtkLabel" id="encrypted_zip_label">
+-                            <property name="label" translatable="no">.zip</property>
+-                            <property name="xalign">0</property>
+-                            <style>
+-                              <class name="encrypted_zip"/>
+-                            </style>
+-                          </object>
+-                        </child>
+                         <child>
+                           <object class="GtkLabel" id="tar_xz_label">
+                             <property name="label" translatable="no">.tar.xz</property>
+@@ -208,33 +179,6 @@
+             <property name="position">3</property>
+           </packing>
+         </child>
+-        <child>
+-          <object class="GtkLabel" id="passphrase_label">
+-            <property name="label" translatable="yes">Password</property>
+-            <property name="margin-top">6</property>
+-            <property name="xalign">0</property>
+-          </object>
+-          <packing>
+-            <property name="expand">False</property>
+-            <property name="fill">True</property>
+-            <property name="position">4</property>
+-          </packing>
+-        </child>
+-        <child>
+-          <object class="GtkEntry" id="passphrase_entry">
+-            <property name="placeholder-text" translatable="yes">Enter a password here.</property>
+-            <property name="input-purpose">password</property>
+-            <property name="visibility">False</property>
+-            <property name="secondary-icon-name">view-conceal</property>
+-            <signal name="changed" handler="passphrase_entry_on_changed"/>
+-            <signal name="icon-press" handler="passphrase_entry_on_icon_press"/>
+-          </object>
+-          <packing>
+-            <property name="expand">False</property>
+-            <property name="fill">True</property>
+-            <property name="position">5</property>
+-          </packing>
+-        </child>
+       </object>
+     </child>
+     <child type="action">
+@@ -253,7 +197,6 @@
+         <property name="can_default">True</property>
+         <property name="receives_default">True</property>
+         <property name="sensitive">False</property>
+-        <signal name="notify::sensitive" handler="activate_button_on_sensitive_notify"/>
+       </object>
+     </child>
+     <action-widgets>
+-- 
+2.32.0
+
