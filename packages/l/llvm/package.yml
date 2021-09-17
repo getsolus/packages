@@ -1,6 +1,6 @@
 name       : llvm
 version    : 12.0.1
-release    : 85
+release    : 86
 source     :
     - https://github.com/llvm/llvm-project/releases/download/llvmorg-12.0.1/llvm-project-12.0.1.src.tar.xz : 129cb25cd13677aad951ce5c2deb0fe4afc1e9d98950f53b51bdcfb5a73afa0e
 homepage   : http://llvm.org/
@@ -18,18 +18,18 @@ component  :
     - clang-32bit-devel : programming.devel
     - clang-devel : programming.devel
 debug      : no
-emul32     : yes
 libsplit   : no
 clang      : yes
 builddeps  :
+    - pkgconfig32(libedit)
     - pkgconfig32(libelf)
     - pkgconfig32(libffi)
     - pkgconfig32(libxml-2.0)
     - pkgconfig32(ncursesw)
-    - pkgconfig(libedit)
     - doxygen
     - glibc-32bit-devel
     - libgcc-32bit
+    - libstdc++-32bit
     - llvm-32bit-devel
     - python-recommonmark
     - swig
@@ -54,13 +54,11 @@ patterns   :
         - /usr/lib32/SampleAnalyzerPlugin.so
         - /usr/lib32/CheckerOptionHandlingAnalyzerPlugin.so
         - /usr/lib32/CheckerDependencyHandlingAnalyzerPlugin.so
-        - /usr/lib32/liblldb*.so*
         - /usr/lib32/lib*omp*.so*
     - clang-32bit-devel :
         - /usr/lib32/clang
         - /usr/lib32/cmake/clang
         - /usr/lib32/libclang*.a
-        - /usr/lib32/liblldb*.a
     - clang-devel :
         - /usr/include/clang*
         - /usr/include/lld*
@@ -105,31 +103,61 @@ environment: |
     # Decontaminate build environment
     unset LDFLAGS
     unset LD_AS_NEEDED
+    unset CFLAGS
+    unset CXXFLAGS
 
-    # Set build flags
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        export _LLVM_TRIPLE="%HOST%"
-        export _LLVM_ARCH="x86_64"
-        export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -O3 -fstack-protector -pipe -DNDEBUG"
-        export CC=clang
-        export CXX=clang++
-    else
-        export _LLVM_TRIPLE="i686-pc-linux-gnu"
-        export _LLVM_ARCH="i686"
-        export _LLVM_FLAGS_FINAL="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -DNDEBUG -m32"
-        export CC="clang -m32"
-        export CXX="clang++ -m32"
-    fi
+    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -O3 -fstack-protector -pipe -DNDEBUG"
+    export CC=clang
+    export CXX=clang++
 
-    # Set projects to build for amd64/emul32
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        export _PROJECTS="clang;clang-tools-extra;compiler-rt;libcxx;libcxxabi;lld;llvm;openmp"
-    else
-        export _PROJECTS="clang;compiler-rt;libcxx;libcxxabi;llvm;openmp"
-    fi
+    # Set projects to build
+    export _PROJECTS="clang;clang-tools-extra;compiler-rt;libcxx;libcxxabi;lld;llvm;openmp"
 
     # Identical code folding reduces size on disk.
-    export LDFLAGS="${LDFLAGS} -Wl,--icf=safe"
+    export LDFLAGS="${LDFLAGS} -Wl,--icf=all"
+
+    # Since we're using custom cflags/cxxflags here setup pgo gen/use flags manually.
+    if [[ ! -z "${PGO_GEN_BUILD}" ]]; then
+        export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-generate=default-%m.profraw"
+    fi
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+        PGO_PATH="/home/build/YPKG/root/llvm/pgo/default.profdata"
+        export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-use=$PGO_PATH"
+    fi
+
+    # Set common build options here
+    export CMAKE_COMMON_OPTIONS="
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DCLANG_DEFAULT_LINKER=lld \
+        -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
+        -DENABLE_EXPERIMENTAL_NEW_PASS_MANAGER=ON \
+        -DLLVM_INSTALL_UTILS=ON \
+        -DLLVM_BINUTILS_INCDIR=/usr/include \
+        -DLLVM_ENABLE_FFI=ON \
+        -DLLVM_ENABLE_ZLIB=ON \
+        -DLLVM_ENABLE_RTTI=ON \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DENABLE_LINKER_BUILD_ID=ON \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_BUILD_LLVM_DYLIB=ON \
+        -DLLVM_LINK_LLVM_DYLIB=ON \
+        -DCLANG_LINK_CLANG_DYLIB=ON"
+
+    # Used by everything except emul32 build
+    export CMAKE_X84_64_OPTIONS="
+         -DLLVM_DEFAULT_TARGET_TRIPLE=%HOST% \
+         -DLLVM_TARGET_ARCH=x86_64 \
+         -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX%"
+
+    # Use the PGO Gen/Use Compiler
+    export CMAKE_USE_COMPILER="
+        -DCMAKE_AR=$workdir/llvm/solusBuildDir/bin/llvm-ar \
+        -DCMAKE_NM=$workdir/llvm/solusBuildDir/bin/llvm-nm \
+        -DCMAKE_RANLIB=$workdir/llvm/solusBuildDir/bin/llvm-ranlib \
+        -DCMAKE_C_COMPILER=$workdir/llvm/solusBuildDir/bin/clang \
+        -DCMAKE_CXX_COMPILER=$workdir/llvm/solusBuildDir/bin/clang++ \
+        -DLLVM_CCACHE_BUILD=ON"
 setup      : |
     # Just annoying.
     %patch -p1 < $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
@@ -156,39 +184,17 @@ setup      : |
         %patch -p1 < $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
         %patch -p1 < $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
     popd
-
-    # Set up stage2 final flags
-    export CFLAGS="$_LLVM_FLAGS_FINAL"
-    export CXXFLAGS="$_LLVM_FLAGS_FINAL"
-
-    # Configure
+build      : |
     pushd llvm
     mkdir solusBuildDir
     pushd solusBuildDir
     cmake -G Ninja .. \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS_RELEASE="$CFLAGS" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$CXXFLAGS" \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DCLANG_DEFAULT_LINKER="lld" \
-        -DCLANG_DEFAULT_OBJCOPY="llvm-objcopy" \
-        -DENABLE_EXPERIMENTAL_NEW_PASS_MANAGER=ON \
-        -DLLVM_INSTALL_UTILS=ON \
-        -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
-        -DLLVM_TARGET_ARCH=$_LLVM_ARCH \
-        -DLLVM_BINUTILS_INCDIR=/usr/include \
-        -DLLVM_DEFAULT_TARGET_TRIPLE=$_LLVM_TRIPLE \
-        -DLLVM_ENABLE_FFI=ON \
+        ${CMAKE_COMMON_OPTIONS} \
+        ${CMAKE_X84_64_OPTIONS} \
+        -DCMAKE_C_FLAGS_RELEASE="$PGOFLAGS" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$PGOFLAGS" \
         -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
-        -DLLVM_ENABLE_ZLIB=ON \
-        -DLLVM_ENABLE_RTTI=ON \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DENABLE_LINKER_BUILD_ID=ON \
-        -DLLVM_ENABLE_PIC=ON \
         -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
-        -DLLVM_BUILD_LLVM_DYLIB=ON \
-        -DLLVM_LINK_LLVM_DYLIB=ON \
-        -DCLANG_LINK_CLANG_DYLIB=ON \
         -DLLVM_BUILD_DOCS=ON \
         -DLLVM_ENABLE_SPHINX=ON \
         -DSPHINX_EXECUTABLE="/usr/bin/sphinx-build" \
@@ -196,28 +202,81 @@ setup      : |
         -DSPHINX_OUTPUT_HTML=OFF \
         -DSPHINX_WARNINGS_AS_ERRORS=OFF \
         -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="AVR"
-
     popd
-    popd
-build      : |
-    pushd llvm
     %ninja_build -v
+
+    # Do only one emul32 build. We can reuse profile data.
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+        export PKG_CONFIG_PATH=/usr/lib32/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig
+        export LT_SYS_LIBRARY_PATH=/usr/lib32
+
+        export CC="$workdir/llvm/solusBuildDir/bin/clang -m32"
+        export CXX="$workdir/llvm/solusBuildDir/bin/clang++ -m32"
+
+        export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -DNDEBUG -m32"
+        export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -DNDEBUG -m32"
+
+        mkdir emul32 && cd emul32
+        cmake .. -G Ninja \
+          ${CMAKE_COMMON_OPTIONS} \
+          -DLLVM_LIBDIR_SUFFIX=32 \
+          -DLLVM_TARGET_ARCH=i686 \
+          -DLLVM_DEFAULT_TARGET_TRIPLE=i686-pc-linux-gnu \
+          -DLLVM_ENABLE_PROJECTS="clang;compiler-rt;libcxx;libcxxabi;llvm;openmp" \
+          -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
+          -DCMAKE_FIND_LIBRARY_CUSTOM_LIB_SUFFIX=32 \
+          -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="AVR" \
+          -DLLVM_CCACHE_BUILD=ON
+        ninja %JOBS% -v
+    fi
+profile    : |
+    # Profiling is the slowest part of the build, try to cut it down as much as possible.
+    pushd llvm
+    mkdir build && cd build
+    cmake .. -G Ninja \
+        ${CMAKE_COMMON_OPTIONS} \
+        ${CMAKE_X84_64_OPTIONS} \
+        ${CMAKE_USE_COMPILER} \
+        -DCMAKE_C_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
+        -DLLVM_ENABLE_PROJECTS="clang" \
+        -DLLVM_TARGETS_TO_BUILD=host
+    ninja %JOBS% -v
 install    : |
     pushd llvm
+    # Install emul32 build
+    DESTDIR="%installroot%" ninja install -C emul32 -v
+    mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-32.h
+    mv $installdir/usr/bin/llvm-config{,32}
+    # Install x86_64 build
     %ninja_install -v
     popd
-    if [[ ! -z "${EMUL32BUILD}" ]]; then
-        mv $installdir/usr/bin/llvm-config{,32}
-    fi
+
+    # Do one more build pass here with thin lto enabled but only install core toolchain bits.
+    # This is to avoid installing LTO built static files which are generally bork.
+    # LTO really shines through with PGO so it's worth the extra hassle.
+    pushd llvm
+    mkdir lto-install && cd lto-install
+    cmake .. -G Ninja \
+      ${CMAKE_COMMON_OPTIONS} \
+      ${CMAKE_X84_64_OPTIONS} \
+      ${CMAKE_USE_COMPILER} \
+      -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON \
+      -DLLVM_ENABLE_LTO=Thin \
+      -DCMAKE_C_FLAGS_RELEASE="$PGOFLAGS" \
+      -DCMAKE_CXX_FLAGS_RELEASE="$PGOFLAGS" \
+      -DLLVM_ENABLE_PROJECTS="clang;llvm" \
+      -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
+      -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="AVR"
+    DESTDIR="%installroot%" ninja %JOBS% install -v
+
     mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-%LIBSUFFIX%.h
 
     # Do NOT include libgomp*, it will conflict with libgomp
-    rm $installdir/%libdir%/libgomp.*
+    rm $installdir/usr/lib*/libgomp.*
 
-    # Only execute for 64bit build
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
-        ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
-        # Finally add our compatibility header
-        install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
-    fi
+    # LTO Plugin
+    install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
+    ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
+    # Finally add our compatibility header
+    install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
