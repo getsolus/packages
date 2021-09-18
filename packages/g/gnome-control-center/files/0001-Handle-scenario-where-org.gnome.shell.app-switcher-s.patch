@@ -1,0 +1,156 @@
+From 43a0b231cdb481534546b916c8081a33da6a0c3d Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Sat, 18 Sep 2021 04:06:27 +0300
+Subject: [PATCH 1/1] Handle scenario where org.gnome.shell.app-switcher schema
+ is not available.
+
+Until we fork gnome-control-center for temporary "Budgie" 10 series variant, we need to patch functionality where GNOME assumes the Control Center is running under GNOME Shell. In this specific case, we are dynamically showing or hiding all sections which are specific to GNOME Shell multitasking.
+---
+ panels/multitasking/cc-multitasking-panel.c  | 52 ++++++++++++++++----
+ panels/multitasking/cc-multitasking-panel.ui | 12 ++---
+ 2 files changed, 48 insertions(+), 16 deletions(-)
+
+diff --git a/panels/multitasking/cc-multitasking-panel.c b/panels/multitasking/cc-multitasking-panel.c
+index 1523e35b1..c7af9ed2e 100644
+--- a/panels/multitasking/cc-multitasking-panel.c
++++ b/panels/multitasking/cc-multitasking-panel.c
+@@ -34,7 +34,13 @@ struct _CcMultitaskingPanel
+   GSettings       *shell_settings;
+   GSettings       *wm_settings;
+ 
++  GtkLabel *general_label;
++  GtkLabel *multimonitor_label;
++  GtkLabel *appswitching_label;
+   GtkSwitch       *active_screen_edges_switch;
++  GtkListBox *hot_corner_box;
++  GtkListBox *multimonitor_box;
++  GtkListBox *appswitching_box;
+   GtkToggleButton *current_workspace_radio;
+   GtkToggleButton *dynamic_workspaces_radio;
+   GtkToggleButton *fixed_workspaces_radio;
+@@ -74,6 +80,12 @@ cc_multitasking_panel_class_init (CcMultitaskingPanelClass *klass)
+   gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/control-center/multitasking/cc-multitasking-panel.ui");
+ 
+   gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, active_screen_edges_switch);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, general_label);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, multimonitor_label);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, appswitching_label);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, appswitching_box);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, multimonitor_box);
++  gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, hot_corner_box);
+   gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, current_workspace_radio);
+   gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, dynamic_workspaces_radio);
+   gtk_widget_class_bind_template_child (widget_class, CcMultitaskingPanel, fixed_workspaces_radio);
+@@ -90,6 +102,17 @@ cc_multitasking_panel_init (CcMultitaskingPanel *self)
+ 
+   gtk_widget_init_template (GTK_WIDGET (self));
+ 
++  GSettingsSchema * app_switcher_schema = g_settings_schema_source_lookup(
++    g_settings_schema_source_get_default(),
++    "org.gnome.shell.app-switcher",
++    FALSE
++  );
++
++  gboolean probably_gnome_shell = (app_switcher_schema != NULL);
++  if (probably_gnome_shell) { // Have the app-switcher schema
++    g_settings_schema_unref(app_switcher_schema); // Unref immediately
++  }
++
+   self->interface_settings = g_settings_new ("org.gnome.desktop.interface");
+   g_settings_bind (self->interface_settings,
+                    "enable-hot-corners",
+@@ -133,14 +156,23 @@ cc_multitasking_panel_init (CcMultitaskingPanel *self)
+                    "value",
+                    G_SETTINGS_BIND_DEFAULT);
+ 
+-  self->shell_settings = g_settings_new ("org.gnome.shell.app-switcher");
+-
+-  if (g_settings_get_boolean (self->shell_settings, "current-workspace-only"))
+-    gtk_toggle_button_set_active (self->current_workspace_radio, TRUE);
+-
+-  g_settings_bind (self->shell_settings,
+-                   "current-workspace-only",
+-                   self->current_workspace_radio,
+-                   "active",
+-                   G_SETTINGS_BIND_DEFAULT);
++  if (probably_gnome_shell) { // Have the app-switcher schema
++    self->shell_settings = g_settings_new ("org.gnome.shell.app-switcher");
++
++    if (g_settings_get_boolean (self->shell_settings, "current-workspace-only"))
++      gtk_toggle_button_set_active (self->current_workspace_radio, TRUE);
++
++    g_settings_bind (self->shell_settings,
++            "current-workspace-only",
++            self->current_workspace_radio,
++            "active",
++            G_SETTINGS_BIND_DEFAULT);
++  } else { // Don't have the app-switcher schema, hide relevant sections to Shell
++    gtk_widget_hide(GTK_WIDGET(self->general_label));
++    gtk_widget_hide(GTK_WIDGET(self->multimonitor_label));
++    gtk_widget_hide(GTK_WIDGET(self->appswitching_label));
++    gtk_widget_hide(GTK_WIDGET(self->hot_corner_box));
++    gtk_widget_hide(GTK_WIDGET(self->appswitching_box));
++    gtk_widget_hide(GTK_WIDGET(self->multimonitor_box));
++  }
+ }
+diff --git a/panels/multitasking/cc-multitasking-panel.ui b/panels/multitasking/cc-multitasking-panel.ui
+index 5b5725038..908006840 100644
+--- a/panels/multitasking/cc-multitasking-panel.ui
++++ b/panels/multitasking/cc-multitasking-panel.ui
+@@ -25,7 +25,7 @@
+ 
+                 <!-- General -->
+                 <child>
+-                  <object class="GtkLabel">
++                  <object class="GtkLabel" id="general_label">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="label" translatable="yes">General</property>
+@@ -37,7 +37,7 @@
+                 </child>
+ 
+                 <child>
+-                  <object class="GtkListBox">
++                  <object class="GtkListBox" id="hot_corner_box">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="selection-mode">none</property>
+@@ -194,7 +194,7 @@
+ 
+                 <!-- Multi-Monitor -->
+                 <child>
+-                  <object class="GtkLabel">
++                  <object class="GtkLabel" id="multimonitor_label">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="label" translatable="yes">Multi-Monitor</property>
+@@ -206,7 +206,7 @@
+                 </child>
+ 
+                 <child>
+-                  <object class="GtkListBox">
++                  <object class="GtkListBox" id="multimonitor_box">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="selection-mode">none</property>
+@@ -276,7 +276,7 @@
+ 
+                 <!-- Application Switching -->
+                 <child>
+-                  <object class="GtkLabel">
++                  <object class="GtkLabel" id="appswitching_label">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="label" translatable="yes">Application Switching</property>
+@@ -288,7 +288,7 @@
+                 </child>
+ 
+                 <child>
+-                  <object class="GtkListBox">
++                  <object class="GtkListBox" id="appswitching_box">
+                     <property name="visible">true</property>
+                     <property name="can-focus">true</property>
+                     <property name="selection-mode">none</property>
+-- 
+2.32.0
+
