@@ -1,0 +1,1 @@
+This package is held back to 40.0 due to the usage of libhandy, a mobile-oriented library not permitted in the repository, in 41+.
