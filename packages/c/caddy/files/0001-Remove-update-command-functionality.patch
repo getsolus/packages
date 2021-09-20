@@ -1,0 +1,287 @@
+From 6838bc15ee83bfa4d9567f3b45bec05703b00c9e Mon Sep 17 00:00:00 2001
+From: Evan Maddock <maddock.evan@vivaldi.net>
+Date: Sat, 18 Sep 2021 15:28:08 -0400
+Subject: [PATCH 1/1] Remove update command functionality
+
+Signed-off-by: Evan Maddock <maddock.evan@vivaldi.net>
+---
+ cmd/commands.go      |  34 --------
+ cmd/packagesfuncs.go | 196 -------------------------------------------
+ 2 files changed, 230 deletions(-)
+
+diff --git a/cmd/commands.go b/cmd/commands.go
+index ccb82b11..69286176 100644
+--- a/cmd/commands.go
++++ b/cmd/commands.go
+@@ -287,40 +287,6 @@ is always printed to stdout.`,
+ 			return fs
+ 		}(),
+ 	})
+-
+-	RegisterCommand(Command{
+-		Name:  "upgrade",
+-		Func:  cmdUpgrade,
+-		Short: "Upgrade Caddy (EXPERIMENTAL)",
+-		Long: `
+-Downloads an updated Caddy binary with the same modules/plugins at the
+-latest versions. EXPERIMENTAL: May be changed or removed.`,
+-	})
+-
+-	RegisterCommand(Command{
+-		Name:  "add-package",
+-		Func:  cmdAddPackage,
+-		Usage: "<packages...>",
+-		Short: "Adds Caddy packages (EXPERIMENTAL)",
+-		Long: `
+-Downloads an updated Caddy binary with the specified packages (module/plugin)
+-added. Retains existing packages. Returns an error if the any of packages are 
+-already included. EXPERIMENTAL: May be changed or removed.
+-`,
+-	})
+-
+-	RegisterCommand(Command{
+-		Name:  "remove-package",
+-		Func:  cmdRemovePackage,
+-		Usage: "<packages...>",
+-		Short: "Removes Caddy packages (EXPERIMENTAL)",
+-		Long: `
+-Downloads an updated Caddy binaries without the specified packages (module/plugin). 
+-Returns an error if any of the packages are not included. 
+-EXPERIMENTAL: May be changed or removed.
+-`,
+-	})
+-
+ }
+ 
+ // RegisterCommand registers the command cmd.
+diff --git a/cmd/packagesfuncs.go b/cmd/packagesfuncs.go
+index 6aaf52bf..b73056cc 100644
+--- a/cmd/packagesfuncs.go
++++ b/cmd/packagesfuncs.go
+@@ -15,160 +15,16 @@
+ package caddycmd
+ 
+ import (
+-	"encoding/json"
+ 	"fmt"
+-	"io"
+-	"net/http"
+-	"net/url"
+ 	"os"
+ 	"os/exec"
+ 	"reflect"
+-	"runtime"
+ 	"runtime/debug"
+ 	"strings"
+ 
+ 	"github.com/caddyserver/caddy/v2"
+-	"go.uber.org/zap"
+ )
+ 
+-func cmdUpgrade(_ Flags) (int, error) {
+-	_, nonstandard, _, err := getModules()
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("unable to enumerate installed plugins: %v", err)
+-	}
+-	pluginPkgs, err := getPluginPackages(nonstandard)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, err
+-	}
+-
+-	return upgradeBuild(pluginPkgs)
+-}
+-
+-func cmdAddPackage(fl Flags) (int, error) {
+-	if len(fl.Args()) == 0 {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("at least one package name must be specified")
+-	}
+-	_, nonstandard, _, err := getModules()
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("unable to enumerate installed plugins: %v", err)
+-	}
+-	pluginPkgs, err := getPluginPackages(nonstandard)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, err
+-	}
+-
+-	for _, arg := range fl.Args() {
+-		if _, ok := pluginPkgs[arg]; ok {
+-			return caddy.ExitCodeFailedStartup, fmt.Errorf("package is already added")
+-		}
+-		pluginPkgs[arg] = struct{}{}
+-	}
+-
+-	return upgradeBuild(pluginPkgs)
+-}
+-
+-func cmdRemovePackage(fl Flags) (int, error) {
+-	if len(fl.Args()) == 0 {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("at least one package name must be specified")
+-	}
+-	_, nonstandard, _, err := getModules()
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("unable to enumerate installed plugins: %v", err)
+-	}
+-	pluginPkgs, err := getPluginPackages(nonstandard)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, err
+-	}
+-
+-	for _, arg := range fl.Args() {
+-		if _, ok := pluginPkgs[arg]; !ok {
+-			// package does not exist
+-			return caddy.ExitCodeFailedStartup, fmt.Errorf("package is not added")
+-		}
+-		delete(pluginPkgs, arg)
+-	}
+-
+-	return upgradeBuild(pluginPkgs)
+-}
+-
+-func upgradeBuild(pluginPkgs map[string]struct{}) (int, error) {
+-	l := caddy.Log()
+-
+-	thisExecPath, err := os.Executable()
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("determining current executable path: %v", err)
+-	}
+-	thisExecStat, err := os.Stat(thisExecPath)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("retrieving current executable permission bits: %v", err)
+-	}
+-	l.Info("this executable will be replaced", zap.String("path", thisExecPath))
+-
+-	// build the request URL to download this custom build
+-	qs := url.Values{
+-		"os":   {runtime.GOOS},
+-		"arch": {runtime.GOARCH},
+-	}
+-	for pkg := range pluginPkgs {
+-		qs.Add("p", pkg)
+-	}
+-
+-	// initiate the build
+-	resp, err := downloadBuild(qs)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("download failed: %v", err)
+-	}
+-	defer resp.Body.Close()
+-
+-	// back up the current binary, in case something goes wrong we can replace it
+-	backupExecPath := thisExecPath + ".tmp"
+-	l.Info("build acquired; backing up current executable",
+-		zap.String("current_path", thisExecPath),
+-		zap.String("backup_path", backupExecPath))
+-	err = os.Rename(thisExecPath, backupExecPath)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("backing up current binary: %v", err)
+-	}
+-	defer func() {
+-		if err != nil {
+-			err2 := os.Rename(backupExecPath, thisExecPath)
+-			if err2 != nil {
+-				l.Error("restoring original executable failed; will need to be restored manually",
+-					zap.String("backup_path", backupExecPath),
+-					zap.String("original_path", thisExecPath),
+-					zap.Error(err2))
+-			}
+-		}
+-	}()
+-
+-	// download the file; do this in a closure to close reliably before we execute it
+-	err = writeCaddyBinary(thisExecPath, &resp.Body, thisExecStat)
+-	if err != nil {
+-		return caddy.ExitCodeFailedStartup, err
+-	}
+-
+-	l.Info("download successful; displaying new binary details", zap.String("location", thisExecPath))
+-
+-	// use the new binary to print out version and module info
+-	fmt.Print("\nModule versions:\n\n")
+-	if err = listModules(thisExecPath); err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("download succeeded, but unable to execute: %v", err)
+-	}
+-	fmt.Println("\nVersion:")
+-	if err = showVersion(thisExecPath); err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("download succeeded, but unable to execute: %v", err)
+-	}
+-	fmt.Println()
+-
+-	// clean up the backup file
+-	if err = os.Remove(backupExecPath); err != nil {
+-		return caddy.ExitCodeFailedStartup, fmt.Errorf("download succeeded, but unable to clean up backup binary: %v", err)
+-	}
+-	l.Info("upgrade successful; please restart any running Caddy instances", zap.String("executable", thisExecPath))
+-
+-	return caddy.ExitCodeSuccess, nil
+-}
+-
+ func getModules() (standard, nonstandard, unknown []moduleInfo, err error) {
+ 	bi, ok := debug.ReadBuildInfo()
+ 	if !ok {
+@@ -241,33 +97,6 @@ func showVersion(path string) error {
+ 	return nil
+ }
+ 
+-func downloadBuild(qs url.Values) (*http.Response, error) {
+-	l := caddy.Log()
+-	l.Info("requesting build",
+-		zap.String("os", qs.Get("os")),
+-		zap.String("arch", qs.Get("arch")),
+-		zap.Strings("packages", qs["p"]))
+-	resp, err := http.Get(fmt.Sprintf("%s?%s", downloadPath, qs.Encode()))
+-	if err != nil {
+-		return nil, fmt.Errorf("secure request failed: %v", err)
+-	}
+-	if resp.StatusCode >= 400 {
+-		var details struct {
+-			StatusCode int `json:"status_code"`
+-			Error      struct {
+-				Message string `json:"message"`
+-				ID      string `json:"id"`
+-			} `json:"error"`
+-		}
+-		err2 := json.NewDecoder(resp.Body).Decode(&details)
+-		if err2 != nil {
+-			return nil, fmt.Errorf("download and error decoding failed: HTTP %d: %v", resp.StatusCode, err2)
+-		}
+-		return nil, fmt.Errorf("download failed: HTTP %d: %s (id=%s)", resp.StatusCode, details.Error.Message, details.Error.ID)
+-	}
+-	return resp, nil
+-}
+-
+ func getPluginPackages(modules []moduleInfo) (map[string]struct{}, error) {
+ 	pluginPkgs := make(map[string]struct{})
+ 	for _, mod := range modules {
+@@ -279,28 +108,3 @@ func getPluginPackages(modules []moduleInfo) (map[string]struct{}, error) {
+ 	}
+ 	return pluginPkgs, nil
+ }
+-
+-func writeCaddyBinary(path string, body *io.ReadCloser, fileInfo os.FileInfo) error {
+-	l := caddy.Log()
+-	destFile, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, fileInfo.Mode())
+-	if err != nil {
+-		return fmt.Errorf("unable to open destination file: %v", err)
+-	}
+-	defer destFile.Close()
+-
+-	l.Info("downloading binary", zap.String("destination", path))
+-
+-	_, err = io.Copy(destFile, *body)
+-	if err != nil {
+-		return fmt.Errorf("unable to download file: %v", err)
+-	}
+-
+-	err = destFile.Sync()
+-	if err != nil {
+-		return fmt.Errorf("syncing downloaded file to device: %v", err)
+-	}
+-
+-	return nil
+-}
+-
+-const downloadPath = "https://caddyserver.com/api/download"
+-- 
+2.32.0
+
