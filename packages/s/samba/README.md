@@ -117,11 +117,8 @@ When doing major version updates, create a phab task with associated diff stack 
 - gnome-control-center
 - gvfs
 - kio-extras
-- kodi (this takes around 1 hour on my system)
 - python-pysmbc
 - vlc
-- kodi-platform (not listed by `eopkg-deps rev samba`, but still recommended due to kodi rebuild)
-
 
 ## Suggested Test Plan for each Samba rebuild
 
@@ -130,9 +127,8 @@ When doing major version updates, create a phab task with associated diff stack 
   - Look for `smbd` and ports 139 and 445 in `sudo ss -plantu |egrep '139|445|smbd'`
 - Rebuild current `gvfs` and `kio-extras` (especially important if there were removals in abi_symbols)
   - Reboot and ensure that anonymous and authenticated user access works in the Dolphin (kio) and Nautilus (gvfs) file managers
-- Rebuild `ffmpeg`, `vlc` and `kodi` (especially important if there were removals in abi_symbols)
+- Rebuild `ffmpeg` and `vlc` (especially important if there were removals in abi_symbols)
   - Ensure that smb:// URI playback works in
-    - `kodi`
     - `mpv` (used by GNOME MPV in Budgie and GNOME Shell)
     - `smplayer` (used by KDE)
     - `vlc` (used by MATE); note that vlc can be temperamental in this regard -- see T8538
