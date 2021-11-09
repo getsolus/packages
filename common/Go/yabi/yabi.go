@@ -71,8 +71,8 @@ func AddPackage(r abi.Report, path string) {
 			h, err = files.Next()
 			continue
 		}
-		// ignore statically linked archives or debug symbols
-		if strings.HasSuffix(h.Name, ".o") ||strings.HasSuffix(h.Name, ".la") || strings.HasSuffix(h.Name, ".a") || strings.HasSuffix(h.Name, ".debug") || strings.HasSuffix(h.Name, ".debuginfo") {
+		// ignore statically linked archives, debug symbols and Guile 3.x JIT .go files compiled to native ELF-format
+		if strings.HasSuffix(h.Name, ".o") ||strings.HasSuffix(h.Name, ".la") || strings.HasSuffix(h.Name, ".a") || strings.HasSuffix(h.Name, ".debug") || strings.HasSuffix(h.Name, ".debuginfo") || strings.HasSuffix(h.Name, ".go") {
 			h, err = files.Next()
 			continue
 		}
