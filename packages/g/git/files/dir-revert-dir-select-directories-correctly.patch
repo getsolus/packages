@@ -1,0 +1,139 @@
+From 33c5d6c8456ecb1e89450483586f5f3f115ffa93 Mon Sep 17 00:00:00 2001
+From: Derrick Stolee <dstolee@microsoft.com>
+Date: Fri, 19 Nov 2021 09:13:49 -0500
+Subject: [PATCH] dir: revert "dir: select directories correctly"
+
+This reverts commit f6526728f950cacfd5b5e42bcc65f2c47f3da654.
+
+The change in f652672 (dir: select directories correctly, 2021-09-24)
+caused a regression in directory-based matches with non-cone-mode
+patterns, especially for .gitignore patterns. A test is included to
+prevent this regression in the future.
+
+The commit ed495847 (dir: fix pattern matching on dirs, 2021-09-24) was
+reverted in 5ceb663 (dir: fix directory-matching bug, 2021-11-02) for
+similar reasons. Neither commit changed tests, and tests added later in
+the series continue to pass when these commits are reverted.
+
+Reported-by: Danial Alihosseini <danial.alihosseini@gmail.com>
+Signed-off-by: Derrick Stolee <dstolee@microsoft.com>
+Signed-off-by: Junio C Hamano <gitster@pobox.com>
+---
+ dir.c              | 54 +++++-----------------------------------------
+ t/t0008-ignores.sh | 17 +++++++++++++++
+ 2 files changed, 22 insertions(+), 49 deletions(-)
+
+diff --git a/dir.c b/dir.c
+index 9ea6cfe61cbf3..86afa2eae001e 100644
+--- a/dir.c
++++ b/dir.c
+@@ -1303,44 +1303,6 @@ int match_pathname(const char *pathname, int pathlen,
+ 				 WM_PATHNAME) == 0;
+ }
+ 
+-static int path_matches_dir_pattern(const char *pathname,
+-				    int pathlen,
+-				    struct strbuf **path_parent,
+-				    int *dtype,
+-				    struct path_pattern *pattern,
+-				    struct index_state *istate)
+-{
+-	if (!*path_parent) {
+-		char *slash;
+-		CALLOC_ARRAY(*path_parent, 1);
+-		strbuf_add(*path_parent, pathname, pathlen);
+-		slash = find_last_dir_sep((*path_parent)->buf);
+-
+-		if (slash)
+-			strbuf_setlen(*path_parent, slash - (*path_parent)->buf);
+-		else
+-			strbuf_setlen(*path_parent, 0);
+-	}
+-
+-	/*
+-	 * If the parent directory matches the pattern, then we do not
+-	 * need to check for dtype.
+-	 */
+-	if ((*path_parent)->len &&
+-	    match_pathname((*path_parent)->buf, (*path_parent)->len,
+-			   pattern->base,
+-			   pattern->baselen ? pattern->baselen - 1 : 0,
+-			   pattern->pattern, pattern->nowildcardlen,
+-			   pattern->patternlen, pattern->flags))
+-		return 1;
+-
+-	*dtype = resolve_dtype(*dtype, istate, pathname, pathlen);
+-	if (*dtype != DT_DIR)
+-		return 0;
+-
+-	return 1;
+-}
+-
+ /*
+  * Scan the given exclude list in reverse to see whether pathname
+  * should be ignored.  The first match (i.e. the last on the list), if
+@@ -1356,7 +1318,6 @@ static struct path_pattern *last_matching_pattern_from_list(const char *pathname
+ {
+ 	struct path_pattern *res = NULL; /* undecided */
+ 	int i;
+-	struct strbuf *path_parent = NULL;
+ 
+ 	if (!pl->nr)
+ 		return NULL;	/* undefined */
+@@ -1366,10 +1327,11 @@ static struct path_pattern *last_matching_pattern_from_list(const char *pathname
+ 		const char *exclude = pattern->pattern;
+ 		int prefix = pattern->nowildcardlen;
+ 
+-		if (pattern->flags & PATTERN_FLAG_MUSTBEDIR &&
+-		    !path_matches_dir_pattern(pathname, pathlen, &path_parent,
+-					      dtype, pattern, istate))
+-			continue;
++		if (pattern->flags & PATTERN_FLAG_MUSTBEDIR) {
++			*dtype = resolve_dtype(*dtype, istate, pathname, pathlen);
++			if (*dtype != DT_DIR)
++				continue;
++		}
+ 
+ 		if (pattern->flags & PATTERN_FLAG_NODIR) {
+ 			if (match_basename(basename,
+@@ -1393,12 +1355,6 @@ static struct path_pattern *last_matching_pattern_from_list(const char *pathname
+ 			break;
+ 		}
+ 	}
+-
+-	if (path_parent) {
+-		strbuf_release(path_parent);
+-		free(path_parent);
+-	}
+-
+ 	return res;
+ }
+ 
+diff --git a/t/t0008-ignores.sh b/t/t0008-ignores.sh
+index 46a5038fed271..fce7c7b408336 100755
+--- a/t/t0008-ignores.sh
++++ b/t/t0008-ignores.sh
+@@ -828,6 +828,23 @@ test_expect_success 'exact prefix matching (without root)' '
+ 	test_cmp expect actual
+ '
+ 
++test_expect_success 'directories and ** matches' '
++	cat >.gitignore <<-\EOF &&
++	data/**
++	!data/**/
++	!data/**/*.txt
++	EOF
++	git check-ignore file \
++		data/file data/data1/file1 data/data1/file1.txt \
++		data/data2/file2 data/data2/file2.txt >actual &&
++	cat >expect <<-\EOF &&
++	data/file
++	data/data1/file1
++	data/data2/file2
++	EOF
++	test_cmp expect actual
++'
++
+ ############################################################################
+ #
+ # test whitespace handling
