@@ -1,0 +1,71 @@
+From 8c08eb9267e009cf4a070d68c57ff543ade0344e Mon Sep 17 00:00:00 2001
+From: Arina Neshlyaeva <arina.neshlyaeva@intel.com>
+Date: Thu, 19 Aug 2021 16:12:29 -0700
+Subject: [PATCH] Fixed ISPC build for LLVM 13
+
+---
+ src/module.cpp |  6 +++---
+ src/opt.cpp    | 13 +++++++++----
+ 2 files changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/src/module.cpp b/src/module.cpp
+index 83a49fd67..d6f3533fc 100644
+--- a/src/module.cpp
++++ b/src/module.cpp
+@@ -1157,15 +1157,15 @@ bool Module::translateToSPIRV(llvm::Module *module, std::stringstream &ss) {
+         llvm::cl::desc("Allow DWARF operations not listed in the OpenCL.DebugInfo.100 "
+                        "specification (experimental, may produce incompatible SPIR-V "
+                        "module)"));
+-#if ISPC_LLVM_VERSION < ISPC_LLVM_12_0
+-    Opts.setSPIRVAllowUnknownIntrinsics({"llvm.genx"});
+-#else
++#if ISPC_LLVM_VERSION == ISPC_LLVM_12_0
+     llvm::cl::opt<bool> SPIRVAllowUnknownIntrinsics(
+         "spirv-allow-unknown-intrinsics", llvm::cl::init(true),
+         llvm::cl::desc("Unknown LLVM intrinsics will be translated as external function "
+                        "calls in SPIR-V"));
+ 
+     Opts.setSPIRVAllowUnknownIntrinsicsEnabled(SPIRVAllowUnknownIntrinsics);
++#else
++    Opts.setSPIRVAllowUnknownIntrinsics({"llvm.genx"});
+ #endif
+     Opts.setAllowExtraDIExpressionsEnabled(SPIRVAllowExtraDIExpressions);
+     Opts.setDesiredBIsRepresentation(SPIRV::BIsRepresentation::SPIRVFriendlyIR);
+diff --git a/src/opt.cpp b/src/opt.cpp
+index 6a6ab97ec..9e47175ed 100644
+--- a/src/opt.cpp
++++ b/src/opt.cpp
+@@ -5782,7 +5782,7 @@ static bool lPrepareGEPs(llvm::BasicBlock &bb) {
+                 if (GEP->getNumOperands() == 2)
+                     foundGEP = GEP;
+                 else
+-                    foundGEP = llvm::GetElementPtrInst::Create(nullptr, ptr, {idx}, "lowered_gep", GEP);
++                    foundGEP = llvm::GetElementPtrInst::Create(PTYPE(ptr), ptr, {idx}, "lowered_gep", GEP);
+ 
+                 ptrData[ptr][idx] = foundGEP;
+             }
+@@ -5794,7 +5794,11 @@ static bool lPrepareGEPs(llvm::BasicBlock &bb) {
+             args.push_back(llvm::Constant::getNullValue(GEP->getOperand(1)->getType()));
+             for (unsigned i = 2, end = GEP->getNumOperands(); i < end; ++i)
+                 args.push_back(GEP->getOperand(i));
+-            auto foundGEPUser = llvm::GetElementPtrInst::Create(nullptr, foundGEP, args, "lowered_gep_succ", GEP);
++            Assert(foundGEP != NULL);
++            Assert(llvm::isa<llvm::GetElementPtrInst>(foundGEP));
++            auto foundGEPUser = llvm::GetElementPtrInst::Create(
++                llvm::dyn_cast<llvm::GetElementPtrInst>(foundGEP)->getSourceElementType(), foundGEP, args,
++                "lowered_gep_succ", GEP);
+             GEP->replaceAllUsesWith(foundGEPUser);
+             lCopyMetadata(foundGEPUser, GEP);
+             dead.push_back(GEP);
+@@ -5896,8 +5900,9 @@ static bool lVectorizeLoads(llvm::BasicBlock &bb) {
+         // It is not done now.
+         if (!GEP->hasAllConstantIndices()) {
+             llvm::GetElementPtrInst *newGEP = llvm::GetElementPtrInst::Create(
+-                nullptr, GEP, {llvm::dyn_cast<llvm::ConstantInt>(llvm::ConstantInt::get(LLVMTypes::Int32Type, 0))},
+-                "ptr_bypass", GEP->getParent());
++                GEP->getSourceElementType(), GEP,
++                {llvm::dyn_cast<llvm::ConstantInt>(llvm::ConstantInt::get(LLVMTypes::Int32Type, 0))}, "ptr_bypass",
++                GEP->getParent());
+             newGEP->moveAfter(GEP);
+             GEP->replaceAllUsesWith(newGEP);
+             lCopyMetadata(newGEP, GEP);
