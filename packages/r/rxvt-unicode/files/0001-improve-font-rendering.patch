@@ -1,0 +1,167 @@
+--- src/rxvtfont.C
++++ src/rxvtfont.C
+@@ -1226,92 +1226,63 @@
+     return false;
+ 
+   int ftheight = 0;
+-  bool success = true;
+-
+-  for (;;)
+-    {
+-      p = FcPatternDuplicate (match);
+-      f = XftFontOpenPattern (disp, p);
+-
+-      if (!f)
+-        {
+-          FcPatternDestroy (p);
+-          success = false;
+-          break;
+-        }
+ 
+-      FT_Face face = XftLockFace (f);
++  p = FcPatternDuplicate (match);
++  f = XftFontOpenPattern (disp, p);
+ 
+-      ascent  = (face->size->metrics.ascender + 63) >> 6;
+-      descent = (-face->size->metrics.descender + 63) >> 6;
+-      height  = max (ascent + descent, (face->size->metrics.height + 63) >> 6);
+-      width   = 0;
+-
+-      bool scalable = face->face_flags & FT_FACE_FLAG_SCALABLE;
++  if (!f)
++    {
++      FcPatternDestroy (p);
++      return false;
++    }
+ 
+-      XftUnlockFace (f);
++  FT_Face face = XftLockFace (f);
+ 
+-      int glheight = height;
++  ascent  = f->ascent;
++  descent = f->descent;
++  height  = max (ascent + descent, f->height);
++  width   = 0;
+ 
+-      for (uint16_t *t = extent_test_chars; t < extent_test_chars + ecb_array_length (extent_test_chars); t++)
+-        {
+-          FcChar16 ch = *t;
++  bool scalable = face->face_flags & FT_FACE_FLAG_SCALABLE;
+ 
+-          if (cs != CS_UNICODE
+-              && ch > 0x100
+-              && FROM_UNICODE (cs, ch) == NOCHAR)
+-            continue;
++  XftUnlockFace (f);
+ 
+-          // ignore characters we wouldn't use anyways
+-          bool careful;
+-          if (!has_char (*t, &prop, careful))
+-            continue;
++  for (uint16_t *t = extent_test_chars; t < extent_test_chars + ecb_array_length (extent_test_chars); t++)
++    {
++      FcChar16 ch = *t;
+ 
+-          XGlyphInfo g;
+-          XftTextExtents16 (disp, f, &ch, 1, &g);
++      if (cs != CS_UNICODE
++          && ch > 0x100
++          && FROM_UNICODE (cs, ch) == NOCHAR)
++        continue;
+ 
+-          g.width -= g.x;
++      // ignore characters we wouldn't use anyways
++      bool careful;
++      if (!has_char (*t, &prop, careful))
++        continue;
+ 
+-          int wcw = WCWIDTH (ch);
+-          if (wcw > 0) g.width = (g.width + wcw - 1) / wcw;
++      XGlyphInfo g;
++      XftTextExtents16 (disp, f, &ch, 1, &g);
+ 
+-          if (width    < g.width       ) width    = g.width;
+-          if (height   < g.height      ) height   = g.height;
+-          if (glheight < g.height - g.y) glheight = g.height - g.y;
+-        }
++      g.width -= g.x;
+ 
+-      if (!width)
+-        {
+-          rxvt_warn ("unable to calculate font width for '%s', ignoring.\n", name);
++      int wcw = WCWIDTH (ch);
++      if (wcw > 1) g.xOff = g.xOff / wcw;
+ 
+-          XftFontClose (disp, f);
+-          f = 0;
++      if (width    < g.xOff  ) width    = g.xOff;
++      if (height   < g.height) height   = g.height;
++    }
+ 
+-          success = false;
+-          break;
+-        }
+-
+-      if (prop.height == rxvt_fontprop::unset
+-          || (height <= prop.height && glheight <= prop.height)
+-          || height <= 2
+-          || !scalable)
+-        break;
++  bool success = true;
+ 
+-      if (ftheight)
+-        {
+-          // take smaller steps near the end
+-          if (height > prop.height + 1) ftheight++;
+-          if (height > prop.height + 2) ftheight++;
+-          if (height > prop.height + 3) ftheight++;
+-
+-          ftheight -= height - prop.height;
+-        }
+-      else
+-        ftheight = prop.height - 1;
++  if (!width)
++    {
++      rxvt_warn ("unable to calculate font width for '%s', ignoring.\n", name);
+ 
+       XftFontClose (disp, f);
+-      FcPatternDel (match, FC_PIXEL_SIZE);
+-      FcPatternAddInteger (match, FC_PIXEL_SIZE, ftheight);
++      f = 0;
++
++      success = false;
+     }
+ 
+   FcPatternDestroy (match);
+@@ -1404,7 +1375,7 @@
+           /* Left-align to bounding box, do not overlap to the left. */
+           max_it(ep->x, x_);
+ #endif
+-          ep->y = y_ + ascent;
++          ep->y = y_ + term->fbase + (term->lineSpace >> 1);
+ 
+           if (extents.xOff == 0)
+             ep->x = x_ + cwidth;
+--- src/screen.C
++++ src/screen.C
+@@ -2538,8 +2538,8 @@
+                 XSetForeground (dpy, gc, lookup_color(fore, pix_colors));
+ 
+               XDrawLine (dpy, vt, gc,
+-                         xpixel, ypixel + font->ascent + 1,
+-                         xpixel + Width2Pixel (count) - 1, ypixel + font->ascent + 1);
++                         xpixel, ypixel + Height2Pixel (1) - 1,
++                         xpixel + Width2Pixel (count) - 1, ypixel + Height2Pixel (1) - 1);
+             }
+         }                     /* for (col....) */
+     }                         /* for (row....) */
+--- src/table/jis0208_1990_0.h
++++ src/table/jis0208_1990_0.h
+@@ -2241,6 +2241,7 @@
+ 
+ static uint32_t cs_jis0208_1990_0_from_unicode (unicode_t unicode) {
+     if (unicode == 0x2312) return 0x225e;
++    if (unicode == 0xff5e) return 0x2141;
+     uint8_t  l = unicode;
+     uint16_t h = unicode >> 8;
+     if (0x00 <= h && h <= 0xff
