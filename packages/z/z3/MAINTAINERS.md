@@ -3,3 +3,6 @@ This file is used to indicate responsibility for the maintenance of this package
 - Silke Hofstra
   - IRC: silkeh
   - Email: silke@slxh.eu
+- Gavin Zhao
+	- Matrix: @gzgavinzhao:matrix.org
+	- Email: gavinzhaojw@protonmail.com
