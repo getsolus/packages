@@ -1,1 +1,0 @@
-This package is held back to 3.38.x due to the usage of libhandy, a mobile-oriented library not permitted in the repository, in 40+
