@@ -55,7 +55,7 @@ setup() {
         sudo mkdir -p /etc/solbuild
         cp ~/rebuilds/${MAINPAK}/common/Scripts/local-unstable-MAINPAK-x86_64.profile /tmp/
         sed -i "s/MAINPAK/${MAINPAK}/g" "/tmp/local-unstable-MAINPAK-x86_64.profile"
-        sudo mv -v local-unstable-MAINPAK-x86_64.profile /etc/solbuild/local-unstable-${MAINPAK}-x86_64.profile
+        sudo mv -v /tmp/local-unstable-MAINPAK-x86_64.profile /etc/solbuild/local-unstable-${MAINPAK}-x86_64.profile
         echo -e "${PROGRESS} > Done! ${NC}"
         echo -e "${INFO} > Now remember to copy ${MAINPAK} .eopkg files to /var/lib/solbuild/local-${MAINPAK} before building.${NC}"
         set -e
