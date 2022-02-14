@@ -1,0 +1,92 @@
+From 63cff5e5cccdae235bd6606766a3f4f005f57ff4 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sat, 12 Feb 2022 19:07:46 +0000
+Subject: [PATCH 4/5] fetcher: make max retry attempts configurable
+
+Additionally, increase the default timeout to 15secs and the default
+max retry count to 5.
+---
+ pisi/cli/command.py |  2 ++
+ pisi/configfile.py  |  1 +
+ pisi/fetcher.py     | 17 ++++++++++++-----
+ 3 files changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/pisi/cli/command.py b/pisi/cli/command.py
+index f2aa94e..bc02038 100644
+--- a/pisi/cli/command.py
++++ b/pisi/cli/command.py
+@@ -102,6 +102,8 @@ class Command(object):
+         group.add_option("-p", "--password", action="store")
+         group.add_option("-L", "--bandwidth-limit", action="store", default = 0,
+                      help = _("Keep bandwidth usage under specified KB's"))
++        group.add_option("-R", "--retry-attempts", action="store", default = 5,
++                     help = _("Set the max number of retry attempts in case of connection timeouts"))
+         group.add_option("-v", "--verbose", action="store_true",
+                      dest="verbose", default=False,
+                      help=_("Detailed output"))
+diff --git a/pisi/configfile.py b/pisi/configfile.py
+index 7a4b563..0c84ef7 100644
+--- a/pisi/configfile.py
++++ b/pisi/configfile.py
+@@ -75,6 +75,7 @@ class GeneralDefaults:
+     package_cache = False
+     package_cache_limit = 0
+     bandwidth_limit = 0
++    retry_attempts = 5
+     ignore_safety = False
+     ignore_delta = False
+ 
+diff --git a/pisi/fetcher.py b/pisi/fetcher.py
+index 1d4f22a..1fed1bc 100644
+--- a/pisi/fetcher.py
++++ b/pisi/fetcher.py
+@@ -135,10 +135,9 @@ class Fetcher:
+             raise FetchError(_('Access denied to destination file: "%s"') % self.archive_file)
+ 
+         attempt = 0
+-        retries = 3
+         success = False
+ 
+-        while success is False and attempt < retries:
++        while success is False and attempt < self._get_retry_attempts():
+             try:
+                 fetch_handler = FetchHandler(self.url, self.partial_file, self._get_bandwidth_limit())
+ 
+@@ -152,7 +151,7 @@ class Fetcher:
+                     partial_file_size = os.path.getsize(self.partial_file)
+                     opener.addheaders.append(('Range', 'bytes=%s-' % partial_file_size))
+ 
+-                with contextlib.closing(urllib2.urlopen(self.url.get_uri(), timeout = 10)) as fp:
++                with contextlib.closing(urllib2.urlopen(self.url.get_uri(), timeout = 15)) as fp:
+                     headers = fp.info()
+ 
+                     if self.url.is_local_file():
+@@ -183,8 +182,9 @@ class Fetcher:
+             # WARNING : Solus specific workaround for RIT mirror issue.
+             except ssl.SSLError as e:
+                 attempt += 1
+-                print FetchError(_('\n Timed out fetching file, retrying %d out of %d "%s": %s') % (attempt, retries, self.url.get_uri(), e))
+-                time.sleep(3)
++                print FetchError(_('\n Timed out fetching file, retrying %d out of %d "%s": %s') % (attempt, self._get_retry_attempts(), self.url.get_uri(), e))
++                if attempt == self._get_retry_attempts():
++                    raise FetchError(_('Hit max retry count when downloading: "%s"') % (self.url.get_uri()))
+                 pass
+             except urllib2.URLError as e:
+                 raise FetchError(_('Could not fetch destination file "%s": %s') % (self.url.get_uri(), e))
+@@ -230,6 +230,13 @@ class Fetcher:
+         else:
+             return 0
+ 
++    def _get_retry_attempts(self):
++        retry_attempts = ctx.config.options.retry_attempts or ctx.config.values.general.retry_attempts
++        if retry_attempts and retry_attempts != "5":
++            return int(retry_attempts)
++        else:
++            return 5
++
+     def _test_range_support(self):
+         if not os.path.exists(self.partial_file):
+             return False
+-- 
+2.35.1
+

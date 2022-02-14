@@ -1,0 +1,135 @@
+From 4598eb26296530b6eb8ba2be9855d669e3b9157b Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sat, 12 Feb 2022 13:49:19 +0000
+Subject: [PATCH 3/5] fetcher: add retry mechanism and reduce timeout to 10s to
+ workaround RIT issue
+
+urllib2 doesn't provide a nice retry mechanism for us unlike urllib3 so we have to
+create our own in an ugly while loop. It's a bit blurgh but does the job.
+
+For the RIT issue we actually have to catch SSL errors specifically rather than
+generic urllib2 or socket timeout errors. We could potentially expand this retry
+mechanism to those errors as well.
+
+Be aware this is currently definitely a workaround for the current RIT woes.
+---
+ pisi/fetcher.py | 95 ++++++++++++++++++++++++++++---------------------
+ 1 file changed, 54 insertions(+), 41 deletions(-)
+
+diff --git a/pisi/fetcher.py b/pisi/fetcher.py
+index 7636d1a..1d4f22a 100644
+--- a/pisi/fetcher.py
++++ b/pisi/fetcher.py
+@@ -20,6 +20,7 @@ import base64
+ import contextlib
+ import os
+ import shutil
++import ssl
+ import time
+ import urllib2
+ 
+@@ -133,48 +134,60 @@ class Fetcher:
+         if os.path.exists(self.archive_file) and not os.access(self.archive_file, os.W_OK):
+             raise FetchError(_('Access denied to destination file: "%s"') % self.archive_file)
+ 
+-        try:
+-            fetch_handler = FetchHandler(self.url, self.partial_file, self._get_bandwidth_limit())
+-
+-            proxy = urllib2.ProxyHandler(self._get_proxies())
+-            opener = urllib2.build_opener(proxy)
+-            opener.addheaders = self._get_headers()
+-            urllib2.install_opener(opener)
+-            has_range_support = self._test_range_support()
+-
+-            if has_range_support and os.path.exists(self.partial_file):
+-                partial_file_size = os.path.getsize(self.partial_file)
+-                opener.addheaders.append(('Range', 'bytes=%s-' % partial_file_size))
+-
+-            with contextlib.closing(urllib2.urlopen(self.url.get_uri(), timeout = 120)) as fp:
+-                headers = fp.info()
+-
+-                if self.url.is_local_file():
+-                    return os.path.normpath(self.url.path())
+-
+-                if has_range_support:
+-                    tfp = open(self.partial_file, 'ab')
+-                else:
+-                    tfp = open(self.partial_file, 'wb')
+-
+-                with tfp:
+-                    bs = 1024 * 8
+-                    size = -1
+-                    read = 0
+-                    blocknum = 0
+-                    if "content-length" in headers:
+-                        size = int(headers["Content-Length"])
+-                    fetch_handler.update(blocknum, bs, size)
+-                    while True:
+-                        block = fp.read(bs)
+-                        if not block:
+-                            break
+-                        read += len(block)
+-                        tfp.write(block)
+-                        blocknum += 1
++        attempt = 0
++        retries = 3
++        success = False
++
++        while success is False and attempt < retries:
++            try:
++                fetch_handler = FetchHandler(self.url, self.partial_file, self._get_bandwidth_limit())
++
++                proxy = urllib2.ProxyHandler(self._get_proxies())
++                opener = urllib2.build_opener(proxy)
++                opener.addheaders = self._get_headers()
++                urllib2.install_opener(opener)
++                has_range_support = self._test_range_support()
++
++                if has_range_support and os.path.exists(self.partial_file):
++                    partial_file_size = os.path.getsize(self.partial_file)
++                    opener.addheaders.append(('Range', 'bytes=%s-' % partial_file_size))
++
++                with contextlib.closing(urllib2.urlopen(self.url.get_uri(), timeout = 10)) as fp:
++                    headers = fp.info()
++
++                    if self.url.is_local_file():
++                        return os.path.normpath(self.url.path())
++
++                    if has_range_support:
++                        tfp = open(self.partial_file, 'ab')
++                    else:
++                        tfp = open(self.partial_file, 'wb')
++
++                    with tfp:
++                        bs = 1024 * 8
++                        size = -1
++                        read = 0
++                        blocknum = 0
++                        if "content-length" in headers:
++                            size = int(headers["Content-Length"])
+                         fetch_handler.update(blocknum, bs, size)
+-        except urllib2.URLError as e:
+-            raise FetchError(_('Could not fetch destination file "%s": %s') % (self.url.get_uri(), e))
++                        while True:
++                            block = fp.read(bs)
++                            if not block:
++                                break
++                            read += len(block)
++                            tfp.write(block)
++                            blocknum += 1
++                            fetch_handler.update(blocknum, bs, size)
++                    success = True
++            # WARNING : Solus specific workaround for RIT mirror issue.
++            except ssl.SSLError as e:
++                attempt += 1
++                print FetchError(_('\n Timed out fetching file, retrying %d out of %d "%s": %s') % (attempt, retries, self.url.get_uri(), e))
++                time.sleep(3)
++                pass
++            except urllib2.URLError as e:
++                raise FetchError(_('Could not fetch destination file "%s": %s') % (self.url.get_uri(), e))
+ 
+         if os.stat(self.partial_file).st_size == 0:
+             os.remove(self.partial_file)
+-- 
+2.35.1
+
