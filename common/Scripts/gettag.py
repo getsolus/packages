@@ -13,13 +13,14 @@ import os
 import sys
 
 import xml.etree.ElementTree as ET
-import yaml
+from ruamel.yaml import YAML
 
 def getYmlTag(spec):
     y = None
     try:
         f = open(spec, "r")
-        y = yaml.safe_load(f)
+        yaml=YAML(typ='safe')
+        y = yaml.load(f)
         f.close()
     except Exception, e:
         print "Unable to load %s: %s" % (spec, e)
