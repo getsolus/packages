@@ -1,31 +1,130 @@
-name       : ovmf
-version    : '202108'
-release    : 5
+name       : edk2-ovmf
+version    : 202111
+release    : 1
 source     :
-    - git|https://github.com/tianocore/edk2 : edk2-stable202108
-license    : 
+    - git|https://github.com/tianocore/edk2 : edk2-stable202111
+    # Reference aarch64 compiler provided by ARM (Solus does not have a usable ARM stack that works with this package)
+    # https://developer.arm.com/tools-and-software/open-source-software/developer-tools/gnu-toolchain/gnu-a/downloads
+    - https://developer.arm.com/-/media/Files/downloads/gnu-a/10.3-2021.07/binrel/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz : 1e33d53dea59c8de823bbdfe0798280bdcd138636c7060da9d77a97ded095a84
+license    :
     - BSD-2-Clause
     - BSD-3-Clause
     - MIT
     - Python-2.0
     - Zlib
 component  : virt
-summary    : EDK II based project to enable UEFI support for Virtual Machines
+summary    : 
+    - UEFI support for Virtual Machines
+    - aarch64: UEFI support for Virtual Machines - aarch64 firmware
+    - i386: UEFI support for Virtual Machines - i386 firmware
 description: |
-    OVMF is an EDK II based project to enable UEFI support for Virtual Machines. OVMF contains sample UEFI firmware for QEMU and KVM.
-    To use directly with qemu make VM specific copys of 'OVMF_VARS.fd' so uefi variables can be writen.
+    OVMF is an EDK II based project to enable UEFI support for Virtual Machines. OVMF contains UEFI firmware for QEMU and KVM.
+replaces   :
+    - ovmf
 builddeps  :
-    - acpica-unix
     - pkgconfig(python3)
+    - acpica-unix
 setup      : |
-   %apply_patches 
+    tar xf $sources/gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu.tar.xz
+    mv gcc-arm-10.3-2021.07-x86_64-aarch64-none-linux-gnu gcc-aarch64
+
+    %apply_patches
 build      : |
+    export GCC5_AARCH64_PREFIX="$workdir/gcc-aarch64/bin/aarch64-none-linux-gnu-"
+    ARCH=AARCH64 make -C BaseTools
     make %JOBS% -C BaseTools
     . edksetup.sh
-    sed s/'MAX_CONCURRENT_THREAD_NUMBER = 1'/'MAX_CONCURRENT_THREAD_NUMBER = '%YJOBS%/ $pkgfiles/target.txt > $workdir/Conf/target.txt
-    build
+
+    # Options that should be used by every build, including the shells
+    CC_OPTS=('-b RELEASE'
+             '-n %YJOBS%'
+             '-t GCC5'
+             '-D NETWORK_IP6_ENABLE'
+             '-D NETWORK_HTTP_BOOT_ENABLE'
+             '-D NETWORK_TLS_ENABLE'
+             '-D TPM_ENABLE')
+    
+    # Options that should be used for non-shell builds
+    OVMF_OPTS=(${CC_OPTS[@]}
+              '-D FD_SIZE_2MB')
+    
+    # Options that should only be used by secure boot builds - excluding AARCH64
+    OVMF_SB_OPTS=(${OVMF_OPTS[@]}
+                 '-D SECURE_BOOT_ENABLE'
+                 '-D SMM_REQUIRE'
+                 '-D EXCLUDE_SHELL_FROM_FD')
+    
+    ## X64
+    BaseTools/BinWrappers/PosixLike/build -p ShellPkg/ShellPkg.dsc \
+                                          -a "X64" \
+                                          ${CC_OPTS[@]}
+    
+    # X64 - Secure Boot
+    OvmfPkg/build.sh -p "OvmfPkg/OvmfPkgX64.dsc" \
+                       -a "X64" \
+                       ${OVMF_SB_OPTS[@]}
+    
+    mv -v Build/OvmfX64{,-secure}
+    
+    # X64 - No Secure Boot
+    OvmfPkg/build.sh -p "OvmfPkg/OvmfPkgX64.dsc" \
+                       -a "X64" \
+                       ${OVMF_OPTS[@]}
+    
+    ## IA32
+    BaseTools/BinWrappers/PosixLike/build -p ShellPkg/ShellPkg.dsc \
+                                          -a "IA32" \
+                                          ${CC_OPTS[@]}
+    
+    # IA32 - Secure Boot
+    OvmfPkg/build.sh -p "OvmfPkg/OvmfPkgIa32.dsc" \
+                       -a "IA32" \
+                       -D LOAD_X64_ON_IA32_ENABLE \
+                       ${OVMF_SB_OPTS[@]}
+    mv -v Build/Ovmf{Ia32,IA32-secure}
+    
+    # IA32 - No Secure Boot
+    OvmfPkg/build.sh -p "OvmfPkg/OvmfPkgIa32.dsc" \
+                       -a "IA32" \
+                       -D LOAD_X64_ON_IA32_ENABLE \
+                       ${OVMF_OPTS[@]}
+    mv -v Build/Ovmf{Ia32,IA32}
+
+    ## ARMVIRT
+    # AARCH64 - Secure Boot only
+    BaseTools/BinWrappers/PosixLike/build -p "ArmVirtPkg/ArmVirtQemu.dsc" \
+                                    -a "AARCH64" \
+                                    -D SECURE_BOOT_ENABLE \
+                                    -D TPM_CONFIG_ENABLE \
+                                    ${CC_OPTS[@]}
+    dd if="/dev/zero" \
+        of="Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_CODE.fd" \
+        bs=1M count=64
+    dd if="Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_EFI.fd" \
+        of="Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_CODE.fd" \
+        conv=notrunc
+    dd if="/dev/zero" \
+        of="Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/QEMU_VARS.fd" \
+        bs=1M count=64
 install    : |
-    install -Dm 0644 $workdir/Build/OvmfX64/RELEASE_GCC5/FV/OVMF_CODE.fd $installdir/usr/share/OVMF/OVMF_CODE.fd
-    install -Dm 0644 $workdir/Build/OvmfX64/RELEASE_GCC5/FV/OVMF_VARS.fd $installdir/usr/share/OVMF/OVMF_VARS.fd
-    install -Dm 0644 $workdir/License.txt $installdir/usr/share/OVMF/edk2_License.txt
-    install -Dm 0644 $workdir/OvmfPkg/License.txt $installdir/usr/share/OVMF/OvmfPkg_License.txt
+    install -dm 0755 $installdir/usr/share/qemu/firmware/
+    install -Dm 0644 $pkgfiles/*-edk2-ovmf-*.json $installdir/usr/share/qemu/firmware/
+
+    install -Dm 0644 $workdir/Build/OvmfX64-secure/RELEASE_GCC5/FV/OVMF_CODE.fd $installdir/usr/share/edk2-ovmf/x64/OVMF_CODE.secboot.fd
+    install -Dm 0644 $workdir/Build/OvmfX64/RELEASE_GCC5/FV/*.fd $installdir/usr/share/edk2-ovmf/x64/
+
+    install -Dm 0644 $workdir/Build/OvmfIA32-secure/RELEASE_GCC5/FV/OVMF_CODE.fd $installdir/usr/share/edk2-ovmf/i386/OVMF_CODE.secboot.fd
+    install -Dm 0644 $workdir/Build/OvmfIA32/RELEASE_GCC5/FV/*.fd $installdir/usr/share/edk2-ovmf/i386/
+
+    install -dm 0755 $installdir/usr/share/edk2-ovmf/aarch64/
+    install -Dm 0644 $workdir/Build/ArmVirtQemu-AARCH64/RELEASE_GCC5/FV/*.fd $installdir/usr/share/edk2-ovmf/aarch64/
+
+    install -Dm 0644 $workdir/License.txt $installdir/usr/share/edk2-ovmf/edk2_License.txt
+    install -Dm 0644 $workdir/OvmfPkg/License.txt $installdir/usr/share/edk2-ovmf/OvmfPkg_License.txt
+patterns   :
+    - aarch64:
+        - /usr/share/edk2-ovmf/aarch64/
+        - /usr/share/qemu/firmware/*aarch64*.json
+    - i386:
+        - /usr/share/edk2-ovmf/i386/
+        - /usr/share/qemu/firmware/*i386*.json
