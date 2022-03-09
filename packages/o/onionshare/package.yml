@@ -1,23 +1,54 @@
 name       : onionshare
-version    : '2.2'
-release    : 7
+version    : 2.5
+release    : 8
 source     :
-    - https://github.com/micahflee/onionshare/archive/v2.2.tar.gz : 7173863d7582b05aa8fd0d2207236e3cbbb38d854aad65e3b98ec5baad521fc2
+    - https://github.com/onionshare/onionshare/releases/download/v2.5/onionshare-2.5.tar.gz : 5b5000669e5f8aa18c783719225622f925cbbb7aa70e59c282622cee8fc731ba
+    - https://dist.torproject.org/torbrowser/11.0.6/tor-browser-linux64-11.0.6_en-US.tar.xz : dfb1d238e2bf19002f2f141178c3af80775dd8d5d83b53b0ab86910ec4a1830d
+homepage   : https://onionshare.org
 license    : GPL-3.0-or-later
 component  : network.util
 summary    : Lets you securely and anonymously share a file of any size with someone
 description: |
     OnionShare lets you securely and anonymously share files of any size. It works by starting a web server, making it accessible as a Tor Onion Service, and generating an unguessable URL to access and download the files. It does not require setting up a separate server or using a third party file-sharing service. You host the files on your own computer and use a Tor Onion Service to make it temporarily accessible over the internet. The receiving user just needs to open the URL in Tor Browser to download the file.
+networking : yes
+builddeps  :
+    - pkgconfig(python3)
+    - golang
+    - onionshare-cli
+    - python-pyside2
+    - python-pytest
+    - python-qrcode
+    - xdg-utils
+    - xorg-server-xvfb
 rundeps    :
-    - flask-httpauth
-    - python-pysocks
-    - python-qtpy
-    - python-requests
-    - python-stem
-    - python3-pycryptodome
-    - tor
+    - onionshare-cli
+    - python-pyside2
+    - python-qrcode
 setup      : |
-    %python3_setup
+    %patch < $pkgfiles/tor-version.patch desktop/scripts/get-tor-linux.py
+    mkdir -v -p desktop/build/tor
+    cp -v $sources/tor-browser-linux64-11.0.6_en-US.tar.xz desktop/build/tor
+build      : |
+    python3 desktop/scripts/get-tor-linux.py
+    python3 desktop/scripts/build-meek-client.py
+
+    pushd desktop
+        python3 setup.py build
+    popd
 install    : |
-    %python3_install
-    install -Dm00644 install/onionshare80.xpm $installdir/usr/share/pixmaps/onionshare80.xpm
+    pushd desktop
+        python3 setup.py install --root="$installdir"
+
+        # install icons and desktop file
+        install -Dm 644 org.onionshare.OnionShare.desktop $installdir/usr/share/applications/org.onionshare.OnionShare.desktop
+        install -Dm 644 org.onionshare.OnionShare.svg $installdir/usr/share/icons/hicolor/scalable/apps/org.onionshare.OnionShare.svg
+        install -Dm 644 org.onionshare.OnionShare.appdata.xml -t $installdir/usr/share/metainfo/org.onionshare.OnionShare.appdata.xml
+    popd
+check     : |
+    pushd desktop
+        xvfb-run pytest3 -v tests/test_gui_tabs.py
+        # Not fully compatible with tor-browser 11.0.6 -> xvfb-run pytest3 -v tests/test_gui_share.py
+        xvfb-run pytest3 -v tests/test_gui_website.py
+        xvfb-run pytest3 -v tests/test_gui_chat.py
+    popd
+    
