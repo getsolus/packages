@@ -90,6 +90,7 @@ class AutoPackage:
         # Package name, including hyphens
         self.package_name = ("-".join(path.split("-")[:-1])).lower()
         self.compile_type = None
+        self.component = "PLEASE FILL ME IN"
         self.networking = False
 
         print "Package: %s\nVersion: %s" % (self.package_name, self.version_string)
@@ -249,7 +250,8 @@ class AutoPackage:
             mapping = { "NAME" : self.package_name,
                         "VERSION" : self.version_string,
                         "SOURCE": self.package_uri,
-                        "SHA256SUM": self.sha256sum }
+                        "SHA256SUM": self.sha256sum,
+                        "COMPONENT": self.component }
             
             tmp = """name       : %(NAME)s
 version    : %(VERSION)s
@@ -257,7 +259,7 @@ release    : 1
 source     :
     - %(SOURCE)s : %(SHA256SUM)s
 license    : GPL-2.0-or-later # CHECK ME
-component  : PLEASE FILL ME IN\n""" % mapping
+component  : %(COMPONENT)s\n""" % mapping
 
             if self.networking:
                 tmp += "\nnetworking : yes\n"
