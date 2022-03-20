@@ -26,14 +26,15 @@ GNOMEY = 1
 AUTOTOOLS = 2
 CMAKE = 3
 PYTHON_MODULES = 4
-PERL_MODULES = 5
-CABAL = 6
-RUBY = 7
-RUBY_GEMS = 8
-MESON = 9
-YARN  = 10
-WAF = 11
-QMAKE = 12
+PYTHON_PEP517_MODULES = 5
+PERL_MODULES = 6
+CABAL = 7
+RUBY = 8
+RUBY_GEMS = 9
+MESON = 10
+YARN  = 11
+WAF = 12
+QMAKE = 13
 
 class DepObject:
 
@@ -130,9 +131,12 @@ class AutoPackage:
                         known_types.append(GNOMEY)
                     else:
                         known_types.append(AUTOTOOLS)
-                if "setup.py" in file or "pyproject.toml" in file or "setup.cfg" in file:
+                if "setup.py" in file:
                     # this is a python module.
                     known_types.append(PYTHON_MODULES)
+                if "pyproject.toml" in file or "setup.cfg" in file:
+                    # this is a python module respecting PEP517.
+                    known_types.append(PYTHON_PEP517_MODULES)
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
@@ -171,6 +175,11 @@ class AutoPackage:
         elif PYTHON_MODULES in known_types:
             print "python"
             self.compile_type = PYTHON_MODULES
+        elif PYTHON_PEP517_MODULES in known_types:
+            print "python pep517"
+            self.compile_type = PYTHON_PEP517_MODULES
+            # yucky
+            self.build_deps = "    - python-build\n    - python-installer\n    - python-packaging\n    - python-wheel"
         elif PERL_MODULES in known_types:
             print "perl"
             self.compile_type = PERL_MODULES
@@ -265,10 +274,13 @@ description: |
 
             totalStr += "\nbuilddeps  :\n"
             if self.build_deps is not None and len(self.build_deps) > 0:
-                for dep in self.build_deps:
-                    if len(dep.name.strip()) == 0:
-                        continue
-                    totalStr += "    - pkgconfig(%s)\n" % dep.name
+                if self.compile_type == PYTHON_PEP517_MODULES:
+                    totalStr += self.build_deps
+                else:
+                    for dep in self.build_deps:
+                        if len(dep.name.strip()) == 0:
+                            continue
+                        totalStr += "    - pkgconfig(%s)\n" % dep.name
             if self.compile_type == GNOMEY:
                 setup = "%configure --disable-static"
             elif self.compile_type == CMAKE:
@@ -279,7 +291,7 @@ description: |
                 setup = "%meson_configure"
                 build = "%ninja_build"
                 install = "%ninja_install"
-            elif self.compile_type == PYTHON_MODULES:
+            elif self.compile_type == PYTHON_MODULES or PYTHON_PEP517_MODULES:
                 setup = ""
                 build = "%python3_setup"
                 install = "%python3_install"
