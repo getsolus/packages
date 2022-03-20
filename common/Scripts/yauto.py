@@ -135,18 +135,23 @@ class AutoPackage:
                 if "setup.py" in file:
                     # this is a python module.
                     known_types.append(PYTHON_MODULES)
+                    self.component = "programming.python"
                 if "pyproject.toml" in file or "setup.cfg" in file:
                     # this is a python module respecting PEP517.
                     known_types.append(PYTHON_PEP517_MODULES)
+                    self.component = "programming.python"
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
+                    self.component = "programming.perl"
                 if "BUILD.PL" in file:
                     self.buildpl = True
                 if ".cabal" in file:
                     known_types.append(CABAL)
+                    self.component = "programming.haskell"
                 if ".gemspec" in file:
                     known_types.append(RUBY)
+                    self.component = "programming.ruby"
                 if "meson.build" in file:
                     known_types.append(MESON)
                     if CMAKE in known_types:
@@ -162,6 +167,7 @@ class AutoPackage:
                     known_types.append(QMAKE)
         if ".gem" in self.file_name:
             known_types.append(RUBY_GEMS)
+            self.component = "programming.ruby"
 
         # We may have hit several systems..
         if CMAKE in known_types:
