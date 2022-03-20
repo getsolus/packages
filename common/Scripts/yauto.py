@@ -130,7 +130,7 @@ class AutoPackage:
                         known_types.append(GNOMEY)
                     else:
                         known_types.append(AUTOTOOLS)
-                if "setup.py" in file:
+                if "setup.py" in file or "pyproject.toml" in file or "setup.cfg" in file:
                     # this is a python module.
                     known_types.append(PYTHON_MODULES)
                 if "Makefile.PL" in file or "Build.PL" in file:
