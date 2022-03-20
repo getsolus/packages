@@ -135,6 +135,7 @@ class AutoPackage:
                     # this is a python module.
                     known_types.append(PYTHON_MODULES)
                     self.component = "programming.python"
+                    self.package_name = "python-%s" % ("-".join(path.split("-")[:-1])).lower()
                 # Handle python modules respecting PEP517.
                 if "pyproject.toml" in file or "setup.cfg" in file:
                     self.build_deps = "    - python-build\n    - python-installer\n    - python-packaging\n    - python-wheel"
