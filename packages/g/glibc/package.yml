@@ -1,8 +1,8 @@
 name       : glibc
-version    : '2.33'
-release    : 68
+version    : '2.35'
+release    : 69
 source     :
-    - git|git://sourceware.org/git/glibc.git : 58b90461ae100c95e0bc53d29d2187bad290ecaf
+    - git|git://sourceware.org/git/glibc.git : a2f1675634b3513c09c38e55e6766e8c05768b1f
 license    : GPL-3.0-or-later
 summary    : This package contains the GNU C libraries and header files
 description: |
@@ -36,11 +36,6 @@ setup      : |
     # https://bugzilla.redhat.com/show_bug.cgi?id=1440287
     %patch -p1 < $pkgfiles/fix-x64-abi.patch
 
-    # Fix glibc LD_AUDIT performance:
-    # https://github.com/solus-project/linux-steam-integration/issues/15
-    # https://sourceware.org/bugzilla/show_bug.cgi?id=15533
-    %patch -p1 < $pkgfiles/perf/fix-ld-audit-performance.patch
-
     # locale data only exists in /usr/lib64 so hardcode it
     %patch -p1 < $pkgfiles/0001-Hardcode-usr-lib64-path-for-locale.patch
 
@@ -52,8 +47,13 @@ setup      : |
     %patch -p1 < $pkgfiles/perf/disable-vectorization-even-more.patch
     %patch -p1 < $pkgfiles/perf/0001-Force-ffsll-to-be-64-bytes-aligned.patch
 
-    # Use system sln when building AVX2 to prevent running illegal instructions.
-    %patch -p1 < $pkgfiles/0001-Fix-AVX2-build-on-non-AVX2-systems.patch
+    # clone3 support required a patch to the chromium sandbox, that patch will take a long time
+    # to proprogate to all the electron apps so just disable it for now. Electron apps without the
+    # patched sandbox will just segfault. Revisit for 2.36.
+    %patch -p1 < $pkgfiles/0001-Disable-clone3-wrapper.patch
+
+    # Backport support DT_RELR AoT but drop the glibc abi check to support lld's relr.
+    %patch -p1 < $pkgfiles/relr.patch
 
     mkdir glibc-build
     pushd glibc-build
@@ -91,28 +91,23 @@ setup      : |
     export LANG="C"
 
     ../../configure \
-           --enable-add-ons \
+           --build=${BUILDHOST} \
+           --disable-profile \
+           --disable-debug \
            --enable-bind-now \
-           --enable-kernel=3.14.32 \
+           --enable-cet \
+           --enable-kernel=4.14 \
+           --enable-stack-protector=strong \
+           --enable-tunables \
            --without-cvs \
            --without-gd \
            --without-selinux \
-           --disable-profile \
            --prefix=/usr \
            --mandir=/usr/share/man \
            --infodir=/usr/share/info \
            --libexecdir=%libdir%/misc \
-           --enable-obsolete-rpc \
-           --enable-lock-elision=yes \
            --libdir=%libdir% \
-           --build=${BUILDHOST} \
-           --with-pkgversion='Solus' \
-           --disable-debug \
-           --enable-bind-now \
-           --enable-cet \
-           --enable-stackguard-randomization \
-           --enable-stack-protector=strong \
-           --enable-tunables
+           --with-pkgversion='Solus'
     popd
     popd
 build      : |
@@ -195,7 +190,8 @@ install    : |
             install -Dm00644 $pkgfiles/ld.so.conf $installdir/usr/share/defaults/etc/ld.so.conf
 
             # iconv cache file
-            iconvconfig --prefix=$installdir
+            # 2.34 borked this, fixed in 2.35
+            # iconvconfig --prefix=$installdir
         fi
     fi
 
@@ -211,3 +207,8 @@ install    : |
             rm -rf $installdir/%libdir%/${nuke}
         done
     fi
+
+    # libxcrypt transition: for now remove conflicts with the libxcrypt package and build everything
+    # against libcrypt.so.2. Keep .so.1 around for compatiblity
+    # When ready we can disable glibc's crypt entirely with --disable-crypt.
+    # rm -f $installdir/usr/include/crypt.h $installdir/usr/lib64/libcrypt.{a,so} $installdir/usr/lib32/libcrypt.{a,so}

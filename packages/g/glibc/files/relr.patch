@@ -1,0 +1,665 @@
+From: Fangrui Song <maskray@google.com>
+
+PIE and shared objects usually have many relative relocations. In
+2017/2018, SHT_RELR/DT_RELR was proposed on
+https://groups.google.com/g/generic-abi/c/bX460iggiKg/m/GxjM0L-PBAAJ
+("Proposal for a new section type SHT_RELR") and is a pre-standard. RELR
+usually takes 3% or smaller space than R_*_RELATIVE relocations. The
+virtual memory size of a mostly statically linked PIE is typically 5~10%
+smaller.
+
+---
+
+Notes I will not include in the submitted commit:
+
+Available on https://sourceware.org/git/?p=glibc.git;a=shortlog;h=refs/heads/maskray/relr
+
+"pre-standard": even Solaris folks are happy with the refined generic-abi
+proposal. Cary Coutant will apply the change
+https://sourceware.org/pipermail/libc-alpha/2021-October/131781.html
+
+This patch is simpler than Chrome OS's glibc patch and makes ELF_DYNAMIC_DO_RELR
+available to all ports. I don't think the current glibc implementation
+supports ia64 in an ELFCLASS32 container. That said, the style I used is
+works with an ELFCLASS32 container for 64-bit machine if ElfW(Addr) is
+64-bit.
+
+* Chrome OS folks have carried a local patch since 2018 (latest version:
+  https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/refs/heads/main/sys-libs/glibc/files/local/glibc-2.32).
+  I.e. this feature has been battle tested.
+* Android bionic supports 2018 and switched to DT_RELR==36 in 2020.
+* The Linux kernel has supported CONFIG_RELR since 2019-08
+  (https://git.kernel.org/linus/5cf896fb6be3effd9aea455b22213e27be8bdb1d).
+* A musl patch (by me) exists but is not applied:
+  https://www.openwall.com/lists/musl/2019/03/06/3
+* rtld-elf from FreeBSD 14 will support DT_RELR.
+
+I believe upstream glibc should support DT_RELR to benefit all Linux
+distributions. I filed some feature requests to get their attention:
+
+* Gentoo: https://bugs.gentoo.org/818376
+* Arch Linux: https://bugs.archlinux.org/task/72433
+* Debian https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=996598
+* Fedora https://bugzilla.redhat.com/show_bug.cgi?id=2014699
+
+As of linker support (to the best of my knowledge):
+
+* LLD support DT_RELR.
+* https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/refs/heads/main/sys-devel/binutils/files/
+  has a gold patch.
+* GNU ld feature request https://sourceware.org/bugzilla/show_bug.cgi?id=27923
+
+Changes from the original patch:
+
+1. Check the linker option, -z pack-relative-relocs, which add a
+GLIBC_ABI_DT_RELR symbol version dependency on the shared C library if
+it provides a GLIBC_2.XX symbol version.
+2. Change make variale to have-dt-relr.
+3. Rename tst-relr-no-pie to tst-relr-pie for --disable-default-pie.
+4. Use TEST_VERIFY in tst-relr.c.
+5. Add the check-tst-relr-pie.out test to check for linker generated
+libc.so version dependency on GLIBC_ABI_DT_RELR.
+---
+ configure              | 42 +++++++++++++++++++++++++++
+ configure.ac           | 10 +++++++
+ elf/Makefile           | 14 +++++++++
+ elf/dynamic-link.h     | 34 ++++++++++++++++++++++
+ elf/elf.h              | 13 +++++++--
+ elf/get-dynamic-info.h |  3 ++
+ elf/tst-relr-pie.c     |  1 +
+ elf/tst-relr.c         | 64 ++++++++++++++++++++++++++++++++++++++++++
+ 8 files changed, 179 insertions(+), 2 deletions(-)
+ create mode 100644 elf/tst-relr-pie.c
+ create mode 100644 elf/tst-relr.c
+
+diff --git a/configure b/configure
+index 8e5bee775a..9156e29fe9 100755
+--- a/configure
++++ b/configure
+@@ -6115,6 +6115,48 @@ $as_echo "$libc_linker_feature" >&6; }
+ config_vars="$config_vars
+ have-depaudit = $libc_cv_depaudit"
+
++{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for linker that supports -z pack-relative-relocs" >&5
++$as_echo_n "checking for linker that supports -z pack-relative-relocs... " >&6; }
++libc_linker_feature=no
++if test x"$gnu_ld" = x"yes"; then
++  cat > conftest.c <<EOF
++int _start (void) { return 42; }
++EOF
++  if { ac_try='${CC-cc} $CFLAGS $CPPFLAGS $LDFLAGS $no_ssp
++		    -Wl,-z,pack-relative-relocs -nostdlib -nostartfiles
++		    -fPIC -shared -o conftest.so conftest.c
++		    1>&5'
++  { { eval echo "\"\$as_me\":${as_lineno-$LINENO}: \"$ac_try\""; } >&5
++  (eval $ac_try) 2>&5
++  ac_status=$?
++  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
++  test $ac_status = 0; }; }
++  then
++    if ${CC-cc} $CFLAGS $CPPFLAGS $LDFLAGS $no_ssp -Wl,-z,pack-relative-relocs -nostdlib \
++	-nostartfiles -fPIC -shared -o conftest.so conftest.c 2>&1 \
++	| grep "warning: -z pack-relative-relocs ignored" > /dev/null 2>&1; then
++      true
++    else
++      libc_linker_feature=yes
++    fi
++  fi
++  rm -f conftest*
++fi
++if test $libc_linker_feature = yes; then
++  libc_cv_dt_relr=yes
++else
++  libc_cv_dt_relr=no
++fi
++{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $libc_linker_feature" >&5
++$as_echo "$libc_linker_feature" >&6; }
++config_vars="$config_vars
++have-dt-relr = $libc_cv_dt_relr"
++if test "$libc_cv_dt_relr" = yes; then
++  have_dt_relr=1
++else
++  have_dt_relr=0
++fi
++
+ { $as_echo "$as_me:${as_lineno-$LINENO}: checking for linker that supports --no-dynamic-linker" >&5
+ $as_echo_n "checking for linker that supports --no-dynamic-linker... " >&6; }
+ libc_linker_feature=no
+diff --git a/configure.ac b/configure.ac
+index 87f67d25ec..5c09871fee 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1367,6 +1367,16 @@ LIBC_LINKER_FEATURE([--depaudit], [-Wl,--depaudit,x],
+ 		    [libc_cv_depaudit=yes], [libc_cv_depaudit=no])
+ LIBC_CONFIG_VAR([have-depaudit], [$libc_cv_depaudit])
+
++LIBC_LINKER_FEATURE([-z pack-relative-relocs],
++		    [-Wl,-z,pack-relative-relocs],
++		    [libc_cv_dt_relr=yes], [libc_cv_dt_relr=no])
++LIBC_CONFIG_VAR([have-dt-relr], [$libc_cv_dt_relr])
++if test "$libc_cv_dt_relr" = yes; then
++  have_dt_relr=1
++else
++  have_dt_relr=0
++fi
++
+ LIBC_LINKER_FEATURE([--no-dynamic-linker],
+ 		    [-Wl,--no-dynamic-linker],
+ 		    [libc_cv_no_dynamic_linker=yes],
+diff --git a/elf/Makefile b/elf/Makefile
+index ac37159b89..71b08c75dd 100644
+--- a/elf/Makefile
++++ b/elf/Makefile
+@@ -537,6 +537,14 @@ tests-special += \
+   # tests-special
+ endif
+ endif
++ifeq ($(have-dt-relr),yes)
++tests += tst-relr tst-relr-pie
++tests-pie += tst-relr-pie
++tests-special += $(objpfx)check-tst-relr-pie.out
++CFLAGS-tst-relr-pie.c += $(pie-ccflag)
++LDFLAGS-tst-relr += -Wl,-z,pack-relative-relocs
++LDFLAGS-tst-relr-pie += -Wl,-z,pack-relative-relocs
++endif
+ endif
+
+ ifeq ($(run-built-tests),yes)
+@@ -2733,3 +2741,9 @@ $(objpfx)tst-p_align3: $(objpfx)tst-p_alignmod3.so
+ $(objpfx)tst-p_align3.out: tst-p_align3.sh $(objpfx)tst-p_align3
+ 	$(SHELL) $< $(common-objpfx) '$(test-program-prefix)'; \
+ 	$(evaluate-test)
++
++$(objpfx)check-tst-relr-pie.out: $(objpfx)tst-relr-pie
++	LC_ALL=C $(OBJDUMP) -p $< \
++		| sed -ne '/required from libc.so/,$$ p' \
++		| grep GLIBC_ABI_DT_RELR > $@; \
++	$(evaluate-test)
+diff --git a/elf/dynamic-link.h b/elf/dynamic-link.h
+index 25dd7ca4f2..5318079bac 100644
+--- a/elf/dynamic-link.h
++++ b/elf/dynamic-link.h
+@@ -146,14 +146,48 @@ elf_machine_lazy_rel (struct link_map *map, struct r_scope_elem *scope[],
+ #  define ELF_DYNAMIC_DO_RELA(map, scope, lazy, skip_ifunc) /* Nothing to do.  */
+ # endif
+
++# define ELF_DYNAMIC_DO_RELR(map)					      \
++  do {									      \
++    ElfW(Addr) l_addr = (map)->l_addr, *where = 0;			      \
++    const ElfW(Relr) *r, *end;						      \
++    if (!(map)->l_info[DT_RELR])					      \
++      break;								      \
++    r = (const ElfW(Relr) *)D_PTR((map), l_info[DT_RELR]);		      \
++    end = (const ElfW(Relr) *)((const char *)r +			      \
++                               (map)->l_info[DT_RELRSZ]->d_un.d_val);	      \
++    for (; r < end; r++)						      \
++      {									      \
++	ElfW(Relr) entry = *r;						      \
++	if ((entry & 1) == 0)						      \
++	  {								      \
++	    where = (ElfW(Addr) *)(l_addr + entry);			      \
++	    *where++ += l_addr;						      \
++	  }								      \
++	else 								      \
++	  {								      \
++	    for (long i = 0; (entry >>= 1) != 0; i++)			      \
++	      if ((entry & 1) != 0)					      \
++		where[i] += l_addr;					      \
++	    where += CHAR_BIT * sizeof(ElfW(Relr)) - 1;			      \
++	  }								      \
++      }									      \
++  } while (0);
++
+ /* This can't just be an inline function because GCC is too dumb
+    to inline functions containing inlines themselves.  */
++# ifdef RTLD_BOOTSTRAP
++#  define DO_RTLD_BOOTSTRAP 1
++# else
++#  define DO_RTLD_BOOTSTRAP 0
++# endif
+ # define ELF_DYNAMIC_RELOCATE(map, scope, lazy, consider_profile, skip_ifunc) \
+   do {									      \
+     int edr_lazy = elf_machine_runtime_setup ((map), (scope), (lazy),	      \
+ 					      (consider_profile));	      \
+     ELF_DYNAMIC_DO_REL ((map), (scope), edr_lazy, skip_ifunc);		      \
+     ELF_DYNAMIC_DO_RELA ((map), (scope), edr_lazy, skip_ifunc);		      \
++    if (((map) != &GL(dl_rtld_map) || DO_RTLD_BOOTSTRAP))		      \
++      ELF_DYNAMIC_DO_RELR (map);					      \
+   } while (0)
+
+ #endif
+diff --git a/elf/elf.h b/elf/elf.h
+index 0735f6b579..0195029188 100644
+--- a/elf/elf.h
++++ b/elf/elf.h
+@@ -443,7 +443,8 @@ typedef struct
+ #define SHT_PREINIT_ARRAY 16		/* Array of pre-constructors */
+ #define SHT_GROUP	  17		/* Section group */
+ #define SHT_SYMTAB_SHNDX  18		/* Extended section indices */
+-#define	SHT_NUM		  19		/* Number of defined types.  */
++#define SHT_RELR	  19            /* RELR relative relocations */
++#define	SHT_NUM		  20		/* Number of defined types.  */
+ #define SHT_LOOS	  0x60000000	/* Start OS-specific.  */
+ #define SHT_GNU_ATTRIBUTES 0x6ffffff5	/* Object attributes.  */
+ #define SHT_GNU_HASH	  0x6ffffff6	/* GNU-style hash table.  */
+@@ -662,6 +663,11 @@ typedef struct
+   Elf64_Sxword	r_addend;		/* Addend */
+ } Elf64_Rela;
+
++/* RELR relocation table entry */
++
++typedef Elf32_Word	Elf32_Relr;
++typedef Elf64_Xword	Elf64_Relr;
++
+ /* How to extract and insert information held in the r_info field.  */
+
+ #define ELF32_R_SYM(val)		((val) >> 8)
+@@ -887,7 +893,10 @@ typedef struct
+ #define DT_PREINIT_ARRAY 32		/* Array with addresses of preinit fct*/
+ #define DT_PREINIT_ARRAYSZ 33		/* size in bytes of DT_PREINIT_ARRAY */
+ #define DT_SYMTAB_SHNDX	34		/* Address of SYMTAB_SHNDX section */
+-#define	DT_NUM		35		/* Number used */
++#define DT_RELRSZ	35		/* Total size of RELR relative relocations */
++#define DT_RELR		36		/* Address of RELR relative relocations */
++#define DT_RELRENT	37		/* Size of one RELR relative relocaction */
++#define	DT_NUM		38		/* Number used */
+ #define DT_LOOS		0x6000000d	/* Start of OS-specific */
+ #define DT_HIOS		0x6ffff000	/* End of OS-specific */
+ #define DT_LOPROC	0x70000000	/* Start of processor-specific */
+diff --git a/elf/get-dynamic-info.h b/elf/get-dynamic-info.h
+index 6c2ccd6db4..6c2a3a12b1 100644
+--- a/elf/get-dynamic-info.h
++++ b/elf/get-dynamic-info.h
+@@ -89,6 +89,7 @@ elf_get_dynamic_info (struct link_map *l, bool bootstrap,
+ # if ! ELF_MACHINE_NO_REL
+       ADJUST_DYN_INFO (DT_REL);
+ # endif
++      ADJUST_DYN_INFO (DT_RELR);
+       ADJUST_DYN_INFO (DT_JMPREL);
+       ADJUST_DYN_INFO (VERSYMIDX (DT_VERSYM));
+       ADJUST_DYN_INFO (ADDRIDX (DT_GNU_HASH));
+@@ -113,6 +114,8 @@ elf_get_dynamic_info (struct link_map *l, bool bootstrap,
+   if (info[DT_REL] != NULL)
+     assert (info[DT_RELENT]->d_un.d_val == sizeof (ElfW(Rel)));
+ #endif
++  if (info[DT_RELR] != NULL)
++    assert (info[DT_RELRENT]->d_un.d_val == sizeof (ElfW(Relr)));
+   if (bootstrap || static_pie_bootstrap)
+     {
+       assert (info[DT_RUNPATH] == NULL);
+diff --git a/elf/tst-relr-pie.c b/elf/tst-relr-pie.c
+new file mode 100644
+index 0000000000..7df0cdbfd6
+--- /dev/null
++++ b/elf/tst-relr-pie.c
+@@ -0,0 +1 @@
++#include "tst-relr.c"
+diff --git a/elf/tst-relr.c b/elf/tst-relr.c
+new file mode 100644
+index 0000000000..56addd2ad4
+--- /dev/null
++++ b/elf/tst-relr.c
+@@ -0,0 +1,64 @@
++/* Basic tests for DT_RELR.
++   Copyright (C) 2022 Free Software Foundation, Inc.
++   This file is part of the GNU C Library.
++
++   The GNU C Library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2.1 of the License, or (at your option) any later version.
++
++   The GNU C Library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with the GNU C Library; if not, see
++   <https://www.gnu.org/licenses/>.  */
++
++#include <link.h>
++#include <stdbool.h>
++#include <support/check.h>
++
++static int o, x;
++
++#define ELEMS O O O O O O O O X X X X X X X O O X O O X X X E X E E O X O E
++#define E 0,
++
++#define O &o,
++#define X &x,
++void *arr[] = { ELEMS };
++#undef O
++#undef X
++
++#define O 1,
++#define X 2,
++static char val[] = { ELEMS };
++
++static int
++do_test (void)
++{
++  ElfW(Dyn) *d = _DYNAMIC;
++  if (d)
++    {
++      bool has_relr = false;
++      for (; d->d_tag != DT_NULL; d++)
++	if (d->d_tag == DT_RELR)
++	  has_relr = true;
++
++#if defined __PIE__ || defined __pie__ || defined PIE || defined pie
++      TEST_VERIFY (has_relr);
++#else
++      TEST_VERIFY (!has_relr);
++#endif
++    }
++
++  for (int i = 0; i < sizeof (arr) / sizeof (arr[0]); i++)
++    TEST_VERIFY ((arr[i] == 0 && val[i] == 0)
++		 || (arr[i] == &o && val[i] == 1)
++		 || (arr[i] == &x && val[i] == 2));
++
++  return 0;
++}
++
++#include <support/test-driver.c>
+--
+2.34.1
+
+
+With DT_RELR, there may be no relocations in DT_RELA/DT_REL and their
+entry values are zero.  Don't relocate DT_RELA/DT_REL and update the
+combined relocation start address if their entry values are zero.
+---
+ elf/dynamic-link.h     |  6 +++++-
+ elf/get-dynamic-info.h | 18 ++++++++++++++----
+ 2 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/elf/dynamic-link.h b/elf/dynamic-link.h
+index 5318079bac..320a9029f2 100644
+--- a/elf/dynamic-link.h
++++ b/elf/dynamic-link.h
+@@ -84,7 +84,9 @@ elf_machine_lazy_rel (struct link_map *map, struct r_scope_elem *scope[],
+ 	     __typeof (((ElfW(Dyn) *) 0)->d_un.d_val) nrelative; int lazy; }  \
+       ranges[2] = { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } };			      \
+ 									      \
+-    if ((map)->l_info[DT_##RELOC])					      \
++    /* With DT_RELR, DT_RELA/DT_REL can have zero value.  */		      \
++    if ((map)->l_info[DT_##RELOC]					      \
++	&& (map)->l_info[DT_##RELOC]->d_un.d_ptr != 0)			      \
+       {									      \
+ 	ranges[0].start = D_PTR ((map), l_info[DT_##RELOC]);		      \
+ 	ranges[0].size = (map)->l_info[DT_##RELOC##SZ]->d_un.d_val;	      \
+@@ -98,6 +100,8 @@ elf_machine_lazy_rel (struct link_map *map, struct r_scope_elem *scope[],
+ 	ElfW(Addr) start = D_PTR ((map), l_info[DT_JMPREL]);		      \
+ 	ElfW(Addr) size = (map)->l_info[DT_PLTRELSZ]->d_un.d_val;	      \
+ 									      \
++	if (ranges[0].start == 0)					      \
++	  ranges[0].start = start;					      \
+ 	if (ranges[0].start + ranges[0].size == (start + size))		      \
+ 	  ranges[0].size -= size;					      \
+ 	if (!(do_lazy)							      \
+diff --git a/elf/get-dynamic-info.h b/elf/get-dynamic-info.h
+index 6c2a3a12b1..f4b957684b 100644
+--- a/elf/get-dynamic-info.h
++++ b/elf/get-dynamic-info.h
+@@ -83,16 +83,26 @@ elf_get_dynamic_info (struct link_map *l, bool bootstrap,
+       ADJUST_DYN_INFO (DT_PLTGOT);
+       ADJUST_DYN_INFO (DT_STRTAB);
+       ADJUST_DYN_INFO (DT_SYMTAB);
++      ADJUST_DYN_INFO (DT_RELR);
++      ADJUST_DYN_INFO (DT_JMPREL);
++      ADJUST_DYN_INFO (VERSYMIDX (DT_VERSYM));
++      ADJUST_DYN_INFO (ADDRIDX (DT_GNU_HASH));
++# undef ADJUST_DYN_INFO
++
++      /* DT_RELA/DT_REL are mandatory.  But they may have zero value if
++	 there is DT_RELR.  Don't relocate them if they are zero.  */
++# define ADJUST_DYN_INFO(tag) \
++      do								      \
++	if (info[tag] != NULL && info[tag]->d_un.d_ptr != 0)		      \
++         info[tag]->d_un.d_ptr += l_addr;				      \
++      while (0)
++
+ # if ! ELF_MACHINE_NO_RELA
+       ADJUST_DYN_INFO (DT_RELA);
+ # endif
+ # if ! ELF_MACHINE_NO_REL
+       ADJUST_DYN_INFO (DT_REL);
+ # endif
+-      ADJUST_DYN_INFO (DT_RELR);
+-      ADJUST_DYN_INFO (DT_JMPREL);
+-      ADJUST_DYN_INFO (VERSYMIDX (DT_VERSYM));
+-      ADJUST_DYN_INFO (ADDRIDX (DT_GNU_HASH));
+ # undef ADJUST_DYN_INFO
+     }
+   if (info[DT_PLTREL] != NULL)
+--
+2.34.1
+
+
+Enable DT_RELR in glibc shared libraries and position independent
+executables (PIE) automatically if linker supports -z pack-relative-relocs.
+
+Also add a new configuration option, --disable-default-dt-relr, to
+avoid DT_RELR usage in glibc shared libraries and PIEs.
+---
+ INSTALL             |  6 ++++++
+ Makeconfig          | 19 +++++++++++++++++++
+ Makerules           |  2 ++
+ configure           | 18 ++++++++++++++++++
+ configure.ac        | 13 +++++++++++++
+ elf/Makefile        |  4 +++-
+ manual/install.texi |  5 +++++
+ 7 files changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/INSTALL b/INSTALL
+index 63c022d6b9..4a6506f11f 100644
+--- a/INSTALL
++++ b/INSTALL
+@@ -133,6 +133,12 @@ if 'CFLAGS' is specified it must enable optimization.  For example:
+      used with the GCC option, -static-pie, which is available with GCC
+      8 or above, to create static PIE.
+
++'--disable-default-dt-relr'
++     Don't enable DT_RELR in glibc shared libraries and position
++     independent executables (PIE). By default, DT_RELR is enabled in
++     glibc shared libraries and position independent executables on
++     targets that support it.
++
+ '--enable-cet'
+ '--enable-cet=permissive'
+      Enable Intel Control-flow Enforcement Technology (CET) support.
+diff --git a/Makeconfig b/Makeconfig
+index 47db08d6ae..70c0acc065 100644
+--- a/Makeconfig
++++ b/Makeconfig
+@@ -358,6 +358,23 @@ else
+ real-static-start-installed-name = $(static-start-installed-name)
+ endif
+
++# Linker option to enable and disable DT-RELR.
++ifeq ($(have-dt-relr),yes)
++dt-relr-ldflag = -Wl,-z,pack-relative-relocs
++no-dt-relr-ldflag = -Wl,-z,nopack-relative-relocs
++else
++dt-relr-ldflag =
++no-dt-relr-ldflag =
++endif
++
++# Default linker option for DT-RELR.
++ifeq (yes,$(build-dt-relr-default))
++default-rt-relr-ldflag = $(dt-relr-ldflag)
++else
++default-rt-relr-ldflag = $(no-dt-relr-ldflag)
++endif
++LDFLAGS-rtld += $(default-rt-relr-ldflag)
++
+ ifeq (yesyes,$(build-shared)$(have-z-combreloc))
+ combreloc-LDFLAGS = -Wl,-z,combreloc
+ LDFLAGS.so += $(combreloc-LDFLAGS)
+@@ -419,6 +436,7 @@ link-extra-libs-tests = $(libsupport)
+ # Command for linking PIE programs with the C library.
+ ifndef +link-pie
+ +link-pie-before-inputs = $(if $($(@F)-no-pie),$(no-pie-ldflag),-pie) \
++	     $(if $($(@F)-no-dt-relr),$(no-dt-relr-ldflag),$(default-rt-relr-ldflag)) \
+ 	     -Wl,-O1 -nostdlib -nostartfiles \
+ 	     $(sysdep-LDFLAGS) $(LDFLAGS) $(LDFLAGS-$(@F)) \
+ 	     $(combreloc-LDFLAGS) $(relro-LDFLAGS) $(hashstyle-LDFLAGS) \
+@@ -451,6 +469,7 @@ endif
+ ifndef +link-static
+ +link-static-before-inputs = -nostdlib -nostartfiles -static \
+ 	      $(if $($(@F)-no-pie),$(no-pie-ldflag),$(static-pie-ldflag)) \
++	      $(if $($(@F)-no-dt-relr),$(no-dt-relr-ldflag),$(default-rt-relr-ldflag)) \
+ 	      $(sysdep-LDFLAGS) $(LDFLAGS) $(LDFLAGS-$(@F))  \
+ 	      $(firstword $(CRT-$(@F)) $(csu-objpfx)$(real-static-start-installed-name)) \
+ 	      $(+preinit) $(+prectorT)
+diff --git a/Makerules b/Makerules
+index 5de2cec6be..260c7b7253 100644
+--- a/Makerules
++++ b/Makerules
+@@ -536,6 +536,7 @@ lib%.so: lib%_pic.a $(+preinit) $(+postinit) $(link-libc-deps)
+ define build-shlib-helper
+ $(LINK.o) -shared -static-libgcc -Wl,-O1 $(sysdep-LDFLAGS) \
+ 	  $(if $($(@F)-no-z-defs)$(no-z-defs),,-Wl,-z,defs) $(rtld-LDFLAGS) \
++	  $(if $($(@F)-no-dt-relr),$(no-dt-relr-ldflag),$(default-rt-relr-ldflag)) \
+ 	  $(extra-B-$(@F:lib%.so=%).so) -B$(csu-objpfx) \
+ 	  $(extra-B-$(@F:lib%.so=%).so) $(load-map-file) \
+ 	  -Wl,-soname=lib$(libprefix)$(@F:lib%.so=%).so$($(@F)-version) \
+@@ -595,6 +596,7 @@ endef
+ define build-module-helper
+ $(LINK.o) -shared -static-libgcc $(sysdep-LDFLAGS) $(rtld-LDFLAGS) \
+ 	  $(if $($(@F)-no-z-defs)$(no-z-defs),,-Wl,-z,defs) \
++	  $(if $($(@F)-no-dt-relr),$(no-dt-relr-ldflag),$(default-rt-relr-ldflag)) \
+ 	  -B$(csu-objpfx) $(load-map-file) \
+ 	  $(LDFLAGS.so) $(LDFLAGS-$(@F:%.so=%).so) \
+ 	  $(link-test-modules-rpath-link) \
+diff --git a/configure b/configure
+index 9156e29fe9..ee4137a977 100755
+--- a/configure
++++ b/configure
+@@ -768,6 +768,7 @@ enable_sanity_checks
+ enable_shared
+ enable_profile
+ enable_default_pie
++enable_default_dt_relr
+ enable_timezone_tools
+ enable_hardcoded_path_in_tests
+ enable_hidden_plt
+@@ -1425,6 +1426,7 @@ Optional Features:
+   --enable-profile        build profiled library [default=no]
+   --disable-default-pie   Do not build glibc programs and the testsuite as PIE
+                           [default=no]
++  --disable-dt-relr       Do not enable DT_RELR in glibc[default=no]
+   --disable-timezone-tools
+                           do not install timezone tools [default=install]
+   --enable-hardcoded-path-in-tests
+@@ -3441,6 +3443,13 @@ else
+   default_pie=yes
+ fi
+
++# Check whether --enable-default-dt-relr was given.
++if test "${enable_default_dt_relr+set}" = set; then :
++  enableval=$enable_default_dt_relr; default_dt_relr=$enableval
++else
++  default_dt_relr=yes
++fi
++
+ # Check whether --enable-timezone-tools was given.
+ if test "${enable_timezone_tools+set}" = set; then :
+   enableval=$enable_timezone_tools; enable_timezone_tools=$enableval
+@@ -7136,6 +7145,15 @@ fi
+ config_vars="$config_vars
+ enable-static-pie = $libc_cv_static_pie"
+
++# Disable build-dt-relr-default if linker does not support it or glibc is
++# configured with --disable-default-dt-relr.
++build_dt_relr_default=$default_dt_relr
++if test "x$build_dt_relr_default" != xno; then
++  build_dt_relr_default=$libc_cv_dt_relr
++fi
++config_vars="$config_vars
++build-dt-relr-default = $build_dt_relr_default"
++
+ # Set the `multidir' variable by grabbing the variable from the compiler.
+ # We do it once and save the result in a generated makefile.
+ libc_cv_multidir=`${CC-cc} $CFLAGS $CPPFLAGS -print-multi-directory`
+diff --git a/configure.ac b/configure.ac
+index 5c09871fee..680b036ffa 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -197,6 +197,11 @@ AC_ARG_ENABLE([default-pie],
+ 			     [Do not build glibc programs and the testsuite as PIE @<:@default=no@:>@]),
+ 	      [default_pie=$enableval],
+ 	      [default_pie=yes])
++AC_ARG_ENABLE([default-dt-relr],
++	      AS_HELP_STRING([--disable-dt-relr],
++			     [Do not enable DT_RELR in glibc@<:@default=no@:>@]),
++	      [default_dt_relr=$enableval],
++	      [default_dt_relr=yes])
+ AC_ARG_ENABLE([timezone-tools],
+ 	      AS_HELP_STRING([--disable-timezone-tools],
+ 			     [do not install timezone tools @<:@default=install@:>@]),
+@@ -1914,6 +1919,14 @@ if test "$libc_cv_static_pie" = "yes"; then
+ fi
+ LIBC_CONFIG_VAR([enable-static-pie], [$libc_cv_static_pie])
+
++# Disable build-dt-relr-default if linker does not support it or glibc is
++# configured with --disable-default-dt-relr.
++build_dt_relr_default=$default_dt_relr
++if test "x$build_dt_relr_default" != xno; then
++  build_dt_relr_default=$libc_cv_dt_relr
++fi
++LIBC_CONFIG_VAR([build-dt-relr-default], [$build_dt_relr_default])
++
+ # Set the `multidir' variable by grabbing the variable from the compiler.
+ # We do it once and save the result in a generated makefile.
+ libc_cv_multidir=`${CC-cc} $CFLAGS $CPPFLAGS -print-multi-directory`
+diff --git a/elf/Makefile b/elf/Makefile
+index a6515e8a21..1727f5acc0 100644
+--- a/elf/Makefile
++++ b/elf/Makefile
+@@ -1570,6 +1570,7 @@ $(objpfx)nodlopen2.out: $(objpfx)nodlopenmod2.so
+
+ $(objpfx)filtmod1.so: $(objpfx)filtmod1.os $(objpfx)filtmod2.so
+ 	$(LINK.o) -shared -o $@ -B$(csu-objpfx) $(LDFLAGS.so) \
++		  $(default-rt-relr-ldflag) \
+ 		  -L$(subst :, -L,$(rpath-link)) \
+ 		  -Wl,-rpath-link=$(rpath-link) \
+ 		  $< -Wl,-F,$(objpfx)filtmod2.so
+@@ -2376,7 +2377,7 @@ $(objpfx)tst-big-note: $(objpfx)tst-big-note-lib.so
+ # artificial, large note in tst-big-note-lib.o and invalidate the
+ # test.
+ $(objpfx)tst-big-note-lib.so: $(objpfx)tst-big-note-lib.o
+-	$(LINK.o) -shared -o $@ $(LDFLAGS.so) $<
++	$(LINK.o) -shared -o $@ $(LDFLAGS.so) $(default-rt-relr-ldflag) $<
+
+ $(objpfx)tst-unwind-ctor: $(objpfx)tst-unwind-ctor-lib.so
+
+@@ -2682,6 +2683,7 @@ $(objpfx)tst-ro-dynamic: $(objpfx)tst-ro-dynamic-mod.so
+ $(objpfx)tst-ro-dynamic-mod.so: $(objpfx)tst-ro-dynamic-mod.os \
+   tst-ro-dynamic-mod.map
+ 	$(LINK.o) -nostdlib -nostartfiles -shared -o $@ \
++		$(default-rt-relr-ldflag) \
+ 		-Wl,--script=tst-ro-dynamic-mod.map \
+ 		$(objpfx)tst-ro-dynamic-mod.os
+
+diff --git a/manual/install.texi b/manual/install.texi
+index 29c52f2927..04ea996561 100644
+--- a/manual/install.texi
++++ b/manual/install.texi
+@@ -161,6 +161,11 @@ and architecture support it, static executables are built as static PIE and the
+ resulting glibc can be used with the GCC option, -static-pie, which is
+ available with GCC 8 or above, to create static PIE.
+
++@item --disable-default-dt-relr
++Don't enable DT_RELR in glibc shared libraries and position independent
++executables (PIE).  By default, DT_RELR is enabled in glibc shared
++libraries and position independent executables on targets that support it.
++
+ @item --enable-cet
+ @itemx --enable-cet=permissive
+ Enable Intel Control-flow Enforcement Technology (CET) support.  When
+--
+2.34.1
