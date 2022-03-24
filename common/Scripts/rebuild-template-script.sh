@@ -178,6 +178,16 @@ verify() {
     popd
 }
 
+# All sorts of jank to install our built packages. Eopkg repos are all sorts of bork.
+install() {
+    sudo eopkg ar ${MAINPAK} /var/lib/solbuild/local-${MAINPAK}/eopkg-index.xml.xz
+    sudo eopkg er ${MAINPAK}
+    sudo eopkg dr Unstable unstable
+    sudo eopkg up
+    sudo eopkg er Unstable unstable
+    sudo eopkg rr ${MAINPAK}
+}
+
 # Add and commit changes before publishing.
 # TODO: add an excludes mechanism to allow a non-generic message for some packages.
 commit() {
