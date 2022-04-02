@@ -3,6 +3,3 @@ This file is used to indicate responsibility for the maintenance of this package
 - Evan Maddock
   - IRC: EbonJaeger
   - Email: maddock.evan@vivaldi.net
-- Martin Reboredo
-  - IRC: YakoYako
-  - Email: yakoyoku@gmail.com
