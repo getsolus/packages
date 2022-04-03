@@ -1,0 +1,1502 @@
+diff --git a/Makefile.am b/Makefile.am
+index 74859c1..1e33833 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -36,6 +36,10 @@ else
+ minidlnad_SOURCES += select.c
+ endif
+ 
++if HAVE_INOTIFY
++minidlnad_SOURCES += monitor_inotify.c
++endif
++
+ if HAVE_VORBISFILE
+ vorbislibs = -lvorbis -logg
+ else
+diff --git a/NEWS b/NEWS
+index 731ffe5..83bfef3 100644
+--- a/NEWS
++++ b/NEWS
+@@ -1,3 +1,11 @@
++1.3.1 - Released 11-Feb-2022
++--------------------------------
++- Fixed a potential crash in SSDP request parsing.
++- Fixed a configure script failure on some platforms.
++- Protect against DNS rebinding attacks.
++- Fix an socket leakage issue on some platforms.
++- Minor bug fixes.
++
+ 1.3.0 - Released 24-Nov-2020
+ --------------------------------
+ - Fixed some build warnings when building with musl.
+diff --git a/configure.ac b/configure.ac
+index cb596b9..92bca0d 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -29,6 +29,7 @@ m4_ifdef([AC_USE_SYSTEM_EXTENSIONS], [AC_USE_SYSTEM_EXTENSIONS])
+ AM_ICONV
+ AM_GNU_GETTEXT([external])
+ AM_GNU_GETTEXT_VERSION(0.18)
++AM_GNU_GETTEXT_REQUIRE_VERSION(0.18)
+ 
+ # Checks for programs.
+ AC_PROG_AWK
+@@ -414,7 +415,10 @@ for dir in "" /usr/local $SEARCH_DIR; do
+     AC_CHECK_LIB([id3tag -lz], [id3_file_open], [LIBID3TAG_LIBS="-lid3tag -lz"], [unset ac_cv_lib_id3tag_id3_file_open; LDFLAGS="$LDFLAGS_SAVE"; continue])
+     break
+ done
+-test x"$ac_cv_lib_id3tag__lz___id3_file_open" = x"yes" || AC_MSG_ERROR([Could not find libid3tag])
++if test x"$ac_cv_lib_id3tag__lz___id3_file_open" != x"yes" &&
++   test x"$ac_cv_lib_id3tag__lz_id3_file_open" != x"yes"; then
++   AC_MSG_ERROR([Could not find libid3tag])
++fi
+ AC_SUBST(LIBID3TAG_LIBS)
+ 
+ LDFLAGS_SAVE="$LDFLAGS"
+@@ -441,7 +445,8 @@ for dir in "" /usr/local $SEARCH_DIR; do
+     break
+ done
+ if test x"$ac_cv_lib_avformat__lavcodec__lavutil__lz___av_open_input_file" != x"yes" &&
+-   test x"$ac_cv_lib_avformat__lavcodec__lavutil__lz___avformat_open_input" != x"yes"; then
++   test x"$ac_cv_lib_avformat__lavcodec__lavutil__lz___avformat_open_input" != x"yes" &&
++   test x"$ac_cv_lib_avformat__lavcodec__lavutil__lz_avformat_open_input" != x"yes"; then
+    AC_MSG_ERROR([Could not find libavformat - part of ffmpeg])
+ fi
+ AC_SUBST(LIBAVFORMAT_LIBS)
+@@ -490,7 +495,12 @@ AC_CHECK_HEADERS([arpa/inet.h asm/unistd.h endian.h machine/endian.h fcntl.h lib
+ test x"$ac_cv_header_poll_h" != x"yes" && AC_MSG_ERROR([poll.h not found or not usable])
+ test x"$ac_cv_header_sys_queue_h" != x"yes" && AC_MSG_ERROR([sys/queue.h not found or not usable])
+ 
+-AC_CHECK_FUNCS(inotify_init, AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotify support]), [
++AC_CHECK_FUNCS(inotify_init, 
++[
++    AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotify support])
++    AM_CONDITIONAL(HAVE_INOTIFY, true)
++],
++[
+     AC_MSG_CHECKING([for __NR_inotify_init syscall])
+     AC_COMPILE_IFELSE(
+          [AC_LANG_PROGRAM(
+@@ -506,9 +516,11 @@ AC_CHECK_FUNCS(inotify_init, AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotif
+          [
+              AC_MSG_RESULT([yes])
+              AC_DEFINE(HAVE_INOTIFY,1,[Whether kernel has inotify support])
++             AM_CONDITIONAL(HAVE_INOTIFY, true)
+          ],
+          [
+              AC_MSG_RESULT([no])
++             AM_CONDITIONAL(HAVE_INOTIFY, false)
+          ])
+ ])
+ 
+diff --git a/event.h b/event.h
+index c05c61b..6b30a21 100644
+--- a/event.h
++++ b/event.h
+@@ -42,7 +42,7 @@ typedef	int	event_module_add_t(struct event *);
+ typedef	int	event_module_del_t(struct event *, int flags);
+ typedef int	event_module_init_t(void);
+ typedef void	event_module_fini_t(void);
+-typedef int	event_module_process_t(u_long);
++typedef int	event_module_process_t(struct timeval *);
+ struct event_module {
+ 	event_module_add_t	*add;
+ 	event_module_del_t	*del;
+diff --git a/kqueue.c b/kqueue.c
+index 67b2c86..35b3f2b 100644
+--- a/kqueue.c
++++ b/kqueue.c
+@@ -178,27 +178,21 @@ kqueue_set(struct event *ev, short filter, u_short flags, u_int fflags)
+ }
+ 
+ static int
+-kqueue_process(u_long timer)
++kqueue_process(struct timeval *tv)
+ {
+ 	struct event *ev;
+ 	int events, n, i;
+-	struct timespec ts, *tp;
++	struct timespec ts;
+ 
+ 	n = (int) nchanges;
+ 	nchanges = 0;
+ 
+-	if (timer == 0) {
+-		tp = NULL;
+-	} else {
+-		ts.tv_sec = timer / 1000;
+-		ts.tv_nsec = (timer % 1000) * 1000000;
+-		tp = &ts;
+-	}
++	TIMEVAL_TO_TIMESPEC(tv, &ts);
+ 
+-	DPRINTF(E_DEBUG, L_GENERAL, "kevent timer: %lu, changes: %d\n",
+-	    timer, n);
++	DPRINTF(E_DEBUG, L_GENERAL, "kevent timer: %lu.%06lu, changes: %d\n",
++	    ts.tv_sec, ts.tv_nsec, n);
+ 
+-	events = kevent(kq, change_list, n, event_list, MAXEVENTS, tp);
++	events = kevent(kq, change_list, n, event_list, MAXEVENTS, &ts);
+ 
+ 	if (events == -1) {
+ 		if (errno == EINTR)
+@@ -208,12 +202,6 @@ kqueue_process(u_long timer)
+ 
+ 	DPRINTF(E_DEBUG, L_GENERAL, "kevent events: %d\n", events);
+ 
+-	if (events == 0) {
+-		if (timer != 0)
+-			return (0);
+-		DPRINTF(E_FATAL, L_GENERAL, "kevent() returned no events. EXITING\n");
+-	}
+-
+ 	for (i = 0; i < events; i++) {
+ 		if (event_list[i].flags & EV_ERROR) {
+ 			DPRINTF(E_ERROR, L_GENERAL,
+diff --git a/minidlna.c b/minidlna.c
+index b2769ae..999adee 100644
+--- a/minidlna.c
++++ b/minidlna.c
+@@ -64,7 +64,6 @@
+ #include <time.h>
+ #include <signal.h>
+ #include <errno.h>
+-#include <pthread.h>
+ #include <limits.h>
+ #include <libgen.h>
+ #include <pwd.h>
+@@ -1088,6 +1087,19 @@ init(int argc, char **argv)
+ 	return 0;
+ }
+ 
++#ifdef HAVE_WATCH
++void
++start_monitor()
++{
++
++	if (!GETFLAG(INOTIFY_MASK))
++		return;
++
++	lav_register_all();
++	monitor_start();
++}
++#endif
++
+ /* === main === */
+ /* process HTTP or SSDP requests */
+ int
+@@ -1100,10 +1112,8 @@ main(int argc, char **argv)
+ 	struct upnphttp * next;
+ 	struct timeval tv, timeofday, lastnotifytime = {0, 0};
+ 	time_t lastupdatetime = 0, lastdbtime = 0;
+-	u_long timeout;	/* in milliseconds */
+ 	int last_changecnt = 0;
+ 	pid_t scanner_pid = 0;
+-	pthread_t inotify_thread = 0;
+ 	struct event ssdpev, httpev, monev;
+ #ifdef TIVO_SUPPORT
+ 	uint8_t beacon_interval = 5;
+@@ -1138,23 +1148,11 @@ main(int argc, char **argv)
+ 	}
+ 	check_db(db, ret, &scanner_pid);
+ 	lastdbtime = _get_dbtime();
+-#ifdef HAVE_INOTIFY
+-	if( GETFLAG(INOTIFY_MASK) )
+-	{
+-		if (!sqlite3_threadsafe() || sqlite3_libversion_number() < 3005001)
+-			DPRINTF(E_ERROR, L_GENERAL, "SQLite library is not threadsafe!  "
+-			                            "Inotify will be disabled.\n");
+-		else if (pthread_create(&inotify_thread, NULL, start_inotify, NULL) != 0)
+-			DPRINTF(E_FATAL, L_GENERAL, "ERROR: pthread_create() failed for start_inotify. EXITING\n");
+-	}
+-#endif /* HAVE_INOTIFY */
+ 
+-#ifdef HAVE_KQUEUE
+-	if (!GETFLAG(SCANNING_MASK)) {
+-		lav_register_all();
+-		kqueue_monitor_start();
+-	}
+-#endif /* HAVE_KQUEUE */
++#ifdef HAVE_WATCH
++	if (!GETFLAG(SCANNING_MASK))
++		start_monitor();
++#endif
+ 
+ 	smonitor = OpenAndConfMonitorSocket();
+ 	if (smonitor > 0)
+@@ -1185,6 +1183,9 @@ main(int argc, char **argv)
+ 	httpev = (struct event ){ .fd = shttpl, .rdwr = EVENT_READ, .process = ProcessListen };
+ 	event_module.add(&httpev);
+ 
++	if (gettimeofday(&timeofday, 0) < 0)
++		DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
++
+ #ifdef TIVO_SUPPORT
+ 	if (GETFLAG(TIVO_MASK))
+ 	{
+@@ -1209,18 +1210,17 @@ main(int argc, char **argv)
+ 			tivo_bcast.sin_family = AF_INET;
+ 			tivo_bcast.sin_addr.s_addr = htonl(getBcastAddress());
+ 			tivo_bcast.sin_port = htons(2190);
++			lastbeacontime = timeofday;
+ 		}
+ 	}
+ #endif
+ 
+-	reload_ifaces(0);
+-	lastnotifytime.tv_sec = time(NULL) + runtime_vars.notify_interval;
++	reload_ifaces(0);	/* sends SSDP notifies */
++	lastnotifytime = timeofday;
+ 
+ 	/* main loop */
+ 	while (!quitting)
+ 	{
+-		if (gettimeofday(&timeofday, 0) < 0)
+-			DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
+ 		/* Check if we need to send SSDP NOTIFY messages and do it if
+ 		 * needed */
+ 		tv = lastnotifytime;
+@@ -1234,58 +1234,62 @@ main(int argc, char **argv)
+ 					runtime_vars.port, runtime_vars.notify_interval);
+ 			}
+ 			lastnotifytime = timeofday;
+-			timeout = runtime_vars.notify_interval * 1000;
++			tv.tv_sec = runtime_vars.notify_interval;
++			tv.tv_usec = 0;
+ 		}
+ 		else
+ 		{
+ 			timevalsub(&tv, &timeofday);
+-			timeout = tv.tv_sec * 1000 + tv.tv_usec / 1000;
+ 		}
+ #ifdef TIVO_SUPPORT
+ 		if (sbeacon >= 0)
+ 		{
+-			u_long beacontimeout;
++			struct timeval beacontv;
+ 
+-			tv = lastbeacontime;
+-			tv.tv_sec += beacon_interval;
+-			if (timevalcmp(&timeofday, &tv, >=))
++			beacontv = lastbeacontime;
++			beacontv.tv_sec += beacon_interval;
++			if (timevalcmp(&timeofday, &beacontv, >=))
+ 			{
+ 				sendBeaconMessage(sbeacon, &tivo_bcast, sizeof(struct sockaddr_in), 1);
+ 				lastbeacontime = timeofday;
+-				beacontimeout = beacon_interval * 1000;
+-				if (timeout > beacon_interval * 1000)
+-					timeout = beacon_interval * 1000;
+ 				/* Beacons should be sent every 5 seconds or
+ 				 * so for the first minute, then every minute
+ 				 * or so thereafter. */
+ 				if (beacon_interval == 5 && (timeofday.tv_sec - startup_time) > 60)
+ 					beacon_interval = 60;
++				beacontv.tv_sec = beacon_interval;
++				beacontv.tv_usec = 0;
+ 			}
+ 			else
+ 			{
+-				timevalsub(&tv, &timeofday);
+-				beacontimeout = tv.tv_sec * 1000 +
+-				    tv.tv_usec / 1000;
++				timevalsub(&beacontv, &timeofday);
+ 			}
+-			if (timeout > beacontimeout)
+-				timeout = beacontimeout;
++			if (timevalcmp(&tv, &beacontv, >))
++				tv = beacontv;
+ 		}
+ #endif
+ 
+-		if (GETFLAG(SCANNING_MASK) && kill(scanner_pid, 0) != 0) {
+-			CLEARFLAG(SCANNING_MASK);
+-			if (_get_dbtime() != lastdbtime)
+-				updateID++;
+-#ifdef HAVE_KQUEUE
+-			lav_register_all();
+-			kqueue_monitor_start();
+-#endif /* HAVE_KQUEUE */
++		if (GETFLAG(SCANNING_MASK)) {
++			if (kill(scanner_pid, 0) != 0) {
++				DPRINTF(E_INFO, L_GENERAL, "Scanner exited\n");
++				CLEARFLAG(SCANNING_MASK);
++				if (_get_dbtime() != lastdbtime)
++					updateID++;
++#ifdef HAVE_WATCH
++				start_monitor();
++#endif
++			} else
++				/* Keep checking for the scanner every sec. */
++				tv.tv_sec = 1;
+ 		}
+ 
+-		event_module.process(timeout);
++		event_module.process(&tv);
+ 		if (quitting)
+ 			goto shutdown;
+ 
++		if (gettimeofday(&timeofday, 0) < 0)
++			DPRINTF(E_FATAL, L_GENERAL, "gettimeofday(): %s\n", strerror(errno));
++
+ 		upnpevents_gc();
+ 
+ 		/* increment SystemUpdateID if the content database has changed,
+@@ -1351,11 +1355,9 @@ shutdown:
+ 		close(lan_addr[i].snotify);
+ 	}
+ 
+-	if (inotify_thread)
+-	{
+-		pthread_kill(inotify_thread, SIGCHLD);
+-		pthread_join(inotify_thread, NULL);
+-	}
++#ifdef HAVE_WATCH
++	monitor_stop();
++#endif
+ 
+ 	/* kill other child processes */
+ 	process_reap_children();
+diff --git a/minissdp.c b/minissdp.c
+index 0e9c68a..fab0e92 100644
+--- a/minissdp.c
++++ b/minissdp.c
+@@ -552,27 +552,27 @@ ProcessSSDPRequest(struct event *ev)
+ 			if (strncasecmp(bufr+i, "SERVER:", 7) == 0)
+ 			{
+ 				srv = bufr+i+7;
+-				while (*srv == ' ' || *srv == '\t')
++				while (*srv && (*srv == ' ' || *srv == '\t'))
+ 					srv++;
+ 			}
+ 			else if (strncasecmp(bufr+i, "LOCATION:", 9) == 0)
+ 			{
+ 				loc = bufr+i+9;
+-				while (*loc == ' ' || *loc == '\t')
++				while (*loc && (*loc == ' ' || *loc == '\t'))
+ 					loc++;
+-				while (loc[loc_len]!='\r' && loc[loc_len]!='\n')
++				while (loc[loc_len] && (loc[loc_len]!='\r' && loc[loc_len]!='\n'))
+ 					loc_len++;
+ 			}
+ 			else if (strncasecmp(bufr+i, "NTS:", 4) == 0)
+ 			{
+ 				nts = bufr+i+4;
+-				while (*nts == ' ' || *nts == '\t')
++				while (*nts && (*nts == ' ' || *nts == '\t'))
+ 					nts++;
+ 			}
+ 			else if (strncasecmp(bufr+i, "NT:", 3) == 0)
+ 			{
+ 				nt = bufr+i+3;
+-				while(*nt == ' ' || *nt == '\t')
++				while(*nt && (*nt == ' ' || *nt == '\t'))
+ 					nt++;
+ 			}
+ 		}
+diff --git a/monitor.c b/monitor.c
+index 9e56bc7..edbe308 100644
+--- a/monitor.c
++++ b/monitor.c
+@@ -30,16 +30,6 @@
+ #include <sys/types.h>
+ #include <sys/stat.h>
+ #include <sys/time.h>
+-#ifdef HAVE_INOTIFY
+-#include <sys/resource.h>
+-#include <poll.h>
+-#ifdef HAVE_SYS_INOTIFY_H
+-#include <sys/inotify.h>
+-#else
+-#include "linux/inotify.h"
+-#include "linux/inotify-syscalls.h"
+-#endif
+-#endif
+ #include "libav.h"
+ 
+ #include "upnpglobalvars.h"
+@@ -52,208 +42,7 @@
+ #include "playlist.h"
+ #include "log.h"
+ 
+-static time_t next_pl_fill = 0;
+-
+-#ifdef HAVE_INOTIFY
+-#define EVENT_SIZE  ( sizeof (struct inotify_event) )
+-#define BUF_LEN     ( 1024 * ( EVENT_SIZE + 16 ) )
+-#define DESIRED_WATCH_LIMIT 65536
+-
+-#define PATH_BUF_SIZE PATH_MAX
+-
+-struct watch
+-{
+-	int wd;		/* watch descriptor */
+-	char *path;	/* watched path */
+-	struct watch *next;
+-};
+-
+-static struct watch *watches;
+-static struct watch *lastwatch = NULL;
+-
+-static char *
+-get_path_from_wd(int wd)
+-{
+-	struct watch *w = watches;
+-
+-	while( w != NULL )
+-	{
+-		if( w->wd == wd )
+-			return w->path;
+-		w = w->next;
+-	}
+-
+-	return NULL;
+-}
+-
+-static unsigned int
+-next_highest(unsigned int num)
+-{
+-	num |= num >> 1;
+-	num |= num >> 2;
+-	num |= num >> 4;
+-	num |= num >> 8;
+-	num |= num >> 16;
+-	return ++num;
+-}
+-
+-static void
+-raise_watch_limit(unsigned int limit)
+-{
+-	FILE *max_watches = fopen("/proc/sys/fs/inotify/max_user_watches", "r+");
+-	if (!max_watches)
+-		return;
+-	if (!limit)
+-	{
+-		if (fscanf(max_watches, "%10u", &limit) < 1)
+-			limit = 8192;
+-		rewind(max_watches);
+-	}
+-	fprintf(max_watches, "%u", next_highest(limit));
+-	fclose(max_watches);
+-}
+-
+-int
+-add_watch(int fd, const char * path)
+-{
+-	struct watch *nw;
+-	int wd;
+-
+-	wd = inotify_add_watch(fd, path, IN_CREATE|IN_CLOSE_WRITE|IN_DELETE|IN_MOVE);
+-	if( wd < 0 && errno == ENOSPC)
+-	{
+-		raise_watch_limit(0);
+-		wd = inotify_add_watch(fd, path, IN_CREATE|IN_CLOSE_WRITE|IN_DELETE|IN_MOVE);
+-	}
+-	if( wd < 0 )
+-	{
+-		DPRINTF(E_ERROR, L_INOTIFY, "inotify_add_watch(%s) [%s]\n", path, strerror(errno));
+-		return (errno);
+-	}
+-
+-	nw = malloc(sizeof(struct watch));
+-	if( nw == NULL )
+-	{
+-		DPRINTF(E_ERROR, L_INOTIFY, "malloc() error\n");
+-		return (ENOMEM);
+-	}
+-	nw->wd = wd;
+-	nw->next = NULL;
+-	nw->path = strdup(path);
+-
+-	if( watches == NULL )
+-	{
+-		watches = nw;
+-	}
+-
+-	if( lastwatch != NULL )
+-	{
+-		lastwatch->next = nw;
+-	}
+-	lastwatch = nw;
+-
+-	DPRINTF(E_INFO, L_INOTIFY, "Added watch to %s [%d]\n", path, wd);
+-	return (0);
+-}
+-
+-static int
+-remove_watch(int fd, const char * path)
+-{
+-	struct watch *w;
+-
+-	for( w = watches; w; w = w->next )
+-	{
+-		if( strcmp(path, w->path) == 0 )
+-			return(inotify_rm_watch(fd, w->wd));
+-	}
+-
+-	return 1;
+-}
+-
+-static int
+-inotify_create_watches(int fd)
+-{
+-	FILE * max_watches;
+-	unsigned int num_watches = 0, watch_limit;
+-	char **result;
+-	int i, rows = 0;
+-	struct media_dir_s * media_path;
+-
+-	for( media_path = media_dirs; media_path != NULL; media_path = media_path->next )
+-	{
+-		DPRINTF(E_DEBUG, L_INOTIFY, "Add watch to %s\n", media_path->path);
+-		add_watch(fd, media_path->path);
+-		num_watches++;
+-	}
+-	sql_get_table(db, "SELECT PATH from DETAILS where MIME is NULL and PATH is not NULL", &result, &rows, NULL);
+-	for( i=1; i <= rows; i++ )
+-	{
+-		DPRINTF(E_DEBUG, L_INOTIFY, "Add watch to %s\n", result[i]);
+-		add_watch(fd, result[i]);
+-		num_watches++;
+-	}
+-	sqlite3_free_table(result);
+-		
+-	max_watches = fopen("/proc/sys/fs/inotify/max_user_watches", "r");
+-	if( max_watches )
+-	{
+-		if( fscanf(max_watches, "%10u", &watch_limit) < 1 )
+-			watch_limit = 8192;
+-		fclose(max_watches);
+-		if( (watch_limit < DESIRED_WATCH_LIMIT) || (watch_limit < (num_watches*4/3)) )
+-		{
+-			if (access("/proc/sys/fs/inotify/max_user_watches", W_OK) == 0)
+-			{
+-				if( DESIRED_WATCH_LIMIT >= (num_watches*3/4) )
+-				{
+-					raise_watch_limit(8191U);
+-				}
+-				else if( next_highest(num_watches) >= (num_watches*3/4) )
+-				{
+-					raise_watch_limit(num_watches);
+-				}
+-				else
+-				{
+-					raise_watch_limit(next_highest(num_watches));
+-				}
+-			}
+-			else
+-			{
+-				DPRINTF(E_WARN, L_INOTIFY, "WARNING: Inotify max_user_watches [%u] is low or close to the number of used watches [%u] "
+-				                        "and I do not have permission to increase this limit.  Please do so manually by "
+-				                        "writing a higher value into /proc/sys/fs/inotify/max_user_watches.\n", watch_limit, num_watches);
+-			}
+-		}
+-	}
+-	else
+-	{
+-		DPRINTF(E_WARN, L_INOTIFY, "WARNING: Could not read inotify max_user_watches!  "
+-		                        "Hopefully it is enough to cover %u current directories plus any new ones added.\n", num_watches);
+-	}
+-
+-	return rows;
+-}
+-
+-static int
+-inotify_remove_watches(int fd)
+-{
+-	struct watch *w = watches;
+-	struct watch *last_w;
+-	int rm_watches = 0;
+-
+-	while( w )
+-	{
+-		last_w = w;
+-		inotify_rm_watch(fd, w->wd);
+-		free(w->path);
+-		rm_watches++;
+-		w = w->next;
+-		free(last_w);
+-	}
+-
+-	return rm_watches;
+-}
+-#endif
++time_t next_pl_fill = 0;
+ 
+ int
+ monitor_remove_file(const char * path)
+@@ -535,7 +324,7 @@ monitor_insert_directory(int fd, char *name, const char * path)
+ 
+ #ifdef HAVE_WATCH
+ 	if( fd > 0 )
+-		add_watch(fd, path);
++		monitor_add_watch(fd, path);
+ #endif
+ 
+ 	dir_types = valid_media_types(path);
+@@ -586,12 +375,12 @@ monitor_remove_directory(int fd, const char * path)
+ 
+ 	/* Invalidate the scanner cache so we don't insert files into non-existent containers */
+ 	valid_cache = 0;
+-	#ifdef HAVE_INOTIFY
++#ifdef HAVE_WATCH
+ 	if( fd > 0 )
+ 	{
+-		remove_watch(fd, path);
++		monitor_remove_watch(fd, path);
+ 	}
+-	#endif
++#endif
+ 	sql = sqlite3_mprintf("SELECT ID from DETAILS where (PATH > '%q/' and PATH <= '%q/%c')"
+ 	                      " or PATH = '%q'", path, path, 0xFF, path);
+ 	if( (sql_get_table(db, sql, &result, &rows, NULL) == SQLITE_OK) )
+@@ -614,137 +403,3 @@ monitor_remove_directory(int fd, const char * path)
+ 
+ 	return ret;
+ }
+-
+-#ifdef HAVE_INOTIFY
+-void *
+-start_inotify(void)
+-{
+-	struct pollfd pollfds[1];
+-	char buffer[BUF_LEN];
+-	char path_buf[PATH_MAX];
+-	int length, i = 0;
+-	char * esc_name = NULL;
+-	struct stat st;
+-	sigset_t set;
+-
+-	sigfillset(&set);
+-	sigdelset(&set, SIGCHLD);
+-	pthread_sigmask(SIG_BLOCK, &set, NULL);
+-
+-	pollfds[0].fd = inotify_init();
+-	pollfds[0].events = POLLIN;
+-
+-	if ( pollfds[0].fd < 0 )
+-		DPRINTF(E_ERROR, L_INOTIFY, "inotify_init() failed!\n");
+-
+-	while( GETFLAG(SCANNING_MASK) )
+-	{
+-		if( quitting )
+-			goto quitting;
+-		sleep(1);
+-	}
+-	inotify_create_watches(pollfds[0].fd);
+-	if (setpriority(PRIO_PROCESS, 0, 19) == -1)
+-		DPRINTF(E_WARN, L_INOTIFY,  "Failed to reduce inotify thread priority\n");
+-	sqlite3_release_memory(1<<31);
+-	lav_register_all();
+-
+-	while( !quitting )
+-	{
+-		int timeout = -1;
+-		if (next_pl_fill)
+-		{
+-			time_t diff = next_pl_fill - time(NULL);
+-			if (diff < 0)
+-				timeout = 0;
+-			else
+-				timeout = diff * 1000;
+-		}
+-		length = poll(pollfds, 1, timeout);
+-		if( !length )
+-		{
+-			if( next_pl_fill && (time(NULL) >= next_pl_fill) )
+-			{
+-				fill_playlists();
+-				next_pl_fill = 0;
+-			}
+-			continue;
+-		}
+-		else if( length < 0 )
+-		{
+-			if( (errno == EINTR) || (errno == EAGAIN) )
+-				continue;
+-			else
+-				DPRINTF(E_ERROR, L_INOTIFY, "read failed!\n");
+-		}
+-		else
+-		{
+-			length = read(pollfds[0].fd, buffer, BUF_LEN);
+-			buffer[BUF_LEN-1] = '\0';
+-		}
+-
+-		i = 0;
+-		while( !quitting && i < length )
+-		{
+-			struct inotify_event * event = (struct inotify_event *) &buffer[i];
+-			if( event->len )
+-			{
+-				if( *(event->name) == '.' )
+-				{
+-					i += EVENT_SIZE + event->len;
+-					continue;
+-				}
+-				esc_name = modifyString(strdup(event->name), "&", "&amp;amp;", 0);
+-				snprintf(path_buf, sizeof(path_buf), "%s/%s", get_path_from_wd(event->wd), event->name);
+-				if ( event->mask & IN_ISDIR && (event->mask & (IN_CREATE|IN_MOVED_TO)) )
+-				{
+-					DPRINTF(E_DEBUG, L_INOTIFY,  "The directory %s was %s.\n",
+-						path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "created"));
+-					monitor_insert_directory(pollfds[0].fd, esc_name, path_buf);
+-				}
+-				else if ( (event->mask & (IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE)) &&
+-				          (lstat(path_buf, &st) == 0) )
+-				{
+-					if( (event->mask & (IN_MOVED_TO|IN_CREATE)) && (S_ISLNK(st.st_mode) || st.st_nlink > 1) )
+-					{
+-						DPRINTF(E_DEBUG, L_INOTIFY, "The %s link %s was %s.\n",
+-							(S_ISLNK(st.st_mode) ? "symbolic" : "hard"),
+-							path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "created"));
+-						if( stat(path_buf, &st) == 0 && S_ISDIR(st.st_mode) )
+-							monitor_insert_directory(pollfds[0].fd, esc_name, path_buf);
+-						else
+-							monitor_insert_file(esc_name, path_buf);
+-					}
+-					else if( event->mask & (IN_CLOSE_WRITE|IN_MOVED_TO) && st.st_size > 0 )
+-					{
+-						if( (event->mask & IN_MOVED_TO) ||
+-						    (sql_get_int_field(db, "SELECT TIMESTAMP from DETAILS where PATH = '%q'", path_buf) != st.st_mtime) )
+-						{
+-							DPRINTF(E_DEBUG, L_INOTIFY, "The file %s was %s.\n",
+-								path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "changed"));
+-							monitor_insert_file(esc_name, path_buf);
+-						}
+-					}
+-				}
+-				else if ( event->mask & (IN_DELETE|IN_MOVED_FROM) )
+-				{
+-					DPRINTF(E_DEBUG, L_INOTIFY, "The %s %s was %s.\n",
+-						(event->mask & IN_ISDIR ? "directory" : "file"),
+-						path_buf, (event->mask & IN_MOVED_FROM ? "moved away" : "deleted"));
+-					if ( event->mask & IN_ISDIR )
+-						monitor_remove_directory(pollfds[0].fd, path_buf);
+-					else
+-						monitor_remove_file(path_buf);
+-				}
+-				free(esc_name);
+-			}
+-			i += EVENT_SIZE + event->len;
+-		}
+-	}
+-	inotify_remove_watches(pollfds[0].fd);
+-quitting:
+-	close(pollfds[0].fd);
+-
+-	return 0;
+-}
+-#endif
+diff --git a/monitor.h b/monitor.h
+index c5e7b99..1040df5 100644
+--- a/monitor.h
++++ b/monitor.h
+@@ -5,14 +5,8 @@ int monitor_remove_directory(int fd, const char * path);
+ 
+ #if defined(HAVE_INOTIFY) || defined(HAVE_KQUEUE)
+ #define	HAVE_WATCH 1
+-int	add_watch(int, const char *);
+-#endif
+-
+-#ifdef HAVE_INOTIFY
+-void *
+-start_inotify();
+-#endif
+-
+-#ifdef HAVE_KQUEUE
+-void	kqueue_monitor_start();
++int	monitor_add_watch(int, const char *);
++int	monitor_remove_watch(int, const char *);
++void 	monitor_start();
++void 	monitor_stop();
+ #endif
+diff --git a/monitor_inotify.c b/monitor_inotify.c
+new file mode 100644
+index 0000000..6e4276c
+--- /dev/null
++++ b/monitor_inotify.c
+@@ -0,0 +1,404 @@
++/* MiniDLNA media server
++ * Copyright (C) 2008-2010  Justin Maggard
++ *
++ * This file is part of MiniDLNA.
++ *
++ * MiniDLNA is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License version 2 as
++ * published by the Free Software Foundation.
++ *
++ * MiniDLNA is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with MiniDLNA. If not, see <http://www.gnu.org/licenses/>.
++ */
++#include "config.h"
++
++#include <stdio.h>
++#include <string.h>
++#include <stdbool.h>
++#include <stdlib.h>
++#include <errno.h>
++#include <pthread.h>
++#include <unistd.h>
++#include <dirent.h>
++#include <libgen.h>
++#include <signal.h>
++#include <errno.h>
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/time.h>
++#ifdef HAVE_INOTIFY
++#include <sys/resource.h>
++#include <poll.h>
++#ifdef HAVE_SYS_INOTIFY_H
++#include <sys/inotify.h>
++#else
++#include "linux/inotify.h"
++#include "linux/inotify-syscalls.h"
++#endif
++#endif
++#include "libav.h"
++
++#include "upnpglobalvars.h"
++#include "monitor.h"
++#include "utils.h"
++#include "sql.h"
++#include "scanner.h"
++#include "metadata.h"
++#include "albumart.h"
++#include "playlist.h"
++#include "log.h"
++
++extern time_t next_pl_fill;
++
++#define EVENT_SIZE  ( sizeof (struct inotify_event) )
++#define BUF_LEN     ( 1024 * ( EVENT_SIZE + 16 ) )
++#define DESIRED_WATCH_LIMIT 65536
++
++#define PATH_BUF_SIZE PATH_MAX
++
++struct watch
++{
++	int wd;		/* watch descriptor */
++	char *path;	/* watched path */
++	struct watch *next;
++};
++
++static struct watch *watches;
++static struct watch *lastwatch = NULL;
++static pthread_t thread_id;
++
++static char *
++get_path_from_wd(int wd)
++{
++	struct watch *w = watches;
++
++	while( w != NULL )
++	{
++		if( w->wd == wd )
++			return w->path;
++		w = w->next;
++	}
++
++	return NULL;
++}
++
++static unsigned int
++next_highest(unsigned int num)
++{
++	num |= num >> 1;
++	num |= num >> 2;
++	num |= num >> 4;
++	num |= num >> 8;
++	num |= num >> 16;
++	return ++num;
++}
++
++static void
++raise_watch_limit(unsigned int limit)
++{
++	FILE *max_watches = fopen("/proc/sys/fs/inotify/max_user_watches", "r+");
++	if (!max_watches)
++		return;
++	if (!limit)
++	{
++		if (fscanf(max_watches, "%u", &limit) < 1)
++			limit = 8192;
++		rewind(max_watches);
++	}
++	fprintf(max_watches, "%u", next_highest(limit));
++	fclose(max_watches);
++}
++
++int
++monitor_add_watch(int fd, const char * path)
++{
++	struct watch *nw;
++	int wd;
++
++	wd = inotify_add_watch(fd, path, IN_CREATE|IN_CLOSE_WRITE|IN_DELETE|IN_MOVE);
++	if( wd < 0 && errno == ENOSPC)
++	{
++		raise_watch_limit(0);
++		wd = inotify_add_watch(fd, path, IN_CREATE|IN_CLOSE_WRITE|IN_DELETE|IN_MOVE);
++	}
++	if( wd < 0 )
++	{
++		DPRINTF(E_ERROR, L_INOTIFY, "inotify_add_watch(%s) [%s]\n", path, strerror(errno));
++		return (errno);
++	}
++
++	nw = malloc(sizeof(struct watch));
++	if( nw == NULL )
++	{
++		DPRINTF(E_ERROR, L_INOTIFY, "malloc() error\n");
++		return (ENOMEM);
++	}
++	nw->wd = wd;
++	nw->next = NULL;
++	nw->path = strdup(path);
++
++	if( watches == NULL )
++	{
++		watches = nw;
++	}
++
++	if( lastwatch != NULL )
++	{
++		lastwatch->next = nw;
++	}
++	lastwatch = nw;
++
++	DPRINTF(E_INFO, L_INOTIFY, "Added watch to %s [%d]\n", path, wd);
++	return (0);
++}
++
++int
++monitor_remove_watch(int fd, const char * path)
++{
++	struct watch *w;
++
++	for( w = watches; w; w = w->next )
++	{
++		if( strcmp(path, w->path) == 0 )
++			return(inotify_rm_watch(fd, w->wd));
++	}
++
++	return 1;
++}
++
++static int
++inotify_create_watches(int fd)
++{
++	FILE * max_watches;
++	unsigned int num_watches = 0, watch_limit;
++	char **result;
++	int i, rows = 0;
++	struct media_dir_s * media_path;
++
++	for( media_path = media_dirs; media_path != NULL; media_path = media_path->next )
++	{
++		DPRINTF(E_DEBUG, L_INOTIFY, "Add watch to %s\n", media_path->path);
++		monitor_add_watch(fd, media_path->path);
++		num_watches++;
++	}
++	sql_get_table(db, "SELECT PATH from DETAILS where MIME is NULL and PATH is not NULL", &result, &rows, NULL);
++	for( i=1; i <= rows; i++ )
++	{
++		DPRINTF(E_DEBUG, L_INOTIFY, "Add watch to %s\n", result[i]);
++		monitor_add_watch(fd, result[i]);
++		num_watches++;
++	}
++	sqlite3_free_table(result);
++
++	max_watches = fopen("/proc/sys/fs/inotify/max_user_watches", "r");
++	if( max_watches )
++	{
++		if( fscanf(max_watches, "%10u", &watch_limit) < 1 )
++			watch_limit = 8192;
++		fclose(max_watches);
++		if( (watch_limit < DESIRED_WATCH_LIMIT) || (watch_limit < (num_watches*4/3)) )
++		{
++			if (access("/proc/sys/fs/inotify/max_user_watches", W_OK) == 0)
++			{
++				if( DESIRED_WATCH_LIMIT >= (num_watches*3/4) )
++				{
++					raise_watch_limit(8191U);
++				}
++				else if( next_highest(num_watches) >= (num_watches*3/4) )
++				{
++					raise_watch_limit(num_watches);
++				}
++				else
++				{
++					raise_watch_limit(next_highest(num_watches));
++				}
++			}
++			else
++			{
++				DPRINTF(E_WARN, L_INOTIFY, "WARNING: Inotify max_user_watches [%u] is low or close to the number of used watches [%u] "
++				                        "and I do not have permission to increase this limit.  Please do so manually by "
++				                        "writing a higher value into /proc/sys/fs/inotify/max_user_watches.\n", watch_limit, num_watches);
++			}
++		}
++	}
++	else
++	{
++		DPRINTF(E_WARN, L_INOTIFY, "WARNING: Could not read inotify max_user_watches!  "
++		                        "Hopefully it is enough to cover %u current directories plus any new ones added.\n", num_watches);
++	}
++
++	return rows;
++}
++
++static int
++inotify_remove_watches(int fd)
++{
++	struct watch *w = watches;
++	struct watch *last_w;
++	int rm_watches = 0;
++
++	while( w )
++	{
++		last_w = w;
++		inotify_rm_watch(fd, w->wd);
++		free(w->path);
++		rm_watches++;
++		w = w->next;
++		free(last_w);
++	}
++
++	return rm_watches;
++}
++
++static void *
++inotify_thread(void *arg)
++{
++	struct pollfd pollfds[1];
++	char buffer[BUF_LEN];
++	char path_buf[PATH_MAX];
++	int length, i = 0;
++	char * esc_name = NULL;
++	struct stat st;
++	sigset_t set;
++
++	sigfillset(&set);
++	sigdelset(&set, SIGCHLD);
++	pthread_sigmask(SIG_BLOCK, &set, NULL);
++
++	pollfds[0].fd = inotify_init();
++	pollfds[0].events = POLLIN;
++
++	if ( pollfds[0].fd < 0 )
++		DPRINTF(E_ERROR, L_INOTIFY, "inotify_init() failed!\n");
++
++	inotify_create_watches(pollfds[0].fd);
++	if (setpriority(PRIO_PROCESS, 0, 19) == -1)
++		DPRINTF(E_WARN, L_INOTIFY,  "Failed to reduce inotify thread priority\n");
++	sqlite3_release_memory(1<<31);
++
++	while( !quitting )
++	{
++		int timeout = -1;
++		if (next_pl_fill)
++		{
++			time_t diff = next_pl_fill - time(NULL);
++			if (diff < 0)
++				timeout = 0;
++			else
++				timeout = diff * 1000;
++		}
++		length = poll(pollfds, 1, timeout);
++		if( !length )
++		{
++			if( next_pl_fill && (time(NULL) >= next_pl_fill) )
++			{
++				fill_playlists();
++				next_pl_fill = 0;
++			}
++			continue;
++		}
++		else if( length < 0 )
++		{
++			if( (errno == EINTR) || (errno == EAGAIN) )
++				continue;
++			else
++				DPRINTF(E_ERROR, L_INOTIFY, "read failed!\n");
++		}
++		else
++		{
++			length = read(pollfds[0].fd, buffer, BUF_LEN);
++			buffer[BUF_LEN-1] = '\0';
++		}
++
++		i = 0;
++		while( !quitting && i < length )
++		{
++			struct inotify_event * event = (struct inotify_event *) &buffer[i];
++			if( event->len )
++			{
++				if( *(event->name) == '.' )
++				{
++					i += EVENT_SIZE + event->len;
++					continue;
++				}
++				esc_name = modifyString(strdup(event->name), "&", "&amp;amp;", 0);
++				snprintf(path_buf, sizeof(path_buf), "%s/%s", get_path_from_wd(event->wd), event->name);
++				if ( event->mask & IN_ISDIR && (event->mask & (IN_CREATE|IN_MOVED_TO)) )
++				{
++					DPRINTF(E_DEBUG, L_INOTIFY,  "The directory %s was %s.\n",
++						path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "created"));
++					monitor_insert_directory(pollfds[0].fd, esc_name, path_buf);
++				}
++				else if ( (event->mask & (IN_CLOSE_WRITE|IN_MOVED_TO|IN_CREATE)) &&
++				          (lstat(path_buf, &st) == 0) )
++				{
++					if( (event->mask & (IN_MOVED_TO|IN_CREATE)) && (S_ISLNK(st.st_mode) || st.st_nlink > 1) )
++					{
++						DPRINTF(E_DEBUG, L_INOTIFY, "The %s link %s was %s.\n",
++							(S_ISLNK(st.st_mode) ? "symbolic" : "hard"),
++							path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "created"));
++						if( stat(path_buf, &st) == 0 && S_ISDIR(st.st_mode) )
++							monitor_insert_directory(pollfds[0].fd, esc_name, path_buf);
++						else
++							monitor_insert_file(esc_name, path_buf);
++					}
++					else if( event->mask & (IN_CLOSE_WRITE|IN_MOVED_TO) && st.st_size > 0 )
++					{
++						if( (event->mask & IN_MOVED_TO) ||
++						    (sql_get_int_field(db, "SELECT TIMESTAMP from DETAILS where PATH = '%q'", path_buf) != st.st_mtime) )
++						{
++							DPRINTF(E_DEBUG, L_INOTIFY, "The file %s was %s.\n",
++								path_buf, (event->mask & IN_MOVED_TO ? "moved here" : "changed"));
++							monitor_insert_file(esc_name, path_buf);
++						}
++					}
++				}
++				else if ( event->mask & (IN_DELETE|IN_MOVED_FROM) )
++				{
++					DPRINTF(E_DEBUG, L_INOTIFY, "The %s %s was %s.\n",
++						(event->mask & IN_ISDIR ? "directory" : "file"),
++						path_buf, (event->mask & IN_MOVED_FROM ? "moved away" : "deleted"));
++					if ( event->mask & IN_ISDIR )
++						monitor_remove_directory(pollfds[0].fd, path_buf);
++					else
++						monitor_remove_file(path_buf);
++				}
++				free(esc_name);
++			}
++			i += EVENT_SIZE + event->len;
++		}
++	}
++	inotify_remove_watches(pollfds[0].fd);
++	close(pollfds[0].fd);
++
++	return 0;
++}
++
++void
++monitor_start(void)
++{
++
++	if (!sqlite3_threadsafe() || sqlite3_libversion_number() < 3005001) {
++		DPRINTF(E_ERROR, L_GENERAL, "SQLite library is not threadsafe!"
++		    "Inotify will be disabled.\n");
++		return;
++	}
++	if (pthread_create(&thread_id, NULL, inotify_thread, NULL) != 0)
++		DPRINTF(E_FATAL, L_GENERAL, "pthread_create() failed [%s]\n",
++		    strerror(errno));
++}
++
++void
++monitor_stop(void)
++{
++
++	if (thread_id != 0) {
++		pthread_kill(thread_id, SIGCHLD);
++		pthread_join(thread_id, NULL);
++	}
++}
+diff --git a/monitor_kqueue.c b/monitor_kqueue.c
+index 34026d5..b16e40f 100644
+--- a/monitor_kqueue.c
++++ b/monitor_kqueue.c
+@@ -214,7 +214,7 @@ err1:
+ }
+ 
+ int
+-add_watch(int fd __unused, const char *path)
++monitor_add_watch(int fd __unused, const char *path)
+ {
+ 	struct watch *wt;
+ 	struct event *ev;
+@@ -251,14 +251,20 @@ add_watch(int fd __unused, const char *path)
+ 	return (0);
+ }
+ 
++int
++monitor_remove_watch(int fd __unused, const char *path __unused)
++{
++
++	return (0);
++}
++
+ /*
+- * XXXGL: this function has too much copypaste of inotify_create_watches().
+- * We need to split out inotify stuff from monitor.c into monitor_inotify.c,
+- * compile the latter on Linux and this file on FreeBSD, and keep monitor.c
+- * itself platform independent.
++ * XXXGL: this function has some copypaste with inotify_create_watches().
++ * We need to push more code to platform independent start_monitor()
++ * in minidlna.c.
+  */
+ void
+-kqueue_monitor_start()
++monitor_start()
+ {
+ 	struct media_dir_s *media_path;
+ 	char **result;
+@@ -267,9 +273,14 @@ kqueue_monitor_start()
+ 	DPRINTF(E_DEBUG, L_INOTIFY, "kqueue monitoring starting\n");
+ 	for (media_path = media_dirs; media_path != NULL;
+ 	    media_path = media_path->next)
+-		add_watch(0, media_path->path);
++		monitor_add_watch(0, media_path->path);
+ 	sql_get_table(db, "SELECT PATH from DETAILS where MIME is NULL and PATH is not NULL", &result, &rows, NULL);
+ 	for (i = 1; i <= rows; i++ )
+-		add_watch(0, result[i]);
++		monitor_add_watch(0, result[i]);
+ 	sqlite3_free_table(result);
+ }
++
++void
++monitor_stop()
++{
++}
+diff --git a/process.c b/process.c
+index abb777b..f55826a 100644
+--- a/process.c
++++ b/process.c
+@@ -123,7 +123,8 @@ process_handle_child_termination(int signal)
+ 			else
+ 				break;
+ 		}
+-		number_of_children--;
++		if (number_of_children)
++			number_of_children--;
+ 		remove_process_info(pid);
+ 	}
+ }
+diff --git a/select.c b/select.c
+index dce7311..e287760 100644
+--- a/select.c
++++ b/select.c
+@@ -142,9 +142,8 @@ select_del(struct event *ev, int flags)
+ }
+ 
+ static int
+-select_process(u_long msec)
++select_process(struct timeval *tv)
+ {
+-	struct timeval tv, *tp;
+ 	struct event *ev;
+ 	int ready, i;
+ 
+@@ -155,14 +154,10 @@ select_process(u_long msec)
+ 				max_fd = events[i]->fd;
+ 		}
+ 
+-	tv.tv_sec = (long) (msec / 1000);
+-	tv.tv_usec = (long) ((msec % 1000) * 1000);
+-	tp = &tv;
+-
+ 	work_read_fd_set = master_read_fd_set;
+ 	work_write_fd_set = master_write_fd_set;
+ 
+-	ready = select(max_fd + 1, &work_read_fd_set, &work_write_fd_set, NULL, tp);
++	ready = select(max_fd + 1, &work_read_fd_set, &work_write_fd_set, NULL, tv);
+ 
+ 	if (ready == -1) {
+ 		if (errno == EINTR)
+diff --git a/tagutils/tagutils-dsf.c b/tagutils/tagutils-dsf.c
+index fe76ce6..1441356 100644
+--- a/tagutils/tagutils-dsf.c
++++ b/tagutils/tagutils-dsf.c
+@@ -141,6 +141,7 @@ _get_dsftags(char *file, struct song_metadata *psong)
+ 
+ 	if (!pid3tag)
+ 	{
++		fclose(fp);
+ 		free(id3tagbuf);
+ 		err = errno;
+ 		errno = err;
+diff --git a/tivo_utils.c b/tivo_utils.c
+index 111e9b6..1f39e5f 100644
+--- a/tivo_utils.c
++++ b/tivo_utils.c
+@@ -27,6 +27,8 @@
+ #include <sqlite3.h>
+ #include "tivo_utils.h"
+ 
++struct sqlite3PrngType sqlite3Prng;
++
+ /* This function based on byRequest */
+ char *
+ decodeString(char *string, int inplace)
+diff --git a/tivo_utils.h b/tivo_utils.h
+index d8756cf..07dea7c 100644
+--- a/tivo_utils.h
++++ b/tivo_utils.h
+@@ -30,7 +30,8 @@ struct sqlite3PrngType {
+   unsigned char isInit;          /* True if initialized */
+   unsigned char i, j;            /* State variables */
+   unsigned char s[256];          /* State variables */
+-} sqlite3Prng;
++};
++extern struct sqlite3PrngType sqlite3Prng;
+ 
+ char *
+ decodeString(char *string, int inplace);
+diff --git a/upnpevents.c b/upnpevents.c
+index 4de6ce8..057066c 100644
+--- a/upnpevents.c
++++ b/upnpevents.c
+@@ -239,23 +239,23 @@ upnp_event_create_notify(struct subscriber *sub)
+ 
+ 	obj = calloc(1, sizeof(struct upnp_event_notify));
+ 	if(!obj) {
+-		DPRINTF(E_ERROR, L_HTTP, "%s: calloc(): %s\n", "upnp_event_create_notify", strerror(errno));
++		DPRINTF(E_ERROR, L_HTTP, "calloc(): %s\n", strerror(errno));
+ 		return;
+ 	}
+ 	obj->sub = sub;
+ 	s = socket(PF_INET, SOCK_STREAM, 0);
+ 	if(s < 0) {
+-		DPRINTF(E_ERROR, L_HTTP, "%s: socket(): %s\n", "upnp_event_create_notify", strerror(errno));
++		DPRINTF(E_ERROR, L_HTTP, "socket(): %s\n", strerror(errno));
+ 		goto error;
+ 	}
+ 	if((flags = fcntl(s, F_GETFL, 0)) < 0) {
+-		DPRINTF(E_ERROR, L_HTTP, "%s: fcntl(..F_GETFL..): %s\n",
+-		       "upnp_event_create_notify", strerror(errno));
++		DPRINTF(E_ERROR, L_HTTP, "fcntl(..F_GETFL..): %s\n",
++		       strerror(errno));
+ 		goto error;
+ 	}
+ 	if(fcntl(s, F_SETFL, flags | O_NONBLOCK) < 0) {
+-		DPRINTF(E_ERROR, L_HTTP, "%s: fcntl(..F_SETFL..): %s\n",
+-		       "upnp_event_create_notify", strerror(errno));
++		DPRINTF(E_ERROR, L_HTTP, "fcntl(..F_SETFL..): %s\n",
++		       strerror(errno));
+ 		goto error;
+ 	}
+ 	if(sub)
+@@ -290,18 +290,18 @@ upnp_event_create_notify(struct subscriber *sub)
+ 	addr.sin_family = AF_INET;
+ 	inet_aton(obj->addrstr, &addr.sin_addr);
+ 	addr.sin_port = htons(port);
+-	DPRINTF(E_DEBUG, L_HTTP, "%s: '%s' %hu '%s'\n", "upnp_event_notify_connect",
++	DPRINTF(E_DEBUG, L_HTTP, "'%s' %hu '%s'\n",
+ 	       obj->addrstr, port, obj->path);
+ 	obj->state = EConnecting;
++	obj->ev = (struct event ){ .fd = s, .rdwr = EVENT_WRITE,
++		.process = upnp_event_process_notify, .data = obj };
++	event_module.add(&obj->ev);
+ 	if(connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+ 		if(errno != EINPROGRESS && errno != EWOULDBLOCK) {
+-			DPRINTF(E_ERROR, L_HTTP, "%s: connect(): %s\n", "upnp_event_notify_connect", strerror(errno));
++			DPRINTF(E_ERROR, L_HTTP, "connect(): %s\n", strerror(errno));
+ 			obj->state = EError;
++			event_module.del(&obj->ev, 0);
+ 		}
+-	} else {
+-		obj->ev = (struct event ){ .fd = s, .rdwr = EVENT_WRITE,
+-		    .process = upnp_event_process_notify, .data = obj };
+-		event_module.add(&obj->ev);
+ 	}
+ 
+ 	return;
+diff --git a/upnpglobalvars.h b/upnpglobalvars.h
+index 92596e7..f4bcc83 100644
+--- a/upnpglobalvars.h
++++ b/upnpglobalvars.h
+@@ -57,7 +57,7 @@
+ 
+ #include <sqlite3.h>
+ 
+-#define MINIDLNA_VERSION "1.3.0"
++#define MINIDLNA_VERSION "1.3.1"
+ 
+ #ifdef NETGEAR
+ # define SERVER_NAME "ReadyDLNA"
+diff --git a/upnphttp.c b/upnphttp.c
+index c8b5e99..61a6cdb 100644
+--- a/upnphttp.c
++++ b/upnphttp.c
+@@ -273,6 +273,11 @@ ParseHttpHeaders(struct upnphttp * h)
+ 				p = colon + 1;
+ 				while(isspace(*p))
+ 					p++;
++				n = 0;
++				while(p[n] >= ' ')
++					n++;
++				h->req_Host = p;
++				h->req_HostLen = n;
+ 				for(n = 0; n < n_lan_addr; n++)
+ 				{
+ 					for(i = 0; lan_addr[n].str[i]; i++)
+@@ -623,7 +628,7 @@ SendResp_presentation(struct upnphttp * h)
+ 	v = sql_get_int_field(db, "SELECT count(*) from DETAILS where MIME glob 'v*'");
+ 	p = sql_get_int_field(db, "SELECT count(*) from DETAILS where MIME glob 'i*'");
+ 	strcatf(&str,
+-		"<HTML><HEAD><TITLE>" SERVER_NAME " " MINIDLNA_VERSION "</TITLE></HEAD>"
++		"<HTML><HEAD><TITLE>" SERVER_NAME " " MINIDLNA_VERSION "</TITLE><meta http-equiv=\"refresh\" content=\"20\"></HEAD>"
+ 		"<BODY><div style=\"text-align: center\">"
+ 		"<h2>" SERVER_NAME " status</h2></div>");
+ 
+@@ -909,6 +914,18 @@ ProcessHttpQuery_upnphttp(struct upnphttp * h)
+ 	}
+ 
+ 	DPRINTF(E_DEBUG, L_HTTP, "HTTP REQUEST: %.*s\n", h->req_buflen, h->req_buf);
++	if(h->req_Host && h->req_HostLen > 0) {
++		const char *ptr = h->req_Host;
++		DPRINTF(E_MAXDEBUG, L_HTTP, "Host: %.*s\n", h->req_HostLen, h->req_Host);
++		for(i = 0; i < h->req_HostLen; i++) {
++			if(*ptr != ':' && *ptr != '.' && (*ptr > '9' || *ptr < '0')) {
++				DPRINTF(E_ERROR, L_HTTP, "DNS rebinding attack suspected (Host: %.*s)", h->req_HostLen, h->req_Host);
++				Send404(h);/* 403 */
++				return;
++			}
++			ptr++;
++		}
++	}
+ 	if(strcmp("POST", HttpCommand) == 0)
+ 	{
+ 		h->req_command = EPost;
+@@ -1745,7 +1762,7 @@ SendResp_resizedimg(struct upnphttp * h, char * object)
+ 	if( ret != 2 )
+ 	{
+ 		Send500(h);
+-		return;
++		goto resized_error;
+ 	}
+ 	/* Figure out the best destination resolution we can use */
+ 	dstw = width;
+diff --git a/upnphttp.h b/upnphttp.h
+index e28a943..57eb2bb 100644
+--- a/upnphttp.h
++++ b/upnphttp.h
+@@ -89,6 +89,8 @@ struct upnphttp {
+ 	struct client_cache_s * req_client;
+ 	const char * req_soapAction;
+ 	int req_soapActionLen;
++	const char * req_Host;        /* Host: header */
++	int req_HostLen;
+ 	const char * req_Callback;	/* For SUBSCRIBE */
+ 	int req_CallbackLen;
+ 	const char * req_NT;
+
