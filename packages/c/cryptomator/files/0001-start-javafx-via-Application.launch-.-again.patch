@@ -1,0 +1,322 @@
+From 62327282cc0c4a418191e31441bb8f79f98ead30 Mon Sep 17 00:00:00 2001
+From: Sebastian Stenzel <sebastian.stenzel@gmail.com>
+Date: Mon, 28 Mar 2022 17:52:39 +0200
+Subject: [PATCH 01/10] start javafx via `Application.launch(...)` again
+
+---
+ src/main/java/module-info.java                |  1 +
+ .../cryptomator/ui/fxapp/FxApplication.java   |  7 +--
+ .../ui/fxapp/FxApplicationComponent.java      | 11 ++++
+ .../ui/fxapp/FxApplicationModule.java         |  7 ---
+ .../ui/launcher/FxApplicationStarter.java     | 51 +++++++++++++------
+ .../ui/launcher/UiLauncherModule.java         |  6 ---
+ .../ui/mainwindow/MainWindowModule.java       | 11 ----
+ .../ui/mainwindow/VaultDetailController.java  |  5 +-
+ .../MigrationImpossibleController.java        |  9 ++--
+ 9 files changed, 57 insertions(+), 51 deletions(-)
+
+diff --git a/src/main/java/module-info.java b/src/main/java/module-info.java
+index f13308be..7441a629 100644
+--- a/src/main/java/module-info.java
++++ b/src/main/java/module-info.java
+@@ -47,6 +47,7 @@ module org.cryptomator.desktop {
+ 	opens org.cryptomator.ui.health to javafx.fxml;
+ 	opens org.cryptomator.ui.keyloading.masterkeyfile to javafx.fxml;
+ 	opens org.cryptomator.ui.lock to javafx.fxml;
++	opens org.cryptomator.ui.launcher to javafx.graphics;
+ 	opens org.cryptomator.ui.mainwindow to javafx.fxml;
+ 	opens org.cryptomator.ui.migration to javafx.fxml;
+ 	opens org.cryptomator.ui.preferences to javafx.fxml;
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+index 1812d38b..d2b11147 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+@@ -41,7 +41,7 @@ import java.util.concurrent.ScheduledExecutorService;
+ import java.util.concurrent.TimeUnit;
+ 
+ @FxApplicationScoped
+-public class FxApplication extends Application {
++public class FxApplication {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(FxApplication.class);
+ 
+@@ -87,11 +87,6 @@ public class FxApplication extends Application {
+ 		loadSelectedStyleSheet(settings.theme().get());
+ 	}
+ 
+-	@Override
+-	public void start(Stage stage) {
+-		throw new UnsupportedOperationException("Use start() instead.");
+-	}
+-
+ 	private void hasVisibleStagesChanged(@SuppressWarnings("unused") ObservableValue<? extends Boolean> observableValue, @SuppressWarnings("unused") boolean oldValue, boolean newValue) {
+ 		LOG.debug("has visible stages: {}", newValue);
+ 		if (newValue) {
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationComponent.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationComponent.java
+index 7d5fd55b..de4134dd 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationComponent.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationComponent.java
+@@ -5,7 +5,12 @@
+  *******************************************************************************/
+ package org.cryptomator.ui.fxapp;
+ 
++import dagger.BindsInstance;
+ import dagger.Subcomponent;
++import org.cryptomator.ui.mainwindow.MainWindow;
++
++import javafx.application.Application;
++import javafx.stage.Stage;
+ 
+ @FxApplicationScoped
+ @Subcomponent(modules = FxApplicationModule.class)
+@@ -16,6 +21,12 @@ public interface FxApplicationComponent {
+ 	@Subcomponent.Builder
+ 	interface Builder {
+ 
++		@BindsInstance
++		Builder fxApplication(Application application);
++
++		@BindsInstance
++		Builder mainWindow(@MainWindow Stage mainWindow);
++
+ 		FxApplicationComponent build();
+ 	}
+ 
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
+index 74c20137..737ddb7c 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
+@@ -5,7 +5,6 @@
+  *******************************************************************************/
+ package org.cryptomator.ui.fxapp;
+ 
+-import dagger.Binds;
+ import dagger.Module;
+ import dagger.Provides;
+ import org.apache.commons.lang3.SystemUtils;
+@@ -18,10 +17,7 @@ import org.cryptomator.ui.quit.QuitComponent;
+ import org.cryptomator.ui.unlock.UnlockComponent;
+ 
+ import javax.inject.Named;
+-import javafx.application.Application;
+-import javafx.collections.ObservableSet;
+ import javafx.scene.image.Image;
+-import javafx.stage.Stage;
+ import java.io.IOException;
+ import java.io.InputStream;
+ import java.io.UncheckedIOException;
+@@ -62,9 +58,6 @@ abstract class FxApplicationModule {
+ 		}
+ 	}
+ 
+-	@Binds
+-	abstract Application bindApplication(FxApplication application);
+-
+ 	@Provides
+ 	static MainWindowComponent provideMainWindowComponent(MainWindowComponent.Builder builder) {
+ 		return builder.build();
+diff --git a/src/main/java/org/cryptomator/ui/launcher/FxApplicationStarter.java b/src/main/java/org/cryptomator/ui/launcher/FxApplicationStarter.java
+index 1799a970..32f41185 100644
+--- a/src/main/java/org/cryptomator/ui/launcher/FxApplicationStarter.java
++++ b/src/main/java/org/cryptomator/ui/launcher/FxApplicationStarter.java
+@@ -1,6 +1,6 @@
+ package org.cryptomator.ui.launcher;
+ 
+-import dagger.Lazy;
++import com.google.common.base.Preconditions;
+ import org.cryptomator.ui.fxapp.FxApplication;
+ import org.cryptomator.ui.fxapp.FxApplicationComponent;
+ import org.slf4j.Logger;
+@@ -8,47 +8,68 @@ import org.slf4j.LoggerFactory;
+ 
+ import javax.inject.Inject;
+ import javax.inject.Singleton;
+-import javafx.application.Platform;
++import javafx.application.Application;
++import javafx.stage.Stage;
++import javafx.stage.StageStyle;
++import java.lang.ref.WeakReference;
++import java.util.Objects;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.CompletionStage;
+ import java.util.concurrent.ExecutorService;
+ import java.util.concurrent.atomic.AtomicBoolean;
++import java.util.concurrent.atomic.AtomicReference;
+ 
+ @Singleton
+ public class FxApplicationStarter {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(FxApplicationStarter.class);
++	private static final AtomicReference<FxApplicationComponent.Builder> FX_APP_COMP_BUILDER = new AtomicReference<>();
++	private static final CompletableFuture<FxApplication> FUTURE = new CompletableFuture<>();
+ 
+-	private final Lazy<FxApplicationComponent> fxAppComponent;
+ 	private final ExecutorService executor;
+ 	private final AtomicBoolean started;
+-	private final CompletableFuture<FxApplication> future;
+ 
+ 	@Inject
+-	public FxApplicationStarter(Lazy<FxApplicationComponent> fxAppComponent, ExecutorService executor) {
+-		this.fxAppComponent = fxAppComponent;
++	public FxApplicationStarter(FxApplicationComponent.Builder fxAppCompBuilder, ExecutorService executor) {
++		FX_APP_COMP_BUILDER.set(fxAppCompBuilder);
+ 		this.executor = executor;
+ 		this.started = new AtomicBoolean();
+-		this.future = new CompletableFuture<>();
+ 	}
+ 
+ 	public CompletionStage<FxApplication> get() {
+ 		if (!started.getAndSet(true)) {
+ 			start();
+ 		}
+-		return future;
++		return FUTURE;
+ 	}
+ 
+ 	private void start() {
+ 		executor.submit(() -> {
+ 			LOG.debug("Starting JavaFX runtime...");
+-			Platform.startup(() -> {
+-				assert Platform.isFxApplicationThread();
+-				LOG.info("JavaFX Runtime started.");
+-				FxApplication app = fxAppComponent.get().application();
+-				app.start();
+-				future.complete(app);
+-			});
++			Application.launch(CryptomatorGui.class);
+ 		});
+ 	}
++
++	public static class CryptomatorGui extends Application {
++
++		@Override
++		public void start(Stage primaryStage) throws Exception {
++			var builder = Objects.requireNonNull(FX_APP_COMP_BUILDER.get()); // TODO add message?
++
++			// set defaults for primary stage:
++			// TODO: invoke StageFactory stuff...
++			primaryStage.setTitle("Cryptomator");
++			primaryStage.initStyle(StageStyle.UNDECORATED);
++			primaryStage.setMinWidth(650);
++			primaryStage.setMinHeight(440);
++
++			// build subcomponent
++			var comp = builder.mainWindow(primaryStage).fxApplication(this).build();
++
++			// call delegate
++			var app = comp.application();
++			app.start();
++			FUTURE.complete(app);
++		}
++	}
+ }
+diff --git a/src/main/java/org/cryptomator/ui/launcher/UiLauncherModule.java b/src/main/java/org/cryptomator/ui/launcher/UiLauncherModule.java
+index c30efa30..fa4631af 100644
+--- a/src/main/java/org/cryptomator/ui/launcher/UiLauncherModule.java
++++ b/src/main/java/org/cryptomator/ui/launcher/UiLauncherModule.java
+@@ -26,12 +26,6 @@ public abstract class UiLauncherModule {
+ 		return builder.build();
+ 	}
+ 
+-	@Provides
+-	@Singleton
+-	static FxApplicationComponent provideFxApplicationComponent(FxApplicationComponent.Builder builder) {
+-		return builder.build();
+-	}
+-
+ 	@Provides
+ 	@Singleton
+ 	static Optional<UiAppearanceProvider> provideAppearanceProvider(PluginClassLoader classLoader) {
+diff --git a/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java b/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
+index 6f63db88..f9372ba0 100644
+--- a/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
++++ b/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
+@@ -47,17 +47,6 @@ abstract class MainWindowModule {
+ 		return new FxmlLoaderFactory(factories, sceneFactory, resourceBundle);
+ 	}
+ 
+-	@Provides
+-	@MainWindow
+-	@MainWindowScoped
+-	static Stage provideStage(StageFactory factory) {
+-		Stage stage = factory.create(StageStyle.UNDECORATED);
+-		stage.setMinWidth(650);
+-		stage.setMinHeight(440);
+-		stage.setTitle("Cryptomator");
+-		return stage;
+-	}
+-
+ 	@Provides
+ 	@MainWindowScoped
+ 	@Named("errorWindow")
+diff --git a/src/main/java/org/cryptomator/ui/mainwindow/VaultDetailController.java b/src/main/java/org/cryptomator/ui/mainwindow/VaultDetailController.java
+index 87a419a9..cf585de3 100644
+--- a/src/main/java/org/cryptomator/ui/mainwindow/VaultDetailController.java
++++ b/src/main/java/org/cryptomator/ui/mainwindow/VaultDetailController.java
+@@ -12,6 +12,7 @@ import org.cryptomator.ui.controls.FontAwesome5IconView;
+ import org.cryptomator.ui.fxapp.FxApplication;
+ 
+ import javax.inject.Inject;
++import javafx.application.Application;
+ import javafx.beans.binding.Binding;
+ import javafx.beans.binding.BooleanBinding;
+ import javafx.beans.property.ObjectProperty;
+@@ -22,7 +23,7 @@ import javafx.fxml.FXML;
+ public class VaultDetailController implements FxController {
+ 
+ 	private final ReadOnlyObjectProperty<Vault> vault;
+-	private final FxApplication application;
++	private final Application application;
+ 	private final Binding<FontAwesome5Icon> glyph;
+ 	private final BooleanBinding anyVaultSelected;
+ 
+@@ -33,7 +34,7 @@ public class VaultDetailController implements FxController {
+ 
+ 
+ 	@Inject
+-	VaultDetailController(ObjectProperty<Vault> vault, FxApplication application) {
++	VaultDetailController(ObjectProperty<Vault> vault, Application application) {
+ 		this.vault = vault;
+ 		this.application = application;
+ 		this.glyph = EasyBind.select(vault) //
+diff --git a/src/main/java/org/cryptomator/ui/migration/MigrationImpossibleController.java b/src/main/java/org/cryptomator/ui/migration/MigrationImpossibleController.java
+index 191fc7a8..e861d643 100644
+--- a/src/main/java/org/cryptomator/ui/migration/MigrationImpossibleController.java
++++ b/src/main/java/org/cryptomator/ui/migration/MigrationImpossibleController.java
+@@ -5,6 +5,7 @@ import org.cryptomator.ui.common.FxController;
+ import org.cryptomator.ui.fxapp.FxApplication;
+ 
+ import javax.inject.Inject;
++import javafx.application.Application;
+ import javafx.fxml.FXML;
+ import javafx.stage.Stage;
+ 
+@@ -12,13 +13,13 @@ public class MigrationImpossibleController implements FxController {
+ 
+ 	private static final String HELP_URI = "https://docs.cryptomator.org/en/1.5/help/manual-migration/";
+ 
+-	private final FxApplication fxApplication;
++	private final Application application;
+ 	private final Stage window;
+ 	private final Vault vault;
+ 
+ 	@Inject
+-	MigrationImpossibleController(FxApplication fxApplication, @MigrationWindow Stage window, @MigrationWindow Vault vault) {
+-		this.fxApplication = fxApplication;
++	MigrationImpossibleController(Application application, @MigrationWindow Stage window, @MigrationWindow Vault vault) {
++		this.application = application;
+ 		this.window = window;
+ 		this.vault = vault;
+ 	}
+@@ -30,7 +31,7 @@ public class MigrationImpossibleController implements FxController {
+ 
+ 	@FXML
+ 	public void getMigrationHelp() {
+-		fxApplication.getHostServices().showDocument(HELP_URI);
++		application.getHostServices().showDocument(HELP_URI);
+ 	}
+ 
+ 	/* Getter/Setters */
+-- 
+2.35.1
+

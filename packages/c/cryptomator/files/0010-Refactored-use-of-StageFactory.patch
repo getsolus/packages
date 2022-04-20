@@ -1,0 +1,201 @@
+From 1ddc2b5e6920d245080a073a7b8ccb96e55f09ab Mon Sep 17 00:00:00 2001
+From: Sebastian Stenzel <sebastian.stenzel@gmail.com>
+Date: Fri, 1 Apr 2022 17:42:29 +0200
+Subject: [PATCH 10/10] Refactored use of StageFactory
+
+---
+ .../cryptomator/ui/common/StageFactory.java   | 13 ++++----
+ .../ui/common/StageInitializer.java           | 32 +++++++++++++++++++
+ .../cryptomator/ui/fxapp/FxApplication.java   |  9 +-----
+ .../ui/fxapp/FxApplicationModule.java         | 25 ---------------
+ .../ui/mainwindow/MainWindowModule.java       | 14 ++++++--
+ 5 files changed, 51 insertions(+), 42 deletions(-)
+ create mode 100644 src/main/java/org/cryptomator/ui/common/StageInitializer.java
+
+diff --git a/src/main/java/org/cryptomator/ui/common/StageFactory.java b/src/main/java/org/cryptomator/ui/common/StageFactory.java
+index 9a0dcb1c..3a8c20cb 100644
+--- a/src/main/java/org/cryptomator/ui/common/StageFactory.java
++++ b/src/main/java/org/cryptomator/ui/common/StageFactory.java
+@@ -1,23 +1,24 @@
+ package org.cryptomator.ui.common;
+ 
++import org.cryptomator.ui.fxapp.FxApplicationScoped;
++
++import javax.inject.Inject;
+ import javafx.stage.Stage;
+ import javafx.stage.StageStyle;
+ import java.util.function.Consumer;
+ 
++@FxApplicationScoped
+ public class StageFactory {
+ 
+ 	private final Consumer<Stage> initializer;
+ 
+-	public StageFactory(Consumer<Stage> initializer) {
++	@Inject
++	public StageFactory(StageInitializer initializer) {
+ 		this.initializer = initializer;
+ 	}
+ 
+ 	public Stage create() {
+-		return create(StageStyle.DECORATED);
+-	}
+-
+-	public Stage create(StageStyle stageStyle) {
+-		Stage stage = new Stage(stageStyle);
++		Stage stage = new Stage(StageStyle.DECORATED);
+ 		initializer.accept(stage);
+ 		return stage;
+ 	}
+diff --git a/src/main/java/org/cryptomator/ui/common/StageInitializer.java b/src/main/java/org/cryptomator/ui/common/StageInitializer.java
+new file mode 100644
+index 00000000..1534deb5
+--- /dev/null
++++ b/src/main/java/org/cryptomator/ui/common/StageInitializer.java
+@@ -0,0 +1,32 @@
++package org.cryptomator.ui.common;
++
++import org.apache.commons.lang3.SystemUtils;
++import org.cryptomator.ui.fxapp.FxApplicationScoped;
++
++import javax.inject.Inject;
++import javafx.scene.image.Image;
++import javafx.stage.Stage;
++import java.util.List;
++import java.util.function.Consumer;
++
++/**
++ * Performs common setup for all stages
++ */
++@FxApplicationScoped
++public class StageInitializer implements Consumer<Stage> {
++
++	private final List<Image> windowIcons;
++
++	@Inject
++	public StageInitializer() {
++		this.windowIcons = SystemUtils.IS_OS_MAC ? List.of() : List.of( //
++				new Image(StageInitializer.class.getResource("/img/window_icon_32.png").toString()), //
++				new Image(StageInitializer.class.getResource("/img/window_icon_512.png").toString()) //
++		);
++	}
++
++	@Override
++	public void accept(Stage stage) {
++		stage.getIcons().setAll(windowIcons);
++	}
++}
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+index ac52d4a9..55f76d32 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+@@ -17,7 +17,6 @@ public class FxApplication {
+ 
+ 	private static final Logger LOG = LoggerFactory.getLogger(FxApplication.class);
+ 
+-	private final Stage primaryStage;
+ 	private final Settings settings;
+ 	private final AppLaunchEventHandler launchEventHandler;
+ 	private final Lazy<TrayMenuComponent> trayMenu;
+@@ -27,8 +26,7 @@ public class FxApplication {
+ 	private final AutoUnlocker autoUnlocker;
+ 
+ 	@Inject
+-	FxApplication(@PrimaryStage Stage primaryStage, Settings settings, AppLaunchEventHandler launchEventHandler, Lazy<TrayMenuComponent> trayMenu, FxApplicationWindows appWindows, FxApplicationStyle applicationStyle, FxApplicationTerminator applicationTerminator, AutoUnlocker autoUnlocker) {
+-		this.primaryStage = primaryStage;
++	FxApplication(Settings settings, AppLaunchEventHandler launchEventHandler, Lazy<TrayMenuComponent> trayMenu, FxApplicationWindows appWindows, FxApplicationStyle applicationStyle, FxApplicationTerminator applicationTerminator, AutoUnlocker autoUnlocker) {
+ 		this.settings = settings;
+ 		this.launchEventHandler = launchEventHandler;
+ 		this.trayMenu = trayMenu;
+@@ -40,11 +38,6 @@ public class FxApplication {
+ 
+ 	public void start() {
+ 		LOG.trace("FxApplication.start()");
+-		primaryStage.setTitle("Cryptomator");
+-		primaryStage.initStyle(StageStyle.UNDECORATED);
+-		primaryStage.setMinWidth(650);
+-		primaryStage.setMinHeight(440);
+-
+ 		applicationStyle.initialize();
+ 		appWindows.initialize();
+ 		applicationTerminator.initialize();
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
+index 68c97426..85e46dff 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationModule.java
+@@ -28,31 +28,6 @@ import java.util.List;
+ @Module(includes = {UpdateCheckerModule.class}, subcomponents = {TrayMenuComponent.class, MainWindowComponent.class, PreferencesComponent.class, UnlockComponent.class, LockComponent.class, QuitComponent.class, ErrorComponent.class})
+ abstract class FxApplicationModule {
+ 
+-	@Provides
+-	@Named("windowIcons")
+-	@FxApplicationScoped
+-	static List<Image> provideWindowIcons() {
+-		if (SystemUtils.IS_OS_MAC) {
+-			return Collections.emptyList();
+-		}
+-		try {
+-			return List.of( //
+-					createImageFromResource("/img/window_icon_32.png"), //
+-					createImageFromResource("/img/window_icon_512.png") //
+-			);
+-		} catch (IOException e) {
+-			throw new UncheckedIOException("Failed to load embedded resource.", e);
+-		}
+-	}
+-
+-	@Provides
+-	@FxApplicationScoped
+-	static StageFactory provideStageFactory(@Named("windowIcons") List<Image> windowIcons) {
+-		return new StageFactory(stage -> {
+-			stage.getIcons().addAll(windowIcons);
+-		});
+-	}
+-
+ 	private static Image createImageFromResource(String resourceName) throws IOException {
+ 		try (InputStream in = FxApplicationModule.class.getResourceAsStream(resourceName)) {
+ 			return new Image(in);
+diff --git a/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java b/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
+index fb65b470..94acba3c 100644
+--- a/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
++++ b/src/main/java/org/cryptomator/ui/mainwindow/MainWindowModule.java
+@@ -13,6 +13,7 @@ import org.cryptomator.ui.common.FxmlFile;
+ import org.cryptomator.ui.common.FxmlLoaderFactory;
+ import org.cryptomator.ui.common.FxmlScene;
+ import org.cryptomator.ui.common.StageFactory;
++import org.cryptomator.ui.common.StageInitializer;
+ import org.cryptomator.ui.fxapp.PrimaryStage;
+ import org.cryptomator.ui.health.HealthCheckComponent;
+ import org.cryptomator.ui.migration.MigrationComponent;
+@@ -35,10 +36,17 @@ import java.util.ResourceBundle;
+ @Module(subcomponents = {AddVaultWizardComponent.class, HealthCheckComponent.class, MigrationComponent.class, RemoveVaultComponent.class, VaultOptionsComponent.class, VaultStatisticsComponent.class, WrongFileAlertComponent.class, ErrorComponent.class})
+ abstract class MainWindowModule {
+ 
+-	@Binds
++	@Provides
+ 	@MainWindow
+ 	@MainWindowScoped
+-	abstract Stage bindMainWindow(@PrimaryStage Stage primaryStage);
++	static Stage provideMainWindow(@PrimaryStage Stage stage, StageInitializer initializer) {
++		initializer.accept(stage);
++		stage.setTitle("Cryptomator");
++		stage.initStyle(StageStyle.UNDECORATED);
++		stage.setMinWidth(650);
++		stage.setMinHeight(440);
++		return stage;
++	}
+ 
+ 	@Provides
+ 	@MainWindowScoped
+@@ -57,7 +65,7 @@ abstract class MainWindowModule {
+ 	@MainWindowScoped
+ 	@Named("errorWindow")
+ 	static Stage provideErrorStage(@MainWindow Stage window, StageFactory factory, ResourceBundle resourceBundle) {
+-		Stage stage = factory.create(StageStyle.DECORATED);
++		Stage stage = factory.create();
+ 		stage.setTitle(resourceBundle.getString("main.vaultDetail.error.windowTitle"));
+ 		stage.initModality(Modality.APPLICATION_MODAL);
+ 		stage.initOwner(window);
+-- 
+2.35.1
+
