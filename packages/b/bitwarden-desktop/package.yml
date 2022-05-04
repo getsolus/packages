@@ -1,0 +1,62 @@
+name       : bitwarden-desktop
+version    : 1.33.0
+release    : 1
+source     :
+    - https://github.com/bitwarden/desktop/archive/refs/tags/v1.33.0.tar.gz : 4e99f4b0d166be274c9741b8411f9c4641ebe196fbafff6f325a0ffd7462f126
+    - git|https://github.com/bitwarden/jslib.git : ddccb41914e5ca3b1398af0d1feb068ed7767416
+license    : GPL-3.0-only
+component  : security
+summary    : A secure and free password manager for all of your devices
+description: A secure and free password manager for all of your devices
+networking : yes
+builddeps  :
+    - pkgconfig(gbm)
+    - pkgconfig(gtk+-3.0)
+    - pkgconfig(libdrm)  
+    - pkgconfig(libnotify)
+    - pkgconfig(libsecret-1)
+    - pkgconfig(pangocairo)
+    - pkgconfig(xtst)
+    - cups-devel
+    - git
+    - jq
+    - nodejs
+rundeps    :
+    - nodejs
+setup      : |
+    rm -rf jslib
+    cp -r $sources/jslib.git/ jslib
+
+    pushd jslib/electron
+    npm install electron@16.2.4
+    popd
+
+    %patch --strip=1 src/main/messaging.main.ts < $pkgfiles/messaging.main.ts.patch
+    %patch --strip=1 package.json < $pkgfiles/package.json.patch
+
+    # Replace all build targets with one that just creates an output directory
+    tmp=$(mktemp)
+    cat package.json | jq '.build.linux.target = ["dir"]' > "$tmp" && mv "$tmp" package.json
+build      : |
+    npm install --build-from-source
+
+    unset LD_PRELOAD
+
+    npm run build && npm run clean:dist
+
+    node ./node_modules/.bin/electron-builder --linux --x64
+install    : |
+    export bwdir=/usr/share/bitwarden-desktop
+    install -dm00755 $installdir/usr/bin
+    install -dm00755 $installdir/$bwdir
+
+    cp -R $workdir/dist/linux-unpacked/* $installdir/$bwdir/
+
+    mv $installdir/$bwdir/bitwarden $installdir/$bwdir/bitwarden-desktop
+    ln -s $bwdir/bitwarden-desktop $installdir/usr/bin/bitwarden-desktop
+    
+    install -Dm00644 $pkgfiles/bitwarden.desktop $installdir/usr/share/applications/bitwarden.desktop
+
+    for i in 16 32 64 128 256 512 1024; do
+        install -Dm00644 $workdir/resources/icons/${i}x${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
+    done
