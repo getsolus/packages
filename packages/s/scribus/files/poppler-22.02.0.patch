@@ -1,27 +1,42 @@
-diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.5.8/scribus/plugins/import/pdf/slaoutput.cpp
---- scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp	2022-01-23 18:16:01.000000000 +0200
-+++ scribus-1.5.8/scribus/plugins/import/pdf/slaoutput.cpp	2022-02-02 12:21:07.441133975 +0200
-@@ -7,6 +7,8 @@ for which a new license (GPL+exception)
+From 85c0dff3422fa3c26fbc2e8d8561f597ec24bd92 Mon Sep 17 00:00:00 2001
+From: Jean Ghali <jghali@libertysurf.fr>
+Date: Wed, 2 Feb 2022 23:12:52 +0000
+Subject: [PATCH] #16734: Build break with poppler 22.2.0
+
+git-svn-id: svn://scribus.net/trunk/Scribus@24884 11d20701-8431-0410-a711-e3c959e3b870
+---
+ scribus/plugins/import/pdf/slaoutput.cpp | 47 +++++++++++++++++++-----
+ 1 file changed, 37 insertions(+), 10 deletions(-)
+
+diff --git a/scribus/plugins/import/pdf/slaoutput.cpp b/scribus/plugins/import/pdf/slaoutput.cpp
+index 5894bf2ad6..3650c96f52 100644
+--- a/scribus/plugins/import/pdf/slaoutput.cpp
++++ b/scribus/plugins/import/pdf/slaoutput.cpp
+@@ -7,6 +7,11 @@ for which a new license (GPL+exception) is in place.
  
  #include "slaoutput.h"
  
++#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
 +#include <memory>
 +#include <optional>
++#endif
++
  #include <poppler/GlobalParams.h>
  #include <poppler/poppler-config.h>
  #include <poppler/FileSpec.h>
-@@ -3027,14 +3029,19 @@ void SlaOutputDev::markPoint(POPPLER_CON
+@@ -3027,18 +3032,24 @@ void SlaOutputDev::markPoint(POPPLER_CONST char *name, Dict *properties)
  void SlaOutputDev::updateFont(GfxState *state)
  {
  	GfxFont *gfxFont;
 -	GfxFontLoc *fontLoc;
 +#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
 +	std::optional<GfxFontLoc> fontLoc;
-+	const GooString *fileName = nullptr;
++	const GooString * fileName = nullptr;
++	std::unique_ptr<FoFiTrueType> ff;
 +#else
-+	GfxFontLoc *fontLoc = nullptr;
-+	GooString *fileName = nullptr;
-+	FoFiTrueType *ff;
++	GfxFontLoc * fontLoc = nullptr;
++	GooString * fileName = nullptr;
++	FoFiTrueType * ff = nullptr;
 +#endif
  	GfxFontType fontType;
  	SlaOutFontFileID *id;
@@ -30,20 +45,27 @@ diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.
 -	FoFiTrueType *ff;
  	Object refObj, strObj;
 -	GooString *fileName;
- 	char *tmpBuf;
+-	char *tmpBuf;
++	char *tmpBuf = nullptr;
  	int tmpBufLen = 0;
- 	int *codeToGID;
-@@ -3046,9 +3053,7 @@ void SlaOutputDev::updateFont(GfxState *
+-	int *codeToGID;
+-	const double *textMat;
++	int *codeToGID = nullptr;
++	const double *textMat = nullptr;
+ 	double m11, m12, m21, m22, fontSize;
+ 	SplashCoord mat[4];
+ 	int n = 0;
+@@ -3046,9 +3057,6 @@ void SlaOutputDev::updateFont(GfxState *state)
  	SplashCoord matrix[6];
  
  	m_font = nullptr;
 -	fileName = nullptr;
- 	tmpBuf = nullptr;
+-	tmpBuf = nullptr;
 -	fontLoc = nullptr;
  
  	gfxFont = state->getFont();
  	if (!gfxFont)
-@@ -3083,7 +3088,11 @@ void SlaOutputDev::updateFont(GfxState *
+@@ -3083,7 +3091,11 @@ void SlaOutputDev::updateFont(GfxState *state)
  		}
  		else
  		{ // gfxFontLocExternal
@@ -55,22 +77,13 @@ diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.
  			fontType = fontLoc->fontType;
  		}
  
-@@ -3130,15 +3139,23 @@ void SlaOutputDev::updateFont(GfxState *
- 			break;
- 		case fontTrueType:
- 		case fontTrueTypeOT:
-+			{
-+#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
-+			std::unique_ptr<FoFiTrueType> ff;
-+#endif
- 			if (fileName)
- 				ff = FoFiTrueType::load(fileName->getCString());
- 			else
+@@ -3136,9 +3148,14 @@ void SlaOutputDev::updateFont(GfxState *state)
  				ff = FoFiTrueType::make(tmpBuf, tmpBufLen);
  			if (ff)
  			{
 +#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
-+				codeToGID = ((Gfx8BitFont *)gfxFont)->getCodeToGIDMap(ff.get());
++				codeToGID = ((Gfx8BitFont*) gfxFont)->getCodeToGIDMap(ff.get());
++				ff.reset();
 +#else
  				codeToGID = ((Gfx8BitFont *)gfxFont)->getCodeToGIDMap(ff);
 -				n = 256;
@@ -80,29 +93,13 @@ diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.
  			}
  			else
  			{
-@@ -3154,6 +3171,7 @@ void SlaOutputDev::updateFont(GfxState *
- 				gfxFont->getName() ? gfxFont->getName()->getCString() : "(unnamed)");
- 				goto err2;
- 			}
-+			}
- 			break;
- 		case fontCIDType0:
- 		case fontCIDType0C:
-@@ -3203,14 +3221,21 @@ void SlaOutputDev::updateFont(GfxState *
- 			}
- 			else
- 			{
-+#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
-+				std::unique_ptr<FoFiTrueType> ff;
-+#endif
- 				if (fileName)
- 					ff = FoFiTrueType::load(fileName->getCString());
- 				else
+@@ -3209,8 +3226,13 @@ void SlaOutputDev::updateFont(GfxState *state)
  					ff = FoFiTrueType::make(tmpBuf, tmpBufLen);
  				if (! ff)
  					goto err2;
 +#if POPPLER_ENCODED_VERSION >= POPPLER_VERSION_ENCODE(22, 2, 0)
-+				codeToGID = ((GfxCIDFont *)gfxFont)->getCodeToGIDMap(ff.get(), &n);
++				codeToGID = ((GfxCIDFont*) gfxFont)->getCodeToGIDMap(ff.get(), &n);
++				ff.reset();
 +#else
  				codeToGID = ((GfxCIDFont *)gfxFont)->getCodeToGIDMap(ff, &n);
  				delete ff;
@@ -110,7 +107,7 @@ diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.
  			}
  			if (!(fontFile = m_fontEngine->loadTrueTypeFont(
  							id,
-@@ -3247,14 +3272,18 @@ void SlaOutputDev::updateFont(GfxState *
+@@ -3247,14 +3269,19 @@ void SlaOutputDev::updateFont(GfxState *state)
  	mat[3] = -m22;
  	m_font = m_fontEngine->getFont(fontFile, mat, matrix);
  
@@ -126,6 +123,7 @@ diff -upr scribus-1.5.8.orig/scribus/plugins/import/pdf/slaoutput.cpp scribus-1.
 +#if POPPLER_ENCODED_VERSION < POPPLER_VERSION_ENCODE(22, 2, 0)
  	delete fontLoc;
 +#endif
++
  err1:
  	if (fontsrc && !fontsrc->isFile)
  		fontsrc->unref();
