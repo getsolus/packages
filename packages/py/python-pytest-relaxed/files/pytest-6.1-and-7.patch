@@ -1,0 +1,219 @@
+Index: pytest-relaxed-1.1.5/pytest_relaxed/classes.py
+===================================================================
+--- pytest-relaxed-1.1.5.orig/pytest_relaxed/classes.py
++++ pytest-relaxed-1.1.5/pytest_relaxed/classes.py
+@@ -4,7 +4,7 @@ import types
+ import six
+ 
+ from pytest import __version__ as pytest_version
+-from pytest import Class, Instance, Module
++from pytest import Class, Module
+ 
+ # NOTE: don't see any other way to get access to pytest innards besides using
+ # the underscored name :(
+@@ -12,6 +12,13 @@ from _pytest.python import PyCollector
+ 
+ pytest_version_info = tuple(map(int, pytest_version.split(".")[:3]))
+ 
++# https://docs.pytest.org/en/latest/deprecations.html#the-pytest-instance-collector
++# The pytest.Instance collector type has been removed in Pytest 7.0
++if pytest_version_info < (7, 0, 0):
++    from pytest import Instance
++else:
++    from pathlib import Path
++    Instance = object
+ 
+ # NOTE: these are defined here for reuse by both pytest's own machinery and our
+ # internal bits.
+@@ -22,6 +29,47 @@ def istestclass(name):
+ def istestfunction(name):
+     return not (name.startswith("_") or name in ("setup", "teardown"))
+ 
++def _get_obj_rec(obj, parent_obj):
++    # Obtain parent attributes, etc not found on our obj (serves as both a
++    # useful identifier of "stuff added to an outer class" and a way of
++    # ensuring that we can override such attrs), and set them on obj
++    delta = set(dir(parent_obj)).difference(set(dir(obj)))
++    for name in delta:
++        value = getattr(parent_obj, name)
++        # Pytest's pytestmark attributes always get skipped, we don't want
++        # to spread that around where it's not wanted. (Besides, it can
++        # cause a lot of collection level warnings.)
++        if name == "pytestmark":
++            continue
++        # Classes get skipped; they'd always just be other 'inner' classes
++        # that we don't want to copy elsewhere.
++        if isinstance(value, six.class_types):
++            continue
++        # Methods may get skipped, or not, depending:
++        if isinstance(value, types.MethodType):
++            # If they look like tests, they get skipped; don't want to copy
++            # tests around!
++            if istestfunction(name):
++                continue
++            # Non-test == they're probably lifecycle methods
++            # (setup/teardown) or helpers (_do_thing). Rebind them to the
++            # target instance, otherwise the 'self' in the setup/helper is
++            # not the same 'self' as that in the actual test method it runs
++            # around or within!
++            # TODO: arguably, all setup or helper methods should become
++            # autouse class fixtures (see e.g. pytest docs under 'xunit
++            # setup on steroids')
++            func = six.get_method_function(value)
++            setattr(obj, name, six.create_bound_method(func, obj))
++            continue
++        # Same as above but for Pytest 7 which does
++        # collect methods as functions, and without the six wrapper.
++        if isinstance(value, types.FunctionType) and istestfunction(name):
++            continue
++        # Anything else should be some data-type attribute, which is copied
++        # verbatim / by-value.
++        setattr(obj, name, value)
++    return obj
+ 
+ # All other classes in here currently inherit from PyCollector, and it is what
+ # defines the default istestfunction/istestclass, so makes sense to inherit
+@@ -50,7 +98,9 @@ class SpecModule(RelaxedMixin, Module):
+ 
+     @classmethod
+     def from_parent(cls, parent, fspath):
+-        if pytest_version_info >= (5, 4):
++        if pytest_version_info >= (7, 0):
++            return super(SpecModule, cls).from_parent(parent, path=Path(fspath))
++        elif pytest_version_info >= (5, 4):
+             return super(SpecModule, cls).from_parent(parent, fspath=fspath)
+         else:
+             return cls(parent=parent, fspath=fspath)
+@@ -96,9 +146,7 @@ class SpecModule(RelaxedMixin, Module):
+         return collected
+ 
+ 
+-# NOTE: no need to inherit from RelaxedMixin here as it doesn't do much by
+-# its lonesome
+-class SpecClass(Class):
++class SpecClass(RelaxedMixin, Class):
+ 
+     @classmethod
+     def from_parent(cls, parent, name):
+@@ -110,16 +158,39 @@ class SpecClass(Class):
+     def collect(self):
+         items = super(SpecClass, self).collect()
+         collected = []
+-        # Replace Instance objects with SpecInstance objects that know how to
+-        # recurse into inner classes.
+-        # TODO: is this ever not a one-item list? Meh.
+         for item in items:
+-            item = SpecInstance.from_parent(item.parent, name=item.name)
+-            collected.append(item)
++            if pytest_version_info < (7, 0):
++                # Replace Instance objects with SpecInstance objects that know how to
++                # recurse into inner classes.
++                item = SpecInstance.from_parent(item.parent, name=item.name)
++                collected.append(item)
++            else:
++                # Pytest >= 7 collects the Functions in Class directly without Instance
++                # Replace any Class objects with SpecClass, and recurse into it.
++                if isinstance(item, Class):
++                    subclass = SpecClass.from_parent(item.parent, name=item.name)
++                    collected += subclass.collect()
++                else:
++                    collected.append(item)
+         return collected
+ 
++    def _getobj(self):
++        # Regular object-making first
++        obj = super(SpecClass, self)._getobj()
++        # Then decorate it with our parent's extra attributes, allowing nested
++        # test classes to appear as an aggregate of parents' "scopes".
++        # NOTE: of course, skipping if we've gone out the top into a module etc
++        if (
++            pytest_version_info < (7, 0)
++            or not hasattr(self, "parent")
++            or not isinstance(self.parent, SpecClass)
++        ):
++            return obj
++        else:
++            return _get_obj_rec(obj, self.parent.obj)
+ 
+ class SpecInstance(RelaxedMixin, Instance):
++    # This is only instantiated in Pytest < 7
+ 
+     @classmethod
+     def from_parent(cls, parent, name):
+@@ -141,61 +212,19 @@ class SpecInstance(RelaxedMixin, Instanc
+             or not isinstance(self.parent.parent, SpecInstance)
+         ):
+             return obj
+-        parent_obj = self.parent.parent.obj
+-        # Obtain parent attributes, etc not found on our obj (serves as both a
+-        # useful identifier of "stuff added to an outer class" and a way of
+-        # ensuring that we can override such attrs), and set them on obj
+-        delta = set(dir(parent_obj)).difference(set(dir(obj)))
+-        for name in delta:
+-            value = getattr(parent_obj, name)
+-            # Pytest's pytestmark attributes always get skipped, we don't want
+-            # to spread that around where it's not wanted. (Besides, it can
+-            # cause a lot of collection level warnings.)
+-            if name == "pytestmark":
+-                continue
+-            # Classes get skipped; they'd always just be other 'inner' classes
+-            # that we don't want to copy elsewhere.
+-            if isinstance(value, six.class_types):
+-                continue
+-            # Functions (methods) may get skipped, or not, depending:
+-            if isinstance(value, types.MethodType):
+-                # If they look like tests, they get skipped; don't want to copy
+-                # tests around!
+-                if istestfunction(name):
+-                    continue
+-                # Non-test == they're probably lifecycle methods
+-                # (setup/teardown) or helpers (_do_thing). Rebind them to the
+-                # target instance, otherwise the 'self' in the setup/helper is
+-                # not the same 'self' as that in the actual test method it runs
+-                # around or within!
+-                # TODO: arguably, all setup or helper methods should become
+-                # autouse class fixtures (see e.g. pytest docs under 'xunit
+-                # setup on steroids')
+-                func = six.get_method_function(value)
+-                setattr(obj, name, six.create_bound_method(func, obj))
+-            # Anything else should be some data-type attribute, which is copied
+-            # verbatim / by-value.
+-            else:
+-                setattr(obj, name, value)
+-        return obj
++        else:
++            return _get_obj_rec(obj, self.parent.parent.obj)
+ 
+-    # Stub for pytest >=3.0,<3.3 where _makeitem did not exist
+-    def makeitem(self, *args, **kwargs):
+-        return self._makeitem(*args, **kwargs)
+ 
+-    def _makeitem(self, name, obj):
+-        # More pytestmark skipping.
+-        if name == "pytestmark":
+-            return
+-        # NOTE: no need to modify collect() this time, just mutate item
+-        # creation. TODO: but if collect() is still public, let's move to that
+-        # sometime, if that'll work as well.
+-        superb = super(SpecInstance, self)
+-        attr = "_makeitem" if hasattr(superb, "_makeitem") else "makeitem"
+-        item = getattr(superb, attr)(name, obj)
+-        # Replace any Class objects with SpecClass; this will automatically
+-        # recurse.
+-        # TODO: can we unify this with SpecModule's same bits?
+-        if isinstance(item, Class):
+-            item = SpecClass.from_parent(item.parent, name=item.name)
+-        return item
++    def collect(self):
++        items = super(SpecInstance, self).collect()
++        collected = []
++        for item in items:
++            # Replace any Class objects with SpecClass, and recurse into it.
++            if isinstance(item, Class):
++                cls = SpecClass.from_parent(item.parent, name=item.name)
++                for item in cls.collect():
++                    collected.append(item)
++            else:
++                collected.append(item)
++        return collected
+
