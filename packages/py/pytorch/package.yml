@@ -1,8 +1,8 @@
 name       : pytorch
-version    : 1.8.1
-release    : 15
+version    : 1.11.0
+release    : 16
 source     :
-    - git|https://github.com/pytorch/pytorch : v1.8.1
+    - https://github.com/pytorch/pytorch/releases/download/v1.11.0/pytorch-v1.11.0.tar.gz : dc0c2b8d13c112a2b9ea8757a475b0ce2ca97cd19c50a8b70b8c286676616f1d
 homepage   : https://pytorch.org/
 license    : BSD-3-Clause
 component  :
@@ -21,12 +21,13 @@ patterns   :
         - /usr/include
 optimize   :
     - speed
-#avx2       : yes
-clang      : yes
+avx2       : yes
+# clang      : yes # Clang is not happy with -flto=24
 builddeps  :
     - pkgconfig(eigen3)
     - pkgconfig(fftw3)
     - pkgconfig(hiredis)
+    - pkgconfig(lapack)
     - pkgconfig(libavcodec)
     - pkgconfig(libglog)
     - pkgconfig(libuv)
@@ -68,58 +69,67 @@ environment: |
     # Good luck while debugging
     export CFLAGS="${CFLAGS/-g3/-gline-tables-only}"
     export CXXFLAGS="${CXXFLAGS/-g3/-gline-tables-only}"
+
+    export PYTHON_BIN_PATH=/usr/bin/python3
+    export USE_DEFAULT_PYTHON_LIB_PATH=1
+
+    export BLAS=OpenBLAS \
+        BUILD_BINARY=1 \
+        BUILD_CAFFE2=1 \
+        BUILD_CUSTOM_PROTOBUF=0 \
+        BUILD_TEST=0 \
+        HAVE_SOVERSION=1 \
+        USE_CUDA=0 \
+        USE_DISTRIBUTED=1 \
+        USE_FBGEMM=0 \
+        USE_FFTW=1 \
+        USE_FFMPEG=1 \
+        USE_GFLAGS=1 \
+        USE_GLOG=1 \
+        USE_GLOO_WITH_OPENSSL=1 \
+        USE_LEVELDB=1 \
+        USE_LAPACK=1 \
+        USE_LIBUV=1 \
+        USE_LMDB=1 \
+        USE_MKLDNN=0 \
+        USE_BLAS=1 \
+        USE_OPENCV=1 \
+        USE_SYSTEM_EIGEN_INSTALL=1 \
+        USE_REDIS=1 \
+        USE_ROCKSDB=1 \
+        USE_TBB=1 \
+        USE_SYSTEM_TBB=1 \
+        USE_VULKAN=1 \
+        USE_ZMQ=1 \
+        USE_ZSTD=1 \
+
+    # Set it in case your computer starts chocking horribly
+    # export MAX_JOBS=$((%YJOBS%/4))
+    # For packagers. The default 5G is barely enough for a single build.
+    # export CCACHE_MAXSIZE=20G
 setup      : |
-    %patch -p1 < $pkgfiles/0001-Fix-build-warnings-treated-as-error-on-Linux.patch
     %patch -p1 < $pkgfiles/I-flag-instead-of-isystem.patch
     %patch -p1 < $pkgfiles/system-libuv.patch
     %patch -p1 < $pkgfiles/system-rocksdb.patch
     %patch -p1 < $pkgfiles/system-zstd.patch
+
+    # Fix some compilation errors.
+    sed -i "s|<atomic>|<atomic>\n#include <array>|" third_party/gloo/gloo/transport/tcp/device.h
+    sed -i "141s|16384|(long int) 16384|" third_party/breakpad/src/client/linux/handler/exception_handler.cc
+
+    # Make sure lapack is detected.
+    sed -i "s|(BLAS_INFO STREQUAL \"generic\")|TRUE|" cmake/Modules/FindLAPACK.cmake
+
     echo %version% > version.txt
 build      : |
-    #export MAX_JOBS=4 # Set it in case your computer starts chocking horribly
-    %python3_setup --cmake-only
-    pushd ../py3build
-    %cmake build \
-        -DCMAKE_INSTALL_PREFIX=$PWD/torch \
-        -DBLAS=OpenBLAS \
-        -DBUILD_BINARY=ON \
-        -DBUILD_CUSTOM_PROTOBUF=OFF \
-        -DBUILD_TEST=OFF \
-        -DHAVE_SOVERSION=ON \
-        -DUSE_FFTW=ON \
-        -DUSE_FFMPEG=ON \
-        -DUSE_LEVELDB=ON \
-        -DUSE_LIBUV=ON \
-        -DUSE_LMDB=ON \
-        -DUSE_MKLDNN=OFF \
-        -DUSE_OPENCV=ON \
-        -DUSE_GFLAGS=ON \
-        -DUSE_GLOG=ON \
-        -DUSE_SYSTEM_EIGEN_INSTALL=ON \
-        -DUSE_REDIS=ON \
-        -DUSE_ROCKSDB=ON \
-        -DUSE_TBB=ON \
-        -DUSE_VULKAN=ON \
-        -DUSE_ZMQ=ON \
-        -DUSE_ZSTD=ON
-    python3 setup.py build
-    popd
+    %python3_setup
 install    : |
     %python3_install
 
     # Configure libtorch
     install -dm00755 $installdir/%libdir%
-    TORCH_PATH=$(python3 -c "import site; print(site.getsitepackages()[0])")/torch
-    mv $installdir/$TORCH_PATH/lib/* $installdir/%libdir%
-
-    TORCH_SONAME=$(echo %version% | perl -ne 'print $1 if /(\d+\.\d+)/;')
-    pushd $installdir/usr/lib64
-    for lib in lib*.so.%version%; do
-        so=${lib//.%version%/}
-        ln -sf $lib $installdir/usr/lib64/$so
-        ln -sf $lib $installdir/usr/lib64/$so.$TORCH_SONAME
-    done
-    popd
+    TORCH_PATH=/usr/lib/python%python3_version%/site-packages/torch
+    mv $installdir/$TORCH_PATH/lib/* $installdir%libdir%
 
     if [ ! -z "${AVX2BUILD}" ]; then
         rm -rf $installdir/usr/lib/python*
