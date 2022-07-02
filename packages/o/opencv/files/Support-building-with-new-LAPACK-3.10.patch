@@ -1,0 +1,162 @@
+From 54c180092d2ca02e0460eac7176cab23890fc11e Mon Sep 17 00:00:00 2001
+From: dwardor <50771662+dwardor@users.noreply.github.com>
+Date: Wed, 22 Dec 2021 13:00:00 +0100
+Subject: [PATCH] Merge pull request #21114 from dwardor:patch-1
+
+* Fix compile against lapack-3.10.0
+
+Fix compilation against lapack >= 3.9.1 and 3.10.0 while not breaking older versions
+
+OpenCVFindLAPACK.cmake & CMakeLists.txt: determine OPENCV_USE_LAPACK_PREFIX from LAPACK_VERSION
+
+hal_internal.cpp : Only apply LAPACK_FUNC to functions whose number of inputs depends on LAPACK_FORTRAN_STR_LEN in lapack >= 3.9.1
+
+lapack_check.cpp : remove LAPACK_FUNC which is not OK as function are not used with input parameters (so lapack.h preprocessing of "LAPACK_xxxx(...)" is not applicable with lapack >= 3.9.1
+If not removed lapack_check fails so LAPACK is deactivated in build (not want we want)
+
+use OCV_ prefix and don't use Global, instead generate OCV_LAPACK_FUNC depending on CMake Conditions
+
+Remove CONFIG from find_package(LAPACK) and use LAPACK_GLOBAL and LAPACK_NAME to figure out if using netlib's reference LAPACK implementation and how to #define OCV_LAPACK_FUNC(f)
+
+* Fix typos and grammar in comments
+---
+ cmake/OpenCVFindLAPACK.cmake      | 17 +++++++++++++++
+ modules/core/src/hal_internal.cpp | 36 +++++++++++++++----------------
+ 2 files changed, 35 insertions(+), 18 deletions(-)
+
+diff --git a/cmake/OpenCVFindLAPACK.cmake b/cmake/OpenCVFindLAPACK.cmake
+index 342bebc7231f..3f17b7b28941 100644
+--- a/cmake/OpenCVFindLAPACK.cmake
++++ b/cmake/OpenCVFindLAPACK.cmake
+@@ -51,6 +51,23 @@ macro(ocv_lapack_check)
+     if(NOT "${OPENCV_CBLAS_H_PATH_${_lapack_impl}}" STREQUAL "${OPENCV_LAPACKE_H_PATH_${_lapack_impl}}")
+       list(APPEND _lapack_content "#include \"${OPENCV_LAPACKE_H_PATH_${_lapack_impl}}\"")
+     endif()
++    list(APPEND _lapack_content "
++#if defined(LAPACK_GLOBAL) || defined(LAPACK_NAME)
++/*
++ * Using netlib's reference LAPACK implementation version >= 3.4.0 (first with C interface).
++ * Use LAPACK_xxxx to transparently (via predefined lapack macros) deal with pre and post 3.9.1 versions.
++ * LAPACK 3.9.1 introduces LAPACK_FORTRAN_STRLEN_END and modifies (through preprocessing) the declarations of the following functions used in opencv
++ *        sposv_, dposv_, spotrf_, dpotrf_, sgesdd_, dgesdd_, sgels_, dgels_
++ * which end up with an extra parameter.
++ * So we also need to preprocess the function calls in opencv coding by prefixing them with LAPACK_.
++ * The good news is the preprocessing works fine whatever netlib's LAPACK version.
++ */
++#define OCV_LAPACK_FUNC(f) LAPACK_##f
++#else
++/* Using other LAPACK implementations so fall back to opencv's assumption until now */
++#define OCV_LAPACK_FUNC(f) f##_
++#endif
++")
+     if(${_lapack_add_extern_c})
+       list(APPEND _lapack_content "}")
+     endif()
+diff --git a/modules/core/src/hal_internal.cpp b/modules/core/src/hal_internal.cpp
+index 483281d1f70c..cbe02780d23b 100644
+--- a/modules/core/src/hal_internal.cpp
++++ b/modules/core/src/hal_internal.cpp
+@@ -163,9 +163,9 @@ lapack_Cholesky(fptype* a, size_t a_step, int m, fptype* b, size_t b_step, int n
+         if(n == 1 && b_step == sizeof(fptype))
+         {
+             if(typeid(fptype) == typeid(float))
+-                sposv_(L, &m, &n, (float*)a, &lda, (float*)b, &m, &lapackStatus);
++                OCV_LAPACK_FUNC(sposv)(L, &m, &n, (float*)a, &lda, (float*)b, &m, &lapackStatus);
+             else if(typeid(fptype) == typeid(double))
+-                dposv_(L, &m, &n, (double*)a, &lda, (double*)b, &m, &lapackStatus);
++                OCV_LAPACK_FUNC(dposv)(L, &m, &n, (double*)a, &lda, (double*)b, &m, &lapackStatus);
+         }
+         else
+         {
+@@ -174,9 +174,9 @@ lapack_Cholesky(fptype* a, size_t a_step, int m, fptype* b, size_t b_step, int n
+             transpose(b, ldb, tmpB, m, m, n);
+ 
+             if(typeid(fptype) == typeid(float))
+-                sposv_(L, &m, &n, (float*)a, &lda, (float*)tmpB, &m, &lapackStatus);
++                OCV_LAPACK_FUNC(sposv)(L, &m, &n, (float*)a, &lda, (float*)tmpB, &m, &lapackStatus);
+             else if(typeid(fptype) == typeid(double))
+-                dposv_(L, &m, &n, (double*)a, &lda, (double*)tmpB, &m, &lapackStatus);
++                OCV_LAPACK_FUNC(dposv)(L, &m, &n, (double*)a, &lda, (double*)tmpB, &m, &lapackStatus);
+ 
+             transpose(tmpB, m, b, ldb, n, m);
+             delete[] tmpB;
+@@ -185,9 +185,9 @@ lapack_Cholesky(fptype* a, size_t a_step, int m, fptype* b, size_t b_step, int n
+     else
+     {
+         if(typeid(fptype) == typeid(float))
+-            spotrf_(L, &m, (float*)a, &lda, &lapackStatus);
++            OCV_LAPACK_FUNC(spotrf)(L, &m, (float*)a, &lda, &lapackStatus);
+         else if(typeid(fptype) == typeid(double))
+-            dpotrf_(L, &m, (double*)a, &lda, &lapackStatus);
++            OCV_LAPACK_FUNC(dpotrf)(L, &m, (double*)a, &lda, &lapackStatus);
+     }
+ 
+     if(lapackStatus == 0) *info = true;
+@@ -227,17 +227,17 @@ lapack_SVD(fptype* a, size_t a_step, fptype *w, fptype* u, size_t u_step, fptype
+     }
+ 
+     if(typeid(fptype) == typeid(float))
+-        sgesdd_(mode, &m, &n, (float*)a, &lda, (float*)w, (float*)u, &ldu, (float*)vt, &ldv, (float*)&work1, &lwork, iworkBuf, info);
++        OCV_LAPACK_FUNC(sgesdd)(mode, &m, &n, (float*)a, &lda, (float*)w, (float*)u, &ldu, (float*)vt, &ldv, (float*)&work1, &lwork, iworkBuf, info);
+     else if(typeid(fptype) == typeid(double))
+-        dgesdd_(mode, &m, &n, (double*)a, &lda, (double*)w, (double*)u, &ldu, (double*)vt, &ldv, (double*)&work1, &lwork, iworkBuf, info);
++        OCV_LAPACK_FUNC(dgesdd)(mode, &m, &n, (double*)a, &lda, (double*)w, (double*)u, &ldu, (double*)vt, &ldv, (double*)&work1, &lwork, iworkBuf, info);
+ 
+     lwork = (int)round(work1); //optimal buffer size
+     fptype* buffer = new fptype[lwork + 1];
+ 
+     if(typeid(fptype) == typeid(float))
+-        sgesdd_(mode, &m, &n, (float*)a, &lda, (float*)w, (float*)u, &ldu, (float*)vt, &ldv, (float*)buffer, &lwork, iworkBuf, info);
++        OCV_LAPACK_FUNC(sgesdd)(mode, &m, &n, (float*)a, &lda, (float*)w, (float*)u, &ldu, (float*)vt, &ldv, (float*)buffer, &lwork, iworkBuf, info);
+     else if(typeid(fptype) == typeid(double))
+-        dgesdd_(mode, &m, &n, (double*)a, &lda, (double*)w, (double*)u, &ldu, (double*)vt, &ldv, (double*)buffer, &lwork, iworkBuf, info);
++        OCV_LAPACK_FUNC(dgesdd)(mode, &m, &n, (double*)a, &lda, (double*)w, (double*)u, &ldu, (double*)vt, &ldv, (double*)buffer, &lwork, iworkBuf, info);
+ 
+     if(!(flags & CV_HAL_SVD_NO_UV))
+         transpose_square_inplace(vt, ldv, n);
+@@ -288,18 +288,18 @@ lapack_QR(fptype* a, size_t a_step, int m, int n, int k, fptype* b, size_t b_ste
+         if (k == 1 && b_step == sizeof(fptype))
+         {
+             if (typeid(fptype) == typeid(float))
+-                sgels_(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)b, &m, (float*)&work1, &lwork, info);
++                OCV_LAPACK_FUNC(sgels)(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)b, &m, (float*)&work1, &lwork, info);
+             else if (typeid(fptype) == typeid(double))
+-                dgels_(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)b, &m, (double*)&work1, &lwork, info);
++                OCV_LAPACK_FUNC(dgels)(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)b, &m, (double*)&work1, &lwork, info);
+ 
+             lwork = cvRound(work1); //optimal buffer size
+             std::vector<fptype> workBufMemHolder(lwork + 1);
+             fptype* buffer = &workBufMemHolder.front();
+ 
+             if (typeid(fptype) == typeid(float))
+-                sgels_(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)b, &m, (float*)buffer, &lwork, info);
++                OCV_LAPACK_FUNC(sgels)(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)b, &m, (float*)buffer, &lwork, info);
+             else if (typeid(fptype) == typeid(double))
+-                dgels_(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)b, &m, (double*)buffer, &lwork, info);
++                OCV_LAPACK_FUNC(dgels)(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)b, &m, (double*)buffer, &lwork, info);
+         }
+         else
+         {
+@@ -309,18 +309,18 @@ lapack_QR(fptype* a, size_t a_step, int m, int n, int k, fptype* b, size_t b_ste
+             transpose(b, ldb, tmpB, m, m, k);
+ 
+             if (typeid(fptype) == typeid(float))
+-                sgels_(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)tmpB, &m, (float*)&work1, &lwork, info);
++                OCV_LAPACK_FUNC(sgels)(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)tmpB, &m, (float*)&work1, &lwork, info);
+             else if (typeid(fptype) == typeid(double))
+-                dgels_(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)tmpB, &m, (double*)&work1, &lwork, info);
++                OCV_LAPACK_FUNC(dgels)(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)tmpB, &m, (double*)&work1, &lwork, info);
+ 
+             lwork = cvRound(work1); //optimal buffer size
+             std::vector<fptype> workBufMemHolder(lwork + 1);
+             fptype* buffer = &workBufMemHolder.front();
+ 
+             if (typeid(fptype) == typeid(float))
+-                sgels_(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)tmpB, &m, (float*)buffer, &lwork, info);
++                OCV_LAPACK_FUNC(sgels)(mode, &m, &n, &k, (float*)tmpA, &ldtmpA, (float*)tmpB, &m, (float*)buffer, &lwork, info);
+             else if (typeid(fptype) == typeid(double))
+-                dgels_(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)tmpB, &m, (double*)buffer, &lwork, info);
++                OCV_LAPACK_FUNC(dgels)(mode, &m, &n, &k, (double*)tmpA, &ldtmpA, (double*)tmpB, &m, (double*)buffer, &lwork, info);
+ 
+             transpose(tmpB, m, b, ldb, k, m);
+         }
