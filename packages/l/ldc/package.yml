@@ -1,6 +1,6 @@
 name       : ldc
 version    : 1.29.0
-release    : 48
+release    : 49
 source     :
     - git|https://github.com/ldc-developers/ldc.git : v1.29.0
 license    :
@@ -19,9 +19,13 @@ patterns   :
         - /usr/share/defaults/etc/ldc2.conf
 builddeps  :
     - ldc-devel
+environment: |
+    unset LDFLAGS # bc we need manual linking off
 setup      : |
     %patch -p1 < $pkgfiles/stateless.patch
+    %patch -p1 < $pkgfiles/extra-dflags.patch
 
+    # Build basic compiler for bootstrap
     mkdir bootstrap && pushd bootstrap
     cmake -G Ninja .. \
         -DCMAKE_BUILD_TYPE=Release \
@@ -32,7 +36,9 @@ setup      : |
     ninja install %JOBS%
     popd
 build      : |
-    IFS=""
+    export LLVM_PROFILE_FILE="$workdir/%p.profraw"
+
+    # Instrumented compiler & collect profiling data
     %cmake_ninja \
         -DLIB_SUFFIX=64 \
         -DBUILD_SHARED_LIBS=BOTH \
@@ -40,8 +46,30 @@ build      : |
         -DINCLUDE_INSTALL_DIR=/usr/include/dlang/ldc \
         -DSYSCONF_INSTALL_DIR=/usr/share/defaults/etc \
         -DLDC_WITH_LLD=OFF \
-        -DD_COMPILER_FLAGS="-O -linker=lld -flto=full" \
         -DD_COMPILER=$workdir/ldc-bootstrap/bin/ldmd2 \
+        -DEXTRA_CXXFLAGS="-fprofile-generate -mllvm -vp-counters-per-site=1.5" \
+        -DEXTRA_DFLAGS_LDC="-fprofile-generate -vp-counters-per-site=1.5" \
+        -DLDC_LINK_MANUALLY=OFF \
+        -DADDITIONAL_DEFAULT_LDC_SWITCHES="\"-link-defaultlib-shared\""
+    %ninja_build
+
+    # ldc bootstrapping itself provides enough profiling data - no need for dedicated workload
+    $workdir/ldc-bootstrap/bin/ldc-profdata merge --output=merged.profdata *.profraw
+    rm -fr $workdir/solusBuildDir
+
+    # Build optimized compiler with collected profile data
+    %cmake_ninja \
+        -DLIB_SUFFIX=64 \
+        -DBUILD_SHARED_LIBS=BOTH \
+        -DBUILD_LTO_LIBS=ON \
+        -DINCLUDE_INSTALL_DIR=/usr/include/dlang/ldc \
+        -DSYSCONF_INSTALL_DIR=/usr/share/defaults/etc \
+        -DLDC_WITH_LLD=OFF \
+        -DD_COMPILER=$workdir/ldc-bootstrap/bin/ldmd2 \
+        -DD_COMPILER_FLAGS="-O -linker=lld -release -flto=full" \
+        -DEXTRA_CXXFLAGS="-flto=full -fprofile-use=$workdir/merged.profdata" \
+        -DEXTRA_DFLAGS_LDC="-fprofile-use=$workdir/merged.profdata" \
+        -DLDC_LINK_MANUALLY=OFF \
         -DADDITIONAL_DEFAULT_LDC_SWITCHES="\"-link-defaultlib-shared\""
     %ninja_build
 install    : |
