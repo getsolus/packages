@@ -1,0 +1,723 @@
+From 49f4d4e3e904179bf3a0b880732b92f8bfb2c64a Mon Sep 17 00:00:00 2001
+From: Marcin Naczk <marcin.naczk@intel.com>
+Date: Wed, 29 Jun 2022 19:56:50 +0000
+Subject: [PATCH]  Fix deprecated pointer element type in LLVM14
+
+Change deprecated llvm::PointerType::getElementType to
+*temporarily* Type::getPointerElementType
+https://reviews.llvm.org/D117885
+---
+ IGC/AdaptorCommon/ProcessFuncAttributes.cpp        |  2 +-
+ IGC/AdaptorCommon/RayTracing/RTBuilder.cpp         |  2 +-
+ IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp               |  6 +++---
+ IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp                 |  2 +-
+ IGC/Compiler/CISACodeGen/EmitVISAPass.cpp          |  2 +-
+ IGC/Compiler/CISACodeGen/ResolveGAS.cpp            | 14 +++++++-------
+ .../CISACodeGen/SinkCommonOffsetFromGEP.cpp        |  4 ++--
+ IGC/Compiler/CISACodeGen/helper.cpp                |  4 ++--
+ IGC/Compiler/FixResourcePtr.cpp                    |  4 ++--
+ IGC/Compiler/Optimizer/BuiltInFuncImport.cpp       |  2 +-
+ .../DeviceEnqueueFuncs/TransformBlocks.cpp         |  4 ++--
+ .../GenericAddressDynamicResolution.cpp            |  6 +++---
+ .../JointMatrixFuncsResolutionPass.cpp             |  2 +-
+ IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp |  2 +-
+ .../LocalBuffers/InlineLocalsResolution.cpp        |  2 +-
+ .../OpenCLPasses/PoisonFP64KernelsPass.cpp         |  2 +-
+ .../PrivateMemory/PrivateMemoryToSLM.cpp           |  2 +-
+ .../ProgramScopeConstantAnalysis.cpp               |  2 +-
+ .../StatelessToStateful/StatelessToStateful.cpp    |  4 ++--
+ IGC/ElfPackager/main.cpp                           |  2 +-
+ IGC/GenISAIntrinsics/GenIntrinsics.cpp             |  2 +-
+ .../include/vc/Utils/General/Types.h               |  2 +-
+ .../GenXCodeGen/GenXAggregatePseudoLowering.cpp    |  4 ++--
+ .../lib/GenXCodeGen/GenXLowerAggrCopies.cpp        |  2 +-
+ .../lib/GenXCodeGen/GenXPromoteArray.cpp           |  4 ++--
+ .../CMAnalysis/InstructionSimplifyGenX.cpp         |  2 +-
+ .../lib/GenXOpts/CMPacketize/GenXPacketize.cpp     |  2 +-
+ .../lib/GenXOpts/CMPacketize/gen_builder.hpp       | 12 ++++++------
+ IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMABI.cpp  |  6 +++---
+ .../lib/GenXOpts/CMTrans/CMKernelArgOffset.cpp     |  2 +-
+ .../lib/InternalIntrinsics/InternalIntrinsics.cpp  |  2 +-
+ .../lib/Utils/GenX/TransformArgCopy.cpp            |  4 ++--
+ .../lib/Utils/General/InstRebuilder.cpp            |  2 +-
+ IGC/WrapperLLVM/include/llvmWrapper/IR/IRBuilder.h | 10 +++++-----
+ 34 files changed, 63 insertions(+), 63 deletions(-)
+
+diff --git a/IGC/AdaptorCommon/ProcessFuncAttributes.cpp b/IGC/AdaptorCommon/ProcessFuncAttributes.cpp
+index b52a7105dff..811ac3e33b6 100644
+--- a/IGC/AdaptorCommon/ProcessFuncAttributes.cpp
++++ b/IGC/AdaptorCommon/ProcessFuncAttributes.cpp
+@@ -127,7 +127,7 @@ static void getContainedStructType(Type *T, SmallPtrSetImpl<StructType *> &Tys)
+     }
+     else if (auto PT = dyn_cast<PointerType>(T))
+     {
+-        return getContainedStructType(PT->getElementType(), Tys);
++        return getContainedStructType(PT->getPointerElementType(), Tys);
+     }
+     else if (auto AT = dyn_cast<ArrayType>(T))
+     {
+diff --git a/IGC/AdaptorCommon/RayTracing/RTBuilder.cpp b/IGC/AdaptorCommon/RayTracing/RTBuilder.cpp
+index 70347cbfc1d..e08052431c5 100644
+--- a/IGC/AdaptorCommon/RayTracing/RTBuilder.cpp
++++ b/IGC/AdaptorCommon/RayTracing/RTBuilder.cpp
+@@ -3044,7 +3044,7 @@ Value* RTBuilder::getSyncTraceRayControl(Value* ptrCtrl)
+ 
+ void RTBuilder::setSyncTraceRayControl(Value* ptrCtrl, unsigned ctrl)
+ {
+-    Type* eleType = cast<PointerType>(ptrCtrl->getType())->getElementType();
++    Type* eleType = cast<PointerType>(ptrCtrl->getType())->getPointerElementType();
+     this->CreateStore(llvm::ConstantInt::get(eleType, ctrl), ptrCtrl);
+ }
+ 
+diff --git a/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp b/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
+index 6fa1433c94b..708d96edd97 100644
+--- a/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
++++ b/IGC/AdaptorOCL/SPIRV/SPIRVReader.cpp
+@@ -2974,7 +2974,7 @@ void transFunctionPointerCallArgumentAttributes(SPIRVValue *BV, CallInst *CI) {
+     auto LlvmAttr = IsTypeAttrKind
+             ? Attribute::get(CI->getContext(), LlvmAttrKind,
+                              cast<PointerType>(CI->getOperand(ArgNo)->getType())
+-                                 ->getElementType())
++                                 ->getPointerElementType())
+             : Attribute::get(CI->getContext(), LlvmAttrKind);
+     CI->addParamAttr(ArgNo, LlvmAttr);
+   }
+@@ -3805,7 +3805,7 @@ SPIRVToLLVM::transValueWithoutDecoration(SPIRVValue *BV, Function *F,
+     auto Call = CallInst::Create(
+ #if LLVM_VERSION_MAJOR > 7
+         llvm::cast<llvm::FunctionType>(
+-            llvm::cast<llvm::PointerType>(func->getType())->getElementType()),
++            llvm::cast<llvm::PointerType>(func->getType())->getPointerElementType()),
+ #endif
+         func,
+         transValue(BC->getArgumentValues(), F, BB),
+@@ -4199,7 +4199,7 @@ SPIRVToLLVM::transFunction(SPIRVFunction *BF) {
+      Attribute::AttrKind LLVMKind = SPIRSPIRVFuncParamAttrMap::rmap(Kind);
+      Type *AttrTy = nullptr;
+      if (LLVMKind == Attribute::AttrKind::ByVal)
+-       AttrTy = cast<PointerType>(I->getType())->getElementType();
++       AttrTy = cast<PointerType>(I->getType())->getPointerElementType();
+      else if (LLVMKind == Attribute::AttrKind::StructRet)
+        AttrTy = I->getType();
+      // Make sure to use a correct constructor for a typed/typeless attribute
+diff --git a/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp b/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
+index a598b134bef..cf4228358e6 100644
+--- a/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
++++ b/IGC/AdaptorOCL/SPIRV/SPIRVUtil.cpp
+@@ -430,7 +430,7 @@ std::string getSPIRVImageSampledTypeName(SPIRVType* Ty) {
+ 
+ bool isSPIRVSamplerType(llvm::Type* Ty) {
+   if (auto PT = dyn_cast<PointerType>(Ty))
+-    if (auto ST = dyn_cast<StructType>(PT->getElementType()))
++    if (auto ST = dyn_cast<StructType>(PT->getPointerElementType()))
+       if (ST->isOpaque()) {
+         auto Name = ST->getName();
+         if (Name.startswith(std::string(kSPIRVTypeName::PrefixAndDelim) + kSPIRVTypeName::Sampler)) {
+diff --git a/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp b/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
+index 16e321b121e..792b2408d46 100644
+--- a/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
++++ b/IGC/Compiler/CISACodeGen/EmitVISAPass.cpp
+@@ -19446,7 +19446,7 @@ void EmitPass::emitLSCAtomic(llvm::GenIntrinsicInst* inst)
+     // take the bitwidth from the pointer type since the return type might
+     // differ; e.g. uint lsc_atomic_add(ushort *, uint) D16U32
+     unsigned short bitwidth =
+-        ptrType->getElementType()->getScalarSizeInBits();
++        ptrType->getPointerElementType()->getScalarSizeInBits();
+     pDstAddr = ReAlignUniformVariable(pDstAddr, EALIGN_GRF);
+ 
+     auto cacheOpts = translateLSCCacheControlsFromValue(inst->getOperand(5), false);
+diff --git a/IGC/Compiler/CISACodeGen/ResolveGAS.cpp b/IGC/Compiler/CISACodeGen/ResolveGAS.cpp
+index 2a94866e1d8..0395a0fc153 100644
+--- a/IGC/Compiler/CISACodeGen/ResolveGAS.cpp
++++ b/IGC/Compiler/CISACodeGen/ResolveGAS.cpp
+@@ -387,7 +387,7 @@ bool GASPropagator::visitAddrSpaceCastInst(AddrSpaceCastInst& I) {
+         return false;
+ 
+     Value* Src = TheVal;
+-    if (SrcPtrTy->getElementType() != DstPtrTy->getElementType()) {
++    if (SrcPtrTy->getPointerElementType() != DstPtrTy->getPointerElementType()) {
+         BuilderType::InsertPointGuard Guard(IRB);
+         IRB.SetInsertPoint(&I);
+         Src = IRB.CreateBitCast(Src, DstPtrTy);
+@@ -406,11 +406,11 @@ bool GASPropagator::visitBitCastInst(BitCastInst& I) {
+     IRB.SetInsertPoint(I.getNextNode());
+     // Push `addrspacecast` forward by replacing this `bitcast` on GAS with the
+     // one on non-GAS followed by a new `addrspacecast` to GAS.
+-    Type* DstTy = DstPtrTy->getElementType();
++    Type* DstTy = DstPtrTy->getPointerElementType();
+     PointerType* TransPtrTy =
+         PointerType::get(DstTy, SrcPtrTy->getAddressSpace());
+     Value* Src = TheVal;
+-    if (SrcPtrTy->getElementType() != DstTy)
++    if (SrcPtrTy->getPointerElementType() != DstTy)
+         Src = IRB.CreateBitCast(Src, TransPtrTy);
+     Value* NewPtr = IRB.CreateAddrSpaceCast(Src, DstPtrTy);
+     I.replaceAllUsesWith(NewPtr);
+@@ -433,7 +433,7 @@ bool GASPropagator::visitGetElementPtrInst(GetElementPtrInst& I) {
+     IRB.SetInsertPoint(I.getNextNode());
+     // Push `getelementptr` forward by replacing this `bitcast` on GAS with the
+     // one on non-GAS followed by a new `addrspacecast` to GAS.
+-    Type* DstTy = DstPtrTy->getElementType();
++    Type* DstTy = DstPtrTy->getPointerElementType();
+     PointerType* TransPtrTy =
+         PointerType::get(DstTy, SrcPtrTy->getAddressSpace());
+     TheUse->set(TheVal);
+@@ -558,7 +558,7 @@ bool GASPropagator::visitSelect(SelectInst& I) {
+ 
+     // Push 'addrspacecast' forward by changing the select return type to non-GAS pointer
+     // followed by a new 'addrspacecast' to GAS
+-    PointerType* TransPtrTy = PointerType::get(DstPtrTy->getElementType(), NonGASPtrTy->getAddressSpace());
++    PointerType* TransPtrTy = PointerType::get(DstPtrTy->getPointerElementType(), NonGASPtrTy->getAddressSpace());
+     I.mutateType(TransPtrTy);
+     Value* NewPtr = IRB.CreateAddrSpaceCast(&I, DstPtrTy);
+ 
+@@ -884,7 +884,7 @@ void GASResolving::convertLoadToGlobal(LoadInst* LI) const {
+ 
+     PointerType* PtrTy = cast<PointerType>(LI->getType());
+     IRB->SetInsertPoint(LI->getNextNode());
+-    PointerType* GlobalPtrTy = PointerType::get(PtrTy->getElementType(), ADDRESS_SPACE_GLOBAL);
++    PointerType* GlobalPtrTy = PointerType::get(PtrTy->getPointerElementType(), ADDRESS_SPACE_GLOBAL);
+     Value* GlobalAddr = IRB->CreateAddrSpaceCast(LI, GlobalPtrTy);
+     Value* GenericCopyAddr = IRB->CreateAddrSpaceCast(GlobalAddr, PtrTy);
+ 
+@@ -905,7 +905,7 @@ bool GASResolving::checkGenericArguments(Function& F) const {
+         if (auto Ty = dyn_cast<PointerType>(FT->getParamType(p))) {
+             if (Ty->getAddressSpace() != ADDRESS_SPACE_GLOBAL)
+                 continue;
+-            auto PteeTy = Ty->getElementType();
++            auto PteeTy = Ty->getPointerElementType();
+             if (auto PTy = dyn_cast<PointerType>(PteeTy)) {
+                 if (PTy->getAddressSpace() == ADDRESS_SPACE_GENERIC)
+                     return true;
+diff --git a/IGC/Compiler/CISACodeGen/SinkCommonOffsetFromGEP.cpp b/IGC/Compiler/CISACodeGen/SinkCommonOffsetFromGEP.cpp
+index edf8816ead8..364c6596f49 100644
+--- a/IGC/Compiler/CISACodeGen/SinkCommonOffsetFromGEP.cpp
++++ b/IGC/Compiler/CISACodeGen/SinkCommonOffsetFromGEP.cpp
+@@ -361,7 +361,7 @@ static bool sinkCommonOffsetForGroup(const CommonBaseGroup& Group) {
+         Value* PtrOperand   = IT.second.first;
+         auto BaseIndices    = IT.second.second;
+ 
+-        auto EType = dyn_cast<PointerType>(PtrOperand->getType())->getElementType();
++        auto EType = dyn_cast<PointerType>(PtrOperand->getType())->getPointerElementType();
+         Value * NewPointer = PtrOperand;
+         if (NewPointer == nullptr)
+             return false;
+@@ -401,7 +401,7 @@ static bool sinkCommonOffsetForGroup(const CommonBaseGroup& Group) {
+             Indices.push_back(ConstantInt::get(Offset->getType(), 0));
+         Indices.push_back(Offset);
+ 
+-        auto OffsetType = dyn_cast<PointerType>(BasePhi->getType())->getElementType();
++        auto OffsetType = dyn_cast<PointerType>(BasePhi->getType())->getPointerElementType();
+         auto OffsetGEP = GetElementPtrInst::Create(OffsetType, BasePhi, Indices, "", BasePhi->getNextNonDebugInstruction());
+ 
+         bool isInBounds = false;
+diff --git a/IGC/Compiler/CISACodeGen/helper.cpp b/IGC/Compiler/CISACodeGen/helper.cpp
+index a9a0477f3a1..dceee9c8c01 100644
+--- a/IGC/Compiler/CISACodeGen/helper.cpp
++++ b/IGC/Compiler/CISACodeGen/helper.cpp
+@@ -303,7 +303,7 @@ namespace IGC
+     llvm::LoadInst* cloneLoad(llvm::LoadInst* Orig, llvm::Value* Ptr)
+     {
+         llvm::LoadInst* LI = new llvm::LoadInst(
+-            cast<PointerType>(Ptr->getType())->getElementType(),
++            cast<PointerType>(Ptr->getType())->getPointerElementType(),
+             Ptr, "", false, Orig);
+         LI->setVolatile(Orig->isVolatile());
+         LI->setAlignment(IGCLLVM::getCorrectAlign(Orig->getAlignment()));
+@@ -2676,7 +2676,7 @@ namespace IGC
+ 
+             if (instType && instType->getAddressSpace() == oldAS)
+             {
+-                Type* eltType = instType->getElementType();
++                Type* eltType = instType->getPointerElementType();
+                 PointerType* ptrType = PointerType::get(eltType, newAS);
+                 inst->mutateType(ptrType);
+                 FixAddressSpaceInAllUses(inst, newAS, oldAS);
+diff --git a/IGC/Compiler/FixResourcePtr.cpp b/IGC/Compiler/FixResourcePtr.cpp
+index d98c222b360..36b00c44dbe 100644
+--- a/IGC/Compiler/FixResourcePtr.cpp
++++ b/IGC/Compiler/FixResourcePtr.cpp
+@@ -112,7 +112,7 @@ void FixResourcePtr::RemoveGetBufferPtr(GenIntrinsicInst* bufPtr, Value* bufIdx)
+ 
+         PointerType* const instType = dyn_cast<PointerType>(inst->getType());
+         IGC_ASSERT(nullptr != instType);
+-        Type* eltType = instType->getElementType();
++        Type* eltType = instType->getPointerElementType();
+         PointerType* ptrType = PointerType::get(eltType, outAS);
+         inst->mutateType(ptrType);
+         // iterate all the uses, put bitcast on the worklist
+@@ -211,7 +211,7 @@ Value* FixResourcePtr::GetByteOffset(Instruction* eltPtr)
+     builder->SetInsertPoint(eltPtr);
+     // decide offset in bytes
+     //     may need to create shift
+-    uint  eltBytes = int_cast<uint>(DL->getTypeStoreSize(ptrTy->getElementType()));
++    uint  eltBytes = int_cast<uint>(DL->getTypeStoreSize(ptrTy->getPointerElementType()));
+     APInt eltSize = APInt(32, eltBytes);
+ 
+     Value* offsetValue = eltIdx;
+diff --git a/IGC/Compiler/Optimizer/BuiltInFuncImport.cpp b/IGC/Compiler/Optimizer/BuiltInFuncImport.cpp
+index 32e37894683..050a401be5c 100644
+--- a/IGC/Compiler/Optimizer/BuiltInFuncImport.cpp
++++ b/IGC/Compiler/Optimizer/BuiltInFuncImport.cpp
+@@ -770,7 +770,7 @@ bool BIImport::runOnModule(Module& M)
+                     // Load function address from the table index
+                     Value* FP = builder.CreateGEP(FPTablePtr, builder.getInt32(tableIndex));
+                     FP = builder.CreateLoad(FP);
+-                    IGC_ASSERT(FP->getType()->isPointerTy() && cast<PointerType>(FP->getType())->getElementType()->isFunctionTy());
++                    IGC_ASSERT(FP->getType()->isPointerTy() && cast<PointerType>(FP->getType())->getPointerElementType()->isFunctionTy());
+                     // Call the loaded function address
+                     SmallVector<Value*, 8> Args;
+                     for (unsigned i = 1; i < IGCLLVM::getNumArgOperands(CI); i++)
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
+index 7a7147c8b47..5f4d4c96bb7 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/DeviceEnqueueFuncs/TransformBlocks.cpp
+@@ -272,7 +272,7 @@ namespace //Anonymous
+ 
+             auto ptrType = dyn_cast_or_null<llvm::PointerType>(type);
+             return ptrType != nullptr
+-                ? dyn_cast<llvm::StructType>(ptrType->getElementType())
++                ? dyn_cast<llvm::StructType>(ptrType->getPointerElementType())
+                 : nullptr;
+         }
+ 
+@@ -1674,7 +1674,7 @@ namespace //Anonymous
+                 if (auto gv = M.getGlobalVariable(name))
+                 {
+                     auto gvType = cast<llvm::PointerType>(gv->getType());
+-                    auto initType = cast<llvm::PointerType>(gvType->getElementType());
++                    auto initType = cast<llvm::PointerType>(gvType->getPointerElementType());
+                     auto nullConst = llvm::ConstantPointerNull::get(initType);
+                     gv->setExternallyInitialized(false);
+                     gv->setConstant(true);
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/GenericAddressResolution/GenericAddressDynamicResolution.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/GenericAddressResolution/GenericAddressDynamicResolution.cpp
+index a5e1b4c93d4..290b4c942df 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/GenericAddressResolution/GenericAddressDynamicResolution.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/GenericAddressResolution/GenericAddressDynamicResolution.cpp
+@@ -301,7 +301,7 @@ void GenericAddressDynamicResolution::resolveGAS(Instruction& I, Value* pointerO
+     {
+         BasicBlock* BB = BasicBlock::Create(I.getContext(), BlockName, convergeBlock->getParent(), convergeBlock);
+         builder.SetInsertPoint(BB);
+-        PointerType* ptrType = pointerType->getElementType()->getPointerTo(addressSpace);
++        PointerType* ptrType = pointerType->getPointerElementType()->getPointerTo(addressSpace);
+         Value* ptr = builder.CreateAddrSpaceCast(pointerOperand, ptrType);
+ 
+         if (LoadInst* LI = dyn_cast<LoadInst>(&I))
+@@ -378,7 +378,7 @@ void GenericAddressDynamicResolution::resolveGASWithoutBranches(Instruction& I,
+ 
+     Value* nonLocalLoad = nullptr;
+ 
+-    PointerType* ptrType = pointerType->getElementType()->getPointerTo(ADDRESS_SPACE_GLOBAL);
++    PointerType* ptrType = pointerType->getPointerElementType()->getPointerTo(ADDRESS_SPACE_GLOBAL);
+     Value* globalPtr = builder.CreateAddrSpaceCast(pointerOperand, ptrType);
+ 
+     if (LoadInst* LI = dyn_cast<LoadInst>(&I))
+@@ -458,7 +458,7 @@ bool GenericAddressDynamicResolution::visitIntrinsicCall(CallInst& I)
+         // If Block
+         {
+             IRBuilder<> ifBuilder(ifBlock);
+-            PointerType* ptrType = pointerType->getElementType()->getPointerTo(targetAS);
++            PointerType* ptrType = pointerType->getPointerElementType()->getPointerTo(targetAS);
+             newPtr = ifBuilder.CreateAddrSpaceCast(arg, ptrType);
+             ifBuilder.CreateBr(convergeBlock);
+         }
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/JointMatrixFuncsResolutionPass.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/JointMatrixFuncsResolutionPass.cpp
+index 822c98dfee6..b068d646771 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/JointMatrixFuncsResolutionPass.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/JointMatrixFuncsResolutionPass.cpp
+@@ -200,7 +200,7 @@ static unsigned parseNumber(StringRef name, unsigned *offset) {
+  * following convention: intel.joint_matrix_acc_8x8_i32_t */
+ static void parseMatrixTypeName(const Type *opaqueType, JointMatrixTypeDescription *outDescription) {
+     const PointerType *ptrType = cast<PointerType>(opaqueType);
+-    StringRef name = ptrType->getElementType()->getStructName();
++    StringRef name = ptrType->getPointerElementType()->getStructName();
+ 
+     unsigned offset = 0;
+     if (name.startswith("intel.joint_matrix_packedA_")) {
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
+index f6a5d30f4f8..d1741b402f0 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/KernelArgs.cpp
+@@ -104,7 +104,7 @@ unsigned int KernelArg::calcAlignment(const Argument* arg, const DataLayout* DL)
+     // For local pointers, we need the alignment of the *contained* type.
+     if (m_argType == ArgType::PTR_LOCAL)
+     {
+-        typeToAlign = cast<PointerType>(typeToAlign)->getElementType();
++        typeToAlign = cast<PointerType>(typeToAlign)->getPointerElementType();
+     }
+ 
+     return (unsigned)DL->getABITypeAlignment(typeToAlign);
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/LocalBuffers/InlineLocalsResolution.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/LocalBuffers/InlineLocalsResolution.cpp
+index 782a085e3f0..1518c985e8a 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/LocalBuffers/InlineLocalsResolution.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/LocalBuffers/InlineLocalsResolution.cpp
+@@ -512,7 +512,7 @@ void InlineLocalsResolution::computeOffsetList(Module& M, llvm::MapVector<Functi
+ 
+             // And the total size after this local is added
+             PointerType* ptrType = dyn_cast<PointerType>(G->getType());
+-            Type* varType = ptrType->getElementType();
++            Type* varType = ptrType->getPointerElementType();
+             if (G == m_pGV)
+             {
+                 // it is GetMemPoolPtr usage
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/PoisonFP64KernelsPass.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/PoisonFP64KernelsPass.cpp
+index f6cb3778640..cfdeb9e75b0 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/PoisonFP64KernelsPass.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/PoisonFP64KernelsPass.cpp
+@@ -118,7 +118,7 @@ static void poisonKernel(Function *Kernel) {
+     }
+ 
+     Constant *PoisonMessage = createPoisonMessage(M, Kernel);
+-    Type *MessageType = static_cast<PointerType *>(PoisonMessage->getType())->getElementType();
++    Type *MessageType = static_cast<PointerType *>(PoisonMessage->getType())->getPointerElementType();
+ 
+     std::vector<Value *> Indices = {
+         ConstantInt::getSigned(Type::getInt32Ty(Ctx), 0),
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryToSLM.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryToSLM.cpp
+index 872c29ae7eb..7425c017693 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryToSLM.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/PrivateMemory/PrivateMemoryToSLM.cpp
+@@ -202,7 +202,7 @@ namespace IGC
+             for (auto offsets : ModuleMD->FuncMD[F].localOffsets)
+             {
+                 PointerType* ptrType = dyn_cast<PointerType>(offsets.m_Var->getType());
+-                Type* varType = ptrType->getElementType();
++                Type* varType = ptrType->getPointerElementType();
+                 offset = iSTD::Align(offset, IGCLLVM::getPreferredAlignValue(&DL, offsets.m_Var));
+                 offset += (unsigned int) DL.getTypeAllocSize(varType);
+             }
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/ProgramScopeConstants/ProgramScopeConstantAnalysis.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/ProgramScopeConstants/ProgramScopeConstantAnalysis.cpp
+index be54453f994..8cdd537f457 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/ProgramScopeConstants/ProgramScopeConstantAnalysis.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/ProgramScopeConstants/ProgramScopeConstantAnalysis.cpp
+@@ -472,7 +472,7 @@ void ProgramScopeConstantAnalysis::addData(Constant* initializer,
+         {
+             inlineProgramScopeBuffer.insert(inlineProgramScopeBuffer.end(), pointerSize, 0);
+         }
+-        else if (isa<FunctionType>(ptrType->getElementType()))
++        else if (isa<FunctionType>(ptrType->getPointerElementType()))
+         {
+             // Save patch info for function pointer to be patched later by runtime
+             // The initializer value must be a function pointer and has the "referenced-indirectly" attribute
+diff --git a/IGC/Compiler/Optimizer/OpenCLPasses/StatelessToStateful/StatelessToStateful.cpp b/IGC/Compiler/Optimizer/OpenCLPasses/StatelessToStateful/StatelessToStateful.cpp
+index fe25408006d..014749d6ddd 100644
+--- a/IGC/Compiler/Optimizer/OpenCLPasses/StatelessToStateful/StatelessToStateful.cpp
++++ b/IGC/Compiler/Optimizer/OpenCLPasses/StatelessToStateful/StatelessToStateful.cpp
+@@ -360,7 +360,7 @@ bool StatelessToStateful::pointerIsPositiveOffsetFromKernelArgument(
+     auto getPointeeAlign = [](const DataLayout* DL, Value* ptrVal)-> unsigned {
+         if (PointerType* PTy = dyn_cast<PointerType>(ptrVal->getType()))
+         {
+-            Type* pointeeTy = PTy->getElementType();
++            Type* pointeeTy = PTy->getPointerElementType();
+             if (!pointeeTy->isSized()) {
+                 return 0;
+             }
+@@ -562,7 +562,7 @@ void StatelessToStateful::visitCallInst(CallInst& I)
+                 }
+                 else if (isUntypedAtomics(intrinID))
+                 {
+-                    PointerType* pTy = PointerType::get(dyn_cast<PointerType>(ptr->getType())->getElementType(), addrSpace);
++                    PointerType* pTy = PointerType::get(dyn_cast<PointerType>(ptr->getType())->getPointerElementType(), addrSpace);
+                     Instruction* pPtrToInt = IntToPtrInst::Create(Instruction::IntToPtr, offset, pTy, "", Inst);
+                     Instruction* pIntrinInst = nullptr;
+                     if (intrinID == GenISAIntrinsic::GenISA_intatomicrawA64 ||
+diff --git a/IGC/ElfPackager/main.cpp b/IGC/ElfPackager/main.cpp
+index 5efc369dea7..0b12438883a 100644
+--- a/IGC/ElfPackager/main.cpp
++++ b/IGC/ElfPackager/main.cpp
+@@ -106,7 +106,7 @@ std::unique_ptr<IGCLLVM::Module> LocalCloneModule(
+         if (VMap.find(&*I) == VMap.end())
+         {
+             GlobalVariable *GV = new GlobalVariable(*New,
+-                I->getType()->getElementType(),
++                I->getType()->getPointerElementType(),
+                 I->isConstant(), I->getLinkage(),
+                 (Constant*) nullptr, I->getName(),
+                 (GlobalVariable*) nullptr,
+diff --git a/IGC/GenISAIntrinsics/GenIntrinsics.cpp b/IGC/GenISAIntrinsics/GenIntrinsics.cpp
+index de9418fed9a..09dfa636f80 100644
+--- a/IGC/GenISAIntrinsics/GenIntrinsics.cpp
++++ b/IGC/GenISAIntrinsics/GenIntrinsics.cpp
+@@ -396,7 +396,7 @@ static std::string getMangledTypeStr(Type* Ty) {
+   std::string Result;
+   if (PointerType* PTyp = dyn_cast<PointerType>(Ty)) {
+     Result += "p" + llvm::utostr(PTyp->getAddressSpace()) +
+-      getMangledTypeStr(PTyp->getElementType());
++      getMangledTypeStr(PTyp->getPointerElementType());
+   } else if (ArrayType* ATyp = dyn_cast<ArrayType>(Ty)) {
+     Result += "a" + llvm::utostr(ATyp->getNumElements()) +
+       getMangledTypeStr(ATyp->getElementType());
+diff --git a/IGC/VectorCompiler/include/vc/Utils/General/Types.h b/IGC/VectorCompiler/include/vc/Utils/General/Types.h
+index bd2c739794a..c8627e0a7d6 100644
+--- a/IGC/VectorCompiler/include/vc/Utils/General/Types.h
++++ b/IGC/VectorCompiler/include/vc/Utils/General/Types.h
+@@ -36,7 +36,7 @@ enum Enum {
+ // and the original pointee type.
+ inline llvm::PointerType *changeAddrSpace(llvm::PointerType *OrigTy,
+                                           int AddrSpace) {
+-  return llvm::PointerType::get(OrigTy->getElementType(), AddrSpace);
++  return llvm::PointerType::get(OrigTy->getPointerElementType(), AddrSpace);
+ }
+ 
+ // Changes addrspace inside a vector of pointers type.
+diff --git a/IGC/VectorCompiler/lib/GenXCodeGen/GenXAggregatePseudoLowering.cpp b/IGC/VectorCompiler/lib/GenXCodeGen/GenXAggregatePseudoLowering.cpp
+index 6b6a5cb97f6..76b881c47ac 100644
+--- a/IGC/VectorCompiler/lib/GenXCodeGen/GenXAggregatePseudoLowering.cpp
++++ b/IGC/VectorCompiler/lib/GenXCodeGen/GenXAggregatePseudoLowering.cpp
+@@ -347,7 +347,7 @@ class SplitInstCreator : public InstVisitor<SplitInstCreator, Instruction *> {
+     IRBuilder<> IRB{&OrigLoad};
+     Value *PointerOp = OrigLoad.getPointerOperand();
+     Type *Ty = cast<PointerType>(PointerOp->getType()->getScalarType())
+-                   ->getElementType();
++                   ->getPointerElementType();
+     auto *GEP = IRB.CreateInBoundsGEP(Ty, PointerOp, CreateIdxListForGEP(IRB),
+                                       OrigLoad.getName() + "aggr.gep");
+     // FIXME: replace a structure alignment with an element alignment
+@@ -361,7 +361,7 @@ class SplitInstCreator : public InstVisitor<SplitInstCreator, Instruction *> {
+     IRBuilder<> IRB{&OrigStore};
+     Value *PointerOp = OrigStore.getPointerOperand();
+     Type *Ty = cast<PointerType>(PointerOp->getType()->getScalarType())
+-                   ->getElementType();
++                   ->getPointerElementType();
+     auto *GEP = IRB.CreateInBoundsGEP(Ty, PointerOp, CreateIdxListForGEP(IRB),
+                                       OrigStore.getName() + "aggr.gep");
+     // FIXME: replace a structure alignment with an element alignment
+diff --git a/IGC/VectorCompiler/lib/GenXCodeGen/GenXLowerAggrCopies.cpp b/IGC/VectorCompiler/lib/GenXCodeGen/GenXLowerAggrCopies.cpp
+index fd3ffb43dc5..c0b30909bf4 100644
+--- a/IGC/VectorCompiler/lib/GenXCodeGen/GenXLowerAggrCopies.cpp
++++ b/IGC/VectorCompiler/lib/GenXCodeGen/GenXLowerAggrCopies.cpp
+@@ -238,7 +238,7 @@ void GenXLowerAggrCopies::expandMemMov2VecLoadStore(T *MemCall) {
+   auto Len = (unsigned)cast<ConstantInt>(LenVal)->getZExtValue();
+   auto DstPtrV = MemCall->getRawDest();
+   IGC_ASSERT(DstPtrV->getType()->isPointerTy());
+-  auto I8Ty = cast<PointerType>(DstPtrV->getType())->getElementType();
++  auto I8Ty = cast<PointerType>(DstPtrV->getType())->getPointerElementType();
+   IGC_ASSERT(I8Ty->isIntegerTy(8));
+   auto VecTy = IGCLLVM::FixedVectorType::get(I8Ty, Len);
+   auto SrcAddr = MemCall->getRawSource();
+diff --git a/IGC/VectorCompiler/lib/GenXCodeGen/GenXPromoteArray.cpp b/IGC/VectorCompiler/lib/GenXCodeGen/GenXPromoteArray.cpp
+index 342ccb3936e..e16aaa16558 100644
+--- a/IGC/VectorCompiler/lib/GenXCodeGen/GenXPromoteArray.cpp
++++ b/IGC/VectorCompiler/lib/GenXCodeGen/GenXPromoteArray.cpp
+@@ -1058,7 +1058,7 @@ void TransposeHelperPromote::handlePrivateGather(IntrinsicInst *pInst,
+   // count byte offset depending on the type of pointer in gather
+   IGC_ASSERT(GatherPtrTy);
+   unsigned GatherPtrNumBytes =
+-      GatherPtrTy->getElementType()->getPrimitiveSizeInBits() / 8;
++      GatherPtrTy->getPointerElementType()->getPrimitiveSizeInBits() / 8;
+   if (CI != nullptr &&
+       IsLinearVectorConstantInts(pInst->getArgOperand(2), v0, diff)) {
+     R.Indirect = nullptr;
+@@ -1138,7 +1138,7 @@ void TransposeHelperPromote::handlePrivateScatter(llvm::IntrinsicInst *pInst,
+   // count byte offset depending on the type of pointer in scatter
+   IGC_ASSERT(ScatterPtrTy);
+   unsigned ScatterPtrNumBytes =
+-      ScatterPtrTy->getElementType()->getPrimitiveSizeInBits() / 8;
++      ScatterPtrTy->getPointerElementType()->getPrimitiveSizeInBits() / 8;
+   if (CI != nullptr && IsLinearVectorConstantInts(pInst->getArgOperand(2), v0, diff)) {
+     R.Indirect = nullptr;
+     R.Width = N;
+diff --git a/IGC/VectorCompiler/lib/GenXOpts/CMAnalysis/InstructionSimplifyGenX.cpp b/IGC/VectorCompiler/lib/GenXOpts/CMAnalysis/InstructionSimplifyGenX.cpp
+index e2b3f86963c..db02b159562 100644
+--- a/IGC/VectorCompiler/lib/GenXOpts/CMAnalysis/InstructionSimplifyGenX.cpp
++++ b/IGC/VectorCompiler/lib/GenXOpts/CMAnalysis/InstructionSimplifyGenX.cpp
+@@ -393,7 +393,7 @@ Value *llvm::SimplifyGenX(CallInst *I, const DataLayout &DL) {
+   Value *V = IGCLLVM::getCalledValue(I);
+   Type *Ty = V->getType();
+   if (auto *PTy = dyn_cast<PointerType>(Ty))
+-    Ty = PTy->getElementType();
++    Ty = PTy->getPointerElementType();
+   auto *FTy = cast<FunctionType>(Ty);
+   auto *F = dyn_cast<Function>(V);
+   if (!F)
+diff --git a/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/GenXPacketize.cpp b/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/GenXPacketize.cpp
+index 97c26d19fa0..0d727d781a2 100644
+--- a/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/GenXPacketize.cpp
++++ b/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/GenXPacketize.cpp
+@@ -1810,7 +1810,7 @@ void GenXPacketize::fixupLLVMIntrinsics(Function &F) {
+ GlobalVariable *GenXPacketize::findGlobalExecMask() {
+   // look for the global EMask variable if exists
+   for (auto &Global : M->getGlobalList()) {
+-    auto Ty = Global.getType()->getElementType();
++    auto Ty = Global.getType()->getPointerElementType();
+     if (Ty->isVectorTy() &&
+         cast<IGCLLVM::FixedVectorType>(Ty)->getNumElements() ==
+             CMSimdCFLower::MAX_SIMD_CF_WIDTH) {
+diff --git a/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/gen_builder.hpp b/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/gen_builder.hpp
+index 73a39a9d330..3503450162b 100644
+--- a/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/gen_builder.hpp
++++ b/IGC/VectorCompiler/lib/GenXOpts/CMPacketize/gen_builder.hpp
+@@ -224,26 +224,26 @@ InvokeInst* INVOKE(Value *Callee, BasicBlock *NormalDest, BasicBlock *UnwindDest
+ {
+ #if LLVM_VERSION_MAJOR >= 11
+     auto *PTy = cast<PointerType>(Callee->getType());
+-    auto *FTy = cast<FunctionType>(PTy->getElementType());
++    auto *FTy = cast<FunctionType>(PTy->getPointerElementType());
+ #endif
+     return IRB()->CreateInvoke(
+ #if LLVM_VERSION_MAJOR >= 11
+-	    FTy,
++        FTy,
+ #endif
+-	    Callee, NormalDest, UnwindDest, Args, Name);
++        Callee, NormalDest, UnwindDest, Args, Name);
+ }
+ 
+ InvokeInst* INVOKE(Value *Callee, BasicBlock *NormalDest, BasicBlock *UnwindDest, ArrayRef<Value *> Args, ArrayRef<OperandBundleDef> OpBundles, const Twine &Name = "")
+ {
+ #if LLVM_VERSION_MAJOR >= 11
+     auto *PTy = cast<PointerType>(Callee->getType());
+-    auto *FTy = cast<FunctionType>(PTy->getElementType());
++    auto *FTy = cast<FunctionType>(PTy->getPointerElementType());
+ #endif
+     return IRB()->CreateInvoke(
+ #if LLVM_VERSION_MAJOR >= 11
+-	    FTy,
++        FTy,
+ #endif
+-	    Callee, NormalDest, UnwindDest, Args, OpBundles, Name);
++        Callee, NormalDest, UnwindDest, Args, OpBundles, Name);
+ }
+ 
+ ResumeInst* RESUME(Value *Exn)
+diff --git a/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMABI.cpp b/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMABI.cpp
+index e1dbbc4b9aa..b041791bd43 100644
+--- a/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMABI.cpp
++++ b/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMABI.cpp
+@@ -404,7 +404,7 @@ void CMABI::LocalizeGlobals(LocalizationInfo &LI) {
+     LLVM_DEBUG(dbgs() << "Localizing global: " << *GV << "\n  ");
+ 
+     Instruction &FirstI = *Fn->getEntryBlock().begin();
+-    Type *ElemTy = GV->getType()->getElementType();
++    Type *ElemTy = GV->getType()->getPointerElementType();
+     IGCLLVM::Align GVAlign = IGCLLVM::getCorrectAlign(GV->getAlignment());
+     AllocaInst *Alloca = new AllocaInst(ElemTy, vc::AddrSpace::Private,
+                                         /*ArraySize=*/nullptr, GVAlign,
+@@ -1071,7 +1071,7 @@ bool CMLowerVLoadVStore::lowerLoadStore(Function &F) {
+           IRBuilder<> Builder(&Inst);
+           if (GenXIntrinsic::isVStore(&Inst)) {
+             auto PtrTy = cast<PointerType>(Inst.getOperand(1)->getType());
+-            PtrTy = PointerType::get(PtrTy->getElementType(), AS1);
++            PtrTy = PointerType::get(PtrTy->getPointerElementType(), AS1);
+             auto PtrCast = Builder.CreateAddrSpaceCast(Inst.getOperand(1), PtrTy);
+             Type* Tys[] = { Inst.getOperand(0)->getType(),
+                            PtrCast->getType() };
+@@ -1082,7 +1082,7 @@ bool CMLowerVLoadVStore::lowerLoadStore(Function &F) {
+           }
+           else {
+             auto PtrTy = cast<PointerType>(Inst.getOperand(0)->getType());
+-            PtrTy = PointerType::get(PtrTy->getElementType(), AS1);
++            PtrTy = PointerType::get(PtrTy->getPointerElementType(), AS1);
+             auto PtrCast = Builder.CreateAddrSpaceCast(Inst.getOperand(0), PtrTy);
+             Type* Tys[] = { Inst.getType(), PtrCast->getType() };
+             Function* Fn = GenXIntrinsic::getGenXDeclaration(
+diff --git a/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMKernelArgOffset.cpp b/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMKernelArgOffset.cpp
+index c44636fe99d..0ceb53a2ea6 100644
+--- a/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMKernelArgOffset.cpp
++++ b/IGC/VectorCompiler/lib/GenXOpts/CMTrans/CMKernelArgOffset.cpp
+@@ -457,7 +457,7 @@ void CMKernelArgOffset::resolveByValArgs(Function *F) const {
+                                                Base->getName() + ".i8");
+     for (const auto &Info : KM->arg_lin(&Arg)) {
+       Type *Ty = cast<PointerType>(BaseAsI8Ptr->getType()->getScalarType())
+-                     ->getElementType();
++                     ->getPointerElementType();
+       Value *StoreAddrUntyped = Builder.CreateGEP(Ty, BaseAsI8Ptr, Info.Offset);
+       Value *StoreAddrTyped = Builder.CreateBitCast(
+           StoreAddrUntyped, Info.Arg->getType()->getPointerTo());
+diff --git a/IGC/VectorCompiler/lib/InternalIntrinsics/InternalIntrinsics.cpp b/IGC/VectorCompiler/lib/InternalIntrinsics/InternalIntrinsics.cpp
+index e8c0019b328..adda52bcef2 100644
+--- a/IGC/VectorCompiler/lib/InternalIntrinsics/InternalIntrinsics.cpp
++++ b/IGC/VectorCompiler/lib/InternalIntrinsics/InternalIntrinsics.cpp
+@@ -439,7 +439,7 @@ static std::string getMangledTypeStr(Type *Ty) {
+   std::string Result;
+   if (PointerType *PTyp = dyn_cast<PointerType>(Ty)) {
+     Result += "p" + utostr(PTyp->getAddressSpace()) +
+-              getMangledTypeStr(PTyp->getElementType());
++              getMangledTypeStr(PTyp->getPointerElementType());
+   } else if (ArrayType *ATyp = dyn_cast<ArrayType>(Ty)) {
+     Result += "a" + utostr(ATyp->getNumElements()) +
+               getMangledTypeStr(ATyp->getElementType());
+diff --git a/IGC/VectorCompiler/lib/Utils/GenX/TransformArgCopy.cpp b/IGC/VectorCompiler/lib/Utils/GenX/TransformArgCopy.cpp
+index 8e895c1d445..38a8872c8c8 100644
+--- a/IGC/VectorCompiler/lib/Utils/GenX/TransformArgCopy.cpp
++++ b/IGC/VectorCompiler/lib/Utils/GenX/TransformArgCopy.cpp
+@@ -115,7 +115,7 @@ static bool isPtrArgModified(const Value &Arg) {
+ // Check if it is safe to pass structure by value.
+ static bool structSafeToPassByVal(const Argument &Arg) {
+   StructType *StrTy =
+-      cast<StructType>(cast<PointerType>(Arg.getType())->getElementType());
++      cast<StructType>(cast<PointerType>(Arg.getType())->getPointerElementType());
+ 
+   if (!containsOnlySuitableTypes(*StrTy))
+     return false;
+@@ -156,7 +156,7 @@ static bool argToTransform(const Argument &Arg,
+   auto *PtrTy = dyn_cast<PointerType>(Arg.getType());
+   if (!PtrTy)
+     return false;
+-  Type *ElemTy = PtrTy->getElementType();
++  Type *ElemTy = PtrTy->getPointerElementType();
+   if ((ElemTy->isVectorTy() || onlyUsedBySimpleValueLoadStore(Arg)) &&
+       (ElemTy->isIntOrIntVectorTy() || ElemTy->isFPOrFPVectorTy()))
+     return true;
+diff --git a/IGC/VectorCompiler/lib/Utils/General/InstRebuilder.cpp b/IGC/VectorCompiler/lib/Utils/General/InstRebuilder.cpp
+index 5f16ce630cd..9eae3480bef 100644
+--- a/IGC/VectorCompiler/lib/Utils/General/InstRebuilder.cpp
++++ b/IGC/VectorCompiler/lib/Utils/General/InstRebuilder.cpp
+@@ -95,7 +95,7 @@ class cloneInstWithNewOpsImpl
+   Instruction *visitLoadInst(LoadInst &OrigLoad) {
+     Value &Ptr = getSingleNewOperand();
+     auto *NewLoad =
+-        new LoadInst{cast<PointerType>(Ptr.getType())->getElementType(),
++        new LoadInst{cast<PointerType>(Ptr.getType())->getPointerElementType(),
+                      &Ptr,
+                      "",
+                      OrigLoad.isVolatile(),
+diff --git a/IGC/WrapperLLVM/include/llvmWrapper/IR/IRBuilder.h b/IGC/WrapperLLVM/include/llvmWrapper/IR/IRBuilder.h
+index 98c46115548..126ec466921 100644
+--- a/IGC/WrapperLLVM/include/llvmWrapper/IR/IRBuilder.h
++++ b/IGC/WrapperLLVM/include/llvmWrapper/IR/IRBuilder.h
+@@ -252,7 +252,7 @@ namespace IGCLLVM
+ 
+         inline llvm::Value* CreateInBoundsGEP(llvm::Value *Ptr, llvm::ArrayRef<llvm::Value*> IdxList,
+                            const llvm::Twine &Name = "") {
+-            llvm::Type *Ty = cast<PointerType>(Ptr->getType()->getScalarType())->getElementType();
++            llvm::Type *Ty = cast<PointerType>(Ptr->getType()->getScalarType())->getPointerElementType();
+             return llvm::IRBuilder<T, InserterTyDef()>::CreateInBoundsGEP(Ty, Ptr, IdxList, Name);
+         }
+ 
+@@ -260,7 +260,7 @@ namespace IGCLLVM
+ 
+         inline llvm::Value* CreateGEP(llvm::Value* Ptr, llvm::ArrayRef<llvm::Value*> IdxList,
+             const llvm::Twine& Name = "") {
+-            llvm::Type* Ty = cast<PointerType>(Ptr->getType()->getScalarType())->getElementType();
++            llvm::Type* Ty = cast<PointerType>(Ptr->getType()->getScalarType())->getPointerElementType();
+             return llvm::IRBuilder<T, InserterTyDef()>::CreateGEP(Ty, Ptr, IdxList, Name);
+         }
+ 
+@@ -271,7 +271,7 @@ namespace IGCLLVM
+           auto *PtrsTy = cast<FixedVectorType>(Ptrs->getType());
+           auto *PtrTy = cast<PointerType>(PtrsTy->getElementType());
+           unsigned NumElts = PtrsTy->getNumElements();
+-          auto *Ty = FixedVectorType::get(PtrTy->getElementType(), NumElts);
++          auto *Ty = FixedVectorType::get(PtrTy->getPointerElementType(), NumElts);
+           return llvm::IRBuilder<T, InserterTyDef()>::CreateMaskedGather(
+               Ty, Ptrs, Alignment, Mask, PassThru, Name);
+         }
+@@ -294,7 +294,7 @@ namespace IGCLLVM
+         CallInst *CreateMaskedLoad(Value *Ptr, Align Alignment, Value *Mask,
+                                    Value *PassThru, const Twine &Name) {
+           auto *PtrTy = cast<PointerType>(Ptr->getType());
+-          Type *Ty = PtrTy->getElementType();
++          Type *Ty = PtrTy->getPointerElementType();
+           return llvm::IRBuilder<T, InserterTyDef()>::CreateMaskedLoad(
+               Ty, Ptr, Alignment, Mask, PassThru, Name);
+         }
+@@ -304,7 +304,7 @@ namespace IGCLLVM
+ #if LLVM_VERSION_MAJOR >= 14
+         Value* CreatePtrDiff(Value *LHS, Value *RHS, const Twine &Name = "") {
+           auto *PtrTy = cast<PointerType>(LHS->getType());
+-          Type *Ty = PtrTy->getElementType();
++          Type *Ty = PtrTy->getPointerElementType();
+           return llvm::IRBuilder<T, InserterTyDef()>::CreatePtrDiff(Ty, LHS, RHS, Name);
+         }
+ #endif
