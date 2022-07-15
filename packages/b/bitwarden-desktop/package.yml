@@ -1,9 +1,8 @@
 name       : bitwarden-desktop
-version    : 1.33.0
-release    : 1
+version    : 2022.6.2
+release    : 2
 source     :
-    - https://github.com/bitwarden/desktop/archive/refs/tags/v1.33.0.tar.gz : 4e99f4b0d166be274c9741b8411f9c4641ebe196fbafff6f325a0ffd7462f126
-    - git|https://github.com/bitwarden/jslib.git : ddccb41914e5ca3b1398af0d1feb068ed7767416
+    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2022.6.2.tar.gz : 35aaf0c7689a2dd4d3e9844714dd306dea84063f17d1a875cbedefe4bdc04959
 license    : GPL-3.0-only
 component  : security
 summary    : A secure and free password manager for all of your devices
@@ -12,7 +11,7 @@ networking : yes
 builddeps  :
     - pkgconfig(gbm)
     - pkgconfig(gtk+-3.0)
-    - pkgconfig(libdrm)  
+    - pkgconfig(libdrm)
     - pkgconfig(libnotify)
     - pkgconfig(libsecret-1)
     - pkgconfig(pangocairo)
@@ -24,39 +23,36 @@ builddeps  :
 rundeps    :
     - nodejs
 setup      : |
-    rm -rf jslib
-    cp -r $sources/jslib.git/ jslib
+    export ELECTRON_VERSION=19.0.8
+    npm install electron@$ELECTRON_VERSION
 
-    pushd jslib/electron
-    npm install electron@16.2.4
-    popd
+    pushd apps/desktop
+    tmp=$(mktemp)
+    jq ".electronVersion = \"${ELECTRON_VERSION}\"" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
 
     %patch --strip=1 src/main/messaging.main.ts < $pkgfiles/messaging.main.ts.patch
-    %patch --strip=1 package.json < $pkgfiles/package.json.patch
+    popd
 
-    # Replace all build targets with one that just creates an output directory
-    tmp=$(mktemp)
-    cat package.json | jq '.build.linux.target = ["dir"]' > "$tmp" && mv "$tmp" package.json
+    npm ci
 build      : |
-    npm install --build-from-source
+    export npm_config_build_from_source=true
 
+    cd apps/desktop
     unset LD_PRELOAD
-
     npm run build && npm run clean:dist
-
-    node ./node_modules/.bin/electron-builder --linux --x64
+    npm exec -c "electron-builder --linux --x64 --dir"
 install    : |
     export bwdir=/usr/share/bitwarden-desktop
     install -dm00755 $installdir/usr/bin
     install -dm00755 $installdir/$bwdir
 
-    cp -R $workdir/dist/linux-unpacked/* $installdir/$bwdir/
+    cp -R $workdir/apps/desktop/dist/linux-unpacked/* $installdir/$bwdir/
 
     mv $installdir/$bwdir/bitwarden $installdir/$bwdir/bitwarden-desktop
     ln -s $bwdir/bitwarden-desktop $installdir/usr/bin/bitwarden-desktop
-    
+
     install -Dm00644 $pkgfiles/bitwarden.desktop $installdir/usr/share/applications/bitwarden.desktop
 
     for i in 16 32 64 128 256 512 1024; do
-        install -Dm00644 $workdir/resources/icons/${i}x${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
+        install -Dm00644 $workdir/apps/desktop/resources/icons/${i}x${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
     done
