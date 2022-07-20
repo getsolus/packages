@@ -1,0 +1,39 @@
+From 5ee5974602b0cd19ebb76c32b718538a328ceb0f Mon Sep 17 00:00:00 2001
+From: Philipp Knechtges <philipp-dev@knechtges.com>
+Date: Tue, 24 Nov 2020 21:28:25 +0100
+Subject: [PATCH 2/2] fix link-time ordering condition
+
+This fixes a segfault error in cases where the linking order of
+compilation unit varies. Reason behind the segfault is that one
+global variable in one compilation unit depends on another global
+variable in another compilation unit, but there is no gurantee that
+this other compilation unit is initialized first. The fix forces a
+reinitialization at the first invocation of the library.
+---
+ src/core/common/hsa_table_interface.cpp | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/common/hsa_table_interface.cpp b/src/core/common/hsa_table_interface.cpp
+index 11b1e49..6f8c3ed 100644
+--- a/src/core/common/hsa_table_interface.cpp
++++ b/src/core/common/hsa_table_interface.cpp
+@@ -64,7 +64,15 @@ class Init {
+ static Init LinkAtLoadOrFirstTranslationUnitAccess;
+ 
+ // Pass through stub functions
+-hsa_status_t HSA_API hsa_init() { return coreApiTable->hsa_init_fn(); }
++hsa_status_t HSA_API hsa_init() {
++  // We initialize the api tables here once more since the code above is prone to a
++  // link-time ordering condition: This compilation unit here may get its global
++  // variables initialized earlier than the global objects in other compilation units.
++  // In particular Init::Init may get called earlier than that the underlying hsa_api_table_
++  // object in hsa_api_trace.cpp has been initialized.
++  rocr::core::LoadInitialHsaApiTable();
++  return coreApiTable->hsa_init_fn();
++}
+ 
+ hsa_status_t HSA_API hsa_shut_down() { return coreApiTable->hsa_shut_down_fn(); }
+ 
+-- 
+2.28.0
+
