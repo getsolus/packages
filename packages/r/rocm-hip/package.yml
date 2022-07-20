@@ -1,0 +1,94 @@
+name       : rocm-hip
+version    : 5.1.3
+release    : 1
+source     :
+    - https://github.com/ROCm-Developer-Tools/ROCclr/archive/refs/tags/rocm-5.1.3.tar.gz#ROCclr-5.1.3.tar.gz : ddee63cdc6515c90bab89572b13e1627b145916cb8ede075ef8446cbb83f0a48
+    - https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime/archive/refs/tags/rocm-5.1.3.tar.gz#ROCm-OpenCL-Runtime-5.1.3.tar.gz : 44a7fac721abcd93470e1a7e466bdea0c668c253dee93e4f1ea9a72dbce4ba31
+    - https://github.com/ROCm-Developer-Tools/hipamd/archive/refs/tags/rocm-5.1.3.tar.gz#hipamd-5.1.3.tar.gz : 707f2217f0e7aeb62d7b76830a271056d665542bf5f7a54e40adf4d5f299ca93
+    - https://github.com/ROCm-Developer-Tools/HIP/archive/refs/tags/rocm-5.1.3.tar.gz#HIP-5.1.3.tar.gz : ce755ee6e407904eba3f6b3c9efcdd48eb4f58a26b06e1892166d05f19a75973
+license    : MIT
+component  : programming.devel
+clang      : yes
+summary    : AMD ROCm HIP
+description: |
+    HIP is a C++ Runtime API and Kernel Language that allows developers to create portable applications for AMD and NVIDIA GPUs from single source code.
+extract    : False
+builddeps  :
+    - pkgconfig(gl)
+    - pkgconfig(libhsakmt)
+    - pkgconfig(x11-xcb)
+    - rocminfo
+    - rocm-cmake
+    - rocm-compilersupport-devel
+    - rocm-device-libs-devel
+    - rocm-opencl-devel
+    - rocm-runtime-devel
+rundeps    :
+    - rocminfo
+environment: |
+    export HIP_CLANG_PATH="/usr/bin"
+setup      : |
+    tar -xvzf $sources/ROCclr-%version%.tar.gz
+    tar -xvzf $sources/ROCm-OpenCL-Runtime-%version%.tar.gz
+    tar -xvzf $sources/hipamd-%version%.tar.gz
+    tar -xvzf $sources/HIP-%version%.tar.gz
+    pushd ROCclr-rocm-%version%
+    %patch -p1 < $pkgfiles/0001-enable-gfx800.patch
+    %patch -p1 < $pkgfiles/0001-SWDEV-323669-Fix-linux-arch-detection.patch
+    echo "set_target_properties(rocclr PROPERTIES VERSION 5.1.3 SOVERSION 5.1)" \
+    >> cmake/ROCclr.cmake
+    popd
+    pushd ROCm-OpenCL-Runtime-rocm-%version%
+    %patch -p1 < $pkgfiles/0001-SWDEV-321118-Use-GNUInstallDirs.patch
+    %patch -p1 < $pkgfiles/0002-SWDEV-321116-Allow-disabling-ICD-loader.patch
+    %patch -p1 < $pkgfiles/0003-SWDEV-321116-Drop-unnecessary-ICD-include.patch
+    %patch -p1 < $pkgfiles/0004-SWDEV-336248-Don-t-exclude-cl_egl.h-from-install.patch
+    echo "set_target_properties(cltrace PROPERTIES VERSION 5.1.3 SOVERSION 5.1)" \
+    >> tools/cltrace/CMakeLists.txt
+    ls -d khronos/* | grep -v headers | xargs rm -r
+    ls -d khronos/headers/* | grep -v opencl2.2 | xargs rm -r
+    rm -r khronos/headers/*/tests/
+    popd
+
+    pushd HIP-rocm-%version%
+    %patch -p1 < $pkgfiles/0007-isystem-removal.patch
+    popd
+    cd hipamd-rocm-%version%
+    %apply_patches
+
+    #soname is broken when building from tar, upstream is fixing the issue:
+    sed -i 's/-${HIP_VERSION_GITHASH}//' CMakeLists.txt
+
+    #HIP requires RPATH
+    sed -i "/CMAKE_INSTALL_RPATH/d" CMakeLists.txt
+
+    mkdir build
+    cd build
+    %cmake -S.. -B. \
+        -DAMD_OPENCL_PATH=%workdir%/ROCm-OpenCL-Runtime-rocm-%version% \
+        -DROCCLR_PATH=%workdir%/ROCclr-rocm-%version% \
+        -DHIP_COMMON_DIR=%workdir%/HIP-rocm-%version% \
+        -DCMAKE_INSTALL_LIBDIR=%libdir% \
+        -DHIP_COMPILER=clang \
+        -DHIP_VERSION_BUILD_ID=0 \
+        -DROCM_PATH=%PREFIX% \
+        #-DCMAKE_HIP_ARCHITECTURES=gfx906
+build      : |
+    cd hipamd-rocm-%version%/build
+    %make
+install    : |
+    cd hipamd-rocm-%version%/build
+    %make_install
+
+    #hip installs some cmake modules incorrectly:
+    mv %installroot%/usr/cmake %installroot%%libdir%/cmake/Modules
+
+    #make hip-config.cmake less broken, allowing to build stuff that relies on hip
+    sed -i 's|${_IMPORT_PREFIX}/../include|${_IMPORT_PREFIX}/include|g' %installroot%%libdir%/cmake/hip/hip-config.cmake
+    sed -i 's|"${ROCM_PATH}/llvm"|"/usr"|g' %installroot%%libdir%/cmake/hip/hip-config.cmake
+
+    #https://salsa.debian.org/rocm-team/rocm-hipamd/-/blob/master/debian/patches/0003-hip-config.cmake.patch
+    sed -i 's|"${AMD_DEVICE_LIBS_PREFIX}/lib"|"${AMD_DEVICE_LIBS_PREFIX}"|g' %installroot%%libdir%/cmake/hip/hip-config.cmake
+
+    # https://github.com/ROCm-Developer-Tools/HIP/issues/2678
+    sed -i '/__noinline__/d' %installroot%/usr/include/hip/amd_detail/host_defines.h
