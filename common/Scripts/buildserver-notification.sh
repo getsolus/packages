@@ -13,15 +13,18 @@ if [[ ! $(curl -s https://build.getsol.us | grep "${TAG}") ]] ; then
     exit
 fi
 
-# Look for build-ok from the tag
-while [[ ! $(curl -s https://build.getsol.us | grep -A 3 ${TAG} | grep build-ok) ]] ; do
+# Get the latest build-id for the $TAG
+BUILDID=$(curl -s https://build.getsol.us | grep -B 1 "${TAG}" | grep -o '[0-9]*' | sort -nr | head -1)
+echo "Build ID: ${BUILDID} | Tag: ${TAG}"
+
+# Look for build-ok from the build id
+while [[ ! $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build-ok) ]] ; do
 
     # Don't DoS the server
     sleep 20
 
     # Check if the build has failed
-    # FIXME: republish case, the tag doesn't change. Get the latest buildid instead (grep -B 1)
-    if [[ $(curl -s https://build.getsol.us | grep -A 3 "${TAG}" | grep build-failed) ]] ; then
+    if [[ $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build-failed) ]] ; then
         notify-send -u critical "${TAG} failed on the build server!" -t 0
         paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
         exit 1
