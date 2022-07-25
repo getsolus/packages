@@ -48,13 +48,13 @@ download_extract_index_if_changed() {
     NEW_INDEX_SHA=$(curl -s $INDEX_SHA_URL)
 
     if [[ $NEW_INDEX_SHA != $INDEX_SHA ]]; then
-        echo "Index SHA changed, redownloading index..."
+        echo "Index SHA changed, redownloading index... | sha: ${INDEX_SHA}"
         rm /tmp/unstable-index.xml
         curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
         unxz /tmp/unstable-index.xml.xz
         INDEX_SHA=$NEW_INDEX_SHA
     elif [[ $NEW_INDEX_SHA = $INDEX_SHA ]]; then
-        echo "Index SHA unchanged."
+        echo "Index SHA unchanged | sha: ${INDEX_SHA}"
     else
         echo "Unknown error occured."
         rm /tmp/unstable-index.xml.xz /tmp/unstable-index.xml
@@ -77,7 +77,6 @@ while [[ $(grep ${TAG} < /tmp/unstable-index.xml | wc -l) -lt 1 ]] ; do
     fi
     sleep 5
     # Download the new index
-    echo "INDEX SHA: ${INDEX_SHA}"
     download_extract_index_if_changed
 done
 
