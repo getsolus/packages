@@ -6,25 +6,26 @@
 # Additionally, if a package successfully builds it will then check if it gets successfully indexed into the repo.
 
 TAG=$(.././common/Scripts/gettag.py package.yml)
+BUILDSERVER_URL="https://build.getsol.us"
 
 # Check it's actually been published first.
-if [[ ! $(curl -s https://build.getsol.us | grep "${TAG}") ]] ; then
+if [[ ! $(curl -s $BUILDSERVER_URL | grep "${TAG}") ]] ; then
     echo "${TAG} not found on build queue, has it been published?"
     exit
 fi
 
 # Get the latest build-id for the $TAG
-BUILDID=$(curl -s https://build.getsol.us | grep -B 1 "${TAG}" | grep -o '[0-9]*' | sort -nr | head -1)
+BUILDID=$(curl -s $BUILDSERVER_URL | grep -B 1 "${TAG}" | grep -o '[0-9]*' | sort -nr | head -1)
 echo "Build ID: ${BUILDID} | Tag: ${TAG}"
 
 # Look for build-ok from the build id
-while [[ ! $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build-ok) ]] ; do
+while [[ ! $(curl -s $BUILDSERVER_URL | grep -A 4 ${BUILDID} | grep build-ok) ]] ; do
 
     # Don't DoS the server
     sleep 20
 
     # Check if the build has failed
-    if [[ $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build-failed) ]] ; then
+    if [[ $(curl -s $BUILDSERVER_URL | grep -A 4 ${BUILDID} | grep build-failed) ]] ; then
         notify-send -u critical "${TAG} failed on the build server!" -t 0
         paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
         exit 1
