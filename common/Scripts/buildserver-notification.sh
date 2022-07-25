@@ -31,8 +31,7 @@ while [[ ! $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build
     fi
 done
 
-echo "${TAG} successfully built, waiting for it to be indexed..."
-paplay /usr/share/sounds/freedesktop/stereo/message.oga
+echo "Build succeeded on the buildserver! Waiting for it to be indexed..."
 
 ### Now that it's built make sure it gets indexed into the repo.
 
@@ -46,7 +45,6 @@ unxz /tmp/unstable-index.xml.xz
 # Downloads and extracts the new index if the sha sum has changed.
 download_extract_index_if_changed() {
     NEW_INDEX_SHA=$(curl -s $INDEX_SHA_URL)
-    echo "NEW INDEX SHA ${NEW_INDEX_SHA}"
 
     if [[ $NEW_INDEX_SHA != $INDEX_SHA ]]; then
         echo "Index SHA changed, redownloading index..."
@@ -58,7 +56,7 @@ download_extract_index_if_changed() {
         echo "Index SHA unchanged."
     else
         echo "Unknown error occured."
-        rm unstable-index.xml.xz unstable-index.xml
+        rm /tmp/unstable-index.xml.xz /tmp/unstable-index.xml
         exit
     fi
 }
@@ -83,7 +81,7 @@ while [[ $(grep ${TAG} < /tmp/unstable-index.xml | wc -l) -lt 1 ]] ; do
 done
 
 # Successfully built and indexed, we're happy bunnies.
-echo "${TAG} indexed into the repo!"
+echo "Successfully indexed into the repo!"
 notify-send "${TAG} indexed into the repo!" -t 0
 paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 rm /tmp/unstable-index.xml
