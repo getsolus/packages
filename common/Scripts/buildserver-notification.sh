@@ -49,8 +49,8 @@ download_extract_index_if_changed() {
 
     if [[ $NEW_INDEX_SHA != $INDEX_SHA ]]; then
         echo "Index SHA changed, redownloading index..."
-        rm unstable-index.xml
-        curl -s $INDEX_XZ_URL -o unstable-index.xml.xz
+        rm /tmp/unstable-index.xml
+        curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
         unxz /tmp/unstable-index.xml.xz
         $INDEX_SHA = $NEW_INDEX_SHA
     elif [[ $NEW_INDEX_SHA = $INDEX_SHA ]]; then
