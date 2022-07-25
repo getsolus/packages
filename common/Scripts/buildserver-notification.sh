@@ -3,7 +3,7 @@
 # Requires notify-send.
 
 # Script to determine whether a published tag has completed on the build server and gives you a notification whether it has completed or failed.
-# If the unstable repo is found it will also notify when the package has been indexed into the repo.
+# Additionally, if a package successfully builds it will then check if it gets successfully indexed into the repo.
 
 TAG=$(.././common/Scripts/gettag.py package.yml)
 
@@ -31,37 +31,59 @@ while [[ ! $(curl -s https://build.getsol.us | grep -A 4 ${BUILDID} | grep build
     fi
 done
 
-# Only check if it's been indexed if the unstable repo exists
-# FIXME: the unstable repo can be called anything, how to make less hardcodey?
-UNSTABLE_FILE=/var/lib/eopkg/index/Unstable/eopkg-index.xml
-if [[ -f "$UNSTABLE_FILE" ]]; then
+echo "${TAG} successfully built, waiting for it to be indexed..."
+paplay /usr/share/sounds/freedesktop/stereo/message.oga
 
-    echo "${TAG} successfully built, waiting for it to be indexed..."
-    notify-send "${TAG} successfully built! Input password to get indexing check" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/message.oga
+### Now that it's built make sure it gets indexed into the repo.
 
-    echo "> Updating unstable to check..."
-    while [[ $(grep ${TAG} < $UNSTABLE_FILE | wc -l) -lt 1 ]] ; do
-        sudo eopkg ur
-        i=0
-        let "i+=1"
-        # Wait for one minute
-        if [[ $i == 12 ]]; then
-            echo "${TAG} Successfully built but hasen't been found in the index yet, please manually check."
-            notify-send -u low "${TAG} successfully built but hasen't been found in the index yet, please manually check." -t 0
-            paplay /usr/share/sounds/freedesktop/stereo/dialog-warning.oga
-            exit 1
-        fi
-        sleep 5
-    done
-    # Send notification and play sound for indexing check
-    echo "${TAG} indexed into the repo!"
-    notify-send "${TAG} indexed into the repo!" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
-else
-    # Send notification and play sound for no indexing check
-    echo "Unstable repo not found, skipping indexing check."
-    echo "${TAG} finished building!"
-    notify-send "${TAG} finished building!" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
-fi
+# Setup for index check
+INDEX_SHA_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz.sha1sum"
+INDEX_XZ_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz"
+INDEX_SHA=$(curl -s $INDEX_SHA_URL)
+curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
+unxz /tmp/unstable-index.xml.xz
+
+# Downloads and extracts the new index if the sha sum has changed.
+download_extract_index_if_changed() {
+    NEW_INDEX_SHA=$(curl -s $INDEX_SHA_URL)
+    echo "NEW INDEX SHA ${NEW_INDEX_SHA}"
+
+    if [[ $NEW_INDEX_SHA != $INDEX_SHA ]]; then
+        echo "Index SHA changed, redownloading index..."
+        rm unstable-index.xml
+        curl -s $INDEX_XZ_URL -o unstable-index.xml.xz
+        unxz /tmp/unstable-index.xml.xz
+        $INDEX_SHA = $NEW_INDEX_SHA
+    elif [[ $NEW_INDEX_SHA = $INDEX_SHA ]]; then
+        echo "Index SHA unchanged."
+    else
+        echo "Unknown error occured."
+        rm unstable-index.xml.xz unstable-index.xml
+        exit
+    fi
+}
+
+i=0
+# Look for the tag in the index
+# FIXME: some packages like libreoffice do not output a eopkg file matching the tag
+while [[ $(grep ${TAG} < /tmp/unstable-index.xml | wc -l) -lt 1 ]] ; do
+    ((i=i+1))
+    # Wait up to a minute (60 / (sleep) 5 = 12) before bailing
+    if [[ $i == 12 ]]; then
+        echo "${TAG} successfully built but hasn't been found in the index yet, please manually check."
+        notify-send -u low "${TAG} successfully built but hasen't been found in the index yet, please manually check." -t 0
+        paplay /usr/share/sounds/freedesktop/stereo/dialog-warning.oga
+        rm /tmp/unstable-index.xml
+        exit 1
+    fi
+    sleep 5
+    # Download the new index
+    echo "INDEX SHA: ${INDEX_SHA}"
+    download_extract_index_if_changed
+done
+
+# Successfully built and indexed, we're happy bunnies.
+echo "${TAG} indexed into the repo!"
+notify-send "${TAG} indexed into the repo!" -t 0
+paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+rm /tmp/unstable-index.xml
