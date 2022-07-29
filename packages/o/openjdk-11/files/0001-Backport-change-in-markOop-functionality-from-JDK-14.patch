@@ -1,9 +1,10 @@
-From 121038c8922b539428e196bd012c9157c94ae1a5 Mon Sep 17 00:00:00 2001
+From 3c38d062b9d1ce1749ac6eba928f597b66a05880 Mon Sep 17 00:00:00 2001
 From: Campbell Jones <git@serebit.com>
-Date: Sat, 18 Dec 2021 21:45:34 -0500
-Subject: [PATCH] Backport change in markOop functionality from JDK 14 for
- Clang
+Date: Sat, 18 Dec 2021 21:50:20 -0500
+Subject: [PATCH 1/1] 8229258: Backport patch from JDK 14 to allow building
+ with Clang 13
 
+This patch backports changes from JDK14 commit ae5615c6142a4dc0d9033462f4880d7b3c127e26. It does not rename the class to markWord as the original patch does, but instead converts markOop to a markWord equivalent in-place. This patch allows the JDK to be built with Clang 13, as it avoids undefined behavior. See here: https://bugs.openjdk.java.net/browse/JDK-8229258
 ---
  src/hotspot/cpu/aarch64/aarch64.ad            |  16 +-
  .../cpu/aarch64/c1_MacroAssembler_aarch64.cpp |   4 +-
@@ -111,10 +112,10 @@ Subject: [PATCH] Backport change in markOop functionality from JDK 14 for
  103 files changed, 782 insertions(+), 737 deletions(-)
 
 diff --git a/src/hotspot/cpu/aarch64/aarch64.ad b/src/hotspot/cpu/aarch64/aarch64.ad
-index d4ae8da07..2a38a6222 100644
+index 8f053cc505b..8ab2d1d79b6 100644
 --- a/src/hotspot/cpu/aarch64/aarch64.ad
 +++ b/src/hotspot/cpu/aarch64/aarch64.ad
-@@ -3381,11 +3381,11 @@ encode %{
+@@ -3493,11 +3493,11 @@ encode %{
  
      // Check for existing monitor
      if ((EmitSync & 0x02) == 0) {
@@ -128,7 +129,7 @@ index d4ae8da07..2a38a6222 100644
  
      // Initialize the box. (Must happen before we update the object mark!)
      __ str(tmp, Address(box, BasicLock::displaced_header_offset_in_bytes()));
-@@ -3409,7 +3409,7 @@ encode %{
+@@ -3521,7 +3521,7 @@ encode %{
      // markOop of object (disp_hdr) with the stack pointer.
      __ mov(rscratch1, sp);
      __ sub(disp_hdr, disp_hdr, rscratch1);
@@ -137,7 +138,7 @@ index d4ae8da07..2a38a6222 100644
      // If condition is true we are cont and hence we can store 0 as the
      // displaced header in the box, which indicates that it is a recursive lock.
      __ ands(tmp/*==0?*/, disp_hdr, tmp);   // Sets flags for result
-@@ -3424,15 +3424,15 @@ encode %{
+@@ -3536,15 +3536,15 @@ encode %{
        // otherwise m->owner may contain a thread or a stack address.
        //
        // Try to CAS m->owner from NULL to current thread.
@@ -156,7 +157,7 @@ index d4ae8da07..2a38a6222 100644
        __ str(tmp, Address(box, BasicLock::displaced_header_offset_in_bytes()));
      }
  
-@@ -3472,7 +3472,7 @@ encode %{
+@@ -3584,7 +3584,7 @@ encode %{
      // Handle existing monitor.
      if ((EmitSync & 0x02) == 0) {
        __ ldr(tmp, Address(oop, oopDesc::mark_offset_in_bytes()));
@@ -165,7 +166,7 @@ index d4ae8da07..2a38a6222 100644
      }
  
      // Check if it is still a light weight lock, this is is true if we
-@@ -3488,7 +3488,7 @@ encode %{
+@@ -3600,7 +3600,7 @@ encode %{
      // Handle existing monitor.
      if ((EmitSync & 0x02) == 0) {
        __ bind(object_has_monitor);
@@ -175,7 +176,7 @@ index d4ae8da07..2a38a6222 100644
        __ ldr(disp_hdr, Address(tmp, ObjectMonitor::recursions_offset_in_bytes()));
        __ eor(rscratch1, rscratch1, rthread); // Will be 0 if we are the owner.
 diff --git a/src/hotspot/cpu/aarch64/c1_MacroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/c1_MacroAssembler_aarch64.cpp
-index 218113b78..647aa7832 100644
+index 218113b7811..647aa78323d 100644
 --- a/src/hotspot/cpu/aarch64/c1_MacroAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/c1_MacroAssembler_aarch64.cpp
 @@ -82,7 +82,7 @@ int C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hdr
@@ -197,7 +198,7 @@ index 218113b78..647aa7832 100644
    str(t1, Address(obj, oopDesc::mark_offset_in_bytes()));
  
 diff --git a/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp
-index abc689f6f..90bc16a6f 100644
+index abc689f6f1d..90bc16a6fd4 100644
 --- a/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/gc/shenandoah/shenandoahBarrierSetAssembler_aarch64.cpp
 @@ -215,9 +215,9 @@ void ShenandoahBarrierSetAssembler::resolve_forward_pointer_not_null(MacroAssemb
@@ -227,7 +228,7 @@ index abc689f6f..90bc16a6f 100644
    __ b(*stub->continuation());
  
 diff --git a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
-index 578e0d140..283fa296f 100644
+index 4bab77d542f..9ab255d9508 100644
 --- a/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/macroAssembler_aarch64.cpp
 @@ -475,7 +475,7 @@ int MacroAssembler::biased_locking_enter(Register lock_reg,
@@ -297,10 +298,10 @@ index 578e0d140..283fa296f 100644
  }
  
 diff --git a/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp b/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
-index dfd204085..d9dd7a2ca 100644
+index 6fd216b9548..8c5a27db42e 100644
 --- a/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
 +++ b/src/hotspot/cpu/aarch64/templateTable_aarch64.cpp
-@@ -3613,7 +3613,7 @@ void TemplateTable::_new() {
+@@ -3611,7 +3611,7 @@ void TemplateTable::_new() {
      if (UseBiasedLocking) {
        __ ldr(rscratch1, Address(r4, Klass::prototype_header_offset()));
      } else {
@@ -310,7 +311,7 @@ index dfd204085..d9dd7a2ca 100644
      __ str(rscratch1, Address(r0, oopDesc::mark_offset_in_bytes()));
      __ store_klass_gap(r0, zr);  // zero klass gap for compressed oops
 diff --git a/src/hotspot/cpu/arm/c1_MacroAssembler_arm.cpp b/src/hotspot/cpu/arm/c1_MacroAssembler_arm.cpp
-index facfbdd4d..a6de7c014 100644
+index facfbdd4de0..a6de7c01473 100644
 --- a/src/hotspot/cpu/arm/c1_MacroAssembler_arm.cpp
 +++ b/src/hotspot/cpu/arm/c1_MacroAssembler_arm.cpp
 @@ -101,7 +101,7 @@ void C1_MacroAssembler::initialize_header(Register obj, Register klass, Register
@@ -343,7 +344,7 @@ index facfbdd4d..a6de7c014 100644
  
    // Check for recursive locking
 diff --git a/src/hotspot/cpu/arm/interp_masm_arm.cpp b/src/hotspot/cpu/arm/interp_masm_arm.cpp
-index 273f92bdf..ceb5deb25 100644
+index 273f92bdf1a..ceb5deb259e 100644
 --- a/src/hotspot/cpu/arm/interp_masm_arm.cpp
 +++ b/src/hotspot/cpu/arm/interp_masm_arm.cpp
 @@ -995,8 +995,8 @@ void InterpreterMacroAssembler::lock_object(Register Rlock) {
@@ -367,7 +368,7 @@ index 273f92bdf..ceb5deb25 100644
  
  #endif // !AARCH64
 diff --git a/src/hotspot/cpu/arm/macroAssembler_arm.cpp b/src/hotspot/cpu/arm/macroAssembler_arm.cpp
-index 9e22fd152..87245fff4 100644
+index 9e22fd152fc..87245fff40a 100644
 --- a/src/hotspot/cpu/arm/macroAssembler_arm.cpp
 +++ b/src/hotspot/cpu/arm/macroAssembler_arm.cpp
 @@ -1933,7 +1933,7 @@ int MacroAssembler::biased_locking_enter(Register obj_reg, Register swap_reg, Re
@@ -474,7 +475,7 @@ index 9e22fd152..87245fff4 100644
  
    // Check for recursive lock
 diff --git a/src/hotspot/cpu/arm/sharedRuntime_arm.cpp b/src/hotspot/cpu/arm/sharedRuntime_arm.cpp
-index 25366a8af..628817777 100644
+index 25366a8af54..628817777f5 100644
 --- a/src/hotspot/cpu/arm/sharedRuntime_arm.cpp
 +++ b/src/hotspot/cpu/arm/sharedRuntime_arm.cpp
 @@ -1228,22 +1228,22 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
@@ -529,7 +530,7 @@ index 25366a8af..628817777 100644
  
      // Check for recursive lock
 diff --git a/src/hotspot/cpu/arm/templateTable_arm.cpp b/src/hotspot/cpu/arm/templateTable_arm.cpp
-index 3adf9fbd8..289910095 100644
+index 3adf9fbd88c..289910095fa 100644
 --- a/src/hotspot/cpu/arm/templateTable_arm.cpp
 +++ b/src/hotspot/cpu/arm/templateTable_arm.cpp
 @@ -4607,7 +4607,7 @@ void TemplateTable::_new() {
@@ -542,7 +543,7 @@ index 3adf9fbd8..289910095 100644
      // mark
      __ str(Rtemp, Address(Robj, oopDesc::mark_offset_in_bytes()));
 diff --git a/src/hotspot/cpu/ppc/c1_MacroAssembler_ppc.cpp b/src/hotspot/cpu/ppc/c1_MacroAssembler_ppc.cpp
-index 0be729060..c6f60071b 100644
+index 0be72906049..c6f60071b21 100644
 --- a/src/hotspot/cpu/ppc/c1_MacroAssembler_ppc.cpp
 +++ b/src/hotspot/cpu/ppc/c1_MacroAssembler_ppc.cpp
 @@ -110,7 +110,7 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
@@ -573,7 +574,7 @@ index 0be729060..c6f60071b 100644
    std(t1, oopDesc::mark_offset_in_bytes(), obj);
    store_klass(obj, klass);
 diff --git a/src/hotspot/cpu/ppc/interp_masm_ppc_64.cpp b/src/hotspot/cpu/ppc/interp_masm_ppc_64.cpp
-index e800e7d01..728f3c9f6 100644
+index e800e7d014b..728f3c9f649 100644
 --- a/src/hotspot/cpu/ppc/interp_masm_ppc_64.cpp
 +++ b/src/hotspot/cpu/ppc/interp_masm_ppc_64.cpp
 @@ -901,7 +901,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
@@ -595,7 +596,7 @@ index e800e7d01..728f3c9f6 100644
      and_(R0/*==0?*/, current_header, tmp);
      // If condition is true we are done and hence we can store 0 in the displaced
 diff --git a/src/hotspot/cpu/ppc/macroAssembler_ppc.cpp b/src/hotspot/cpu/ppc/macroAssembler_ppc.cpp
-index be0125db0..112e7cebc 100644
+index be0125db0a2..112e7cebca0 100644
 --- a/src/hotspot/cpu/ppc/macroAssembler_ppc.cpp
 +++ b/src/hotspot/cpu/ppc/macroAssembler_ppc.cpp
 @@ -2089,7 +2089,7 @@ void MacroAssembler::biased_locking_enter(ConditionRegister cr_reg, Register obj
@@ -793,7 +794,7 @@ index be0125db0..112e7cebc 100644
  
      // It's inflated.
 diff --git a/src/hotspot/cpu/ppc/templateTable_ppc_64.cpp b/src/hotspot/cpu/ppc/templateTable_ppc_64.cpp
-index b1411b0fc..5e5927076 100644
+index b1411b0fcec..5e592707672 100644
 --- a/src/hotspot/cpu/ppc/templateTable_ppc_64.cpp
 +++ b/src/hotspot/cpu/ppc/templateTable_ppc_64.cpp
 @@ -3806,7 +3806,7 @@ void TemplateTable::_new() {
@@ -806,7 +807,7 @@ index b1411b0fc..5e5927076 100644
      __ std(Rscratch, oopDesc::mark_offset_in_bytes(), RallocatedObject);
  
 diff --git a/src/hotspot/cpu/s390/c1_MacroAssembler_s390.cpp b/src/hotspot/cpu/s390/c1_MacroAssembler_s390.cpp
-index 3f6d7eee6..5c71e7b5b 100644
+index 3f6d7eee689..5c71e7b5b57 100644
 --- a/src/hotspot/cpu/s390/c1_MacroAssembler_s390.cpp
 +++ b/src/hotspot/cpu/s390/c1_MacroAssembler_s390.cpp
 @@ -96,7 +96,7 @@ void C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hd
@@ -851,7 +852,7 @@ index 3f6d7eee6..5c71e7b5b 100644
    z_stg(t1, Address(obj, oopDesc::mark_offset_in_bytes()));
  
 diff --git a/src/hotspot/cpu/s390/interp_masm_s390.cpp b/src/hotspot/cpu/s390/interp_masm_s390.cpp
-index 5143dc4db..e36f39763 100644
+index 5143dc4dbee..e36f3976344 100644
 --- a/src/hotspot/cpu/s390/interp_masm_s390.cpp
 +++ b/src/hotspot/cpu/s390/interp_masm_s390.cpp
 @@ -989,7 +989,7 @@ void InterpreterMacroAssembler::lock_object(Register monitor, Register object) {
@@ -873,7 +874,7 @@ index 5143dc4db..e36f39763 100644
  
    // If condition is true we are done and hence we can store 0 in the displaced
 diff --git a/src/hotspot/cpu/s390/macroAssembler_s390.cpp b/src/hotspot/cpu/s390/macroAssembler_s390.cpp
-index 58ed963e5..ad74844aa 100644
+index 58ed963e57f..ad74844aa82 100644
 --- a/src/hotspot/cpu/s390/macroAssembler_s390.cpp
 +++ b/src/hotspot/cpu/s390/macroAssembler_s390.cpp
 @@ -3200,15 +3200,15 @@ void MacroAssembler::biased_locking_enter(Register  obj_reg,
@@ -995,7 +996,7 @@ index 58ed963e5..ad74844aa 100644
    }
  
 diff --git a/src/hotspot/cpu/s390/templateTable_s390.cpp b/src/hotspot/cpu/s390/templateTable_s390.cpp
-index 5f6c7f205..f095cc5ff 100644
+index 5f6c7f205ba..f095cc5ff5e 100644
 --- a/src/hotspot/cpu/s390/templateTable_s390.cpp
 +++ b/src/hotspot/cpu/s390/templateTable_s390.cpp
 @@ -3865,7 +3865,7 @@ void TemplateTable::_new() {
@@ -1008,7 +1009,7 @@ index 5f6c7f205..f095cc5ff 100644
  
      __ store_klass_gap(Rzero, RallocatedObject);  // Zero klass gap for compressed oops.
 diff --git a/src/hotspot/cpu/sparc/c1_MacroAssembler_sparc.cpp b/src/hotspot/cpu/sparc/c1_MacroAssembler_sparc.cpp
-index 27c525aad..d9bbafd8c 100644
+index 27c525aad15..d9bbafd8cff 100644
 --- a/src/hotspot/cpu/sparc/c1_MacroAssembler_sparc.cpp
 +++ b/src/hotspot/cpu/sparc/c1_MacroAssembler_sparc.cpp
 @@ -97,7 +97,7 @@ void C1_MacroAssembler::lock_object(Register Rmark, Register Roop, Register Rbox
@@ -1030,7 +1031,7 @@ index 27c525aad..d9bbafd8c 100644
    st_ptr(t1, obj, oopDesc::mark_offset_in_bytes());
    if (UseCompressedClassPointers) {
 diff --git a/src/hotspot/cpu/sparc/interp_masm_sparc.cpp b/src/hotspot/cpu/sparc/interp_masm_sparc.cpp
-index d6ff62c11..eaf8afaa0 100644
+index d6ff62c118b..eaf8afaa034 100644
 --- a/src/hotspot/cpu/sparc/interp_masm_sparc.cpp
 +++ b/src/hotspot/cpu/sparc/interp_masm_sparc.cpp
 @@ -1212,7 +1212,7 @@ void InterpreterMacroAssembler::lock_object(Register lock_reg, Register Object)
@@ -1052,7 +1053,7 @@ index d6ff62c11..eaf8afaa0 100644
      // unrelated to the actual MMU page size.  We use a 'logical' page size of
      // 4096 bytes.   F..FFF003 is designed to fit conveniently in the SIMM13 immediate
 diff --git a/src/hotspot/cpu/sparc/macroAssembler_sparc.cpp b/src/hotspot/cpu/sparc/macroAssembler_sparc.cpp
-index 497991b7e..17bacfb26 100644
+index 497991b7e30..17bacfb2605 100644
 --- a/src/hotspot/cpu/sparc/macroAssembler_sparc.cpp
 +++ b/src/hotspot/cpu/sparc/macroAssembler_sparc.cpp
 @@ -2469,15 +2469,15 @@ void MacroAssembler::biased_locking_enter(Register obj_reg, Register mark_reg,
@@ -1167,7 +1168,7 @@ index 497991b7e..17bacfb26 100644
        // Intentional fall-through into done
     }
 diff --git a/src/hotspot/cpu/sparc/sharedRuntime_sparc.cpp b/src/hotspot/cpu/sparc/sharedRuntime_sparc.cpp
-index aa95c38e2..fafbdec97 100644
+index aa95c38e247..fafbdec976d 100644
 --- a/src/hotspot/cpu/sparc/sharedRuntime_sparc.cpp
 +++ b/src/hotspot/cpu/sparc/sharedRuntime_sparc.cpp
 @@ -1835,19 +1835,19 @@ nmethod* SharedRuntime::generate_native_wrapper(MacroAssembler* masm,
@@ -1196,7 +1197,7 @@ index aa95c38e2..fafbdec97 100644
      __ br(Assembler::equal, false, Assembler::pn, slowCase);
      __ delayed()->nop();
 diff --git a/src/hotspot/cpu/sparc/templateTable_sparc.cpp b/src/hotspot/cpu/sparc/templateTable_sparc.cpp
-index 67792cfa7..4b90edabf 100644
+index 67792cfa771..4b90edabf39 100644
 --- a/src/hotspot/cpu/sparc/templateTable_sparc.cpp
 +++ b/src/hotspot/cpu/sparc/templateTable_sparc.cpp
 @@ -3518,7 +3518,7 @@ void TemplateTable::_new() {
@@ -1209,7 +1210,7 @@ index 67792cfa7..4b90edabf 100644
    __ st_ptr(G4_scratch, RallocatedObject, oopDesc::mark_offset_in_bytes());       // mark
    __ store_klass_gap(G0, RallocatedObject);         // klass gap if compressed
 diff --git a/src/hotspot/cpu/x86/c1_MacroAssembler_x86.cpp b/src/hotspot/cpu/x86/c1_MacroAssembler_x86.cpp
-index 25353446f..eea15526e 100644
+index 25353446f22..eea15526ef5 100644
 --- a/src/hotspot/cpu/x86/c1_MacroAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/c1_MacroAssembler_x86.cpp
 @@ -59,7 +59,7 @@ int C1_MacroAssembler::lock_object(Register hdr, Register obj, Register disp_hdr
@@ -1231,7 +1232,7 @@ index 25353446f..eea15526e 100644
  #ifdef _LP64
    if (UseCompressedClassPointers) { // Take care not to kill klass
 diff --git a/src/hotspot/cpu/x86/gc/shenandoah/shenandoahBarrierSetAssembler_x86.cpp b/src/hotspot/cpu/x86/gc/shenandoah/shenandoahBarrierSetAssembler_x86.cpp
-index cffa78939..769002af6 100644
+index cffa78939f2..769002af6fa 100644
 --- a/src/hotspot/cpu/x86/gc/shenandoah/shenandoahBarrierSetAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/gc/shenandoah/shenandoahBarrierSetAssembler_x86.cpp
 @@ -653,7 +653,7 @@ void ShenandoahBarrierSetAssembler::cmpxchg_oop(MacroAssembler* masm,
@@ -1244,7 +1245,7 @@ index cffa78939..769002af6 100644
    __ jcc(Assembler::zero, L_failure);      // When it is 00, then also not forwarded
  
 diff --git a/src/hotspot/cpu/x86/macroAssembler_x86.cpp b/src/hotspot/cpu/x86/macroAssembler_x86.cpp
-index d3d62ea05..c72e9500e 100644
+index d3d62ea05cf..c72e9500eb5 100644
 --- a/src/hotspot/cpu/x86/macroAssembler_x86.cpp
 +++ b/src/hotspot/cpu/x86/macroAssembler_x86.cpp
 @@ -1118,7 +1118,7 @@ int MacroAssembler::biased_locking_enter(Register lock_reg,
@@ -1438,7 +1439,7 @@ index d3d62ea05..c72e9500e 100644
  
      // It's inflated.
 diff --git a/src/hotspot/cpu/x86/sharedRuntime_x86.cpp b/src/hotspot/cpu/x86/sharedRuntime_x86.cpp
-index a68cbe811..973d6c44c 100644
+index a68cbe811a2..973d6c44ca5 100644
 --- a/src/hotspot/cpu/x86/sharedRuntime_x86.cpp
 +++ b/src/hotspot/cpu/x86/sharedRuntime_x86.cpp
 @@ -59,12 +59,12 @@ void SharedRuntime::inline_check_hashcode_from_object_header(MacroAssembler* mas
@@ -1478,7 +1479,7 @@ index a68cbe811..973d6c44c 100644
    __ ret(0);
    __ bind(slowCase);
 diff --git a/src/hotspot/cpu/x86/templateTable_x86.cpp b/src/hotspot/cpu/x86/templateTable_x86.cpp
-index 311a54f1b..b726023a6 100644
+index 311a54f1b5e..b726023a6c0 100644
 --- a/src/hotspot/cpu/x86/templateTable_x86.cpp
 +++ b/src/hotspot/cpu/x86/templateTable_x86.cpp
 @@ -4103,7 +4103,7 @@ void TemplateTable::_new() {
@@ -1491,7 +1492,7 @@ index 311a54f1b..b726023a6 100644
      }
  #ifdef _LP64
 diff --git a/src/hotspot/cpu/zero/cppInterpreter_zero.cpp b/src/hotspot/cpu/zero/cppInterpreter_zero.cpp
-index 9331d02ce..c944ac63d 100644
+index 9331d02ce7f..c944ac63d1e 100644
 --- a/src/hotspot/cpu/zero/cppInterpreter_zero.cpp
 +++ b/src/hotspot/cpu/zero/cppInterpreter_zero.cpp
 @@ -274,7 +274,7 @@ int CppInterpreter::native_entry(Method* method, intptr_t UNUSED, TRAPS) {
@@ -1513,10 +1514,10 @@ index 9331d02ce..c944ac63d 100644
          monitor->set_obj(rcvr); {
            HandleMark hm(thread);
 diff --git a/src/hotspot/share/classfile/altHashing.cpp b/src/hotspot/share/classfile/altHashing.cpp
-index 7143e728e..8cb34e0fb 100644
+index 25d2728b445..4bc17bc1968 100644
 --- a/src/hotspot/share/classfile/altHashing.cpp
 +++ b/src/hotspot/share/classfile/altHashing.cpp
-@@ -52,8 +52,8 @@
+@@ -57,8 +57,8 @@
  // objects.  We don't want to call the synchronizer hash code to install
  // this value because it may safepoint.
  static intptr_t object_hash(Klass* k) {
@@ -1528,10 +1529,10 @@ index 7143e728e..8cb34e0fb 100644
  
  // Seed value used for each alternative hash calculated.
 diff --git a/src/hotspot/share/classfile/systemDictionary.cpp b/src/hotspot/share/classfile/systemDictionary.cpp
-index f21fbaf2b..b7b8f2354 100644
+index ed22bb21e84..61dd6825dc4 100644
 --- a/src/hotspot/share/classfile/systemDictionary.cpp
 +++ b/src/hotspot/share/classfile/systemDictionary.cpp
-@@ -2187,7 +2187,7 @@ void SystemDictionary::update_dictionary(unsigned int d_hash,
+@@ -2183,7 +2183,7 @@ void SystemDictionary::update_dictionary(unsigned int d_hash,
        // NOTE that we must only do this when the class is initally
        // defined, not each time it is referenced from a new class loader
        if (k->class_loader() == class_loader()) {
@@ -1541,7 +1542,7 @@ index f21fbaf2b..b7b8f2354 100644
      }
  
 diff --git a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
-index c98691ea7..08866e1bc 100644
+index c98691ea7a9..08866e1bcf2 100644
 --- a/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
 +++ b/src/hotspot/share/gc/cms/concurrentMarkSweepGeneration.cpp
 @@ -7755,10 +7755,10 @@ bool CMSCollector::take_from_overflow_list(size_t num, CMSMarkStack* stack) {
@@ -1666,7 +1667,7 @@ index c98691ea7..08866e1bc 100644
      markOop m = _preserved_mark_stack.pop();
      p->set_mark_raw(m);
 diff --git a/src/hotspot/share/gc/cms/freeChunk.hpp b/src/hotspot/share/gc/cms/freeChunk.hpp
-index a48a6dd1f..2e0b7cc0e 100644
+index a48a6dd1fff..2e0b7cc0e52 100644
 --- a/src/hotspot/share/gc/cms/freeChunk.hpp
 +++ b/src/hotspot/share/gc/cms/freeChunk.hpp
 @@ -62,8 +62,8 @@ class FreeChunk {
@@ -1713,7 +1714,7 @@ index a48a6dd1f..2e0b7cc0e 100644
  #endif
      assert(!is_free(), "Error");
 diff --git a/src/hotspot/share/gc/cms/parOopClosures.inline.hpp b/src/hotspot/share/gc/cms/parOopClosures.inline.hpp
-index 609a14868..e73659121 100644
+index 609a148686f..e73659121d4 100644
 --- a/src/hotspot/share/gc/cms/parOopClosures.inline.hpp
 +++ b/src/hotspot/share/gc/cms/parOopClosures.inline.hpp
 @@ -47,7 +47,7 @@ template <class T> inline void ParScanWeakRefClosure::do_oop_work(T* p) {
@@ -1735,7 +1736,7 @@ index 609a14868..e73659121 100644
          RawAccess<IS_NOT_NULL>::oop_store(p, new_obj);
          log_develop_trace(gc, scavenge)("{%s %s ( " PTR_FORMAT " ) " PTR_FORMAT " -> " PTR_FORMAT " (%d)}",
 diff --git a/src/hotspot/share/gc/cms/promotionInfo.cpp b/src/hotspot/share/gc/cms/promotionInfo.cpp
-index 971368c12..776e273ae 100644
+index 971368c121d..776e273aea3 100644
 --- a/src/hotspot/share/gc/cms/promotionInfo.cpp
 +++ b/src/hotspot/share/gc/cms/promotionInfo.cpp
 @@ -95,13 +95,13 @@ void PromotionInfo::track(PromotedObject* trackOop, Klass* klassOfOop) {
@@ -1755,7 +1756,7 @@ index 971368c12..776e273ae 100644
      // cleared. The remainder of the check would be identical to the
      // condition checked in must_be_preserved() above, so we don't really
 diff --git a/src/hotspot/share/gc/g1/g1FullGCCompactionPoint.cpp b/src/hotspot/share/gc/g1/g1FullGCCompactionPoint.cpp
-index 76e9e77d7..bfc358185 100644
+index 76e9e77d739..bfc3581851d 100644
 --- a/src/hotspot/share/gc/g1/g1FullGCCompactionPoint.cpp
 +++ b/src/hotspot/share/gc/g1/g1FullGCCompactionPoint.cpp
 @@ -116,11 +116,11 @@ void G1FullGCCompactionPoint::forward(oop object, size_t size) {
@@ -1774,7 +1775,7 @@ index 76e9e77d7..bfc358185 100644
      assert(object->forwardee() == NULL, "should be forwarded to NULL");
    }
 diff --git a/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp b/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
-index 98a2fe7f1..e0976fd5c 100644
+index 98a2fe7f1c3..e0976fd5c4d 100644
 --- a/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
 +++ b/src/hotspot/share/gc/g1/g1FullGCMarker.inline.hpp
 @@ -51,7 +51,7 @@ inline bool G1FullGCMarker::mark_object(oop obj) {
@@ -1787,7 +1788,7 @@ index 98a2fe7f1..e0976fd5c 100644
      preserved_stack()->push(obj, mark);
    }
 diff --git a/src/hotspot/share/gc/g1/g1FullGCOopClosures.inline.hpp b/src/hotspot/share/gc/g1/g1FullGCOopClosures.inline.hpp
-index f19a57846..88e2a4ee0 100644
+index f19a578460b..88e2a4ee0ec 100644
 --- a/src/hotspot/share/gc/g1/g1FullGCOopClosures.inline.hpp
 +++ b/src/hotspot/share/gc/g1/g1FullGCOopClosures.inline.hpp
 @@ -76,11 +76,11 @@ template <class T> inline void G1AdjustClosure::adjust_pointer(T* p) {
@@ -1806,7 +1807,7 @@ index f19a57846..88e2a4ee0 100644
    }
  
 diff --git a/src/hotspot/share/gc/g1/g1OopClosures.inline.hpp b/src/hotspot/share/gc/g1/g1OopClosures.inline.hpp
-index c25491323..81f9e1d0e 100644
+index c2549132350..81f9e1d0eba 100644
 --- a/src/hotspot/share/gc/g1/g1OopClosures.inline.hpp
 +++ b/src/hotspot/share/gc/g1/g1OopClosures.inline.hpp
 @@ -250,8 +250,8 @@ void G1ParCopyClosure<barrier, do_mark_object>::do_oop_work(T* p) {
@@ -1821,7 +1822,7 @@ index c25491323..81f9e1d0e 100644
        forwardee = _par_scan_state->copy_to_survivor_space(state, obj, m);
      }
 diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
-index 72a607168..d08155148 100644
+index 72a607168ed..d081551486e 100644
 --- a/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
 +++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.cpp
 @@ -188,8 +188,8 @@ HeapWord* G1ParScanThreadState::allocate_in_next_plab(InCSetState const state,
@@ -1860,7 +1861,7 @@ index 72a607168..d08155148 100644
        _age_table.add(age, word_sz);
      } else {
 diff --git a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
-index f1fba8e94..b8e21009a 100644
+index f1fba8e947a..b8e21009adc 100644
 --- a/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
 +++ b/src/hotspot/share/gc/g1/g1ParScanThreadState.inline.hpp
 @@ -42,8 +42,8 @@ template <class T> void G1ParScanThreadState::do_oop_evac(T* p) {
@@ -1875,7 +1876,7 @@ index f1fba8e94..b8e21009a 100644
        obj = copy_to_survivor_space(in_cset_state, obj, m);
      }
 diff --git a/src/hotspot/share/gc/parallel/psMarkSweepDecorator.cpp b/src/hotspot/share/gc/parallel/psMarkSweepDecorator.cpp
-index eed0fa51b..43c336892 100644
+index eed0fa51b51..43c33689293 100644
 --- a/src/hotspot/share/gc/parallel/psMarkSweepDecorator.cpp
 +++ b/src/hotspot/share/gc/parallel/psMarkSweepDecorator.cpp
 @@ -113,8 +113,8 @@ void PSMarkSweepDecorator::precompact() {
@@ -1917,7 +1918,7 @@ index eed0fa51b..43c336892 100644
      } else {
        // prefetch beyond q
 diff --git a/src/hotspot/share/gc/parallel/psPromotionLAB.cpp b/src/hotspot/share/gc/parallel/psPromotionLAB.cpp
-index a36350d36..e39588f2d 100644
+index a36350d36b7..e39588f2d59 100644
 --- a/src/hotspot/share/gc/parallel/psPromotionLAB.cpp
 +++ b/src/hotspot/share/gc/parallel/psPromotionLAB.cpp
 @@ -82,7 +82,7 @@ void PSPromotionLAB::flush() {
@@ -1930,7 +1931,7 @@ index a36350d36..e39588f2d 100644
    const size_t array_length =
      pointer_delta(tlab_end, top()) - typeArrayOopDesc::header_size(T_INT);
 diff --git a/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp b/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
-index 1ef900783..15c95e3ea 100644
+index 1ef900783d4..15c95e3ea1e 100644
 --- a/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
 +++ b/src/hotspot/share/gc/parallel/psPromotionManager.inline.hpp
 @@ -119,13 +119,13 @@ inline oop PSPromotionManager::copy_to_survivor_space(oop o) {
@@ -1951,7 +1952,7 @@ index 1ef900783..15c95e3ea 100644
      if (!promote_immediately) {
        // Try allocating obj in to-space (unless too old)
 diff --git a/src/hotspot/share/gc/parallel/psScavenge.cpp b/src/hotspot/share/gc/parallel/psScavenge.cpp
-index 1353c9519..70f84d0a9 100644
+index 1353c9519ee..70f84d0a995 100644
 --- a/src/hotspot/share/gc/parallel/psScavenge.cpp
 +++ b/src/hotspot/share/gc/parallel/psScavenge.cpp
 @@ -276,7 +276,7 @@ bool PSScavenge::invoke_no_policy() {
@@ -1975,7 +1976,7 @@ index 1353c9519..70f84d0a9 100644
    } else {
      // We want to smooth out our startup times for the AdaptiveSizePolicy
 diff --git a/src/hotspot/share/gc/serial/markSweep.cpp b/src/hotspot/share/gc/serial/markSweep.cpp
-index fcc4f40ec..c799afbe5 100644
+index fcc4f40ec3b..c799afbe5a8 100644
 --- a/src/hotspot/share/gc/serial/markSweep.cpp
 +++ b/src/hotspot/share/gc/serial/markSweep.cpp
 @@ -131,7 +131,7 @@ template <class T> inline void MarkSweep::follow_root(T* p) {
@@ -1988,7 +1989,7 @@ index fcc4f40ec..c799afbe5 100644
        follow_object(obj);
      }
 diff --git a/src/hotspot/share/gc/serial/markSweep.inline.hpp b/src/hotspot/share/gc/serial/markSweep.inline.hpp
-index 25a5a315f..1de9ce19f 100644
+index 25a5a315fce..1de9ce19f88 100644
 --- a/src/hotspot/share/gc/serial/markSweep.inline.hpp
 +++ b/src/hotspot/share/gc/serial/markSweep.inline.hpp
 @@ -39,9 +39,9 @@ inline void MarkSweep::mark_object(oop obj) {
@@ -2028,7 +2029,7 @@ index 25a5a315f..1de9ce19f 100644
             "should be forwarded");
  
 diff --git a/src/hotspot/share/gc/shared/ageTable.cpp b/src/hotspot/share/gc/shared/ageTable.cpp
-index 14cac1b4b..f27e7dcd2 100644
+index 14cac1b4bb5..f27e7dcd210 100644
 --- a/src/hotspot/share/gc/shared/ageTable.cpp
 +++ b/src/hotspot/share/gc/shared/ageTable.cpp
 @@ -79,8 +79,8 @@ uint AgeTable::compute_tenuring_threshold(size_t desired_survivor_size) {
@@ -2043,7 +2044,7 @@ index 14cac1b4b..f27e7dcd2 100644
    } else {
      size_t total = 0;
 diff --git a/src/hotspot/share/gc/shared/ageTable.hpp b/src/hotspot/share/gc/shared/ageTable.hpp
-index 4d65fca5a..65deab358 100644
+index 4d65fca5ad9..65deab358f6 100644
 --- a/src/hotspot/share/gc/shared/ageTable.hpp
 +++ b/src/hotspot/share/gc/shared/ageTable.hpp
 @@ -41,7 +41,7 @@ class AgeTable {
@@ -2056,7 +2057,7 @@ index 4d65fca5a..65deab358 100644
    // instance variables
    size_t sizes[table_size];
 diff --git a/src/hotspot/share/gc/shared/gc_globals.hpp b/src/hotspot/share/gc/shared/gc_globals.hpp
-index a77964e35..1ebe5719c 100644
+index a77964e35ce..1ebe5719cdb 100644
 --- a/src/hotspot/share/gc/shared/gc_globals.hpp
 +++ b/src/hotspot/share/gc/shared/gc_globals.hpp
 @@ -816,12 +816,12 @@
@@ -2075,7 +2076,7 @@ index a77964e35..1ebe5719c 100644
                                                                              \
    product(uintx, TargetSurvivorRatio,    50,                                \
 diff --git a/src/hotspot/share/gc/shared/memAllocator.cpp b/src/hotspot/share/gc/shared/memAllocator.cpp
-index e84af118a..5b8d78c7c 100644
+index e84af118a54..5b8d78c7c8e 100644
 --- a/src/hotspot/share/gc/shared/memAllocator.cpp
 +++ b/src/hotspot/share/gc/shared/memAllocator.cpp
 @@ -400,7 +400,7 @@ oop MemAllocator::finish(HeapWord* mem) const {
@@ -2088,7 +2089,7 @@ index e84af118a..5b8d78c7c 100644
    // Need a release store to ensure array/class length, mark word, and
    // object zeroing are visible before setting the klass non-NULL, for
 diff --git a/src/hotspot/share/gc/shared/preservedMarks.inline.hpp b/src/hotspot/share/gc/shared/preservedMarks.inline.hpp
-index e246a8a5b..42691d63b 100644
+index e246a8a5b17..42691d63b9c 100644
 --- a/src/hotspot/share/gc/shared/preservedMarks.inline.hpp
 +++ b/src/hotspot/share/gc/shared/preservedMarks.inline.hpp
 @@ -31,7 +31,7 @@
@@ -2101,7 +2102,7 @@ index e246a8a5b..42691d63b 100644
  
  inline void PreservedMarks::push(oop obj, markOop m) {
 diff --git a/src/hotspot/share/gc/shared/space.cpp b/src/hotspot/share/gc/shared/space.cpp
-index 5b6b2b1c7..a46bac055 100644
+index 5b6b2b1c798..a46bac055e5 100644
 --- a/src/hotspot/share/gc/shared/space.cpp
 +++ b/src/hotspot/share/gc/shared/space.cpp
 @@ -651,14 +651,14 @@ void ContiguousSpace::allocate_temporary_filler(int factor) {
@@ -2122,7 +2123,7 @@ index 5b6b2b1c7..a46bac055 100644
      obj->set_klass(SystemDictionary::Object_klass());
    }
 diff --git a/src/hotspot/share/gc/shared/space.inline.hpp b/src/hotspot/share/gc/shared/space.inline.hpp
-index ad22b6c42..3732606bc 100644
+index ad22b6c4283..3732606bce5 100644
 --- a/src/hotspot/share/gc/shared/space.inline.hpp
 +++ b/src/hotspot/share/gc/shared/space.inline.hpp
 @@ -118,7 +118,7 @@ public:
@@ -2146,7 +2147,7 @@ index ad22b6c42..3732606bc 100644
      if (space->scanned_block_is_obj(cur_obj) && oop(cur_obj)->is_gc_marked()) {
        // prefetch beyond cur_obj
 diff --git a/src/hotspot/share/gc/shenandoah/shenandoahAsserts.cpp b/src/hotspot/share/gc/shenandoah/shenandoahAsserts.cpp
-index 1f8b79d5e..d9ecdc8f7 100644
+index 1f8b79d5ef0..d9ecdc8f7b1 100644
 --- a/src/hotspot/share/gc/shenandoah/shenandoahAsserts.cpp
 +++ b/src/hotspot/share/gc/shenandoah/shenandoahAsserts.cpp
 @@ -60,7 +60,7 @@ void ShenandoahAsserts::print_obj(ShenandoahMessageBuffer& msg, oop obj) {
@@ -2159,7 +2160,7 @@ index 1f8b79d5e..d9ecdc8f7 100644
    ShenandoahMarkingContext* const ctx = heap->marking_context();
  
 diff --git a/src/hotspot/share/gc/shenandoah/shenandoahForwarding.inline.hpp b/src/hotspot/share/gc/shenandoah/shenandoahForwarding.inline.hpp
-index 50d9c5015..de79a3847 100644
+index 50d9c501584..077eb505ccf 100644
 --- a/src/hotspot/share/gc/shenandoah/shenandoahForwarding.inline.hpp
 +++ b/src/hotspot/share/gc/shenandoah/shenandoahForwarding.inline.hpp
 @@ -40,8 +40,8 @@ inline HeapWord* ShenandoahForwarding::get_forwardee_raw_unchecked(oop obj) {
@@ -2169,7 +2170,7 @@ index 50d9c5015..de79a3847 100644
 -  if (mark->is_marked()) {
 -    HeapWord* fwdptr = (HeapWord*) mark->clear_lock_bits();
 +  if (mark.is_marked()) {
-+    HeapWord* fwdptr = (HeapWord*) mark.clear_lock_bits();
++    HeapWord* fwdptr = (HeapWord*) mark.clear_lock_bits().to_pointer();
      if (fwdptr != NULL) {
        return fwdptr;
      }
@@ -2180,7 +2181,7 @@ index 50d9c5015..de79a3847 100644
 -  if (mark->is_marked()) {
 -    HeapWord* fwdptr = (HeapWord*)mark->clear_lock_bits();
 +  if (mark.is_marked()) {
-+    HeapWord* fwdptr = (HeapWord*)mark.clear_lock_bits();
++    HeapWord* fwdptr = (HeapWord*)mark.clear_lock_bits().to_pointer();
      assert(fwdptr != NULL, "Forwarding pointer is never null here");
      return oop(fwdptr);
    } else {
@@ -2197,7 +2198,7 @@ index 50d9c5015..de79a3847 100644
 -  if (old_mark->is_marked()) {
 -    return (oop) old_mark->clear_lock_bits();
 +  if (old_mark.is_marked()) {
-+    return (oop) old_mark.clear_lock_bits();
++    return (oop) old_mark.clear_lock_bits().to_pointer();
    }
  
 -  markOop new_mark = markOopDesc::encode_pointer_as_mark(update);
@@ -2207,12 +2208,12 @@ index 50d9c5015..de79a3847 100644
      return update;
    } else {
 -    return (oop) prev_mark->clear_lock_bits();
-+    return (oop) prev_mark.clear_lock_bits();
++    return (oop) prev_mark.clear_lock_bits().to_pointer();
    }
  }
  
 diff --git a/src/hotspot/share/gc/shenandoah/shenandoahStringDedup.cpp b/src/hotspot/share/gc/shenandoah/shenandoahStringDedup.cpp
-index edcb7724f..3a72358e7 100644
+index edcb7724f16..3a72358e7bf 100644
 --- a/src/hotspot/share/gc/shenandoah/shenandoahStringDedup.cpp
 +++ b/src/hotspot/share/gc/shenandoah/shenandoahStringDedup.cpp
 @@ -50,14 +50,14 @@ void ShenandoahStringDedup::enqueue_candidate(oop java_string) {
@@ -2234,10 +2235,10 @@ index edcb7724f..3a72358e7 100644
        }
      }
 diff --git a/src/hotspot/share/interpreter/bytecodeInterpreter.cpp b/src/hotspot/share/interpreter/bytecodeInterpreter.cpp
-index f5d159538..db1f9347f 100644
+index cea13746943..062851298a7 100644
 --- a/src/hotspot/share/interpreter/bytecodeInterpreter.cpp
 +++ b/src/hotspot/share/interpreter/bytecodeInterpreter.cpp
-@@ -665,17 +665,17 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -664,17 +664,17 @@ BytecodeInterpreter::run(interpreterState istate) {
          BasicObjectLock* mon = &istate->monitor_base()[-1];
          mon->set_obj(rcvr);
          bool success = false;
@@ -2259,7 +2260,7 @@ index f5d159538..db1f9347f 100644
  
            if (anticipated_bias_locking_value == 0) {
              // Already biased towards this thread, nothing to do.
-@@ -683,10 +683,10 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -682,10 +682,10 @@ BytecodeInterpreter::run(interpreterState istate) {
                (* BiasedLocking::biased_lock_entry_count_addr())++;
              }
              success = true;
@@ -2272,7 +2273,7 @@ index f5d159538..db1f9347f 100644
                header = header->copy_set_hash(hash);
              }
              if (rcvr->cas_set_mark(header, mark) == mark) {
-@@ -696,7 +696,7 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -695,7 +695,7 @@ BytecodeInterpreter::run(interpreterState istate) {
            } else if ((anticipated_bias_locking_value & epoch_mask_in_place) != 0) {
              // Try to rebias.
              markOop new_header = (markOop) ( (intptr_t) rcvr->klass()->prototype_header() | thread_ident);
@@ -2281,7 +2282,7 @@ index f5d159538..db1f9347f 100644
                new_header = new_header->copy_set_hash(hash);
              }
              if (rcvr->cas_set_mark(new_header, mark) == mark) {
-@@ -710,9 +710,9 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -709,9 +709,9 @@ BytecodeInterpreter::run(interpreterState istate) {
            } else {
              // Try to bias towards thread in case object is anonymously biased.
              markOop header = (markOop) ((uintptr_t) mark &
@@ -2294,7 +2295,7 @@ index f5d159538..db1f9347f 100644
                header = header->copy_set_hash(hash);
              }
              markOop new_header = (markOop) ((uintptr_t) header | thread_ident);
-@@ -731,7 +731,7 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -730,7 +730,7 @@ BytecodeInterpreter::run(interpreterState istate) {
  
          // Traditional lightweight locking.
          if (!success) {
@@ -2303,7 +2304,7 @@ index f5d159538..db1f9347f 100644
            mon->lock()->set_displaced_header(displaced);
            bool call_vm = UseHeavyMonitors;
            if (call_vm || rcvr->cas_set_mark((markOop)mon, displaced) != displaced) {
-@@ -850,18 +850,18 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -849,18 +849,18 @@ BytecodeInterpreter::run(interpreterState istate) {
        assert(entry->obj() == NULL, "Frame manager didn't allocate the monitor");
        entry->set_obj(lockee);
        bool success = false;
@@ -2326,7 +2327,7 @@ index f5d159538..db1f9347f 100644
  
          if  (anticipated_bias_locking_value == 0) {
            // already biased towards this thread, nothing to do
-@@ -869,10 +869,10 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -868,10 +868,10 @@ BytecodeInterpreter::run(interpreterState istate) {
              (* BiasedLocking::biased_lock_entry_count_addr())++;
            }
            success = true;
@@ -2339,7 +2340,7 @@ index f5d159538..db1f9347f 100644
              header = header->copy_set_hash(hash);
            }
            if (lockee->cas_set_mark(header, mark) == mark) {
-@@ -883,7 +883,7 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -882,7 +882,7 @@ BytecodeInterpreter::run(interpreterState istate) {
          } else if ((anticipated_bias_locking_value & epoch_mask_in_place) !=0) {
            // try rebias
            markOop new_header = (markOop) ( (intptr_t) lockee->klass()->prototype_header() | thread_ident);
@@ -2348,7 +2349,7 @@ index f5d159538..db1f9347f 100644
                  new_header = new_header->copy_set_hash(hash);
            }
            if (lockee->cas_set_mark(new_header, mark) == mark) {
-@@ -896,9 +896,9 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -895,9 +895,9 @@ BytecodeInterpreter::run(interpreterState istate) {
            success = true;
          } else {
            // try to bias towards thread in case object is anonymously biased
@@ -2361,7 +2362,7 @@ index f5d159538..db1f9347f 100644
              header = header->copy_set_hash(hash);
            }
            markOop new_header = (markOop) ((uintptr_t) header | thread_ident);
-@@ -917,7 +917,7 @@ BytecodeInterpreter::run(interpreterState istate) {
+@@ -916,7 +916,7 @@ BytecodeInterpreter::run(interpreterState istate) {
  
        // traditional lightweight locking
        if (!success) {
@@ -2370,7 +2371,7 @@ index f5d159538..db1f9347f 100644
          entry->lock()->set_displaced_header(displaced);
          bool call_vm = UseHeavyMonitors;
          if (call_vm || lockee->cas_set_mark((markOop)entry, displaced) != displaced) {
-@@ -1790,18 +1790,18 @@ run:
+@@ -1789,18 +1789,18 @@ run:
          if (entry != NULL) {
            entry->set_obj(lockee);
            int success = false;
@@ -2393,7 +2394,7 @@ index f5d159538..db1f9347f 100644
  
              if  (anticipated_bias_locking_value == 0) {
                // already biased towards this thread, nothing to do
-@@ -1810,10 +1810,10 @@ run:
+@@ -1809,10 +1809,10 @@ run:
                }
                success = true;
              }
@@ -2406,7 +2407,7 @@ index f5d159538..db1f9347f 100644
                  header = header->copy_set_hash(hash);
                }
                if (lockee->cas_set_mark(header, mark) == mark) {
-@@ -1824,7 +1824,7 @@ run:
+@@ -1823,7 +1823,7 @@ run:
              else if ((anticipated_bias_locking_value & epoch_mask_in_place) !=0) {
                // try rebias
                markOop new_header = (markOop) ( (intptr_t) lockee->klass()->prototype_header() | thread_ident);
@@ -2415,7 +2416,7 @@ index f5d159538..db1f9347f 100644
                  new_header = new_header->copy_set_hash(hash);
                }
                if (lockee->cas_set_mark(new_header, mark) == mark) {
-@@ -1838,10 +1838,10 @@ run:
+@@ -1837,10 +1837,10 @@ run:
              }
              else {
                // try to bias towards thread in case object is anonymously biased
@@ -2429,7 +2430,7 @@ index f5d159538..db1f9347f 100644
                  header = header->copy_set_hash(hash);
                }
                markOop new_header = (markOop) ((uintptr_t) header | thread_ident);
-@@ -1860,7 +1860,7 @@ run:
+@@ -1859,7 +1859,7 @@ run:
  
            // traditional lightweight locking
            if (!success) {
@@ -2438,7 +2439,7 @@ index f5d159538..db1f9347f 100644
              entry->lock()->set_displaced_header(displaced);
              bool call_vm = UseHeavyMonitors;
              if (call_vm || lockee->cas_set_mark((markOop)entry, displaced) != displaced) {
-@@ -1891,11 +1891,11 @@ run:
+@@ -1890,11 +1890,11 @@ run:
              BasicLock* lock = most_recent->lock();
              markOop header = lock->displaced_header();
              most_recent->set_obj(NULL);
@@ -2452,7 +2453,7 @@ index f5d159538..db1f9347f 100644
                  if (call_vm || lockee->cas_set_mark(header, old_header) != old_header) {
                    // restore object for the slow case
                    most_recent->set_obj(lockee);
-@@ -2181,7 +2181,7 @@ run:
+@@ -2180,7 +2180,7 @@ run:
                if (UseBiasedLocking) {
                  result->set_mark(ik->prototype_header());
                } else {
@@ -2461,7 +2462,7 @@ index f5d159538..db1f9347f 100644
                }
                result->set_klass_gap(0);
                result->set_klass(ik);
-@@ -3031,10 +3031,10 @@ run:
+@@ -3030,10 +3030,10 @@ run:
            markOop header = lock->displaced_header();
            end->set_obj(NULL);
  
@@ -2474,7 +2475,7 @@ index f5d159538..db1f9347f 100644
                if (lockee->cas_set_mark(header, old_header) != old_header) {
                  // restore object for the slow case
                  end->set_obj(lockee);
-@@ -3106,11 +3106,11 @@ run:
+@@ -3105,11 +3105,11 @@ run:
              markOop header = lock->displaced_header();
              base->set_obj(NULL);
  
@@ -2489,7 +2490,7 @@ index f5d159538..db1f9347f 100644
                    // restore object for the slow case
                    base->set_obj(rcvr);
 diff --git a/src/hotspot/share/jfr/leakprofiler/chains/bfsClosure.cpp b/src/hotspot/share/jfr/leakprofiler/chains/bfsClosure.cpp
-index e436746e8..b484ecee0 100644
+index e436746e891..b484ecee0e8 100644
 --- a/src/hotspot/share/jfr/leakprofiler/chains/bfsClosure.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/chains/bfsClosure.cpp
 @@ -131,7 +131,7 @@ void BFSClosure::closure_impl(const oop* reference, const oop pointee) {
@@ -2502,7 +2503,7 @@ index e436746e8..b484ecee0 100644
      }
  
 diff --git a/src/hotspot/share/jfr/leakprofiler/chains/dfsClosure.cpp b/src/hotspot/share/jfr/leakprofiler/chains/dfsClosure.cpp
-index c347901bf..b1a1fca20 100644
+index c347901bf3d..b1a1fca2051 100644
 --- a/src/hotspot/share/jfr/leakprofiler/chains/dfsClosure.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/chains/dfsClosure.cpp
 @@ -121,7 +121,7 @@ void DFSClosure::closure_impl(const oop* reference, const oop pointee) {
@@ -2515,7 +2516,7 @@ index c347901bf..b1a1fca20 100644
    }
  
 diff --git a/src/hotspot/share/jfr/leakprofiler/chains/edgeStore.cpp b/src/hotspot/share/jfr/leakprofiler/chains/edgeStore.cpp
-index ad549f486..b9f09fa9a 100644
+index ad549f4864a..b9f09fa9ad2 100644
 --- a/src/hotspot/share/jfr/leakprofiler/chains/edgeStore.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/chains/edgeStore.cpp
 @@ -237,8 +237,8 @@ StoredEdge* EdgeStore::associate_leak_context_with_candidate(const Edge* edge) {
@@ -2530,7 +2531,7 @@ index ad549f486..b9f09fa9a 100644
  }
  
 diff --git a/src/hotspot/share/jfr/leakprofiler/chains/edgeUtils.cpp b/src/hotspot/share/jfr/leakprofiler/chains/edgeUtils.cpp
-index 699fd4ac4..f4c925004 100644
+index 699fd4ac41a..f4c9250040e 100644
 --- a/src/hotspot/share/jfr/leakprofiler/chains/edgeUtils.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/chains/edgeUtils.cpp
 @@ -36,7 +36,7 @@
@@ -2543,7 +2544,7 @@ index 699fd4ac4..f4c925004 100644
  
  static bool is_static_field(const oop ref_owner, const InstanceKlass* ik, int offset) {
 diff --git a/src/hotspot/share/jfr/leakprofiler/chains/objectSampleMarker.hpp b/src/hotspot/share/jfr/leakprofiler/chains/objectSampleMarker.hpp
-index 9a97a373f..3d51edf6e 100644
+index 9a97a373fbc..3d51edf6e3e 100644
 --- a/src/hotspot/share/jfr/leakprofiler/chains/objectSampleMarker.hpp
 +++ b/src/hotspot/share/jfr/leakprofiler/chains/objectSampleMarker.hpp
 @@ -45,7 +45,7 @@ class ObjectSampleMarker : public StackObj {
@@ -2567,7 +2568,7 @@ index 9a97a373f..3d51edf6e 100644
    }
  };
 diff --git a/src/hotspot/share/jfr/leakprofiler/checkpoint/eventEmitter.cpp b/src/hotspot/share/jfr/leakprofiler/checkpoint/eventEmitter.cpp
-index 02d9c2d9c..438f91763 100644
+index 02d9c2d9cb2..438f917634a 100644
 --- a/src/hotspot/share/jfr/leakprofiler/checkpoint/eventEmitter.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/checkpoint/eventEmitter.cpp
 @@ -111,7 +111,7 @@ void EventEmitter::write_event(const ObjectSample* sample, EdgeStore* edge_store
@@ -2580,7 +2581,7 @@ index 02d9c2d9c..438f91763 100644
    if (edge == NULL) {
      // In order to dump out a representation of the event
 diff --git a/src/hotspot/share/jfr/leakprofiler/utilities/saveRestore.cpp b/src/hotspot/share/jfr/leakprofiler/utilities/saveRestore.cpp
-index 3cfff5a70..d5b7d71e0 100644
+index 3cfff5a708b..d5b7d71e0d4 100644
 --- a/src/hotspot/share/jfr/leakprofiler/utilities/saveRestore.cpp
 +++ b/src/hotspot/share/jfr/leakprofiler/utilities/saveRestore.cpp
 @@ -27,7 +27,7 @@
@@ -2613,10 +2614,10 @@ index 3cfff5a70..d5b7d71e0 100644
  }
  
 diff --git a/src/hotspot/share/jvmci/vmStructs_jvmci.cpp b/src/hotspot/share/jvmci/vmStructs_jvmci.cpp
-index 4951b3545..7b63c38ca 100644
+index 89270633304..b48a830c2ed 100644
 --- a/src/hotspot/share/jvmci/vmStructs_jvmci.cpp
 +++ b/src/hotspot/share/jvmci/vmStructs_jvmci.cpp
-@@ -566,7 +566,7 @@
+@@ -567,7 +567,7 @@
    declare_constant(Klass::_lh_array_tag_type_value)                       \
    declare_constant(Klass::_lh_array_tag_obj_value)                        \
                                                                            \
@@ -2625,7 +2626,7 @@ index 4951b3545..7b63c38ca 100644
                                                                            \
    declare_constant(Method::_caller_sensitive)                             \
    declare_constant(Method::_force_inline)                                 \
-@@ -598,19 +598,19 @@
+@@ -599,19 +599,19 @@
    declare_constant(InvocationCounter::count_increment)                    \
    declare_constant(InvocationCounter::count_shift)                        \
                                                                            \
@@ -2656,10 +2657,10 @@ index 4951b3545..7b63c38ca 100644
  #define VM_ADDRESSES(declare_address, declare_preprocessor_address, declare_function) \
    declare_function(SharedRuntime::register_finalizer)                     \
 diff --git a/src/hotspot/share/memory/metaspaceShared.cpp b/src/hotspot/share/memory/metaspaceShared.cpp
-index 46ebf3d60..81e45dca1 100644
+index 5199c86c378..26ed7295f75 100644
 --- a/src/hotspot/share/memory/metaspaceShared.cpp
 +++ b/src/hotspot/share/memory/metaspaceShared.cpp
-@@ -1898,7 +1898,7 @@ void MetaspaceShared::dump_open_archive_heap_objects(
+@@ -1871,7 +1871,7 @@ void MetaspaceShared::dump_open_archive_heap_objects(
  }
  
  unsigned MetaspaceShared::obj_hash(oop const& p) {
@@ -2669,7 +2670,7 @@ index 46ebf3d60..81e45dca1 100644
    unsigned hash = (unsigned)p->identity_hash();
    return hash;
 diff --git a/src/hotspot/share/memory/universe.cpp b/src/hotspot/share/memory/universe.cpp
-index eab9576bc..79695828f 100644
+index eab9576bcc6..79695828f9e 100644
 --- a/src/hotspot/share/memory/universe.cpp
 +++ b/src/hotspot/share/memory/universe.cpp
 @@ -1310,12 +1310,12 @@ uintptr_t Universe::verify_oop_bits() {
@@ -2688,10 +2689,10 @@ index eab9576bc..79695828f 100644
    return bits;
  }
 diff --git a/src/hotspot/share/memory/virtualspace.cpp b/src/hotspot/share/memory/virtualspace.cpp
-index 2ff39acc1..a1ecd37b3 100644
+index d67f624cafb..ab83062ce7e 100644
 --- a/src/hotspot/share/memory/virtualspace.cpp
 +++ b/src/hotspot/share/memory/virtualspace.cpp
-@@ -627,9 +627,9 @@ ReservedHeapSpace::ReservedHeapSpace(size_t size, size_t alignment, bool large,
+@@ -628,9 +628,9 @@ ReservedHeapSpace::ReservedHeapSpace(size_t size, size_t alignment, bool large,
      initialize(size, alignment, large, NULL, false);
    }
  
@@ -2704,7 +2705,7 @@ index 2ff39acc1..a1ecd37b3 100644
  
    if (base() != NULL) {
 diff --git a/src/hotspot/share/oops/klass.cpp b/src/hotspot/share/oops/klass.cpp
-index 01c5ed5bd..2cc654342 100644
+index 01c5ed5bd46..2cc654342ad 100644
 --- a/src/hotspot/share/oops/klass.cpp
 +++ b/src/hotspot/share/oops/klass.cpp
 @@ -195,7 +195,7 @@ void* Klass::operator new(size_t size, ClassLoaderData* loader_data, size_t word
@@ -2726,7 +2727,7 @@ index 01c5ed5bd..2cc654342 100644
  
    // print class
 diff --git a/src/hotspot/share/oops/klass.hpp b/src/hotspot/share/oops/klass.hpp
-index b77a19deb..a90bd19f4 100644
+index 1d1c524fe88..d534715ce81 100644
 --- a/src/hotspot/share/oops/klass.hpp
 +++ b/src/hotspot/share/oops/klass.hpp
 @@ -28,6 +28,7 @@
@@ -2738,7 +2739,7 @@ index b77a19deb..a90bd19f4 100644
  #include "oops/oop.hpp"
  #include "oops/oopHandle.hpp"
 diff --git a/src/hotspot/share/oops/markOop.cpp b/src/hotspot/share/oops/markOop.cpp
-index 0224ca759..62cb1578d 100644
+index 0224ca7597b..62cb1578dfe 100644
 --- a/src/hotspot/share/oops/markOop.cpp
 +++ b/src/hotspot/share/oops/markOop.cpp
 @@ -27,7 +27,7 @@
@@ -2751,7 +2752,7 @@ index 0224ca759..62cb1578d 100644
      st->print(" marked(" INTPTR_FORMAT ")", value());
    } else if (has_monitor()) {
 diff --git a/src/hotspot/share/oops/markOop.hpp b/src/hotspot/share/oops/markOop.hpp
-index 649217c88..d05616621 100644
+index 649217c8808..d056166215c 100644
 --- a/src/hotspot/share/oops/markOop.hpp
 +++ b/src/hotspot/share/oops/markOop.hpp
 @@ -101,10 +101,9 @@ class BasicLock;
@@ -2900,7 +2901,7 @@ index 649217c88..d05616621 100644
 +
  #endif // SHARE_VM_OOPS_MARKOOP_HPP
 diff --git a/src/hotspot/share/oops/markOop.inline.hpp b/src/hotspot/share/oops/markOop.inline.hpp
-index 77d2fee0e..d6e653de6 100644
+index 77d2fee0ebb..d6e653de696 100644
 --- a/src/hotspot/share/oops/markOop.inline.hpp
 +++ b/src/hotspot/share/oops/markOop.inline.hpp
 @@ -31,7 +31,7 @@
@@ -2992,7 +2993,7 @@ index 77d2fee0e..d6e653de6 100644
    return obj->klass()->prototype_header();
  }
 diff --git a/src/hotspot/share/oops/oop.cpp b/src/hotspot/share/oops/oop.cpp
-index 0470cbbde..a7bbd6b7c 100644
+index 0470cbbde1a..a7bbd6b7cf6 100644
 --- a/src/hotspot/share/oops/oop.cpp
 +++ b/src/hotspot/share/oops/oop.cpp
 @@ -130,7 +130,7 @@ bool oopDesc::is_oop(oop obj, bool ignore_mark_word) {
@@ -3005,7 +3006,7 @@ index 0470cbbde..a7bbd6b7c 100644
    }
    return !SafepointSynchronize::is_at_safepoint();
 diff --git a/src/hotspot/share/oops/oop.hpp b/src/hotspot/share/oops/oop.hpp
-index 4430530e5..6311ee908 100644
+index 4430530e5e4..6311ee9088a 100644
 --- a/src/hotspot/share/oops/oop.hpp
 +++ b/src/hotspot/share/oops/oop.hpp
 @@ -28,6 +28,7 @@
@@ -3017,7 +3018,7 @@ index 4430530e5..6311ee908 100644
  #include "runtime/atomic.hpp"
  #include "utilities/macros.hpp"
 diff --git a/src/hotspot/share/oops/oop.inline.hpp b/src/hotspot/share/oops/oop.inline.hpp
-index 6c631f545..9eefc6261 100644
+index 6c631f54584..9eefc6261d9 100644
 --- a/src/hotspot/share/oops/oop.inline.hpp
 +++ b/src/hotspot/share/oops/oop.inline.hpp
 @@ -44,23 +44,24 @@
@@ -3229,7 +3230,7 @@ index 6c631f545..9eefc6261 100644
  
  #endif // SHARE_VM_OOPS_OOP_INLINE_HPP
 diff --git a/src/hotspot/share/oops/oopsHierarchy.hpp b/src/hotspot/share/oops/oopsHierarchy.hpp
-index d419aa156..f5ae4084b 100644
+index d419aa156c0..f5ae4084b35 100644
 --- a/src/hotspot/share/oops/oopsHierarchy.hpp
 +++ b/src/hotspot/share/oops/oopsHierarchy.hpp
 @@ -40,7 +40,6 @@ typedef juint narrowOop; // Offset instead of address for an oop within a java o
@@ -3249,10 +3250,10 @@ index d419aa156..f5ae4084b 100644
  
    // from javaCalls.cpp
 diff --git a/src/hotspot/share/opto/library_call.cpp b/src/hotspot/share/opto/library_call.cpp
-index a89c39f6c..bd791dd62 100644
+index 6b6aa9e9bd6..f67134103fd 100644
 --- a/src/hotspot/share/opto/library_call.cpp
 +++ b/src/hotspot/share/opto/library_call.cpp
-@@ -3961,9 +3961,9 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
+@@ -3960,9 +3960,9 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
    Node* header = make_load(no_ctrl, header_addr, TypeX_X, TypeX_X->basic_type(), MemNode::unordered);
  
    // Test the header to see if it is unlocked.
@@ -3264,7 +3265,7 @@ index a89c39f6c..bd791dd62 100644
    Node *chk_unlocked   = _gvn.transform(new CmpXNode( lmasked_header, unlocked_val));
    Node *test_unlocked  = _gvn.transform(new BoolNode( chk_unlocked, BoolTest::ne));
  
-@@ -3973,8 +3973,8 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
+@@ -3972,8 +3972,8 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
    // We depend on hash_mask being at most 32 bits and avoid the use of
    // hash_mask_in_place because it could be larger than 32 bits in a 64-bit
    // vm: see markOop.hpp.
@@ -3275,7 +3276,7 @@ index a89c39f6c..bd791dd62 100644
    Node *hshifted_header= _gvn.transform(new URShiftXNode(header, hash_shift));
    // This hack lets the hash bits live anywhere in the mark object now, as long
    // as the shift drops the relevant bits into the low 32 bits.  Note that
-@@ -3983,7 +3983,7 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
+@@ -3982,7 +3982,7 @@ bool LibraryCallKit::inline_native_hashcode(bool is_virtual, bool is_static) {
    hshifted_header      = ConvX2I(hshifted_header);
    Node *hash_val       = _gvn.transform(new AndINode(hshifted_header, hash_mask));
  
@@ -3285,10 +3286,10 @@ index a89c39f6c..bd791dd62 100644
    Node *test_assigned  = _gvn.transform(new BoolNode( chk_assigned, BoolTest::eq));
  
 diff --git a/src/hotspot/share/opto/macro.cpp b/src/hotspot/share/opto/macro.cpp
-index b66982ffd..9183fe9f6 100644
+index 7a35cd87065..f16f867313f 100644
 --- a/src/hotspot/share/opto/macro.cpp
 +++ b/src/hotspot/share/opto/macro.cpp
-@@ -1773,7 +1773,7 @@ PhaseMacroExpand::initialize_object(AllocateNode* alloc,
+@@ -1780,7 +1780,7 @@ PhaseMacroExpand::initialize_object(AllocateNode* alloc,
    if (UseBiasedLocking && (length == NULL)) {
      mark_node = make_load(control, rawmem, klass_node, in_bytes(Klass::prototype_header_offset()), TypeRawPtr::BOTTOM, T_ADDRESS);
    } else {
@@ -3297,7 +3298,7 @@ index b66982ffd..9183fe9f6 100644
    }
    rawmem = make_store(control, rawmem, object, oopDesc::mark_offset_in_bytes(), mark_node, T_ADDRESS);
  
-@@ -2330,8 +2330,8 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
+@@ -2338,8 +2338,8 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
  
      // Get fast path - mark word has the biased lock pattern.
      ctrl = opt_bits_test(ctrl, fast_lock_region, 1, mark_node,
@@ -3308,7 +3309,7 @@ index b66982ffd..9183fe9f6 100644
      // fast_lock_region->in(1) is set to slow path.
      fast_lock_mem_phi->init_req(1, mem);
  
-@@ -2360,7 +2360,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
+@@ -2368,7 +2368,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
  
      // Get slow path - mark word does NOT match the value.
      Node* not_biased_ctrl =  opt_bits_test(ctrl, region, 3, x_node,
@@ -3317,7 +3318,7 @@ index b66982ffd..9183fe9f6 100644
      // region->in(3) is set to fast path - the object is biased to the current thread.
      mem_phi->init_req(3, mem);
  
-@@ -2371,7 +2371,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
+@@ -2379,7 +2379,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
      // First, check biased pattern.
      // Get fast path - _prototype_header has the same biased lock pattern.
      ctrl =  opt_bits_test(not_biased_ctrl, fast_lock_region, 2, x_node,
@@ -3326,7 +3327,7 @@ index b66982ffd..9183fe9f6 100644
  
      not_biased_ctrl = fast_lock_region->in(2); // Slow path
      // fast_lock_region->in(2) - the prototype header is no longer biased
-@@ -2393,7 +2393,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
+@@ -2401,7 +2401,7 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
  
      // Get slow path - mark word does NOT match epoch bits.
      Node* epoch_ctrl =  opt_bits_test(ctrl, rebiased_region, 1, x_node,
@@ -3335,7 +3336,7 @@ index b66982ffd..9183fe9f6 100644
      // The epoch of the current bias is not valid, attempt to rebias the object
      // toward the current thread.
      rebiased_region->init_req(2, epoch_ctrl);
-@@ -2403,9 +2403,9 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
+@@ -2411,9 +2411,9 @@ void PhaseMacroExpand::expand_lock_node(LockNode *lock) {
      // rebiased_region->in(1) is set to fast path.
      // The epoch of the current bias is still valid but we know
      // nothing about the owner; it might be set or it might be clear.
@@ -3348,7 +3349,7 @@ index b66982ffd..9183fe9f6 100644
      Node* old = transform_later(new AndXNode(mark_node, cmask));
      cast_thread = transform_later(new CastP2XNode(ctrl, thread));
      Node* new_mark = transform_later(new OrXNode(cast_thread, old));
-@@ -2520,8 +2520,8 @@ void PhaseMacroExpand::expand_unlock_node(UnlockNode *unlock) {
+@@ -2528,8 +2528,8 @@ void PhaseMacroExpand::expand_unlock_node(UnlockNode *unlock) {
  
      Node* mark_node = make_load(ctrl, mem, obj, oopDesc::mark_offset_in_bytes(), TypeX_X, TypeX_X->basic_type());
      ctrl = opt_bits_test(ctrl, region, 3, mark_node,
@@ -3360,7 +3361,7 @@ index b66982ffd..9183fe9f6 100644
      region  = new RegionNode(3);
      // create a Phi for the memory state
 diff --git a/src/hotspot/share/prims/jvmtiEnvBase.cpp b/src/hotspot/share/prims/jvmtiEnvBase.cpp
-index efb7d36a6..086b4952a 100644
+index 093c790425c..28ef4781542 100644
 --- a/src/hotspot/share/prims/jvmtiEnvBase.cpp
 +++ b/src/hotspot/share/prims/jvmtiEnvBase.cpp
 @@ -965,16 +965,16 @@ JvmtiEnvBase::get_object_monitor_usage(JavaThread* calling_thread, jobject objec
@@ -3385,7 +3386,7 @@ index efb7d36a6..086b4952a 100644
          // The owner field of a heavyweight monitor may be NULL for no
          // owner, a JavaThread * or it may still be the address of the
 diff --git a/src/hotspot/share/prims/jvmtiTagMap.cpp b/src/hotspot/share/prims/jvmtiTagMap.cpp
-index 1baa32c33..bd861a52b 100644
+index 1baa32c3340..bd861a52b64 100644
 --- a/src/hotspot/share/prims/jvmtiTagMap.cpp
 +++ b/src/hotspot/share/prims/jvmtiTagMap.cpp
 @@ -1645,7 +1645,7 @@ class RestoreMarksClosure : public ObjectClosure {
@@ -3426,10 +3427,10 @@ index 1baa32c33..bd861a52b 100644
  
  // Stack allocated class to help ensure that ObjectMarker is used
 diff --git a/src/hotspot/share/prims/whitebox.cpp b/src/hotspot/share/prims/whitebox.cpp
-index 44852340c..f4d967f01 100644
+index 7738272550f..fa30e75b2a8 100644
 --- a/src/hotspot/share/prims/whitebox.cpp
 +++ b/src/hotspot/share/prims/whitebox.cpp
-@@ -1666,7 +1666,7 @@ WB_END
+@@ -1679,7 +1679,7 @@ WB_END
  
  WB_ENTRY(jboolean, WB_IsMonitorInflated(JNIEnv* env, jobject wb, jobject obj))
    oop obj_oop = JNIHandles::resolve(obj);
@@ -3439,7 +3440,7 @@ index 44852340c..f4d967f01 100644
  
  WB_ENTRY(void, WB_ForceSafepoint(JNIEnv* env, jobject wb))
 diff --git a/src/hotspot/share/runtime/arguments.cpp b/src/hotspot/share/runtime/arguments.cpp
-index cc9366dcc..20855a579 100644
+index fd54d45cc36..0d19b286954 100644
 --- a/src/hotspot/share/runtime/arguments.cpp
 +++ b/src/hotspot/share/runtime/arguments.cpp
 @@ -2879,7 +2879,7 @@ jint Arguments::parse_each_vm_init_arg(const JavaVMInitArgs* args, bool* patch_m
@@ -3452,7 +3453,7 @@ index cc9366dcc..20855a579 100644
        }
      } else if (match_option(option, "-XX:+AlwaysTenure")) {
 diff --git a/src/hotspot/share/runtime/basicLock.cpp b/src/hotspot/share/runtime/basicLock.cpp
-index 5d69b30ae..2090e4906 100644
+index 5d69b30ae1f..2090e49069a 100644
 --- a/src/hotspot/share/runtime/basicLock.cpp
 +++ b/src/hotspot/share/runtime/basicLock.cpp
 @@ -29,8 +29,8 @@
@@ -3484,7 +3485,7 @@ index 5d69b30ae..2090e4906 100644
    dest->set_displaced_header(displaced_header());
  }
 diff --git a/src/hotspot/share/runtime/basicLock.hpp b/src/hotspot/share/runtime/basicLock.hpp
-index 68fd6c332..388741734 100644
+index 68fd6c33286..388741734c9 100644
 --- a/src/hotspot/share/runtime/basicLock.hpp
 +++ b/src/hotspot/share/runtime/basicLock.hpp
 @@ -26,6 +26,7 @@
@@ -3512,7 +3513,7 @@ index 68fd6c332..388741734 100644
    void print_on(outputStream* st) const;
  
 diff --git a/src/hotspot/share/runtime/biasedLocking.cpp b/src/hotspot/share/runtime/biasedLocking.cpp
-index a324120d8..9e15ea3fa 100644
+index a324120d8d8..9e15ea3fa38 100644
 --- a/src/hotspot/share/runtime/biasedLocking.cpp
 +++ b/src/hotspot/share/runtime/biasedLocking.cpp
 @@ -49,7 +49,7 @@ static GrowableArray<Handle>*  _preserved_oop_stack  = NULL;
@@ -3800,10 +3801,10 @@ index a324120d8..9e15ea3fa 100644
                  _preserved_mark_stack->push(mark);
                }
 diff --git a/src/hotspot/share/runtime/deoptimization.cpp b/src/hotspot/share/runtime/deoptimization.cpp
-index 024efd97c..d14d6c804 100644
+index 7ca0d91542f..444ab8b6818 100644
 --- a/src/hotspot/share/runtime/deoptimization.cpp
 +++ b/src/hotspot/share/runtime/deoptimization.cpp
-@@ -1100,14 +1100,14 @@ void Deoptimization::relock_objects(GrowableArray<MonitorInfo*>* monitors, JavaT
+@@ -1121,14 +1121,14 @@ void Deoptimization::relock_objects(GrowableArray<MonitorInfo*>* monitors, JavaT
        if (!mon_info->owner_is_scalar_replaced()) {
          Handle obj(thread, mon_info->owner());
          markOop mark = obj->mark();
@@ -3823,10 +3824,10 @@ index 024efd97c..d14d6c804 100644
          }
          BasicLock* lock = mon_info->lock();
 diff --git a/src/hotspot/share/runtime/globals.hpp b/src/hotspot/share/runtime/globals.hpp
-index 5c3895054..1569e9a65 100644
+index 3d2e4e6900b..d3d1941a7f5 100644
 --- a/src/hotspot/share/runtime/globals.hpp
 +++ b/src/hotspot/share/runtime/globals.hpp
-@@ -2583,7 +2583,7 @@ define_pd_global(uint64_t,MaxRAM,                    1ULL*G);
+@@ -2586,7 +2586,7 @@ define_pd_global(uint64_t,MaxRAM,                    1ULL*G);
    product(uintx, StringDeduplicationAgeThreshold, 3,                        \
            "A string must reach this age (or be promoted to an old region) " \
            "to be considered for deduplication")                             \
@@ -3836,7 +3837,7 @@ index 5c3895054..1569e9a65 100644
    diagnostic(bool, StringDeduplicationResizeALot, false,                    \
            "Force table resize every time the table is scanned")             \
 diff --git a/src/hotspot/share/runtime/objectMonitor.cpp b/src/hotspot/share/runtime/objectMonitor.cpp
-index f069d415e..654ad843f 100644
+index a9690c2d742..e9f7f491b40 100644
 --- a/src/hotspot/share/runtime/objectMonitor.cpp
 +++ b/src/hotspot/share/runtime/objectMonitor.cpp
 @@ -302,7 +302,7 @@ void ObjectMonitor::enter(TRAPS) {
@@ -3894,7 +3895,7 @@ index f069d415e..654ad843f 100644
    if (SyncFlags & 32) {
      OrderAccess::fence();
 diff --git a/src/hotspot/share/runtime/objectMonitor.hpp b/src/hotspot/share/runtime/objectMonitor.hpp
-index d73c8a947..d12238269 100644
+index d73c8a9470a..d12238269e4 100644
 --- a/src/hotspot/share/runtime/objectMonitor.hpp
 +++ b/src/hotspot/share/runtime/objectMonitor.hpp
 @@ -27,6 +27,7 @@
@@ -3924,7 +3925,7 @@ index d73c8a947..d12238269 100644
    markOop   header() const;
    volatile markOop* header_addr();
 diff --git a/src/hotspot/share/runtime/objectMonitor.inline.hpp b/src/hotspot/share/runtime/objectMonitor.inline.hpp
-index 951d6472e..abb8cc554 100644
+index 951d6472e03..abb8cc55415 100644
 --- a/src/hotspot/share/runtime/objectMonitor.inline.hpp
 +++ b/src/hotspot/share/runtime/objectMonitor.inline.hpp
 @@ -25,6 +25,8 @@
@@ -3972,7 +3973,7 @@ index 951d6472e..abb8cc554 100644
  }
  
 diff --git a/src/hotspot/share/runtime/sharedRuntime.cpp b/src/hotspot/share/runtime/sharedRuntime.cpp
-index 595ff7495..cee41fcd7 100644
+index 595ff7495a9..cee41fcd776 100644
 --- a/src/hotspot/share/runtime/sharedRuntime.cpp
 +++ b/src/hotspot/share/runtime/sharedRuntime.cpp
 @@ -3080,10 +3080,10 @@ JRT_LEAF(intptr_t*, SharedRuntime::OSR_migration_begin( JavaThread *thread) )
@@ -3989,7 +3990,7 @@ index 595ff7495..cee41fcd7 100644
      }
    }
 diff --git a/src/hotspot/share/runtime/synchronizer.cpp b/src/hotspot/share/runtime/synchronizer.cpp
-index 84cf3720b..19e06dcd1 100644
+index e7b32723e47..71fc7944724 100644
 --- a/src/hotspot/share/runtime/synchronizer.cpp
 +++ b/src/hotspot/share/runtime/synchronizer.cpp
 @@ -160,14 +160,14 @@ bool ObjectSynchronizer::quick_notify(oopDesc * obj, Thread * self, bool all) {
@@ -4613,10 +4614,10 @@ index 84cf3720b..19e06dcd1 100644
        }
      }
 diff --git a/src/hotspot/share/runtime/thread.cpp b/src/hotspot/share/runtime/thread.cpp
-index b6df811d8..9bed6d06a 100644
+index 3cabb1e0228..9a71e2625d7 100644
 --- a/src/hotspot/share/runtime/thread.cpp
 +++ b/src/hotspot/share/runtime/thread.cpp
-@@ -175,7 +175,7 @@ THREAD_LOCAL_DECL Thread* Thread::_thr_current = NULL;
+@@ -177,7 +177,7 @@ THREAD_LOCAL_DECL Thread* Thread::_thr_current = NULL;
  // Support for forcing alignment of thread objects for biased locking
  void* Thread::allocate(size_t size, bool throw_excpt, MEMFLAGS flags) {
    if (UseBiasedLocking) {
@@ -4625,7 +4626,7 @@ index b6df811d8..9bed6d06a 100644
      size_t aligned_size = size + (alignment - sizeof(intptr_t));
      void* real_malloc_addr = throw_excpt? AllocateHeap(aligned_size, flags, CURRENT_PC)
                                            : AllocateHeap(aligned_size, flags, CURRENT_PC,
-@@ -302,9 +302,9 @@ Thread::Thread() {
+@@ -304,9 +304,9 @@ Thread::Thread() {
  #endif // CHECK_UNHANDLED_OOPS
  #ifdef ASSERT
    if (UseBiasedLocking) {
@@ -4638,7 +4639,7 @@ index b6df811d8..9bed6d06a 100644
    }
  #endif // ASSERT
 diff --git a/src/hotspot/share/runtime/vframe.cpp b/src/hotspot/share/runtime/vframe.cpp
-index cca364217..7dfb2e4a2 100644
+index cca36421778..7dfb2e4a2e0 100644
 --- a/src/hotspot/share/runtime/vframe.cpp
 +++ b/src/hotspot/share/runtime/vframe.cpp
 @@ -222,7 +222,7 @@ void javaVFrame::print_lock_info_on(outputStream* st, int frame_count) {
@@ -4703,10 +4704,10 @@ index cca364217..7dfb2e4a2 100644
          }
  
 diff --git a/src/hotspot/share/runtime/vmStructs.cpp b/src/hotspot/share/runtime/vmStructs.cpp
-index 3056965f1..21d7e2703 100644
+index 85530164e31..9523c13266a 100644
 --- a/src/hotspot/share/runtime/vmStructs.cpp
 +++ b/src/hotspot/share/runtime/vmStructs.cpp
-@@ -1286,7 +1286,6 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+@@ -1285,7 +1285,6 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
      declare_type(arrayOopDesc, oopDesc)                                   \
        declare_type(objArrayOopDesc, arrayOopDesc)                         \
      declare_type(instanceOopDesc, oopDesc)                                \
@@ -4714,7 +4715,7 @@ index 3056965f1..21d7e2703 100644
                                                                            \
    /**************************************************/                    \
    /* MetadataOopDesc hierarchy (NOTE: some missing) */                    \
-@@ -1324,7 +1323,6 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+@@ -1325,7 +1324,6 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
    /* Oops */                                                              \
    /********/                                                              \
                                                                            \
@@ -4722,7 +4723,7 @@ index 3056965f1..21d7e2703 100644
    declare_oop_type(objArrayOop)                                           \
    declare_oop_type(oop)                                                   \
    declare_oop_type(narrowOop)                                             \
-@@ -1980,6 +1978,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+@@ -1981,6 +1979,7 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
              declare_type(BitMapView, BitMap)                              \
                                                                            \
     declare_integer_type(AccessFlags)  /* FIXME: wrong type (not integer) */\
@@ -4730,7 +4731,7 @@ index 3056965f1..21d7e2703 100644
    declare_toplevel_type(address)      /* FIXME: should this be an integer type? */\
     declare_integer_type(BasicType)   /* FIXME: wrong type (not integer) */\
    JVMTI_ONLY(declare_toplevel_type(BreakpointInfo))                       \
-@@ -2641,45 +2640,45 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
+@@ -2642,45 +2641,45 @@ typedef PaddedEnd<ObjectMonitor>              PaddedObjectMonitor;
    /* consistency. The mask constants are the only ones requiring */       \
    /* 64 bits (on 64-bit platforms). */                                    \
                                                                            \
@@ -4814,7 +4815,7 @@ index 3056965f1..21d7e2703 100644
    /* InvocationCounter constants */                                       \
    declare_constant(InvocationCounter::count_increment)                    \
 diff --git a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/oops/Mark.java b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/oops/Mark.java
-index 796ac8567..024f9c9f8 100644
+index 796ac85675c..024f9c9f85f 100644
 --- a/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/oops/Mark.java
 +++ b/src/jdk.hotspot.agent/share/classes/sun/jvm/hotspot/oops/Mark.java
 @@ -51,39 +51,39 @@ public class Mark extends VMObject {
@@ -4889,7 +4890,7 @@ index 796ac8567..024f9c9f8 100644
  
    // Field accessors
 diff --git a/src/jdk.internal.vm.ci/share/classes/jdk.vm.ci.hotspot/src/jdk/vm/ci/hotspot/HotSpotVMConfig.java b/src/jdk.internal.vm.ci/share/classes/jdk.vm.ci.hotspot/src/jdk/vm/ci/hotspot/HotSpotVMConfig.java
-index 6528a9bcd..ae51847bc 100644
+index 33caa4d1f01..e3af4808deb 100644
 --- a/src/jdk.internal.vm.ci/share/classes/jdk.vm.ci.hotspot/src/jdk/vm/ci/hotspot/HotSpotVMConfig.java
 +++ b/src/jdk.internal.vm.ci/share/classes/jdk.vm.ci.hotspot/src/jdk/vm/ci/hotspot/HotSpotVMConfig.java
 @@ -134,11 +134,11 @@ class HotSpotVMConfig extends HotSpotVMConfigAccess {
@@ -4908,7 +4909,7 @@ index 6528a9bcd..ae51847bc 100644
      long arrayPrototypeMarkWord() {
          return markWordNoHashInPlace | markWordNoLockInPlace;
 diff --git a/src/jdk.internal.vm.compiler/share/classes/org.graalvm.compiler.hotspot/src/org/graalvm/compiler/hotspot/GraalHotSpotVMConfig.java b/src/jdk.internal.vm.compiler/share/classes/org.graalvm.compiler.hotspot/src/org/graalvm/compiler/hotspot/GraalHotSpotVMConfig.java
-index 5bfbddf89..7848136c9 100644
+index 5bfbddf892e..7848136c9c8 100644
 --- a/src/jdk.internal.vm.compiler/share/classes/org.graalvm.compiler.hotspot/src/org/graalvm/compiler/hotspot/GraalHotSpotVMConfig.java
 +++ b/src/jdk.internal.vm.compiler/share/classes/org.graalvm.compiler.hotspot/src/org/graalvm/compiler/hotspot/GraalHotSpotVMConfig.java
 @@ -399,17 +399,17 @@ public class GraalHotSpotVMConfig extends GraalHotSpotVMConfigBase {
@@ -4982,7 +4983,7 @@ index 5bfbddf89..7848136c9 100644
      public final int methodAccessFlagsOffset = getFieldOffset("Method::_access_flags", Integer.class, "AccessFlags");
      public final int methodConstMethodOffset = getFieldOffset("Method::_constMethod", Integer.class, "ConstMethod*");
 diff --git a/test/hotspot/gtest/gc/shared/test_preservedMarks.cpp b/test/hotspot/gtest/gc/shared/test_preservedMarks.cpp
-index 725b74517..02279c64d 100644
+index 77c2fe79d70..9f7d9cd0348 100644
 --- a/test/hotspot/gtest/gc/shared/test_preservedMarks.cpp
 +++ b/test/hotspot/gtest/gc/shared/test_preservedMarks.cpp
 @@ -45,11 +45,11 @@ public:
@@ -5000,10 +5001,10 @@ index 725b74517..02279c64d 100644
  };
  
 diff --git a/test/hotspot/jtreg/serviceability/sa/ClhsdbAttach.java b/test/hotspot/jtreg/serviceability/sa/ClhsdbAttach.java
-index 3311ebf97..ca13be094 100644
+index 9779cb593ba..dd0f2bee911 100644
 --- a/test/hotspot/jtreg/serviceability/sa/ClhsdbAttach.java
 +++ b/test/hotspot/jtreg/serviceability/sa/ClhsdbAttach.java
-@@ -55,7 +55,7 @@ public class ClhsdbAttach {
+@@ -56,7 +56,7 @@ public class ClhsdbAttach {
                      "detach",
                      "universe",
                      "reattach",
@@ -5012,7 +5013,7 @@ index 3311ebf97..ca13be094 100644
  
              Map<String, List<String>> expStrMap = new HashMap<>();
              expStrMap.put("where", List.of(
-@@ -64,8 +64,8 @@ public class ClhsdbAttach {
+@@ -65,8 +65,8 @@ public class ClhsdbAttach {
                      "MaxJavaStackTraceDepth = "));
              expStrMap.put("universe", List.of(
                      "Command not valid until attached to a VM"));
@@ -5022,9 +5023,9 @@ index 3311ebf97..ca13be094 100644
 +                    "longConstant markOop::locked_value"));
  
              test.run(-1, cmds, expStrMap, null);
-         } catch (Exception ex) {
+         } catch (SkippedException se) {
 diff --git a/test/hotspot/jtreg/serviceability/sa/ClhsdbLongConstant.java b/test/hotspot/jtreg/serviceability/sa/ClhsdbLongConstant.java
-index 293101213..df87066b0 100644
+index 177b1126056..2ad0aed2a98 100644
 --- a/test/hotspot/jtreg/serviceability/sa/ClhsdbLongConstant.java
 +++ b/test/hotspot/jtreg/serviceability/sa/ClhsdbLongConstant.java
 @@ -51,21 +51,21 @@ public class ClhsdbLongConstant {
@@ -5058,7 +5059,7 @@ index 293101213..df87066b0 100644
              expStrMap.put("longConstant jtreg::test", List.of(
                      "longConstant jtreg::test 6"));
  
-@@ -96,12 +96,12 @@ public class ClhsdbLongConstant {
+@@ -93,12 +93,12 @@ public class ClhsdbLongConstant {
          // Expected output snippet is of the form (on x64-64):
          // ...
          // longConstant VM_Version::CPU_SHA 17179869184
@@ -5076,5 +5077,5 @@ index 293101213..df87066b0 100644
                         Platform.is64bit() ? 549755813632L: 4294967168L);
  
 -- 
-2.34.0
+2.35.4
 
