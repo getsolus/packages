@@ -12,6 +12,11 @@ for i in $REQUIREMENTS; do
     fi
 done
 
+if [[ ! -z "${DISABLE_BUILD_SUCCESS_NOTIFY}" ]]; then
+    # For rebuild-template-script.sh
+    echo "Notification and sound ping for build success disabled due to DISABLE_SUCCESS_NOTIFY being set."
+fi
+
 TAG=$(.././common/Scripts/gettag.py package.yml)
 BUILDSERVER_URL="https://build.getsol.us"
 
@@ -33,6 +38,7 @@ while [[ ! $(curl -s $BUILDSERVER_URL | grep -A 4 "${BUILDID}" | grep build-ok) 
 
     # Check if the build has failed
     if [[ $(curl -s $BUILDSERVER_URL | grep -A 4 "${BUILDID}" | grep build-failed) ]] ; then
+        echo "Failed on the build server!"
         notify-send -u critical "${TAG} failed on the build server!" -t 0
         paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
         exit 1
@@ -91,6 +97,8 @@ done
 
 # Successfully built and indexed, we're happy bunnies.
 echo "Successfully indexed into the repo!"
-notify-send "${TAG} indexed into the repo!" -t 0
-paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+if [[ -z "${DISABLE_BUILD_SUCCESS_NOTIFY}" ]]; then
+    notify-send "${TAG} indexed into the repo!" -t 0
+    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+fi
 rm /tmp/unstable-index.xml
