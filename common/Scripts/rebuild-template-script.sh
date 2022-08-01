@@ -35,6 +35,19 @@ INFO='\033[1;34m' # blue
 PROGRESS='\033[0;32m' # green
 NC='\033[0m' # No Color
 
+# Not to be ran as root
+if [[ $EUID -eq 0 ]]
+then
+    printf "Please run as normal user.\n" >&2
+    exit 1
+fi
+
+# Get sudo
+sudo -p "Enter sudo password: " printf "" || exit 1
+
+# Keep sudo alive without need for passwordless sudo
+while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+
 # Count the number of packages
 package_count() {
     echo -e ${PACKAGES} | wc -w
