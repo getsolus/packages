@@ -20,14 +20,14 @@ MAINPAK=""
 # e.g. $(cat "packages.txt")
 PACKAGES="foo bar xyz"
 
+# Track any troublesome packages here to deal with them manually.
+MANUAL=""
+
 # Don't DOS the server
 CONCURRENT_NETWORK_REQUESTS=8
 
 # At what percentage of disk usage does delete-cache run automatically
 DELETE_CACHE_THRESHOLD=80
-
-# Track any troublesome packages here to deal with them manually.
-MANUAL=""
 
 # Colours
 ERROR='\033[0;31m' # red
@@ -222,47 +222,21 @@ publish() {
     do
       pushd ${i}
         var=$((var+1))
-
         echo -e "${PROGRESS} > Publishing package" ${var} "out of" $(package_count) "${NC}"
         make publish
-        
-        # Figure out eopkg string.
-        PKGNAME=$(grep ^name < package.yml | awk '{ print $3 }' | tr -d "'")
-        RELEASE=$(grep ^release < package.yml | awk '{ print $3 }' | tr -d "'")
-        VERSION=$(grep ^version < package.yml | awk '{ print $3 }' | tr -d "'")
-        EOPKG="${PKGNAME}-${VERSION}-${RELEASE}-1-x86_64.eopkg"
-
-        # The buildname of the package listed on the buildserver queue.
-        BUILDNAME="${PKGNAME}-${VERSION}-${RELEASE}"
-
-        # Take care: your unstable repo can be called anything.
-        # TODO: It could be quicker to check if the build has completed on the buildserver first
-        #       then update the index and look for it
-        # FIXME:If subpackaging is used and the "main" package doesn't exist this check will fail e.g. libreoffice.
-        while [[ $(grep ${EOPKG} < /var/lib/eopkg/index/Unstable/eopkg-index.xml | wc -l) -lt 1 ]] ; do
-
-          echo -e "${INFO} > Waiting for ${i} to build and be indexed... ${NC}"
-          sleep 30
-
-          echo -e "${INFO} > Checking that ${i} has not failed on the buildserver... ${NC}"
-          # Add a sanity check in case the build has failed on the buildserver for whatever reason.
-          if [[ -n $(curl https://build.getsol.us | grep -A 3 ${BUILDNAME} | grep build-failed) ]]; then
-            echo -e "${ERROR} > ${i} failed on the build server, aborting. ${NC}"
-            exit 1
-          fi
-
-          echo -e "${INFO} > Updating repo to see if ${i} has been indexed... ${NC}"
-          sudo eopkg ur
-        done
-        echo -e "${PROGRESS} > ${i} has been indexed into the repo ${NC}"
+        sleep 10
+        echo -e "${INFO} > Waiting for ${i} to build and be indexed... ${NC}"
+        DISABLE_BUILD_SUCCESS_NOTIFY=1 make notify-complete
       popd
     done
     popd
-    echo -e "${PROGRESS} > Finished publishing packages! ${NC}"
+    echo -e "${PROGRESS} > All published packages successfully indexed into the repo! ${NC}"
+    notify-send "All rebuilds against ${MAINPAK} successfully indexed into the repo!" -t 0
+    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
 }
 
 NUKE() {
-    read -p "This will nuke all of your work, if you are sure input NUKE my work to continue. " prompt
+    read -p "This will nuke all of your work, if you are sure input 'NUKE my work' to continue. " prompt
     if [[ $prompt = "NUKE my work" ]]; then
         echo -e "${INFO} >  Removing rebuilds repo for ${MAINPAK} ${NC}"
         rm -fr ~/rebuilds/${MAINPAK}
