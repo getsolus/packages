@@ -42,11 +42,14 @@ then
     exit 1
 fi
 
-# Get sudo
-sudo -p "Enter sudo password: " printf "" || exit 1
-
-# Keep sudo alive without need for passwordless sudo
-while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+# Check requirements before starting
+REQUIREMENTS="curl unxz notify-send paplay solbuild"
+for i in $REQUIREMENTS; do
+    if ! which $i &> /dev/null; then
+        echo "Missing requirement: $i. Install it to continue."
+        exit 1
+    fi
+done
 
 # Count the number of packages
 package_count() {
@@ -107,6 +110,13 @@ bump() {
 # Build all packages and move resulting eopkgs to local repo. Stop on error.
 # Check if the eopkg already exists before attempting to build and skip if it does.
 build() {
+
+    # Get sudo
+    sudo -p "Enter sudo password: " printf "" || exit 1
+
+    # Keep sudo alive without need for passwordless sudo
+    while true; do sudo -n true; sleep 60; kill -0 "$$" || exit; done 2>/dev/null &
+
     set -e
     # Do a naïve check that the package we are building against actually exists in the custom local repo before continuing.
     if ( ls /var/lib/solbuild/local-${MAINPAK} | grep -q ${MAINPAK}); then
@@ -137,6 +147,8 @@ build() {
         popd
         done
         echo -e "${PROGRESS} > All packages built! ${NC}"
+        notify-send "All rebuilds against ${MAINPAK} successfully built locally!" -t 0
+        paplay /usr/share/sounds/freedesktop/stereo/complete.oga
         popd
     else
         echo -e "${ERROR} > No package ${MAINPAK} was found in the repo. Remember to copy it to /var/lib/solbuild/local-${MAINPAK} before starting. ${NC}"
@@ -146,7 +158,7 @@ build() {
 # Generate a "clean" abireport for most packages
 # Until ypkg3 where yabi/abi-wizard gets run inside the chroot this will have to do
 # Can fail with subpackages
-# NOT TESTED
+# Not recommended for use.
 cleanabireport() {
     # Get the most recent eopkg history point
     eopkg_history_point = $(eopkg history | grep -m 1 "" | egrep -o '[[:digit:]]*')
@@ -226,20 +238,39 @@ commit() {
 }
 
 # Publish package to the build server and wait for it to be indexed into the repo
-# before publishing the next package. Lower or increase sleep time depending on the size
-# of packages being built.
+# before publishing the next package.
 publish() {
     set -e
+
+    # Download initial index
+    INDEX_XZ_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz"
+    curl -s $INDEX_XZ_URL -o /tmp/rebuilds-unstable-index.xml.xz
+    unxz /tmp/rebuilds-unstable-index.xml.xz -k -f
+
     pushd ~/rebuilds/${MAINPAK}
     for i in ${PACKAGES}
     do
       pushd ${i}
         var=$((var+1))
         echo -e "${PROGRESS} > Publishing package" ${var} "out of" $(package_count) "${NC}"
-        make publish
-        sleep 10
-        echo -e "${INFO} > Waiting for ${i} to build and be indexed... ${NC}"
-        DISABLE_BUILD_SUCCESS_NOTIFY=1 make notify-complete
+
+        TAG=$(~/rebuilds/${MAINPAK}/common/Scripts/gettag.py package.yml)
+
+        # Update index if changed (-z)
+        curl -s -z /tmp/rebuilds-unstable-index.xml.xz $INDEX_XZ_URL -o /tmp/rebuilds-unstable-index.xml.xz
+        unxz /tmp/rebuilds-unstable-index.xml.xz -k -f
+
+        # We may have had a build failure at some point which we had to sort manually and had to rerun publish
+        # FIXME: Can fail if no eopkgs produced matches the tag (e.g. libreoffice)
+        # FIXME: We may have had to bump the troublesome package, check for higher release than advertised.
+        if [[ $(grep ${TAG} < /tmp/rebuilds-unstable-index.xml | wc -l) -eq 1 ]] ; then
+            echo -e "${INFO} > ${TAG} already indexed in the repo, skipping. ${NC}"
+        else
+            make publish
+            echo -e "${INFO} > Waiting for ${i} to build and be indexed... ${NC}"
+            sleep 30
+            DISABLE_BUILD_SUCCESS_NOTIFY=1 make notify-complete
+        fi
       popd
     done
     popd
@@ -343,7 +374,6 @@ cat << EOF
    Generally only the MAINPAK and PACKAGES variables will need to be set where MAINPAK
    is the package you are rebuilding against and PACKAGES are the packages that need to
    be rebuilt against it. You'll also want to copy and rename it appropriately before using.
-   To run unattended passwordless sudo needs to be enabled. Use at your own risk.
 
    Usage: ./rebuild-package.sh {setup,clone,bump,build,verify,commit,publish,NUKE}
 
