@@ -1,0 +1,144 @@
+From: Robert Ancell <robert.ancell@canonical.com>
+Date: Thu, 19 Mar 2020 16:44:44 +1300
+Subject: sound: Add a button to select the default theme
+
+Chosen alert sound doesn't persist in the viewer
+https://gitlab.gnome.org/GNOME/gnome-control-center/-/issues/2026
+
+Also, on Ubuntu, the alert sound doesn't seem to actually change.
+That happens even without this patch.
+https://launchpad.net/bugs/1871320
+---
+ panels/sound/cc-alert-chooser.c  | 50 ++++++++++++++++++++++++++++++++++++----
+ panels/sound/cc-alert-chooser.ui |  7 ++++++
+ 2 files changed, 53 insertions(+), 4 deletions(-)
+
+diff --git a/panels/sound/cc-alert-chooser.c b/panels/sound/cc-alert-chooser.c
+index 686d8c6..b9615ac 100644
+--- a/panels/sound/cc-alert-chooser.c
++++ b/panels/sound/cc-alert-chooser.c
+@@ -29,6 +29,7 @@ struct _CcAlertChooser
+ {
+   GtkBox         parent_instance;
+ 
++  GtkToggleButton *default_button;
+   GtkToggleButton *click_button;
+   GtkToggleButton *hum_button;
+   GtkToggleButton *string_button;
+@@ -123,6 +124,27 @@ set_sound_symlink (const gchar *alert_name,
+     g_warning ("Failed to make sound theme symbolic link %s->%s: %s", source_path, target_path, error->message);
+ }
+ 
++static void
++remove_sound_symlink (const gchar *alert_name)
++{
++  g_autofree gchar *dir = NULL;
++  g_autofree gchar *source_filename = NULL;
++  g_autofree gchar *source_path = NULL;
++  g_autoptr(GFile) file = NULL;
++  g_autoptr(GError) error = NULL;
++
++  dir = get_theme_dir ();
++  source_filename = g_strdup_printf ("%s.ogg", alert_name);
++  source_path = g_build_filename (dir, source_filename, NULL);
++
++  file = g_file_new_for_path (source_path);
++  if (!g_file_delete (file, NULL, &error))
++    {
++      if (!g_error_matches (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND))
++        g_warning ("Failed to remove existing sound symbolic link %s: %s", source_path, error->message);
++    }
++}
++
+ static void
+ set_custom_theme (CcAlertChooser *self,
+                   const gchar    *name)
+@@ -183,6 +205,16 @@ set_custom_theme (CcAlertChooser *self,
+   g_settings_set_string (self->sound_settings, "theme-name", CUSTOM_THEME_NAME);
+ }
+ 
++static void
++set_default_theme (CcAlertChooser *self)
++{
++  remove_sound_symlink ("bell-terminal");
++  remove_sound_symlink ("bell-window-system");
++
++  g_settings_set_boolean (self->sound_settings, "event-sounds", TRUE);
++  g_settings_reset (self->sound_settings, "theme-name");
++}
++
+ static void
+ select_sound (CcAlertChooser *self,
+               const gchar    *name)
+@@ -217,6 +249,11 @@ clicked_cb (CcAlertChooser *self,
+ {
+   if (button == self->click_button)
+     select_sound (self, "click");
++  else if (button == self->default_button)
++    {
++      set_default_theme (self);
++      gtk_widget_error_bell (GTK_WIDGET (self));
++    }
+   else if (button == self->hum_button)
+     select_sound (self, "hum");
+   else if (button == self->string_button)
+@@ -227,6 +264,8 @@ clicked_cb (CcAlertChooser *self,
+   set_button (self, button, TRUE);
+   if (button != self->click_button)
+     set_button (self, self->click_button, FALSE);
++  if (button != self->default_button)
++    set_button (self, self->default_button, FALSE);
+   if (button != self->hum_button)
+     set_button (self, self->hum_button, FALSE);
+   if (button != self->string_button)
+@@ -257,6 +296,7 @@ cc_alert_chooser_class_init (CcAlertChooserClass *klass)
+   gtk_widget_class_set_template_from_resource (widget_class, "/org/gnome/control-center/sound/cc-alert-chooser.ui");
+ 
+   gtk_widget_class_bind_template_child (widget_class, CcAlertChooser, click_button);
++  gtk_widget_class_bind_template_child (widget_class, CcAlertChooser, default_button);
+   gtk_widget_class_bind_template_child (widget_class, CcAlertChooser, hum_button);
+   gtk_widget_class_bind_template_child (widget_class, CcAlertChooser, string_button);
+   gtk_widget_class_bind_template_child (widget_class, CcAlertChooser, swing_button);
+@@ -282,18 +322,20 @@ cc_alert_chooser_init (CcAlertChooser *self)
+ 
+   alert_name = get_alert_name ();
+ 
+-  /* If user has selected an old sound alert, migrate them to click. */
++  /* If user has selected an old sound alert, migrate them to default. */
+   if (g_strcmp0 (alert_name, "click") != 0 &&
+       g_strcmp0 (alert_name, "hum") != 0 &&
+       g_strcmp0 (alert_name, "string") != 0 &&
+       g_strcmp0 (alert_name, "swing") != 0)
+     {
+-      set_custom_theme (self, "click");
++      set_default_theme (self);
+       g_free (alert_name);
+-      alert_name = g_strdup ("click");
++      alert_name = get_alert_name();
+     }
+ 
+-  if (g_strcmp0 (alert_name, "click") == 0)
++  if (alert_name == NULL)
++    set_button (self, self->default_button, TRUE);
++  else if (g_strcmp0 (alert_name, "click") == 0)
+     set_button (self, self->click_button, TRUE);
+   else if (g_strcmp0 (alert_name, "hum") == 0)
+     set_button (self, self->hum_button, TRUE);
+diff --git a/panels/sound/cc-alert-chooser.ui b/panels/sound/cc-alert-chooser.ui
+index 603aff9..1512a2f 100644
+--- a/panels/sound/cc-alert-chooser.ui
++++ b/panels/sound/cc-alert-chooser.ui
+@@ -6,6 +6,13 @@
+     <style>
+       <class name="linked"/>
+     </style>
++    <child>
++      <object class="GtkToggleButton" id="default_button">
++        <property name="visible">True</property>
++        <property name="label" translatable="yes">Default</property>
++        <signal name="clicked" handler="clicked_cb" object="CcAlertChooser" swapped="yes"/>
++      </object>
++    </child>
+     <child>
+       <object class="GtkToggleButton" id="click_button">
+         <property name="visible">True</property>
