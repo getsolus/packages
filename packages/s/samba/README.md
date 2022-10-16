@@ -113,6 +113,7 @@ When doing major version updates, create a phab task with associated diff stack 
 
 ### Packages that will need a safety rebuild if Samba exports ABI changes (eopkg-deps rev samba)
 
+- budgie-control-center
 - ffmpeg
 - gnome-control-center
 - gvfs
