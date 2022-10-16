@@ -117,6 +117,7 @@ When doing major version updates, create a phab task with associated diff stack 
 - gnome-control-center
 - gvfs
 - kio-extras
+- kodi
 - python-pysmbc
 - vlc
 
