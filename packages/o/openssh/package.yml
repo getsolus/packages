@@ -1,8 +1,8 @@
 name       : openssh
-version    : 8.6_p1
-release    : 44
+version    : 9.1_p1
+release    : 45
 source     :
-    - https://github.com/openssh/openssh-portable/archive/refs/tags/V_8_6_P1.tar.gz : b641e88a61b58d60f87b1c0e38805eb5b1206810cab71b1f2966faa87938593b
+    - https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-9.1p1.tar.gz : 19f85009c7e3e23787f0236fbb1578392ab4d4bf9f8ec5fe6bc1cd7e8bfdd288
 homepage   : https://www.openssh.com/
 license    :
     - BSD-2-Clause
@@ -22,6 +22,7 @@ builddeps  :
     - pkgconfig(libedit)
     - pkgconfig(libfido2)
     - pkgconfig(libldns)
+    - pkgconfig(libsystemd)
     - pkgconfig(krb5)
     - groff
     - xauth
@@ -34,37 +35,55 @@ patterns   :
         - /usr/sbin
         - /usr/lib/systemd/system
         - /usr/lib/sysusers.d
-        - /usr/lib/tmpfiles.d
-        - /etc/ssh/sshd_config
+        - /usr/lib/tmpfiles.d/openssh-server.conf
         - /usr/lib64/openssh/sftp*
+        - /usr/share/defaults/etc/ssh/moduli
+        - /usr/share/defaults/etc/ssh/sshd_config
+        - /usr/share/defaults/etc/pam.d/sshd
+        - /usr/share/man/*/moduli*
         - /usr/share/man/*/sshd*
         - /usr/share/man/*/sftp-*
 setup      : |
+    %apply_patches
+
     %reconfigure --sysconfdir=/etc/ssh \
-               --datadir=/usr/share/sshd \
-               --with-xauth=/usr/bin/xauth \
-               --with-kerberos5=/usr \
-               --with-ldns=/usr \
-               --with-libedit \
-               --with-md5-passwords \
-               --with-pam \
-               --with-ssl-engine \
-               --with-security-key-builtin \
-               --with-privsep-path=/var/lib/sshd
+                 --datadir=/usr/share/sshd \
+                 --with-pid-dir=/run \
+                 --with-xauth=/usr/bin/xauth \
+                 --with-kerberos5=/usr \
+                 --with-ldns=/usr \
+                 --with-libedit \
+                 --with-md5-passwords \
+                 --with-pam \
+                 --with-ssl-engine \
+                 --with-systemd \
+                 --with-security-key-builtin \
+                 --with-privsep-path=/var/lib/sshd
 build      : |
     %make
 install    : |
     %make_install
 
-    # Make PAM + systemd work
+    # PAM
     install -Dm 00644 $pkgfiles/sshd.pam $installdir/usr/share/defaults/etc/pam.d/sshd
+
+    # systemd
     install -Dm 00644 $pkgfiles/sshd.service $installdir/usr/lib/systemd/system/sshd.service
     install -Dm 00644 $pkgfiles/sshd@.service $installdir/usr/lib/systemd/system/sshd@.service
+    install -Dm 00644 $pkgfiles/sshd-keygen.service $installdir/usr/lib/systemd/system/sshd-keygen.service
 
     # Folks want ssh-copy-id :)
     install -Dm 00755 contrib/ssh-copy-id $installdir/usr/bin/.
 
     install -Dm 00644 $pkgfiles/openssh.tmpfiles $installdir/usr/lib/tmpfiles.d/openssh.conf
+    install -Dm 00644 $pkgfiles/openssh-server.tmpfiles $installdir/usr/lib/tmpfiles.d/openssh-server.conf
     install -Dm 00644 $pkgfiles/openssh.sysusers $installdir/usr/lib/sysusers.d/openssh.conf
 
-    rm -rf $installdir/var
+    # Stateless
+    install -dm00755 $installdir/usr/share/defaults/etc/
+    mv $installdir/etc/ssh $installdir/usr/share/defaults/etc/
+    ls -ahl $installdir/var/lib
+    rmdir $installdir/var/lib/sshd
+    rmdir $installdir/var/lib
+    rmdir $installdir/var
+    rmdir $installdir/etc
