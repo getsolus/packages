@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Safety catch to prevent system.base/system.devel pkgs where there are additions to abi_used_libs from being publishing accidently.
-# Otherwise, if a system.base/system.devel pkg depends on another pkg that isn't in system.base/system.devel the solbuild image will refuse to update.
+# Safety catch to prevent system.base/system.devel pkgs where there are additions to abi_used_libs from being published accidently.
+# Otherwise, if a system.base/system.devel pkg depends on another pkg that isn't in system.base/system.devel the solbuild image
+# will refuse to update.
 
 # FIXME: Check for rundeps changes as well
 
@@ -29,9 +30,3 @@ if [[ ! -z "${SYSTEM_BASE_DEVEL_PKG}" && ! -z "${CHANGED_ABI_USED_LIBS}" ]]; the
         exit 1
     fi
 fi
-
-#FILES_PATTERN='abi_used_libs'
-#FORBIDDEN='system.base'
-#git diff --cached --name-only | \
-#    grep -E $FILES_PATTERN | \
-#    GREP_COLORS='mt=4;5;37;41' xargs grep --color --with-filename -n $FORBIDDEN && echo 'COMMIT REJECTED Found "$FORBIDDEN" references. Please remove them before commiting' && exit 1
