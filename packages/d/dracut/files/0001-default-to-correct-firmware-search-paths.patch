@@ -1,0 +1,117 @@
+From 95aeed8975dd5a2af782ec986f2af6176b585c59 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=D0=BD=D0=B0=D0=B1?= <nabijaczleweli@nabijaczleweli.xyz>
+Date: Tue, 26 Apr 2022 16:42:55 +0200
+Subject: [PATCH] fix(dracut): default to correct firmware search paths
+
+1. /sys/module/firmware_class/parameters/path (fw_path_para), if any
+2. /lib/firmware/updates/$(uname -r)
+3. /lib/firmware/updates
+4. /lib/firmware/$(uname -r)
+5. /lib/firmware
+
+https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/drivers/base/firmware_loader/main.c?h=v5.17#n406
+---
+ dracut-init.sh               |  2 --
+ dracut.sh                    |  5 ++++-
+ src/install/dracut-install.c | 36 ++++++++++++++++++++++++++++--------
+ 3 files changed, 32 insertions(+), 11 deletions(-)
+
+diff --git a/dracut-init.sh b/dracut-init.sh
+index 9f9c09801..900e8b839 100644
+--- a/dracut-init.sh
++++ b/dracut-init.sh
+@@ -72,8 +72,6 @@ srcmods="$dracutsysrootdir/lib/modules/$kernel/"
+ }
+ export srcmods
+ 
+-[[ $DRACUT_FIRMWARE_PATH ]] || export DRACUT_FIRMWARE_PATH="/lib/firmware/updates:/lib/firmware:/lib/firmware/$kernel"
+-
+ # export standard hookdirs
+ [[ $hookdirs ]] || {
+     hookdirs="cmdline pre-udev pre-trigger netroot "
+diff --git a/dracut.sh b/dracut.sh
+index 408f54d1c..0b7199661 100755
+--- a/dracut.sh
++++ b/dracut.sh
+@@ -1020,7 +1020,10 @@ stdloglvl=$((stdloglvl + verbosity_mod_l))
+ [[ $mdadmconf_l ]] && mdadmconf=$mdadmconf_l
+ [[ $lvmconf_l ]] && lvmconf=$lvmconf_l
+ [[ $dracutbasedir ]] || dracutbasedir="$dracutsysrootdir"/usr/lib/dracut
+-[[ $fw_dir ]] || fw_dir="$dracutsysrootdir/lib/firmware/updates:$dracutsysrootdir/lib/firmware:$dracutsysrootdir/lib/firmware/$kernel"
++[[ $fw_dir ]] || {
++    fw_path_para=$(< /sys/module/firmware_class/parameters/path)
++    fw_dir="${fw_path_para:+$dracutsysrootdir$fw_path_para:}$dracutsysrootdir/lib/firmware/updates/$kernel:$dracutsysrootdir/lib/firmware/updates:$dracutsysrootdir/lib/firmware/$kernel:$dracutsysrootdir/lib/firmware"
++}
+ [[ $tmpdir_l ]] && tmpdir="$tmpdir_l"
+ [[ $tmpdir ]] || tmpdir="$TMPDIR"
+ [[ $tmpdir ]] || tmpdir="$dracutsysrootdir"/var/tmp
+diff --git a/src/install/dracut-install.c b/src/install/dracut-install.c
+index 7c6d91c15..c8b25733d 100644
+--- a/src/install/dracut-install.c
++++ b/src/install/dracut-install.c
+@@ -983,9 +983,12 @@ static void usage(int status)
+                "\n"
+                "  --module,-m       Install kernel modules, instead of files\n"
+                "  --kerneldir       Specify the kernel module directory\n"
+-               "                     (default: /lib/modules/`uname -r`)\n"
++               "                     (default: /lib/modules/$(uname -r))\n"
+                "  --firmwaredirs    Specify the firmware directory search path with : separation\n"
+-               "                     (default: DRACUT_FIRMWARE_PATH env var, /lib/firmware if not set)\n"
++               "                     (default: $DRACUT_FIRMWARE_PATH, otherwise kernel-compatible\n"
++               "                      $(</sys/module/firmware_class/parameters/path),\n"
++               "                      /lib/firmware/updates/$(uname -r), /lib/firmware/updates\n"
++               "                      /lib/firmware/$(uname -r), /lib/firmware)\n"
+                "  --silent          Don't display error messages for kernel module install\n"
+                "  --modalias        Only generate module list from /sys/devices modalias list\n"
+                "  -o --optional     If kernel module does not exist, do not fail\n"
+@@ -1149,10 +1152,10 @@ static int parse_argv(int argc, char *argv[])
+                 log_set_max_level(arg_loglevel);
+         }
+ 
++        struct utsname buf = {0};
+         if (!kerneldir) {
+-                struct utsname buf;
+                 uname(&buf);
+-                _asprintf(&kerneldir, "%s%s", "/lib/modules/", buf.release);
++                _asprintf(&kerneldir, "/lib/modules/%s", buf.release);
+         }
+ 
+         if (arg_modalias) {
+@@ -1161,15 +1164,32 @@ static int parse_argv(int argc, char *argv[])
+ 
+         if (arg_module) {
+                 if (!firmwaredirs) {
+-                        char *path = NULL;
+-
+-                        path = getenv("DRACUT_FIRMWARE_PATH");
++                        char *path = getenv("DRACUT_FIRMWARE_PATH");
+ 
+                         if (path) {
+                                 log_debug("DRACUT_FIRMWARE_PATH=%s", path);
+                                 firmwaredirs = strv_split(path, ":");
+                         } else {
+-                                firmwaredirs = strv_new("/lib/firmware", NULL);
++                                if (!*buf.release)
++                                        uname(&buf);
++
++                                char fw_path_para[PATH_MAX + 1] = "";
++                                int path = open("/sys/module/firmware_class/parameters/path", O_RDONLY | O_CLOEXEC);
++                                if (path != -1) {
++                                        ssize_t rd = read(path, fw_path_para, PATH_MAX);
++                                        if (rd != -1)
++                                                fw_path_para[rd - 1] = '\0';
++                                        close(path);
++                                }
++                                char uk[22 + sizeof(buf.release)], fk[14 + sizeof(buf.release)];
++                                sprintf(uk, "/lib/firmware/updates/%s", buf.release);
++                                sprintf(fk, "/lib/firmware/%s", buf.release);
++                                firmwaredirs = strv_new(STRV_IFNOTNULL(*fw_path_para ? fw_path_para : NULL),
++                                                        uk,
++                                                        "/lib/firmware/updates",
++                                                        fk,
++                                                        "/lib/firmware",
++                                                        NULL);
+                         }
+                 }
+         }
+
