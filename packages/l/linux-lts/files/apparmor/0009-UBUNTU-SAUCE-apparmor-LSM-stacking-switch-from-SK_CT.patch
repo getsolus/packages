@@ -1,0 +1,89 @@
+From 7a3c2604f8e969bfd3c257b1d9e69d9b4ef169ea Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Tue, 6 Oct 2020 14:29:39 -0700
+Subject: [PATCH 09/16] UBUNTU: SAUCE: apparmor: LSM stacking: switch from
+ SK_CTX() to aa_sock()
+
+LSM: Infrastructure management of the sock security
+
+changes apparmor to use aa_sock() instead of SK_CTX() but doesn't
+update the apparmor unix mediation because that code is not upstream.
+So make the change here instead of modifying the LSM patch.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ security/apparmor/af_unix.c |  6 +++---
+ security/apparmor/lsm.c     | 10 +++++-----
+ 2 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/security/apparmor/af_unix.c b/security/apparmor/af_unix.c
+index 5c05d3114f54..06d6946990b9 100644
+--- a/security/apparmor/af_unix.c
++++ b/security/apparmor/af_unix.c
+@@ -46,7 +46,7 @@ static inline int unix_fs_perm(const char *op, u32 mask, struct aa_label *label,
+ 		/* socket path has been cleared because it is being shutdown
+ 		 * can only fall back to original sun_path request
+ 		 */
+-		struct aa_sk_ctx *ctx = SK_CTX(&u->sk);
++		struct aa_sk_ctx *ctx = aa_sock(&u->sk);
+ 		if (ctx->path.dentry)
+ 			return aa_path_perm(op, label, &ctx->path, flags, mask,
+ 					    &cond);
+@@ -512,7 +512,7 @@ static int profile_peer_perm(struct aa_profile *profile, const char *op, u32 req
+ 
+ 	state = PROFILE_MEDIATES_AF(profile, AF_UNIX);
+ 	if (state) {
+-		struct aa_sk_ctx *peer_ctx = SK_CTX(peer_sk);
++		struct aa_sk_ctx *peer_ctx = aa_sock(peer_sk);
+ 		struct aa_profile *peerp;
+ 		struct sockaddr_un *addr = NULL;
+ 		int len = 0;
+@@ -632,7 +632,7 @@ int aa_unix_file_perm(struct aa_label *label, const char *op, u32 request,
+ 		error = unix_fs_perm(op, request, label, unix_sk(peer_sk),
+ 				     PATH_SOCK_COND);
+ 	} else {
+-		struct aa_sk_ctx *pctx = SK_CTX(peer_sk);
++		struct aa_sk_ctx *pctx = aa_sock(peer_sk);
+ 		if (sk_req)
+ 			error = aa_unix_label_sk_perm(label, op, sk_req,
+ 						      sock->sk);
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 0180675d5a5c..855b865a0bba 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -843,9 +843,9 @@ static struct path *UNIX_FS_CONN_PATH(struct sock *sk, struct sock *newsk)
+ static int apparmor_unix_stream_connect(struct sock *sk, struct sock *peer_sk,
+ 					struct sock *newsk)
+ {
+-	struct aa_sk_ctx *sk_ctx = SK_CTX(sk);
+-	struct aa_sk_ctx *peer_ctx = SK_CTX(peer_sk);
+-	struct aa_sk_ctx *new_ctx = SK_CTX(newsk);
++	struct aa_sk_ctx *sk_ctx = aa_sock(sk);
++	struct aa_sk_ctx *peer_ctx = aa_sock(peer_sk);
++	struct aa_sk_ctx *new_ctx = aa_sock(newsk);
+ 	struct aa_label *label;
+ 	struct path *path;
+ 	int error;
+@@ -902,7 +902,7 @@ static int apparmor_unix_stream_connect(struct sock *sk, struct sock *peer_sk,
+  */
+ static int apparmor_unix_may_send(struct socket *sock, struct socket *peer)
+ {
+-	struct aa_sk_ctx *peer_ctx = SK_CTX(peer->sk);
++	struct aa_sk_ctx *peer_ctx = aa_sock(peer->sk);
+ 	struct aa_label *label;
+ 	int error;
+ 
+@@ -1175,7 +1175,7 @@ static struct aa_label *sk_peer_label(struct sock *sk)
+ 	 */
+ 	peer_sk = unix_peer_get(sk);
+ 	if (peer_sk) {
+-		ctx = SK_CTX(peer_sk);
++		ctx = aa_sock(peer_sk);
+ 		if (ctx->label)
+ 			label = aa_get_label(ctx->label);
+ 		sock_put(peer_sk);
+-- 
+2.32.0
+

@@ -1,0 +1,114 @@
+From 9634614d1e0623efa25f2417d2d9417c4366b063 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Tue, 6 Oct 2020 14:43:16 -0700
+Subject: [PATCH 07/16] UBUNTU: SAUCE: apparmor: disable showing the mode as
+ part of a secid to secctx
+
+Displaying the mode as part of the seectx takes up unnecessary memory,
+makes it so we can't use refcounted secctx so we need to alloc/free on
+every conversion from secid to secctx and introduces a space that
+could be potentially mishandled by tooling.
+
+Eg. In an audit record we get
+
+  subj_type=firefix (enforce)
+
+Having the mode reported is not necessary, and might even be confusing
+eg. when writing an audit rule to match the above record field you
+would use
+
+  -F subj_type=firefox
+
+ie. the mode is not included. AppArmor provides ways to find the mode
+without reporting as part of the secctx. So disable this by default
+before its use is wide spread and we can't. For now we add a sysctl
+to control the behavior as we can't guarentee no one is using this.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ security/apparmor/include/secid.h |  3 +++
+ security/apparmor/lsm.c           |  8 ++++++++
+ security/apparmor/secid.c         | 15 +++++++++------
+ 3 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/security/apparmor/include/secid.h b/security/apparmor/include/secid.h
+index 48ff1ddecad5..ce942b551124 100644
+--- a/security/apparmor/include/secid.h
++++ b/security/apparmor/include/secid.h
+@@ -21,6 +21,9 @@ struct aa_label;
+ /* secid value that matches any other secid */
+ #define AA_SECID_WILDCARD 1
+ 
++/* sysctl to enable displaying mode when converting secid to secctx */
++extern int apparmor_display_secid_mode;
++
+ struct aa_label *aa_secid_to_label(u32 secid);
+ int apparmor_secid_to_secctx(u32 secid, char **secdata, u32 *seclen);
+ int apparmor_secctx_to_secid(const char *secdata, u32 seclen, u32 *secid);
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index b1216ee7dd2f..0180675d5a5c 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -1849,6 +1849,14 @@ static struct ctl_table apparmor_sysctl_table[] = {
+ 		.mode           = 0600,
+ 		.proc_handler   = apparmor_dointvec,
+ 	},
++	{
++		.procname       = "apparmor_display_secid_mode",
++		.data           = &apparmor_display_secid_mode,
++		.maxlen         = sizeof(int),
++		.mode           = 0600,
++		.proc_handler   = apparmor_dointvec,
++	},
++
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/secid.c b/security/apparmor/secid.c
+index ce545f99259e..8a7208fee2da 100644
+--- a/security/apparmor/secid.c
++++ b/security/apparmor/secid.c
+@@ -32,6 +32,8 @@
+ static DEFINE_IDR(aa_secids);
+ static DEFINE_SPINLOCK(secid_lock);
+ 
++int apparmor_display_secid_mode = 0;
++
+ /*
+  * TODO: allow policy to reserve a secid range?
+  * TODO: add secid pinning
+@@ -71,6 +73,7 @@ int apparmor_secid_to_secctx(u32 secid, char **secdata, u32 *seclen)
+ {
+ 	/* TODO: cache secctx and ref count so we don't have to recreate */
+ 	struct aa_label *label = aa_secid_to_label(secid);
++	int flags = FLAG_VIEW_SUBNS | FLAG_HIDDEN_UNCONFINED | FLAG_ABS_ROOT;
+ 	int len;
+ 
+ 	AA_BUG(!seclen);
+@@ -78,15 +81,15 @@ int apparmor_secid_to_secctx(u32 secid, char **secdata, u32 *seclen)
+ 	if (!label)
+ 		return -EINVAL;
+ 
++	if (apparmor_display_secid_mode)
++		flags |= FLAG_SHOW_MODE;
++
+ 	if (secdata)
+ 		len = aa_label_asxprint(secdata, root_ns, label,
+-					FLAG_SHOW_MODE | FLAG_VIEW_SUBNS |
+-					FLAG_HIDDEN_UNCONFINED | FLAG_ABS_ROOT,
+-					GFP_ATOMIC);
++					flags, GFP_ATOMIC);
+ 	else
+-		len = aa_label_snxprint(NULL, 0, root_ns, label,
+-					FLAG_SHOW_MODE | FLAG_VIEW_SUBNS |
+-					FLAG_HIDDEN_UNCONFINED | FLAG_ABS_ROOT);
++		len = aa_label_snxprint(NULL, 0, root_ns, label, flags);
++
+ 	if (len < 0)
+ 		return -ENOMEM;
+ 
+-- 
+2.32.0
+

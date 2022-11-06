@@ -1,0 +1,103 @@
+From 5dfd017c11a734a4c4d0bc864d29bfc5f70f6214 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Thu, 20 Aug 2020 10:40:08 -0700
+Subject: [PATCH 12/16] UBUNTU: SAUCE: LSM: Specify which LSM to display
+
+Create a new entry "display" in the procfs attr directory for
+controlling which LSM security information is displayed for a
+process. A process can only read or write its own display value.
+
+The name of an active LSM that supplies hooks for
+human readable data may be written to "display" to set the
+value. The name of the LSM currently in use can be read from
+"display". At this point there can only be one LSM capable
+of display active. A helper function lsm_task_display() is
+provided to get the display slot for a task_struct.
+
+Setting the "display" requires that all security modules using
+setprocattr hooks allow the action. Each security module is
+responsible for defining its policy.
+
+AppArmor hook provided by John Johansen <john.johansen@canonical.com>
+SELinux hook provided by Stephen Smalley <sds@tycho.nsa.gov>
+
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Acked-by: Stephen Smalley <sds@tycho.nsa.gov>
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ security/apparmor/include/apparmor.h |  3 ++-
+ security/apparmor/lsm.c              | 32 ++++++++++++++++++++++++++++
+ 2 files changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/security/apparmor/include/apparmor.h b/security/apparmor/include/apparmor.h
+index 5870de20122f..9bed3fcb239a 100644
+--- a/security/apparmor/include/apparmor.h
++++ b/security/apparmor/include/apparmor.h
+@@ -28,8 +28,9 @@
+ #define AA_CLASS_SIGNAL		10
+ #define AA_CLASS_NET		14
+ #define AA_CLASS_LABEL		16
++#define AA_CLASS_DISPLAY_LSM	17
+ 
+-#define AA_CLASS_LAST		AA_CLASS_LABEL
++#define AA_CLASS_LAST		AA_CLASS_DISPLAY_LSM
+ 
+ /* Control parameters settable through module/boot flags */
+ extern enum audit_mode aa_g_audit;
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 62b9daf4e04d..4bb846f74a34 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -622,6 +622,25 @@ static int apparmor_getprocattr(struct task_struct *task, char *name,
+ 	return error;
+ }
+ 
++
++static int profile_display_lsm(struct aa_profile *profile,
++			       struct common_audit_data *sa)
++{
++	struct aa_perms perms = { };
++	unsigned int state;
++
++	state = PROFILE_MEDIATES(profile, AA_CLASS_DISPLAY_LSM);
++	if (state) {
++		aa_compute_perms(profile->policy.dfa, state, &perms);
++		aa_apply_modes_to_perms(profile, &perms);
++		aad(sa)->label = &profile->label;
++
++		return aa_check_perms(profile, &perms, AA_MAY_WRITE, sa, NULL);
++	}
++
++	return 0;
++}
++
+ static int apparmor_setprocattr(const char *name, void *value,
+ 				size_t size)
+ {
+@@ -633,6 +652,19 @@ static int apparmor_setprocattr(const char *name, void *value,
+ 	if (size == 0)
+ 		return -EINVAL;
+ 
++	/* LSM infrastructure does actual setting of display if allowed */
++	if (!strcmp(name, "display")) {
++		struct aa_profile *profile;
++		struct aa_label *label;
++
++		aad(&sa)->info = "set display lsm";
++		label = begin_current_label_crit_section();
++		error = fn_for_each_confined(label, profile,
++					     profile_display_lsm(profile, &sa));
++		end_current_label_crit_section(label);
++		return error;
++	}
++
+ 	/* AppArmor requires that the buffer must be null terminated atm */
+ 	if (args[size - 1] != '\0') {
+ 		/* null terminate */
+-- 
+2.32.0
+
