@@ -8,7 +8,7 @@
 
 LAST_COMMIT_DIFF=`git diff @~ @`
 
-if [[ `git grep -E 'system.base|system.devel' package.yml` ]]; then
+if [[ `git grep -E 'system.base|system.devel' pspec_x86_64.xml` ]]; then
     SYSTEM_BASE_DEVEL_PKG=1
 fi
 
