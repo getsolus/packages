@@ -1,7 +1,7 @@
-From f689135e21bc09ba4a0f8bbc62e50da75ec355a2 Mon Sep 17 00:00:00 2001
-From: Ikey Doherty <ikey@solus-project.com>
-Date: Sun, 16 Oct 2016 01:07:07 +0100
-Subject: [PATCH] Support automatic login for LightDM in a stateless
+From 1a6bcbcbb984f92d573478ac2bd2432991ee79a4 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Wed, 16 Nov 2022 10:36:18 +0000
+Subject: [PATCH 1/1] Support automatic login for LightDM in a stateless
  configuration
 
 This is a modification of the original patch from Michael Terry at
@@ -12,17 +12,15 @@ To support this we use a new control file presence, i.e. /usr/sbin/lightdm.
 If we have a config when we start up we'll automatically start a monitor on
 it, otherwise we'll set up a monitor the first time we ever write the config
 out.
-
-Signed-off-by: Ikey Doherty <ikey@solus-project.com>
 ---
- src/daemon.c | 175 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-----
- 1 file changed, 161 insertions(+), 14 deletions(-)
+ src/daemon.c | 155 ++++++++++++++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 147 insertions(+), 8 deletions(-)
 
 diff --git a/src/daemon.c b/src/daemon.c
-index e62e124..6f949f4 100644
+index c8b6320..20eab22 100644
 --- a/src/daemon.c
 +++ b/src/daemon.c
-@@ -51,6 +51,8 @@
+@@ -54,6 +54,8 @@
  #define PATH_PASSWD "/etc/passwd"
  #define PATH_SHADOW "/etc/shadow"
  #define PATH_GROUP "/etc/group"
@@ -31,15 +29,15 @@ index e62e124..6f949f4 100644
  
  enum {
          PROP_0,
-@@ -70,6 +72,7 @@ struct DaemonPrivate {
+@@ -73,6 +75,7 @@ typedef struct {
          GFileMonitor *shadow_monitor;
          GFileMonitor *group_monitor;
          GFileMonitor *gdm_monitor;
 +        GFileMonitor *lightdm_monitor;
          GFileMonitor *wtmp_monitor;
  
-         guint reload_id;
-@@ -730,9 +733,20 @@ daemon_init (Daemon *daemon)
+         GQueue *pending_list_cached_users;
+@@ -745,9 +748,19 @@ daemon_init (Daemon *daemon)
                                              wtmp_helper_get_path_for_monitor (),
                                              on_users_monitor_changed);
  
@@ -59,26 +57,19 @@ index e62e124..6f949f4 100644
 +                                                       PATH_LIGHTDM_CONFIG,
 +                                                       on_gdm_monitor_changed);
 +        }
-+
          reload_users_timeout (daemon);
          queue_reload_autologin (daemon);
  }
-@@ -1464,10 +1478,10 @@ daemon_local_check_auth (Daemon                *daemon,
+@@ -1509,7 +1522,7 @@ daemon_local_check_auth (Daemon                *daemon,
  }
  
  gboolean
 -load_autologin (Daemon      *daemon,
--                gchar      **name,
--                gboolean    *enabled,
--                GError     **error)
 +load_autologin_gdm (Daemon      *daemon,
-+                    gchar      **name,
-+                    gboolean    *enabled,
-+                    GError     **error)
- {
-         g_autoptr(GKeyFile) keyfile = NULL;
-         GError *local_error = NULL;
-@@ -1502,22 +1515,89 @@ load_autologin (Daemon      *daemon,
+                 gchar      **name,
+                 gboolean    *enabled,
+                 GError     **error)
+@@ -1547,17 +1560,77 @@ load_autologin (Daemon      *daemon,
          return TRUE;
  }
  
@@ -115,7 +106,7 @@ index e62e124..6f949f4 100644
 +                gchar      **name,
 +                gboolean    *enabled,
                  GError     **error)
- {
++{
 +        GDBusConnection *connection;
 +        GVariant *reply;
 +
@@ -148,33 +139,19 @@ index e62e124..6f949f4 100644
 +                    const gchar *name,
 +                    gboolean     enabled,
 +                    GError     **error)
-+{
+ {
          g_autoptr(GKeyFile) keyfile = NULL;
          g_autofree gchar *data = NULL;
          gboolean result;
-+        GError *local_error = NULL;
-+
+         g_autoptr(GError) local_error = NULL;
+ 
 +        if (!g_file_test ("/etc/gdm", G_FILE_TEST_EXISTS))
 +                return TRUE; /* not an error, just not installed */
- 
++
          keyfile = g_key_file_new ();
          if (!g_key_file_load_from_file (keyfile,
                                          PATH_GDM_CUSTOM,
-                                         G_KEY_FILE_KEEP_COMMENTS,
--                                        error)) {
--                return FALSE;
-+                                        &local_error)) {
-+                /* It's OK for custom.conf to not exist, we will make it */
-+                if (!g_error_matches (local_error, G_FILE_ERROR, G_FILE_ERROR_NOENT)) {
-+                        g_propagate_error (error, local_error);
-+                        g_key_file_free (keyfile);
-+                        return FALSE;
-+                }
-+                g_error_free (local_error);
-         }
- 
-         g_key_file_set_string (keyfile, "daemon", "AutomaticLoginEnable", enabled ? "True" : "False");
-@@ -1529,6 +1610,72 @@ save_autologin (Daemon      *daemon,
+@@ -1579,6 +1652,72 @@ save_autologin (Daemon      *daemon,
          return result;
  }
  
@@ -248,5 +225,5 @@ index e62e124..6f949f4 100644
  daemon_local_set_automatic_login (Daemon    *daemon,
                                    User      *user,
 -- 
-2.10.1
+2.35.5
 
