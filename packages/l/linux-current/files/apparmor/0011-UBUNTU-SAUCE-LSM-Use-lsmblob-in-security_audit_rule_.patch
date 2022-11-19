@@ -1,0 +1,216 @@
+From 3256f1aec573de067d7aa515b5abcbd88c052917 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 17 Aug 2020 17:15:27 -0700
+Subject: [PATCH 11/36] UBUNTU: SAUCE: LSM: Use lsmblob in
+ security_audit_rule_match
+
+Change the secid parameter of security_audit_rule_match
+to a lsmblob structure pointer. Pass the entry from the
+lsmblob structure for the approprite slot to the LSM hook.
+
+Change the users of security_audit_rule_match to use the
+lsmblob instead of a u32. The scaffolding function lsmblob_init()
+fills the blob with the value of the old secid, ensuring that
+it is available to the appropriate module hook. The sources of
+the secid, security_task_getsecid() and security_inode_getsecid(),
+will be converted to use the blob structure later in the series.
+At the point the use of lsmblob_init() is dropped.
+
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Stephen Smalley <sds@tycho.nsa.gov>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+[ saf: resolve conflicts ]
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ include/linux/security.h            |  7 ++++---
+ kernel/auditfilter.c                |  6 ++++--
+ kernel/auditsc.c                    | 14 ++++++++++----
+ security/integrity/ima/ima.h        |  2 +-
+ security/integrity/ima/ima_policy.c |  7 +++++--
+ security/security.c                 | 10 ++++++++--
+ 6 files changed, 32 insertions(+), 14 deletions(-)
+
+diff --git a/include/linux/security.h b/include/linux/security.h
+index e5fceb930267d..710f9603e5e1a 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -1959,7 +1959,8 @@ static inline int security_key_getsecurity(struct key *key, char **_buffer)
+ #ifdef CONFIG_SECURITY
+ int security_audit_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule);
+ int security_audit_rule_known(struct audit_krule *krule);
+-int security_audit_rule_match(u32 secid, u32 field, u32 op, void **lsmrule);
++int security_audit_rule_match(struct lsmblob *blob, u32 field, u32 op,
++			      void **lsmrule);
+ void security_audit_rule_free(void **lsmrule);
+ 
+ #else
+@@ -1975,8 +1976,8 @@ static inline int security_audit_rule_known(struct audit_krule *krule)
+ 	return 0;
+ }
+ 
+-static inline int security_audit_rule_match(u32 secid, u32 field, u32 op,
+-					    void **lsmrule)
++static inline int security_audit_rule_match(struct lsmblob *blob, u32 field,
++					    u32 op, void **lsmrule)
+ {
+ 	return 0;
+ }
+diff --git a/kernel/auditfilter.c b/kernel/auditfilter.c
+index 7039187886248..c8745814975ae 100644
+--- a/kernel/auditfilter.c
++++ b/kernel/auditfilter.c
+@@ -1340,6 +1340,7 @@ int audit_filter(int msgtype, unsigned int listtype)
+ 			struct audit_field *f = &e->rule.fields[i];
+ 			pid_t pid;
+ 			u32 sid;
++			struct lsmblob blob;
+ 
+ 			switch (f->type) {
+ 			case AUDIT_PID:
+@@ -1370,8 +1371,9 @@ int audit_filter(int msgtype, unsigned int listtype)
+ 			case AUDIT_SUBJ_CLR:
+ 				if (f->lsm_isset) {
+ 					security_current_getsecid_subj(&sid);
+-					result = security_audit_rule_match(sid,
+-						   f->type, f->op,
++					lsmblob_init(&blob, sid);
++					result = security_audit_rule_match(
++						   &blob, f->type, f->op,
+ 						   f->lsm_rules);
+ 				}
+ 				break;
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index 652e89b95a683..049cd31b48620 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -468,6 +468,7 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 	const struct cred *cred;
+ 	int i, need_sid = 1;
+ 	u32 sid;
++	struct lsmblob blob;
+ 	unsigned int sessionid;
+ 
+ 	if (ctx && rule->prio <= ctx->prio)
+@@ -678,7 +679,9 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 					security_current_getsecid_subj(&sid);
+ 					need_sid = 0;
+ 				}
+-				result = security_audit_rule_match(sid, f->type,
++				lsmblob_init(&blob, sid);
++				result = security_audit_rule_match(&blob,
++								   f->type,
+ 								   f->op,
+ 								   f->lsm_rules);
+ 			}
+@@ -693,15 +696,17 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 			if (f->lsm_isset) {
+ 				/* Find files that match */
+ 				if (name) {
++					lsmblob_init(&blob, name->osid);
+ 					result = security_audit_rule_match(
+-								name->osid,
++								&blob,
+ 								f->type,
+ 								f->op,
+ 								f->lsm_rules);
+ 				} else if (ctx) {
+ 					list_for_each_entry(n, &ctx->names_list, list) {
++						lsmblob_init(&blob, name->osid);
+ 						if (security_audit_rule_match(
+-								n->osid,
++								&blob,
+ 								f->type,
+ 								f->op,
+ 								f->lsm_rules)) {
+@@ -713,7 +718,8 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 				/* Find ipc objects that match */
+ 				if (!ctx || ctx->type != AUDIT_IPC)
+ 					break;
+-				if (security_audit_rule_match(ctx->ipc.osid,
++				lsmblob_init(&blob, ctx->ipc.osid);
++				if (security_audit_rule_match(&blob,
+ 							      f->type, f->op,
+ 							      f->lsm_rules))
+ 					++result;
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index be965a8715e4e..6c2e35375dc8a 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -437,7 +437,7 @@ static inline void ima_filter_rule_free(void *lsmrule)
+ {
+ }
+ 
+-static inline int ima_filter_rule_match(u32 secid, u32 field, u32 op,
++static inline int ima_filter_rule_match(strcut lsmblob *blob, u32 field, u32 op,
+ 					void *lsmrule)
+ {
+ 	return -EINVAL;
+diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
+index 1187e5fe1d87b..de24a2de645e9 100644
+--- a/security/integrity/ima/ima_policy.c
++++ b/security/integrity/ima/ima_policy.c
+@@ -627,6 +627,7 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 	for (i = 0; i < MAX_LSM_RULES; i++) {
+ 		int rc = 0;
+ 		u32 osid;
++		struct lsmblob lsmdata;
+ 
+ 		if (!ima_lsm_isset(rule->lsm[i].rules)) {
+ 			if (!rule->lsm[i].args_p)
+@@ -639,14 +640,16 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		case LSM_OBJ_ROLE:
+ 		case LSM_OBJ_TYPE:
+ 			security_inode_getsecid(inode, &osid);
+-			rc = ima_filter_rule_match(osid, rule->lsm[i].type,
++			lsmblob_init(&lsmdata, osid);
++			rc = ima_filter_rule_match(&lsmdata, rule->lsm[i].type,
+ 						   Audit_equal,
+ 						   rule->lsm[i].rules);
+ 			break;
+ 		case LSM_SUBJ_USER:
+ 		case LSM_SUBJ_ROLE:
+ 		case LSM_SUBJ_TYPE:
+-			rc = ima_filter_rule_match(secid, rule->lsm[i].type,
++			lsmblob_init(&lsmdata, secid);
++			rc = ima_filter_rule_match(&lsmdata, rule->lsm[i].type,
+ 						   Audit_equal,
+ 						   rule->lsm[i].rules);
+ 			break;
+diff --git a/security/security.c b/security/security.c
+index 99627145bd5b3..f1752b7d72803 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -2649,11 +2649,14 @@ void security_audit_rule_free(void **lsmrule)
+ 	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_free, list) {
+ 		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
+ 			continue;
++		if (lsmrule[hp->lsmid->slot] == NULL)
++			continue;
+ 		hp->hook.audit_rule_free(lsmrule[hp->lsmid->slot]);
+ 	}
+ }
+ 
+-int security_audit_rule_match(u32 secid, u32 field, u32 op, void **lsmrule)
++int security_audit_rule_match(struct lsmblob *blob, u32 field, u32 op,
++			      void **lsmrule)
+ {
+ 	struct security_hook_list *hp;
+ 	int rc;
+@@ -2661,7 +2664,10 @@ int security_audit_rule_match(u32 secid, u32 field, u32 op, void **lsmrule)
+ 	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_match, list) {
+ 		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
+ 			continue;
+-		rc = hp->hook.audit_rule_match(secid, field, op,
++		if (lsmrule[hp->lsmid->slot] == NULL)
++			continue;
++		rc = hp->hook.audit_rule_match(blob->secid[hp->lsmid->slot],
++					       field, op,
+ 					       &lsmrule[hp->lsmid->slot]);
+ 		if (rc)
+ 			return rc;
+-- 
+2.38.1
+
