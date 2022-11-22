@@ -189,15 +189,25 @@ cleanabireport() {
 
 }
 
-# Use tool of choice here to verify changes e.g. git diff, meld, etc.
+# Verify the rebuild went through against ABI_LIB
+# FIXME: Some packages provide several libs to rebuild against, e.g. libicu, grep all options
 verify() {
+    if [[ -z "${ABI_LIB}" ]]; then
+         echo "ABI_LIB not set. e.g. libfoobar.so.8"
+         exit 1
+    fi
+
     pushd ~/rebuilds/${MAINPAK}
     for i in ${PACKAGES}
     do
       pushd ${i}
         var=$((var+1))
         echo -e "Verifying package" ${var} "out of" $(package_count)
-        git difftool --tool=gvimdiff3
+        VERIFY_ABI_BUMP=`git diff -U0 --word-diff abi_used_libs | grep ${ABI_LIB}`
+        if [[ $VERIFY_ABI_BUMP = "" ]]; then
+            echo "Package ${i} failed to rebuild against ${MAINPAK}"
+            exit 1
+        fi
       popd
     done
     popd
