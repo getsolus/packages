@@ -203,7 +203,7 @@ verify() {
       pushd ${i}
         var=$((var+1))
         echo -e "Verifying package" ${var} "out of" $(package_count)
-        VERIFY_ABI_BUMP=`git diff -U0 --word-diff abi_used_libs | grep ${ABI_LIB}`
+        VERIFY_ABI_BUMP=`git diff -U0 --word-diff abi_used_libs | grep +${ABI_LIB}`
         if [[ $VERIFY_ABI_BUMP = "" ]]; then
             echo "Package ${i} failed to rebuild against ${MAINPAK}"
             exit 1
