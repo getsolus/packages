@@ -12,3 +12,4 @@ This is a list of things to rebuild after this, in the right order:
 * v4l2loopback
 * virtualbox
 * vhba-module
+* xone
