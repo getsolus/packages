@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Script to determine whether a published tag has completed on the build server and gives you a notification whether it has completed or failed.
 # Additionally, if a package successfully builds it will then check if it gets successfully indexed into the repo.
