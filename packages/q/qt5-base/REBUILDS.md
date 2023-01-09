@@ -1,20 +1,18 @@
 This is a list of packages which need to be rebuild by every new update
 
-QT Update:
+QT Minor Update (eg 5.15.7 -> 5.15.8):
 
-* python-qt5 (needs always an update to the same QT Version)
 * python3-qt5 (needs always an update to the same QT Version)
-* python-webengine (needs always an update to the same QT Version)
-* calibre
-* qt-creator
+* python-qtwebengine (needs always an update to the same QT Version)
+* qtstyleplugins
 * akonadi
 * skrooge
-* hedgewars
-* liteide
-* dnscrypt-proxy-gui
-* qt5ct
-* eqonomize
-* python-pyotherside
+<!-- * hedgewars -->
+<!-- * liteide -->
+<!-- * dnscrypt-proxy-gui -->
+<!-- * qt5ct -->
+<!-- * eqonomize -->
+<!-- * python-pyotherside -->
 
 QT release: 
 
