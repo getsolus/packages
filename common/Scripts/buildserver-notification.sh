@@ -35,7 +35,7 @@ BUILDID=$(grep -B 1 "${TAG}" "${BUILDPAGE}" | grep -o '[0-9]*' | sort -nr | head
 echo "Build ID: ${BUILDID} | Tag: ${TAG}"
 
 # Look for build-ok from the build id
-while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep build-ok) ]] ; do
+while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ok) ]] ; do
 
     # Don't DoS the server
     sleep 20
