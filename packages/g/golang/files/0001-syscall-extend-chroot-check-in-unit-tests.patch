@@ -1,0 +1,65 @@
+From 13865b10b6ac973005e1b477353a55609f0a3096 Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Wed, 15 Feb 2023 17:25:08 +0100
+Subject: [PATCH] syscall: extend chroot check in unit tests
+
+Extend the current check (which checks if the inode of / is 2)
+by one comparing `/proc/{1,self}/mountinfo`.
+
+This check may not always work, which is why the original inode-based
+check is left intact. This essentially makes the result of `isChroot`
+identical to running the `ischroot` command on systems that provide it.
+---
+ src/syscall/exec_linux_test.go | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/src/syscall/exec_linux_test.go b/src/syscall/exec_linux_test.go
+index a6900f9033..ffe1849ce8 100644
+--- a/src/syscall/exec_linux_test.go
++++ b/src/syscall/exec_linux_test.go
+@@ -77,10 +77,18 @@ func skipUnprivilegedUserClone(t *testing.T) {
+ 	}
+ }
+ 
++func isChrooted(t *testing.T) bool {
++	if chroot, err := isChrootedMountInfo(t); err == nil {
++		return chroot
++	}
++
++	return isChrootedIno(t)
++}
++
+ // Check if we are in a chroot by checking if the inode of / is
+ // different from 2 (there is no better test available to non-root on
+ // linux).
+-func isChrooted(t *testing.T) bool {
++func isChrootedIno(t *testing.T) bool {
+ 	root, err := os.Stat("/")
+ 	if err != nil {
+ 		t.Fatalf("cannot stat /: %v", err)
+@@ -88,6 +96,22 @@ func isChrooted(t *testing.T) bool {
+ 	return root.Sys().(*syscall.Stat_t).Ino != 2
+ }
+ 
++// Check if we are in a chroot by checking if our mountinfo matches that of PID 1.
++// This only works with sufficient permissions, but is more reliable than checking
++func isChrootedMountInfo(t *testing.T) (bool, error) {
++	initInfo, err := os.ReadFile("/proc/1/mountinfo")
++	if err != nil {
++		return false, err
++	}
++
++	selfInfo, err := os.ReadFile("/proc/self/mountinfo")
++	if err != nil {
++		return false, err
++	}
++
++	return !bytes.Equal(selfInfo, initInfo), nil
++}
++
+ func checkUserNS(t *testing.T) {
+ 	skipInContainer(t)
+ 	skipNoUserNamespaces(t)
+-- 
+2.39.0
+
