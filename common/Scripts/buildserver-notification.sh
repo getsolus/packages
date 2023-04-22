@@ -44,7 +44,7 @@ while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ok) ]] ; do
     curl -s -z $BUILDPAGE $BUILDSERVER_URL -o $BUILDPAGE
 
     # Check if the build has failed
-    if [[ $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep build-failed) ]] ; then
+    if [[ $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep failed) ]] ; then
         echo "Failed on the build server!"
         notify-send -u critical "${TAG} failed on the build server!" -t 0
         paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
