@@ -58,8 +58,8 @@ rm ${BUILDPAGE}
 ### Now that it's built ensure we find it indexed into the repo.
 
 # Setup for index check
-INDEX_SHA_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz.sha1sum"
-INDEX_XZ_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz"
+INDEX_SHA_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz.sha1sum"
+INDEX_XZ_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz"
 INDEX_SHA=$(curl -s $INDEX_SHA_URL)
 curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
 unxz /tmp/unstable-index.xml.xz
