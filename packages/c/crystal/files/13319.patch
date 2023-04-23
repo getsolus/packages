@@ -1,0 +1,86 @@
+From ab0810cae7e85a2b86721a793dc237669081a67e Mon Sep 17 00:00:00 2001
+From: Quinton Miller <nicetas.c@gmail.com>
+Date: Fri, 14 Apr 2023 20:57:20 +0800
+Subject: [PATCH] Always use 0 for offset of `StaticArray`'s `@buffer`
+
+---
+ spec/compiler/codegen/offsetof_spec.cr     |  8 +++++++
+ spec/compiler/interpreter/pointers_spec.cr | 26 ++++++++++++++++++++++
+ src/compiler/crystal/codegen/codegen.cr    |  6 ++---
+ 3 files changed, 37 insertions(+), 3 deletions(-)
+
+diff --git a/spec/compiler/codegen/offsetof_spec.cr b/spec/compiler/codegen/offsetof_spec.cr
+index f7e7971be6b..c42fc6f4ad5 100644
+--- a/spec/compiler/codegen/offsetof_spec.cr
++++ b/spec/compiler/codegen/offsetof_spec.cr
+@@ -56,4 +56,12 @@ describe "Code gen: offsetof" do
+       (pointerof(f).as(Void*) + offsetof(Foo, @y).to_i64).as(UInt32*).value == f.y
+       CRYSTAL
+   end
++
++  it "returns offset of `StaticArray#@buffer`" do
++    run(<<-CRYSTAL).to_b.should be_true
++      x = uninitialized Int32[4]
++      pointerof(x.@buffer).value = 12345
++      (pointerof(x).as(Void*) + offsetof(Int32[4], @buffer).to_i64).as(Int32*).value == x.@buffer
++      CRYSTAL
++  end
+ end
+diff --git a/spec/compiler/interpreter/pointers_spec.cr b/spec/compiler/interpreter/pointers_spec.cr
+index 571e6384392..d3049d2ac25 100644
+--- a/spec/compiler/interpreter/pointers_spec.cr
++++ b/spec/compiler/interpreter/pointers_spec.cr
+@@ -121,6 +121,32 @@ describe Crystal::Repl::Interpreter do
+       CRYSTAL
+     end
+ 
++    it "pointerof read `StaticArray#@buffer` (1)" do
++      interpret(<<-CRYSTAL).should eq(2)
++        struct StaticArray(T, N)
++          def to_unsafe
++            pointerof(@buffer)
++          end
++
++          def x
++            @buffer
++          end
++        end
++
++        foo = uninitialized Int32[4]
++        foo.to_unsafe.value = 2
++        foo.x
++        CRYSTAL
++    end
++
++    it "pointerof read `StaticArray#@buffer` (2)" do
++      interpret(<<-CRYSTAL).should eq(2)
++        foo = uninitialized Int32[4]
++        pointerof(foo.@buffer).value = 2
++        foo.@buffer
++        CRYSTAL
++    end
++
+     it "interprets pointer set and get (union type)" do
+       interpret(<<-CRYSTAL).should eq(10)
+         ptr = Pointer(Int32 | Bool).malloc(1_u64)
+diff --git a/src/compiler/crystal/codegen/codegen.cr b/src/compiler/crystal/codegen/codegen.cr
+index 3b3a81757bb..34dbb49d4b7 100644
+--- a/src/compiler/crystal/codegen/codegen.cr
++++ b/src/compiler/crystal/codegen/codegen.cr
+@@ -105,13 +105,13 @@ module Crystal
+     end
+ 
+     def offset_of(type, element_index)
+-      return 0_u64 if type.extern_union?
++      return 0_u64 if type.extern_union? || type.is_a?(StaticArrayInstanceType)
+       llvm_typer.offset_of(llvm_typer.llvm_type(type), element_index)
+     end
+ 
+     def instance_offset_of(type, element_index)
+-      # extern unions must be value types, which always use the above
+-      # `offset_of` instead
++      # extern unions and static arrays must be value types, which always use
++      # the above `offset_of` instead
+       llvm_typer.offset_of(llvm_typer.llvm_struct_type(type), element_index + 1)
+     end
+   end
