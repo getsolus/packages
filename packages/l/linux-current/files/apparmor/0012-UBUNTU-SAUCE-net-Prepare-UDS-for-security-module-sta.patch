@@ -1,0 +1,180 @@
+From 9fa6543225743a0c50d57f5b8a74ba979ec87032 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Tue, 21 Jul 2020 14:05:54 -0700
+Subject: [PATCH 12/36] UBUNTU: SAUCE: net: Prepare UDS for security module
+ stacking
+
+Change the data used in UDS SO_PEERSEC processing from a
+secid to a more general struct lsmblob. Update the
+security_socket_getpeersec_dgram() interface to use the
+lsmblob. There is a small amount of scaffolding code
+that will come out when the security_secid_to_secctx()
+code is brought in line with the lsmblob.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ include/linux/security.h |  7 +++++--
+ include/net/af_unix.h    |  2 +-
+ include/net/scm.h        |  8 +++++---
+ net/ipv4/ip_sockglue.c   |  8 +++++---
+ net/unix/af_unix.c       |  6 +++---
+ security/security.c      | 18 +++++++++++++++---
+ 6 files changed, 34 insertions(+), 15 deletions(-)
+
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 6a6e725f2598..5253e04f618a 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -1509,7 +1509,8 @@ int security_socket_shutdown(struct socket *sock, int how);
+ int security_sock_rcv_skb(struct sock *sk, struct sk_buff *skb);
+ int security_socket_getpeersec_stream(struct socket *sock, sockptr_t optval,
+ 				      sockptr_t optlen, unsigned int len);
+-int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb, u32 *secid);
++int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb,
++				     struct lsmblob *blob);
+ int security_sk_alloc(struct sock *sk, int family, gfp_t priority);
+ void security_sk_free(struct sock *sk);
+ void security_sk_clone(const struct sock *sk, struct sock *newsk);
+@@ -1652,7 +1653,9 @@ static inline int security_socket_getpeersec_stream(struct socket *sock,
+ 	return -ENOPROTOOPT;
+ }
+ 
+-static inline int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb, u32 *secid)
++static inline int security_socket_getpeersec_dgram(struct socket *sock,
++						   struct sk_buff *skb,
++						   struct lsmblob *blob)
+ {
+ 	return -ENOPROTOOPT;
+ }
+diff --git a/include/net/af_unix.h b/include/net/af_unix.h
+index 480fa579787e..30462c60d360 100644
+--- a/include/net/af_unix.h
++++ b/include/net/af_unix.h
+@@ -34,7 +34,7 @@ struct unix_skb_parms {
+ 	kgid_t			gid;
+ 	struct scm_fp_list	*fp;		/* Passed files		*/
+ #ifdef CONFIG_SECURITY_NETWORK
+-	u32			secid;		/* Security ID		*/
++	struct lsmblob		lsmblob;	/* Security LSM data	*/
+ #endif
+ 	u32			consumed;
+ } __randomize_layout;
+diff --git a/include/net/scm.h b/include/net/scm.h
+index 1ce365f4c256..e2e71c4bf9d0 100644
+--- a/include/net/scm.h
++++ b/include/net/scm.h
+@@ -33,7 +33,7 @@ struct scm_cookie {
+ 	struct scm_fp_list	*fp;		/* Passed files		*/
+ 	struct scm_creds	creds;		/* Skb credentials	*/
+ #ifdef CONFIG_SECURITY_NETWORK
+-	u32			secid;		/* Passed security ID 	*/
++	struct lsmblob		lsmblob;	/* Passed LSM data	*/
+ #endif
+ };
+ 
+@@ -46,7 +46,7 @@ struct scm_fp_list *scm_fp_dup(struct scm_fp_list *fpl);
+ #ifdef CONFIG_SECURITY_NETWORK
+ static __inline__ void unix_get_peersec_dgram(struct socket *sock, struct scm_cookie *scm)
+ {
+-	security_socket_getpeersec_dgram(sock, NULL, &scm->secid);
++	security_socket_getpeersec_dgram(sock, NULL, &scm->lsmblob);
+ }
+ #else
+ static __inline__ void unix_get_peersec_dgram(struct socket *sock, struct scm_cookie *scm)
+@@ -97,7 +97,9 @@ static inline void scm_passec(struct socket *sock, struct msghdr *msg, struct sc
+ 	int err;
+ 
+ 	if (test_bit(SOCK_PASSSEC, &sock->flags)) {
+-		err = security_secid_to_secctx(scm->secid, &secdata, &seclen);
++		/* Scaffolding - it has to be element 0 for now */
++		err = security_secid_to_secctx(scm->lsmblob.secid[0],
++					       &secdata, &seclen);
+ 
+ 		if (!err) {
+ 			put_cmsg(msg, SOL_SOCKET, SCM_SECURITY, seclen, secdata);
+diff --git a/net/ipv4/ip_sockglue.c b/net/ipv4/ip_sockglue.c
+index 9f92ae35bb01..8fce4aedcea6 100644
+--- a/net/ipv4/ip_sockglue.c
++++ b/net/ipv4/ip_sockglue.c
+@@ -130,15 +130,17 @@ static void ip_cmsg_recv_checksum(struct msghdr *msg, struct sk_buff *skb,
+ 
+ static void ip_cmsg_recv_security(struct msghdr *msg, struct sk_buff *skb)
+ {
++	struct lsmblob lb;
+ 	char *secdata;
+-	u32 seclen, secid;
++	u32 seclen;
+ 	int err;
+ 
+-	err = security_socket_getpeersec_dgram(NULL, skb, &secid);
++	err = security_socket_getpeersec_dgram(NULL, skb, &lb);
+ 	if (err)
+ 		return;
+ 
+-	err = security_secid_to_secctx(secid, &secdata, &seclen);
++	/* Scaffolding - it has to be element 0 */
++	err = security_secid_to_secctx(lb.secid[0], &secdata, &seclen);
+ 	if (err)
+ 		return;
+ 
+diff --git a/net/unix/af_unix.c b/net/unix/af_unix.c
+index 7d17601ceee7..f819ffdc90a8 100644
+--- a/net/unix/af_unix.c
++++ b/net/unix/af_unix.c
+@@ -186,17 +186,17 @@ static void unix_table_double_unlock(struct net *net,
+ #ifdef CONFIG_SECURITY_NETWORK
+ static void unix_get_secdata(struct scm_cookie *scm, struct sk_buff *skb)
+ {
+-	UNIXCB(skb).secid = scm->secid;
++	UNIXCB(skb).lsmblob = scm->lsmblob;
+ }
+ 
+ static inline void unix_set_secdata(struct scm_cookie *scm, struct sk_buff *skb)
+ {
+-	scm->secid = UNIXCB(skb).secid;
++	scm->lsmblob = UNIXCB(skb).lsmblob;
+ }
+ 
+ static inline bool unix_secdata_eq(struct scm_cookie *scm, struct sk_buff *skb)
+ {
+-	return (scm->secid == UNIXCB(skb).secid);
++	return lsmblob_equal(&scm->lsmblob, &(UNIXCB(skb).lsmblob));
+ }
+ #else
+ static inline void unix_get_secdata(struct scm_cookie *scm, struct sk_buff *skb)
+diff --git a/security/security.c b/security/security.c
+index 23b28336e652..58438933e6cc 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -2401,10 +2401,22 @@ int security_socket_getpeersec_stream(struct socket *sock, sockptr_t optval,
+ 			     optval, optlen, len);
+ }
+ 
+-int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb, u32 *secid)
++int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb,
++				     struct lsmblob *blob)
+ {
+-	return call_int_hook(socket_getpeersec_dgram, -ENOPROTOOPT, sock,
+-			     skb, secid);
++	struct security_hook_list *hp;
++	int rc = -ENOPROTOOPT;
++
++	hlist_for_each_entry(hp, &security_hook_heads.socket_getpeersec_dgram,
++			     list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		rc = hp->hook.socket_getpeersec_dgram(sock, skb,
++						&blob->secid[hp->lsmid->slot]);
++		if (rc != 0)
++			break;
++	}
++	return rc;
+ }
+ EXPORT_SYMBOL(security_socket_getpeersec_dgram);
+ 
+-- 
+2.40.1
+

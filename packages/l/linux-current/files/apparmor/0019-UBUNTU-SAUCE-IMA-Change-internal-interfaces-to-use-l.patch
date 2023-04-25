@@ -1,0 +1,254 @@
+From 8279645663b9c13baef28e8913e3e66a18cca0df Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Thu, 20 Aug 2020 09:24:21 -0700
+Subject: [PATCH 19/36] UBUNTU: SAUCE: IMA: Change internal interfaces to use
+ lsmblobs
+
+The IMA interfaces ima_get_action() and ima_match_policy()
+call LSM functions that use lsmblobs. Change the IMA functions
+to pass the lsmblob to be compatible with the LSM functions.
+
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Stephen Smalley <sds@tycho.nsa.gov>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+cc: linux-integrity@vger.kernel.org
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Andrea Righi <andrea.righi@canonical.com>
+[ saf: resolve conflicts ]
+Signed-off-by: Seth Forshee <seth.forshee@canonical.com>
+---
+ security/integrity/ima/ima.h          |  6 +++---
+ security/integrity/ima/ima_api.c      |  6 +++---
+ security/integrity/ima/ima_appraise.c |  3 +--
+ security/integrity/ima/ima_main.c     | 31 +++++++++++----------------
+ security/integrity/ima/ima_policy.c   | 13 ++++++-----
+ 5 files changed, 26 insertions(+), 33 deletions(-)
+
+diff --git a/security/integrity/ima/ima.h b/security/integrity/ima/ima.h
+index 6aade6c099e2..6f167fcc28f5 100644
+--- a/security/integrity/ima/ima.h
++++ b/security/integrity/ima/ima.h
+@@ -255,7 +255,7 @@ static inline void ima_process_queued_keys(void) {}
+ 
+ /* LIM API function definitions */
+ int ima_get_action(struct user_namespace *mnt_userns, struct inode *inode,
+-		   const struct cred *cred, u32 secid, int mask,
++		   const struct cred *cred, struct lsmblob *blob, int mask,
+ 		   enum ima_hooks func, int *pcr,
+ 		   struct ima_template_desc **template_desc,
+ 		   const char *func_data, unsigned int *allowed_algos);
+@@ -286,8 +286,8 @@ const char *ima_d_path(const struct path *path, char **pathbuf, char *filename);
+ 
+ /* IMA policy related functions */
+ int ima_match_policy(struct user_namespace *mnt_userns, struct inode *inode,
+-		     const struct cred *cred, u32 secid, enum ima_hooks func,
+-		     int mask, int flags, int *pcr,
++		     const struct cred *cred, struct lsmblob *blob,
++		     enum ima_hooks func, int mask, int flags, int *pcr,
+ 		     struct ima_template_desc **template_desc,
+ 		     const char *func_data, unsigned int *allowed_algos);
+ void ima_init_policy(void);
+diff --git a/security/integrity/ima/ima_api.c b/security/integrity/ima/ima_api.c
+index 1e3a7a4f8833..8f29db2b77b5 100644
+--- a/security/integrity/ima/ima_api.c
++++ b/security/integrity/ima/ima_api.c
+@@ -166,7 +166,7 @@ void ima_add_violation(struct file *file, const unsigned char *filename,
+  * @mnt_userns:	user namespace of the mount the inode was found from
+  * @inode: pointer to the inode associated with the object being validated
+  * @cred: pointer to credentials structure to validate
+- * @secid: secid of the task being validated
++ * @blob: LSM data of the task being validated
+  * @mask: contains the permission mask (MAY_READ, MAY_WRITE, MAY_EXEC,
+  *        MAY_APPEND)
+  * @func: caller identifier
+@@ -187,7 +187,7 @@ void ima_add_violation(struct file *file, const unsigned char *filename,
+  *
+  */
+ int ima_get_action(struct user_namespace *mnt_userns, struct inode *inode,
+-		   const struct cred *cred, u32 secid, int mask,
++		   const struct cred *cred, struct lsmblob *blob, int mask,
+ 		   enum ima_hooks func, int *pcr,
+ 		   struct ima_template_desc **template_desc,
+ 		   const char *func_data, unsigned int *allowed_algos)
+@@ -196,7 +196,7 @@ int ima_get_action(struct user_namespace *mnt_userns, struct inode *inode,
+ 
+ 	flags &= ima_policy_flag;
+ 
+-	return ima_match_policy(mnt_userns, inode, cred, secid, func, mask,
++	return ima_match_policy(mnt_userns, inode, cred, blob, func, mask,
+ 				flags, pcr, template_desc, func_data,
+ 				allowed_algos);
+ }
+diff --git a/security/integrity/ima/ima_appraise.c b/security/integrity/ima/ima_appraise.c
+index 9b8213d51fc8..cbd54635c308 100644
+--- a/security/integrity/ima/ima_appraise.c
++++ b/security/integrity/ima/ima_appraise.c
+@@ -79,8 +79,7 @@ int ima_must_appraise(struct user_namespace *mnt_userns, struct inode *inode,
+ 		return 0;
+ 
+ 	security_current_getsecid_subj(&blob);
+-	/* scaffolding the .secid[0] */
+-	return ima_match_policy(mnt_userns, inode, current_cred(), blob.secid[0],
++	return ima_match_policy(mnt_userns, inode, current_cred(), &blob,
+ 				func, mask, IMA_APPRAISE | IMA_HASH, NULL, NULL,
+ 				NULL, NULL);
+ }
+diff --git a/security/integrity/ima/ima_main.c b/security/integrity/ima/ima_main.c
+index 6b0d7bd3ec76..3423cc9f6bf7 100644
+--- a/security/integrity/ima/ima_main.c
++++ b/security/integrity/ima/ima_main.c
+@@ -199,8 +199,8 @@ void ima_file_free(struct file *file)
+ }
+ 
+ static int process_measurement(struct file *file, const struct cred *cred,
+-			       u32 secid, char *buf, loff_t size, int mask,
+-			       enum ima_hooks func)
++			       struct lsmblob *blob, char *buf, loff_t size,
++			       int mask, enum ima_hooks func)
+ {
+ 	struct inode *inode = file_inode(file);
+ 	struct integrity_iint_cache *iint = NULL;
+@@ -224,7 +224,7 @@ static int process_measurement(struct file *file, const struct cred *cred,
+ 	 * bitmask based on the appraise/audit/measurement policy.
+ 	 * Included is the appraise submask.
+ 	 */
+-	action = ima_get_action(file_mnt_user_ns(file), inode, cred, secid,
++	action = ima_get_action(file_mnt_user_ns(file), inode, cred, blob,
+ 				mask, func, &pcr, &template_desc, NULL,
+ 				&allowed_algos);
+ 	violation_check = ((func == FILE_CHECK || func == MMAP_CHECK) &&
+@@ -415,7 +415,7 @@ int ima_file_mmap(struct file *file, unsigned long reqprot,
+ 	if (file && (prot & PROT_EXEC)) {
+ 		security_current_getsecid_subj(&blob);
+ 		/* scaffolding - until process_measurement changes */
+-		return process_measurement(file, current_cred(), blob.secid[0],
++		return process_measurement(file, current_cred(), &blob,
+ 					   NULL, 0, MAY_EXEC, MMAP_CHECK);
+ 	}
+ 
+@@ -455,9 +455,8 @@ int ima_file_mprotect(struct vm_area_struct *vma, unsigned long prot)
+ 
+ 	security_current_getsecid_subj(&blob);
+ 	inode = file_inode(vma->vm_file);
+-	/* scaffolding */
+ 	action = ima_get_action(file_mnt_user_ns(vma->vm_file), inode,
+-				current_cred(), blob.secid[0], MAY_EXEC,
++				current_cred(), &blob, MAY_EXEC,
+ 				MMAP_CHECK, &pcr, &template, NULL, NULL);
+ 
+ 	/* Is the mmap'ed file in policy? */
+@@ -496,16 +495,14 @@ int ima_bprm_check(struct linux_binprm *bprm)
+ 	struct lsmblob blob;
+ 
+ 	security_current_getsecid_subj(&blob);
+-	/* scaffolding until process_measurement changes */
+-	ret = process_measurement(bprm->file, current_cred(), blob.secid[0],
+-				  NULL, 0, MAY_EXEC, BPRM_CHECK);
++	ret = process_measurement(bprm->file, current_cred(), &blob, NULL, 0,
++				  MAY_EXEC, BPRM_CHECK);
+ 	if (ret)
+ 		return ret;
+ 
+ 	security_cred_getsecid(bprm->cred, &blob);
+-	/* scaffolding until process_measurement changes */
+-	return process_measurement(bprm->file, bprm->cred, blob.secid[0],
+-				   NULL, 0, MAY_EXEC, CREDS_CHECK);
++	return process_measurement(bprm->file, bprm->cred, &blob, NULL, 0,
++				   MAY_EXEC, CREDS_CHECK);
+ }
+ 
+ /**
+@@ -523,8 +520,7 @@ int ima_file_check(struct file *file, int mask)
+ 	struct lsmblob blob;
+ 
+ 	security_current_getsecid_subj(&blob);
+-	/* scaffolding until process_measurement changes */
+-	return process_measurement(file, current_cred(), blob.secid[0], NULL, 0,
++	return process_measurement(file, current_cred(), &blob, NULL, 0,
+ 				   mask & (MAY_READ | MAY_WRITE | MAY_EXEC |
+ 					   MAY_APPEND), FILE_CHECK);
+ }
+@@ -789,9 +785,8 @@ int ima_post_read_file(struct file *file, void *buf, loff_t size,
+ 
+ 	func = read_idmap[read_id] ?: FILE_CHECK;
+ 	security_current_getsecid_subj(&blob);
+-	/* scaffolding until process_measurement changes */
+-	return process_measurement(file, current_cred(), blob.secid[0], buf,
+-				   size, MAY_READ, func);
++	return process_measurement(file, current_cred(), &blob, buf, size,
++				   MAY_READ, func);
+ }
+ 
+ /**
+@@ -941,7 +936,7 @@ int process_buffer_measurement(struct user_namespace *mnt_userns,
+ 	if (func) {
+ 		security_current_getsecid_subj(&blob);
+ 		action = ima_get_action(mnt_userns, inode, current_cred(),
+-					blob.secid[0], 0, func, &pcr, &template,
++					&blob, 0, func, &pcr, &template,
+ 					func_data, NULL);
+ 		if (!(action & IMA_MEASURE) && !digest)
+ 			return -ENOENT;
+diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
+index 864fd0470d45..f0261be32fd7 100644
+--- a/security/integrity/ima/ima_policy.c
++++ b/security/integrity/ima/ima_policy.c
+@@ -573,7 +573,7 @@ static bool ima_match_rule_data(struct ima_rule_entry *rule,
+  * @mnt_userns:	user namespace of the mount the inode was found from
+  * @inode: a pointer to an inode
+  * @cred: a pointer to a credentials structure for user validation
+- * @secid: the secid of the task to be validated
++ * @blob: the lsm data of the task to be validated
+  * @func: LIM hook identifier
+  * @mask: requested action (MAY_READ | MAY_WRITE | MAY_APPEND | MAY_EXEC)
+  * @func_data: func specific data, may be NULL
+@@ -583,7 +583,7 @@ static bool ima_match_rule_data(struct ima_rule_entry *rule,
+ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 			    struct user_namespace *mnt_userns,
+ 			    struct inode *inode, const struct cred *cred,
+-			    u32 secid, enum ima_hooks func, int mask,
++			    struct lsmblob *blob, enum ima_hooks func, int mask,
+ 			    const char *func_data)
+ {
+ 	int i;
+@@ -673,7 +673,6 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		case LSM_SUBJ_USER:
+ 		case LSM_SUBJ_ROLE:
+ 		case LSM_SUBJ_TYPE:
+-			lsmblob_init(&lsmdata, secid);
+ 			rc = ima_filter_rule_match(&lsmdata, lsm_rule->lsm[i].type,
+ 						   Audit_equal,
+ 						   lsm_rule->lsm[i].rules);
+@@ -736,7 +735,7 @@ static int get_subaction(struct ima_rule_entry *rule, enum ima_hooks func)
+  * @inode: pointer to an inode for which the policy decision is being made
+  * @cred: pointer to a credentials structure for which the policy decision is
+  *        being made
+- * @secid: LSM secid of the task to be validated
++ * @blob: LSM data of the task to be validated
+  * @func: IMA hook identifier
+  * @mask: requested action (MAY_READ | MAY_WRITE | MAY_APPEND | MAY_EXEC)
+  * @pcr: set the pcr to extend
+@@ -752,8 +751,8 @@ static int get_subaction(struct ima_rule_entry *rule, enum ima_hooks func)
+  * than writes so ima_match_policy() is classical RCU candidate.
+  */
+ int ima_match_policy(struct user_namespace *mnt_userns, struct inode *inode,
+-		     const struct cred *cred, u32 secid, enum ima_hooks func,
+-		     int mask, int flags, int *pcr,
++		     const struct cred *cred, struct lsmblob *blob,
++		     enum ima_hooks func, int mask, int flags, int *pcr,
+ 		     struct ima_template_desc **template_desc,
+ 		     const char *func_data, unsigned int *allowed_algos)
+ {
+@@ -771,7 +770,7 @@ int ima_match_policy(struct user_namespace *mnt_userns, struct inode *inode,
+ 		if (!(entry->action & actmask))
+ 			continue;
+ 
+-		if (!ima_match_rules(entry, mnt_userns, inode, cred, secid,
++		if (!ima_match_rules(entry, mnt_userns, inode, cred, blob,
+ 				     func, mask, func_data))
+ 			continue;
+ 
+-- 
+2.40.1
+
