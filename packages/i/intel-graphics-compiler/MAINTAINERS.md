@@ -4,6 +4,8 @@ This file is used to indicate responsibility for the maintenance of this package
   - IRC: joebonrichie
   - Email: josephriches@gmail.com
   - Matrix: @joebonrichie:matrix.org
-- Campbell Jones
-  - IRC: serebit
-  - Email: dev@serebit.com
+
+- Thomas Staudinger
+  - IRC: staudey
+  - Email: staudi.kaos@gmail.com
+  - Matrix: @staudey:matrix.org
