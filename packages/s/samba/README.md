@@ -45,7 +45,7 @@ Checking the necessary versions might be done with the following bash snippet ex
 
 ```
 for pkg in talloc tevent tdb ldb; do
-    egrep -Hin '^VERSION =' "lib/${pkg}/wscript"
+    grep -EHin '^VERSION =' "lib/${pkg}/wscript"
     eopkg info ${pkg} |grep Name |uniq
 done
 ```
@@ -56,7 +56,7 @@ done
 ```
 ermo@rocinante:~/src/samba ⑂samba-4.10.10
 $ for pkg in talloc tevent tdb ldb; do
->     egrep -Hin '^VERSION =' "lib/${pkg}/wscript"
+>     grep -EHin '^VERSION =' "lib/${pkg}/wscript"
 >     eopkg info ${pkg} |grep Name |uniq
 > done
 lib/talloc/wscript:4:VERSION = '2.1.16'
@@ -121,6 +121,12 @@ When doing major version updates, create a phab task with associated diff stack 
 - kodi
 - python-pysmbc
 - vlc
+
+### Related packages that should be checked for updates on a regular basis
+
+- [cifs-utils](https://www.samba.org/ftp/linux-cifs/cifs-utils/)
+- [python-pysmbc](https://files.pythonhosted.org/packages/source/p/pysmbc/)
+- [wsdd](https://github.com/christgau/wsdd/tags)
 
 ## Suggested Test Plan for each Samba rebuild
 
