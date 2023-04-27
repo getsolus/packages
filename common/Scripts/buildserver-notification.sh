@@ -35,7 +35,7 @@ BUILDID=$(grep -B 1 "${TAG}" "${BUILDPAGE}" | grep -o '[0-9]*' | sort -nr | head
 echo "Build ID: ${BUILDID} | Tag: ${TAG}"
 
 # Look for build-ok from the build id
-while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ok) ]] ; do
+while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ">ok<") ]] ; do
 
     # Don't DoS the server
     sleep 20
@@ -44,7 +44,7 @@ while [[ ! $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ok) ]] ; do
     curl -s -z $BUILDPAGE $BUILDSERVER_URL -o $BUILDPAGE
 
     # Check if the build has failed
-    if [[ $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep failed) ]] ; then
+    if [[ $(grep -A 4 "${BUILDID}" "${BUILDPAGE}" | grep ">failed<") ]] ; then
         echo "Failed on the build server!"
         notify-send -u critical "${TAG} failed on the build server!" -t 0
         paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
