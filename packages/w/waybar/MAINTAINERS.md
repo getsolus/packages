@@ -3,3 +3,7 @@ This file is used to indicate responsibility for the maintenance of this package
 - Matt Kastelic
   - IRC: h3o
   - Email: edenfall_matt@hotmail.com
+
+- David Harder
+  - Matrix: @davidjharder:matrix.org
+  - Email: david@davidjharder.ca
