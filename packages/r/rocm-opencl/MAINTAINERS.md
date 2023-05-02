@@ -3,3 +3,6 @@ This file is used to indicate responsibility for the maintenance of this package
 - Jacek Jagosz
   - IRC: JacekJagosz
   - Email: jacek.jagosz@outlook.com
+- Gavin Zhao
+    - Email: me@gzgz.dev
+    - Matrix: @gzgavinzhao:matrix.org
