@@ -1,4 +1,8 @@
-# nano is installed out of the box on solus and is our default editor.
+# Ensure there is a default editor should a user remove all other editors.
 set -gx EDITOR /usr/bin/vim
-set -gx VISUAL $EDITOR
 
+if test -e /usr/bin/gvim
+  set -gx VISUAL /usr/bin/gvim
+else
+  set -gx VISUAL $EDITOR
+end
