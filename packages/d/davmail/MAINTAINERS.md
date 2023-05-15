@@ -2,4 +2,5 @@ This file is used to indicate responsibility for the maintenance of this package
 
 - Alexander Zhirov
   - IRC: alexanderzhirov
-  - Email: alexander@zhirov.kz
+  - Telegram: alexanderzhirov
+  - Email: azhirov1991@gmail.com
