@@ -78,8 +78,14 @@ func main() {
 		panic(err.Error())
 	}
 	config, err := os.Open(u.HomeDir + "/.arcrc")
+	if os.IsNotExist(err) {
+		 // fallthrough, try xdg path
+	} else if err != nil {
+		 panic(err.Error())
+	}
+	config, err = os.Open(u.HomeDir + "/.config" + "/arcrc")
 	if err != nil {
-		panic(err.Error())
+		  panic(err.Error())
 	}
 	defer config.Close()
 	dec := json.NewDecoder(config)
