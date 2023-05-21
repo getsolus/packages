@@ -79,7 +79,7 @@ func main() {
 	}
 	config, err := os.Open(u.HomeDir + "/.arcrc")
 	if os.IsNotExist(err) {
-		config, err = os.Open(u.HomeDir + "/.config" + "/.arcrc")
+		config, err = os.Open(u.HomeDir + "/.config" + "/arcrc")
 	}
 	if err != nil {
 		panic(err.Error())
