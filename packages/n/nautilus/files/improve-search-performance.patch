@@ -1,0 +1,1205 @@
+From 46c09ce1f5b422a425b55799a187c150ff9d47ce Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 8 Mar 2023 14:45:31 +0100
+Subject: [PATCH 01/10] search-engine: Create queries as
+ TrackerSparqlStatements
+
+These are not reused nor proper yet, this will happen in following
+commits. At the moment, we go first through the step of creating
+a TrackerSparqlStatement, and execute the query from there.
+
+In order to create queries matching the enabled filter features,
+we now use a flag set to express these capabilities. These capability
+flags will be used further in later commits in order to cache
+statements and assigning statement parameters.
+
+A (so far) peculiarity of these flags is that we coalesce filename
+and content search within the SEARCH_FEATURE_TERMS flag, but only
+enable the latter with SEARCH_FEATURE_CONTENT. This will gain
+relevance in later commits moving to fts:match for both sides of
+the data. So far the distinct fn:contains and fts:match paths receive
+the same search terms (if any was provided).
+---
+ src/nautilus-search-engine-tracker.c | 199 +++++++++++++++++++--------
+ 1 file changed, 139 insertions(+), 60 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 88bd376c2b..97ba5cf9f7 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -33,6 +33,18 @@
+ #include <gio/gio.h>
+ #include <libtracker-sparql/tracker-sparql.h>
+ 
++typedef enum
++{
++    SEARCH_FEATURE_NONE = 0,
++    SEARCH_FEATURE_TERMS = 1 << 0,
++    SEARCH_FEATURE_CONTENT = 1 << 1,
++    SEARCH_FEATURE_MIMETYPE = 1 << 2,
++    SEARCH_FEATURE_RECURSIVE = 1 << 3,
++    SEARCH_FEATURE_ATIME = 1 << 4,
++    SEARCH_FEATURE_MTIME = 1 << 5,
++    SEARCH_FEATURE_CTIME = 1 << 6,
++} SearchFeatures;
++
+ struct _NautilusSearchEngineTracker
+ {
+     GObject parent_instance;
+@@ -277,16 +289,16 @@ query_callback (GObject      *object,
+                 gpointer      user_data)
+ {
+     NautilusSearchEngineTracker *tracker;
+-    TrackerSparqlConnection *connection;
++    TrackerSparqlStatement *stmt;
+     TrackerSparqlCursor *cursor;
+     GError *error = NULL;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (user_data);
+ 
+-    connection = TRACKER_SPARQL_CONNECTION (object);
+-    cursor = tracker_sparql_connection_query_finish (connection,
+-                                                     result,
+-                                                     &error);
++    stmt = TRACKER_SPARQL_STATEMENT (object);
++    cursor = tracker_sparql_statement_execute_finish (stmt,
++                                                      result,
++                                                      &error);
+ 
+     if (error != NULL)
+     {
+@@ -317,37 +329,20 @@ search_finished_idle (gpointer user_data)
+  */
+ #define FILENAME_RANK "5.0"
+ 
+-static void
+-nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
++static TrackerSparqlStatement *
++create_statement (NautilusSearchProvider *provider,
++                  SearchFeatures          features)
+ {
+     NautilusSearchEngineTracker *tracker;
+     gchar *query_text, *search_text, *location_uri, *downcase;
+     GFile *location;
+     GString *sparql;
+     g_autoptr (GPtrArray) mimetypes = NULL;
++    TrackerSparqlStatement *stmt;
+     GPtrArray *date_range;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+ 
+-    if (tracker->query_pending)
+-    {
+-        return;
+-    }
+-
+-    DEBUG ("Tracker engine start");
+-    g_object_ref (tracker);
+-    tracker->query_pending = TRUE;
+-
+-    g_object_notify (G_OBJECT (provider), "running");
+-
+-    if (tracker->connection == NULL)
+-    {
+-        g_idle_add (search_finished_idle, provider);
+-        return;
+-    }
+-
+-    tracker->fts_enabled = nautilus_query_get_search_content (tracker->query);
+-
+     query_text = nautilus_query_get_text (tracker->query);
+     downcase = g_utf8_strdown (query_text, -1);
+     search_text = tracker_sparql_escape_string (downcase);
+@@ -357,6 +352,7 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+     location = nautilus_query_get_location (tracker->query);
+     location_uri = location ? g_file_get_uri (location) : NULL;
+     mimetypes = nautilus_query_get_mime_types (tracker->query);
++    date_range = nautilus_query_get_date_range (tracker->query);
+ 
+     sparql = g_string_new ("SELECT DISTINCT"
+                            " ?url"
+@@ -365,7 +361,7 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+                            " nfo:fileCreated(?file)"
+                            " nfo:fileLastAccessed(?file)");
+ 
+-    if (tracker->fts_enabled && *search_text)
++    if (features & SEARCH_FEATURE_CONTENT)
+     {
+         g_string_append (sparql,
+                          "fts:snippet(?content,"
+@@ -377,7 +373,7 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ 
+     g_string_append (sparql, "FROM tracker:FileSystem ");
+ 
+-    if (tracker->fts_enabled)
++    if (features & SEARCH_FEATURE_CONTENT)
+     {
+         g_string_append (sparql, "FROM tracker:Documents ");
+     }
+@@ -391,36 +387,39 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+                      "  nie:url ?url."
+                      "  OPTIONAL { ?file nfo:fileCreated ?ctime.}");
+ 
+-    if (mimetypes->len > 0)
++    if (features & SEARCH_FEATURE_MIMETYPE)
+     {
+         g_string_append (sparql,
+                          "  ?content nie:isStoredAs ?file;"
+                          "    nie:mimeType ?mime");
+     }
+ 
+-    if (tracker->fts_enabled && *search_text)
++    if (features & SEARCH_FEATURE_TERMS)
+     {
+-        /* Use fts:match only for content search to not lose some filename results due to stop words. */
++        if (features & SEARCH_FEATURE_CONTENT)
++        {
++            /* Use fts:match only for content search to not lose some filename results due to stop words. */
++            g_string_append_printf (sparql,
++                                    " { "
++                                    " ?content nie:isStoredAs ?file ."
++                                    " ?content fts:match \"%s*\" ."
++                                    " BIND(fts:rank(?content) AS ?rank1) ."
++                                    " } UNION",
++                                    search_text);
++        }
++
+         g_string_append_printf (sparql,
+-                                " { "
+-                                " ?content nie:isStoredAs ?file ."
+-                                " ?content fts:match \"%s*\" ."
+-                                " BIND(fts:rank(?content) AS ?rank1) ."
+-                                " } UNION",
++                                " {"
++                                " ?file nfo:fileName ?filename ."
++                                " FILTER(fn:contains(fn:lower-case(?filename), '%s')) ."
++                                " BIND(" FILENAME_RANK " AS ?rank2) ."
++                                " }",
+                                 search_text);
+     }
+ 
+-    g_string_append_printf (sparql,
+-                            " {"
+-                            " ?file nfo:fileName ?filename ."
+-                            " FILTER(fn:contains(fn:lower-case(?filename), '%s')) ."
+-                            " BIND(" FILENAME_RANK " AS ?rank2) ."
+-                            " }",
+-                            search_text);
+-
+     g_string_append_printf (sparql, " . FILTER( ");
+ 
+-    if (!tracker->recursive)
++    if (!(features & SEARCH_FEATURE_RECURSIVE))
+     {
+         g_string_append_printf (sparql, "tracker:uri-is-parent('%s', ?url)", location_uri);
+     }
+@@ -432,10 +431,9 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+         g_string_append_printf (sparql, "STRSTARTS(?url, '%s/')", location_uri);
+     }
+ 
+-    date_range = nautilus_query_get_date_range (tracker->query);
+-    if (date_range)
++    if (features &
++        (SEARCH_FEATURE_ATIME | SEARCH_FEATURE_MTIME | SEARCH_FEATURE_CTIME))
+     {
+-        NautilusQuerySearchType type;
+         gchar *initial_date_format;
+         gchar *end_date_format;
+         GDateTime *initial_date;
+@@ -448,23 +446,22 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+          * For that, add a day to it */
+         shifted_end_date = g_date_time_add_days (end_date, 1);
+ 
+-        type = nautilus_query_get_search_type (tracker->query);
+         initial_date_format = g_date_time_format_iso8601 (initial_date);
+         end_date_format = g_date_time_format_iso8601 (shifted_end_date);
+ 
+         g_string_append (sparql, " && ");
+ 
+-        if (type == NAUTILUS_QUERY_SEARCH_TYPE_LAST_ACCESS)
++        if (features & SEARCH_FEATURE_ATIME)
+         {
+             g_string_append_printf (sparql, "?atime >= \"%s\"^^xsd:dateTime", initial_date_format);
+             g_string_append_printf (sparql, " && ?atime <= \"%s\"^^xsd:dateTime", end_date_format);
+         }
+-        else if (type == NAUTILUS_QUERY_SEARCH_TYPE_LAST_MODIFIED)
++        else if (features & SEARCH_FEATURE_MTIME)
+         {
+             g_string_append_printf (sparql, "?mtime >= \"%s\"^^xsd:dateTime", initial_date_format);
+             g_string_append_printf (sparql, " && ?mtime <= \"%s\"^^xsd:dateTime", end_date_format);
+         }
+-        else
++        else if (features & SEARCH_FEATURE_CTIME)
+         {
+             g_string_append_printf (sparql, "?ctime >= \"%s\"^^xsd:dateTime", initial_date_format);
+             g_string_append_printf (sparql, " && ?ctime <= \"%s\"^^xsd:dateTime", end_date_format);
+@@ -473,10 +470,9 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ 
+         g_free (initial_date_format);
+         g_free (end_date_format);
+-        g_ptr_array_unref (date_range);
+     }
+ 
+-    if (mimetypes->len > 0)
++    if (features & SEARCH_FEATURE_MIMETYPE)
+     {
+         g_string_append (sparql, " && (");
+ 
+@@ -495,17 +491,100 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ 
+     g_string_append (sparql, ")} ORDER BY DESC (?rank)");
+ 
+-    tracker->cancellable = g_cancellable_new ();
+-    tracker_sparql_connection_query_async (tracker->connection,
+-                                           sparql->str,
+-                                           tracker->cancellable,
+-                                           query_callback,
+-                                           tracker);
++    stmt = tracker_sparql_connection_query_statement (tracker->connection,
++                                                      sparql->str,
++                                                      NULL,
++                                                      NULL);
+     g_string_free (sparql, TRUE);
+ 
++    g_clear_pointer (&date_range, g_ptr_array_unref);
+     g_free (search_text);
+     g_free (location_uri);
+     g_object_unref (location);
++
++    return stmt;
++}
++
++static void
++nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
++{
++    NautilusSearchEngineTracker *tracker;
++    gchar *query_text;
++    g_autoptr (GPtrArray) mimetypes = NULL;
++    g_autoptr (GPtrArray) date_range = NULL;
++    NautilusQuerySearchType type;
++    TrackerSparqlStatement *stmt;
++    SearchFeatures features = 0;
++
++    tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
++
++    if (tracker->query_pending)
++    {
++        return;
++    }
++
++    DEBUG ("Tracker engine start");
++    g_object_ref (tracker);
++    tracker->query_pending = TRUE;
++
++    g_object_notify (G_OBJECT (provider), "running");
++
++    if (tracker->connection == NULL)
++    {
++        g_idle_add (search_finished_idle, provider);
++        return;
++    }
++
++    tracker->fts_enabled = nautilus_query_get_search_content (tracker->query);
++
++    query_text = nautilus_query_get_text (tracker->query);
++    mimetypes = nautilus_query_get_mime_types (tracker->query);
++    date_range = nautilus_query_get_date_range (tracker->query);
++    type = nautilus_query_get_search_type (tracker->query);
++
++    if (*query_text)
++    {
++        features |= SEARCH_FEATURE_TERMS;
++    }
++    if (tracker->fts_enabled)
++    {
++        features |= SEARCH_FEATURE_CONTENT;
++    }
++    if (tracker->recursive)
++    {
++        features |= SEARCH_FEATURE_RECURSIVE;
++    }
++    if (mimetypes->len > 0)
++    {
++        features |= SEARCH_FEATURE_MIMETYPE;
++    }
++
++    if (date_range)
++    {
++        if (type == NAUTILUS_QUERY_SEARCH_TYPE_LAST_ACCESS)
++        {
++            features |= SEARCH_FEATURE_ATIME;
++        }
++        else if (type == NAUTILUS_QUERY_SEARCH_TYPE_LAST_MODIFIED)
++        {
++            features |= SEARCH_FEATURE_MTIME;
++        }
++        else if (type == NAUTILUS_QUERY_SEARCH_TYPE_CREATED)
++        {
++            features |= SEARCH_FEATURE_CTIME;
++        }
++    }
++
++    stmt = create_statement (provider, features);
++
++    tracker->cancellable = g_cancellable_new ();
++    tracker_sparql_statement_execute_async (stmt,
++                                            tracker->cancellable,
++                                            query_callback,
++                                            tracker);
++
++    g_free (query_text);
++    g_object_unref (stmt);
+ }
+ 
+ static void
+-- 
+GitLab
+
+
+From 6501c258d8e96bb83fa9fbf74d68fbd1668cf3f7 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 8 Mar 2023 23:04:35 +0100
+Subject: [PATCH 02/10] search-engine: Use TrackerSparqlStatement parameter
+ bindings for arguments
+
+Avoid building the full query string with its arguments in place, and
+use TrackerSparqlStatement parameters to assign values before execution,
+based on the enabled search features.
+---
+ src/nautilus-search-engine-tracker.c | 163 ++++++++++++++-------------
+ 1 file changed, 85 insertions(+), 78 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 97ba5cf9f7..10394be389 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -334,26 +334,11 @@ create_statement (NautilusSearchProvider *provider,
+                   SearchFeatures          features)
+ {
+     NautilusSearchEngineTracker *tracker;
+-    gchar *query_text, *search_text, *location_uri, *downcase;
+-    GFile *location;
+     GString *sparql;
+-    g_autoptr (GPtrArray) mimetypes = NULL;
+     TrackerSparqlStatement *stmt;
+-    GPtrArray *date_range;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+ 
+-    query_text = nautilus_query_get_text (tracker->query);
+-    downcase = g_utf8_strdown (query_text, -1);
+-    search_text = tracker_sparql_escape_string (downcase);
+-    g_free (query_text);
+-    g_free (downcase);
+-
+-    location = nautilus_query_get_location (tracker->query);
+-    location_uri = location ? g_file_get_uri (location) : NULL;
+-    mimetypes = nautilus_query_get_mime_types (tracker->query);
+-    date_range = nautilus_query_get_date_range (tracker->query);
+-
+     sparql = g_string_new ("SELECT DISTINCT"
+                            " ?url"
+                            " xsd:double(COALESCE(?rank2, ?rank1)) AS ?rank"
+@@ -366,7 +351,7 @@ create_statement (NautilusSearchProvider *provider,
+         g_string_append (sparql,
+                          "fts:snippet(?content,"
+                          "            '_NAUTILUS_SNIPPET_DELIM_START_',"
+-                         "            '_NAUTILUS_SNIPPET_DELIM_END_', "
++                         "            '_NAUTILUS_SNIPPET_DELIM_END_',"
+                          "            '…',"
+                          "            20)");
+     }
+@@ -399,94 +384,61 @@ create_statement (NautilusSearchProvider *provider,
+         if (features & SEARCH_FEATURE_CONTENT)
+         {
+             /* Use fts:match only for content search to not lose some filename results due to stop words. */
+-            g_string_append_printf (sparql,
+-                                    " { "
+-                                    " ?content nie:isStoredAs ?file ."
+-                                    " ?content fts:match \"%s*\" ."
+-                                    " BIND(fts:rank(?content) AS ?rank1) ."
+-                                    " } UNION",
+-                                    search_text);
++            g_string_append (sparql,
++                             " { "
++                             " ?content nie:isStoredAs ?file ."
++                             " ?content fts:match ~match ."
++                             " BIND(fts:rank(?content) AS ?rank1) ."
++                             " } UNION");
+         }
+ 
+-        g_string_append_printf (sparql,
+-                                " {"
+-                                " ?file nfo:fileName ?filename ."
+-                                " FILTER(fn:contains(fn:lower-case(?filename), '%s')) ."
+-                                " BIND(" FILENAME_RANK " AS ?rank2) ."
+-                                " }",
+-                                search_text);
++        g_string_append (sparql,
++                         " {"
++                         " ?file nfo:fileName ?filename ."
++                         " FILTER(fn:contains(fn:lower-case(?filename), ~match)) ."
++                         " BIND(" FILENAME_RANK " AS ?rank2) ."
++                         " }");
+     }
+ 
+-    g_string_append_printf (sparql, " . FILTER( ");
++    g_string_append (sparql, " . FILTER( ");
+ 
+     if (!(features & SEARCH_FEATURE_RECURSIVE))
+     {
+-        g_string_append_printf (sparql, "tracker:uri-is-parent('%s', ?url)", location_uri);
++        g_string_append (sparql, "tracker:uri-is-parent(~location, ?url)");
+     }
+     else
+     {
+         /* STRSTARTS is faster than tracker:uri-is-descendant().
+          * See https://gitlab.gnome.org/GNOME/tracker/-/issues/243
+          */
+-        g_string_append_printf (sparql, "STRSTARTS(?url, '%s/')", location_uri);
++        g_string_append (sparql, "STRSTARTS(?url, CONCAT (~location, '/'))");
+     }
+ 
+     if (features &
+         (SEARCH_FEATURE_ATIME | SEARCH_FEATURE_MTIME | SEARCH_FEATURE_CTIME))
+     {
+-        gchar *initial_date_format;
+-        gchar *end_date_format;
+-        GDateTime *initial_date;
+-        GDateTime *end_date;
+-        GDateTime *shifted_end_date;
+-
+-        initial_date = g_ptr_array_index (date_range, 0);
+-        end_date = g_ptr_array_index (date_range, 1);
+-        /* As we do for other searches, we want to make the end date inclusive.
+-         * For that, add a day to it */
+-        shifted_end_date = g_date_time_add_days (end_date, 1);
+-
+-        initial_date_format = g_date_time_format_iso8601 (initial_date);
+-        end_date_format = g_date_time_format_iso8601 (shifted_end_date);
+-
+         g_string_append (sparql, " && ");
+ 
+         if (features & SEARCH_FEATURE_ATIME)
+         {
+-            g_string_append_printf (sparql, "?atime >= \"%s\"^^xsd:dateTime", initial_date_format);
+-            g_string_append_printf (sparql, " && ?atime <= \"%s\"^^xsd:dateTime", end_date_format);
++            g_string_append (sparql, "?atime >= ~startTime^^xsd:dateTime");
++            g_string_append (sparql, " && ?atime <= ~endTime^^xsd:dateTime");
+         }
+         else if (features & SEARCH_FEATURE_MTIME)
+         {
+-            g_string_append_printf (sparql, "?mtime >= \"%s\"^^xsd:dateTime", initial_date_format);
+-            g_string_append_printf (sparql, " && ?mtime <= \"%s\"^^xsd:dateTime", end_date_format);
++            g_string_append (sparql, "?mtime >= ~startTime^^xsd:dateTime");
++            g_string_append (sparql, " && ?mtime <= ~endTime^^xsd:dateTime");
+         }
+         else if (features & SEARCH_FEATURE_CTIME)
+         {
+-            g_string_append_printf (sparql, "?ctime >= \"%s\"^^xsd:dateTime", initial_date_format);
+-            g_string_append_printf (sparql, " && ?ctime <= \"%s\"^^xsd:dateTime", end_date_format);
++            g_string_append (sparql, "?ctime >= ~startTime^^xsd:dateTime");
++            g_string_append (sparql, " && ?ctime <= ~endTime^^xsd:dateTime");
+         }
+-
+-
+-        g_free (initial_date_format);
+-        g_free (end_date_format);
+     }
+ 
+     if (features & SEARCH_FEATURE_MIMETYPE)
+     {
+-        g_string_append (sparql, " && (");
+-
+-        for (gint i = 0; i < mimetypes->len; i++)
+-        {
+-            if (i != 0)
+-            {
+-                g_string_append (sparql, " || ");
+-            }
+-
+-            g_string_append_printf (sparql, "fn:contains(?mime, '%s')",
+-                                    (gchar *) g_ptr_array_index (mimetypes, i));
+-        }
+-        g_string_append (sparql, ")\n");
++        g_string_append (sparql, " && CONTAINS(~mimeTypes, ?mime)");
+     }
+ 
+     g_string_append (sparql, ")} ORDER BY DESC (?rank)");
+@@ -497,11 +449,6 @@ create_statement (NautilusSearchProvider *provider,
+                                                       NULL);
+     g_string_free (sparql, TRUE);
+ 
+-    g_clear_pointer (&date_range, g_ptr_array_unref);
+-    g_free (search_text);
+-    g_free (location_uri);
+-    g_object_unref (location);
+-
+     return stmt;
+ }
+ 
+@@ -509,12 +456,14 @@ static void
+ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ {
+     NautilusSearchEngineTracker *tracker;
+-    gchar *query_text;
++    g_autofree gchar *query_text = NULL;
++    g_autofree gchar *location_uri = NULL;
+     g_autoptr (GPtrArray) mimetypes = NULL;
+     g_autoptr (GPtrArray) date_range = NULL;
+     NautilusQuerySearchType type;
+     TrackerSparqlStatement *stmt;
+     SearchFeatures features = 0;
++    g_autoptr (GFile) location = NULL;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+ 
+@@ -577,13 +526,71 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ 
+     stmt = create_statement (provider, features);
+ 
++    location = nautilus_query_get_location (tracker->query);
++    location_uri = g_file_get_uri (location);
++    tracker_sparql_statement_bind_string (stmt, "location", location_uri);
++
++    if (*query_text)
++    {
++        g_autofree gchar *search_text = NULL;
++
++        search_text = g_utf8_strdown (query_text, -1);
++        tracker_sparql_statement_bind_string (stmt, "match", search_text);
++    }
++
++    if (mimetypes->len > 0)
++    {
++        g_autoptr (GString) mimetype_str = NULL;
++        gint i;
++
++        for (i = 0; i < mimetypes->len; i++)
++        {
++            const gchar *mimetype;
++
++            mimetype = g_ptr_array_index (mimetypes, i);
++
++            if (!mimetype_str)
++            {
++                mimetype_str = g_string_new (mimetype);
++            }
++            else
++            {
++                g_string_append_printf (mimetype_str, ",%s", mimetype);
++            }
++        }
++
++        tracker_sparql_statement_bind_string (stmt, "mimeTypes", mimetype_str->str);
++    }
++
++    if (date_range)
++    {
++        g_autofree gchar *initial_date_format = NULL;
++        g_autofree gchar *end_date_format = NULL;
++        GDateTime *initial_date;
++        GDateTime *end_date;
++        GDateTime *shifted_end_date;
++
++        initial_date = g_ptr_array_index (date_range, 0);
++        end_date = g_ptr_array_index (date_range, 1);
++        /* As we do for other searches, we want to make the end date inclusive.
++         * For that, add a day to it */
++        shifted_end_date = g_date_time_add_days (end_date, 1);
++
++        initial_date_format = g_date_time_format_iso8601 (initial_date);
++        end_date_format = g_date_time_format_iso8601 (shifted_end_date);
++
++        tracker_sparql_statement_bind_string (stmt, "startTime",
++                                              initial_date_format);
++        tracker_sparql_statement_bind_string (stmt, "endTime",
++                                              end_date_format);
++    }
++
+     tracker->cancellable = g_cancellable_new ();
+     tracker_sparql_statement_execute_async (stmt,
+                                             tracker->cancellable,
+                                             query_callback,
+                                             tracker);
+ 
+-    g_free (query_text);
+     g_object_unref (stmt);
+ }
+ 
+-- 
+GitLab
+
+
+From b46c85089f72f52616a81a59672439ba147dbbb0 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Wed, 8 Mar 2023 23:09:28 +0100
+Subject: [PATCH 03/10] search-engine: Cache statements
+
+Cache the TrackerSparqlStatements based on the search feature flags
+describing the SPARQL query, so it can be reused for multiple runs.
+---
+ src/nautilus-search-engine-tracker.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 10394be389..3d678bff43 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -51,6 +51,7 @@ struct _NautilusSearchEngineTracker
+ 
+     TrackerSparqlConnection *connection;
+     NautilusQuery *query;
++    GHashTable *statements;
+ 
+     gboolean query_pending;
+     GQueue *hits_pending;
+@@ -91,6 +92,7 @@ finalize (GObject *object)
+ 
+     g_clear_object (&tracker->query);
+     g_queue_free_full (tracker->hits_pending, g_object_unref);
++    g_clear_pointer (&tracker->statements, g_hash_table_unref);
+     /* This is a singleton, no need to unref. */
+     tracker->connection = NULL;
+ 
+@@ -524,7 +526,14 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+         }
+     }
+ 
+-    stmt = create_statement (provider, features);
++    stmt = g_hash_table_lookup (tracker->statements, GUINT_TO_POINTER (features));
++
++    if (!stmt)
++    {
++        stmt = create_statement (provider, features);
++        g_hash_table_insert (tracker->statements,
++                             GUINT_TO_POINTER (features), stmt);
++    }
+ 
+     location = nautilus_query_get_location (tracker->query);
+     location_uri = g_file_get_uri (location);
+@@ -590,8 +599,6 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+                                             tracker->cancellable,
+                                             query_callback,
+                                             tracker);
+-
+-    g_object_unref (stmt);
+ }
+ 
+ static void
+@@ -695,6 +702,8 @@ nautilus_search_engine_tracker_init (NautilusSearchEngineTracker *engine)
+     GError *error = NULL;
+ 
+     engine->hits_pending = g_queue_new ();
++    engine->statements = g_hash_table_new_full (NULL, NULL, NULL,
++                                                g_object_unref);
+ 
+     engine->connection = nautilus_tracker_get_miner_fs_connection (&error);
+     if (error)
+-- 
+GitLab
+
+
+From 94e5fb1101d19dbaa9871703a76bc19fe7d4d9cf Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 10 Mar 2023 10:50:31 +0100
+Subject: [PATCH 04/10] search-engine: Make ctime no longer optional
+
+It has not been for a long long time already.
+---
+ src/nautilus-search-engine-tracker.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 3d678bff43..69d6f1ee0f 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -370,9 +370,9 @@ create_statement (NautilusSearchProvider *provider,
+                      "  ?file a nfo:FileDataObject;"
+                      "  nfo:fileLastModified ?mtime;"
+                      "  nfo:fileLastAccessed ?atime;"
++                     "  nfo:fileCreated ?ctime;"
+                      "  nie:dataSource/tracker:available true;"
+-                     "  nie:url ?url."
+-                     "  OPTIONAL { ?file nfo:fileCreated ?ctime.}");
++                     "  nie:url ?url.");
+ 
+     if (features & SEARCH_FEATURE_MIMETYPE)
+     {
+-- 
+GitLab
+
+
+From 65ac0a0623810c509a927ce28ab4390011d0d9e5 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 10 Mar 2023 10:55:32 +0100
+Subject: [PATCH 05/10] search-engine: Use the already extracted variables
+
+Instead of using property functions to get the values again.
+---
+ src/nautilus-search-engine-tracker.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 69d6f1ee0f..076fde7d0d 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -344,9 +344,9 @@ create_statement (NautilusSearchProvider *provider,
+     sparql = g_string_new ("SELECT DISTINCT"
+                            " ?url"
+                            " xsd:double(COALESCE(?rank2, ?rank1)) AS ?rank"
+-                           " nfo:fileLastModified(?file)"
+-                           " nfo:fileCreated(?file)"
+-                           " nfo:fileLastAccessed(?file)");
++                           " ?mtime"
++                           " ?ctime"
++                           " ?atime");
+ 
+     if (features & SEARCH_FEATURE_CONTENT)
+     {
+-- 
+GitLab
+
+
+From 1d2903ab3d3240efbb4a0e712d14b1ff512c0bca Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 10 Mar 2023 11:26:57 +0100
+Subject: [PATCH 06/10] search-engine: Simplify FTS variable management
+
+Bind these within the triple pattern and use the propagated
+variables in the select clause, we don't need to propagate
+two sets of ranks either.
+---
+ src/nautilus-search-engine-tracker.c | 22 +++++++++++-----------
+ 1 file changed, 11 insertions(+), 11 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 076fde7d0d..ccb927e451 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -343,19 +343,14 @@ create_statement (NautilusSearchProvider *provider,
+ 
+     sparql = g_string_new ("SELECT DISTINCT"
+                            " ?url"
+-                           " xsd:double(COALESCE(?rank2, ?rank1)) AS ?rank"
++                           " ?rank"
+                            " ?mtime"
+                            " ?ctime"
+                            " ?atime");
+ 
+     if (features & SEARCH_FEATURE_CONTENT)
+     {
+-        g_string_append (sparql,
+-                         "fts:snippet(?content,"
+-                         "            '_NAUTILUS_SNIPPET_DELIM_START_',"
+-                         "            '_NAUTILUS_SNIPPET_DELIM_END_',"
+-                         "            '…',"
+-                         "            20)");
++        g_string_append (sparql, "?snippet ");
+     }
+ 
+     g_string_append (sparql, "FROM tracker:FileSystem ");
+@@ -388,9 +383,14 @@ create_statement (NautilusSearchProvider *provider,
+             /* Use fts:match only for content search to not lose some filename results due to stop words. */
+             g_string_append (sparql,
+                              " { "
+-                             " ?content nie:isStoredAs ?file ."
+-                             " ?content fts:match ~match ."
+-                             " BIND(fts:rank(?content) AS ?rank1) ."
++                             "   ?content nie:isStoredAs ?file ."
++                             "   ?content fts:match ~match ."
++                             "   BIND(fts:rank(?content) AS ?rank) ."
++                             "   BIND(fts:snippet(?content,"
++                             "                    '_NAUTILUS_SNIPPET_DELIM_START_',"
++                             "                    '_NAUTILUS_SNIPPET_DELIM_END_',"
++                             "                    '…',"
++                             "                    20) AS ?snippet)"
+                              " } UNION");
+         }
+ 
+@@ -398,7 +398,7 @@ create_statement (NautilusSearchProvider *provider,
+                          " {"
+                          " ?file nfo:fileName ?filename ."
+                          " FILTER(fn:contains(fn:lower-case(?filename), ~match)) ."
+-                         " BIND(" FILENAME_RANK " AS ?rank2) ."
++                         " BIND(" FILENAME_RANK " AS ?rank) ."
+                          " }");
+     }
+ 
+-- 
+GitLab
+
+
+From dd1056dc93ea47fbd10d4a37346f83016ea8a00d Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 10 Mar 2023 11:42:50 +0100
+Subject: [PATCH 07/10] search-engine: Also use fts:match on filenames
+
+As the deleted comment insinuates, this is only done because
+Tracker stop words possibly eat some search terms. This overeagerness
+of the stop word list is already known and acknowledged by Tracker
+maintainers: https://gitlab.gnome.org/GNOME/tracker/-/issues/191.
+
+This should not prevent anyways Nautilus from shooting itself in
+the foot (and Tracker in the face) as doing custom string manipulations
+defeats any index, and will certainly suck for databases with millions
+of elements.
+
+In this commit, SEARCH_FEATURE_TERMS becomes more relevant by
+controlling fts:match input for both filename and content search.
+---
+ src/nautilus-search-engine-tracker.c | 22 ++++++++--------------
+ 1 file changed, 8 insertions(+), 14 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index ccb927e451..ea343e2d81 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -325,12 +325,6 @@ search_finished_idle (gpointer user_data)
+     return FALSE;
+ }
+ 
+-/* This is used to compensate rank if fts:rank is not set (resp. fts:match is
+- * not used). The value was determined experimentally. I am convinced that
+- * fts:rank is currently always set to 5.0 in case of filename match.
+- */
+-#define FILENAME_RANK "5.0"
+-
+ static TrackerSparqlStatement *
+ create_statement (NautilusSearchProvider *provider,
+                   SearchFeatures          features)
+@@ -380,7 +374,6 @@ create_statement (NautilusSearchProvider *provider,
+     {
+         if (features & SEARCH_FEATURE_CONTENT)
+         {
+-            /* Use fts:match only for content search to not lose some filename results due to stop words. */
+             g_string_append (sparql,
+                              " { "
+                              "   ?content nie:isStoredAs ?file ."
+@@ -394,11 +387,15 @@ create_statement (NautilusSearchProvider *provider,
+                              " } UNION");
+         }
+ 
++        /* Note: Do not be fooled by `fts:match` bellow. It matches only the
++         * filename here, unlike its usage above. This is because it's used
++         * with `nfo:FileDataObject`, not `nie:InformationElement`. The only
++         * full-text indexed property of `nfo:FileDataObject` is `nfo:fileName`.
++         */
+         g_string_append (sparql,
+                          " {"
+-                         " ?file nfo:fileName ?filename ."
+-                         " FILTER(fn:contains(fn:lower-case(?filename), ~match)) ."
+-                         " BIND(" FILENAME_RANK " AS ?rank) ."
++                         "   ?file fts:match ~match ."
++                         "   BIND(fts:rank(?file) AS ?rank) ."
+                          " }");
+     }
+ 
+@@ -541,10 +538,7 @@ nautilus_search_engine_tracker_start (NautilusSearchProvider *provider)
+ 
+     if (*query_text)
+     {
+-        g_autofree gchar *search_text = NULL;
+-
+-        search_text = g_utf8_strdown (query_text, -1);
+-        tracker_sparql_statement_bind_string (stmt, "match", search_text);
++        tracker_sparql_statement_bind_string (stmt, "match", query_text);
+     }
+ 
+     if (mimetypes->len > 0)
+-- 
+GitLab
+
+
+From 69b953bc3fafa2488cb080b63265e176375a518b Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Fri, 10 Mar 2023 11:33:10 +0100
+Subject: [PATCH 08/10] search-engine: Demux content and filename queries
+
+The current query does something like:
+
+  SELECT vars WHERE {
+    { maybe_big_set_1 } UNION { maybe_big_set_1 }
+    add_some_info_to_each_match
+  } order by variable_only_obtained_after_merging_both_sets
+
+Which pushes the query engine to fetch those two sets, poke around
+each individual element in the returned mixed set in order to add
+the missing information, and then sort all of this data in
+memory before even presenting the first item through the cursor.
+
+Since the preference order between filename and content matches
+is fixed, we can instead turn this query into:
+
+  SELECT vars WHERE {
+    { SELECT vars WHERE { maybe_big_set_1_plus_info } ORDER BY var_in_set_1 }
+    UNION
+    { SELECT vars WHERE { maybe_big_set_2_plus_info } ORDER BY var_in_set_2 }
+  }
+
+Which will be able to hit FTS indices in both independent queries,
+run much faster and avoid in-memory sorting of possibly large resultsets
+in the tracker-miner-fs side.
+
+Using a Tracker database with ~1.4 million indexed files, results are now
+returned within milliseconds allowing for truly interactive search. Since the
+FTS index is hit for sorting, tracker-miner-fs also avoids having to allocate
+some 600MB extra temporary heap for the in-memory sorting.
+---
+ src/nautilus-search-engine-tracker.c | 95 ++++++++++++++++------------
+ 1 file changed, 55 insertions(+), 40 deletions(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index ea343e2d81..13746238a1 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -335,39 +335,31 @@ create_statement (NautilusSearchProvider *provider,
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+ 
+-    sparql = g_string_new ("SELECT DISTINCT"
+-                           " ?url"
+-                           " ?rank"
+-                           " ?mtime"
+-                           " ?ctime"
+-                           " ?atime");
+-
+-    if (features & SEARCH_FEATURE_CONTENT)
+-    {
+-        g_string_append (sparql, "?snippet ");
+-    }
+-
+-    g_string_append (sparql, "FROM tracker:FileSystem ");
+-
+-    if (features & SEARCH_FEATURE_CONTENT)
+-    {
+-        g_string_append (sparql, "FROM tracker:Documents ");
+-    }
+-
+-    g_string_append (sparql,
+-                     "\nWHERE {"
+-                     "  ?file a nfo:FileDataObject;"
+-                     "  nfo:fileLastModified ?mtime;"
+-                     "  nfo:fileLastAccessed ?atime;"
+-                     "  nfo:fileCreated ?ctime;"
+-                     "  nie:dataSource/tracker:available true;"
+-                     "  nie:url ?url.");
++#define VARIABLES \
++        " ?url" \
++        " ?rank"  \
++        " ?mtime" \
++        " ?ctime" \
++        " ?atime" \
++        " ?snippet"
++
++#define TRIPLE_PATTERN \
++        "?file a nfo:FileDataObject;" \
++        "  nfo:fileLastModified ?mtime;" \
++        "  nfo:fileLastAccessed ?atime;" \
++        "  nfo:fileCreated ?ctime;" \
++        "  nie:dataSource/tracker:available true;" \
++        "  nie:url ?url."
++
++    sparql = g_string_new ("SELECT DISTINCT " VARIABLES " WHERE {");
+ 
+     if (features & SEARCH_FEATURE_MIMETYPE)
+     {
+         g_string_append (sparql,
+-                         "  ?content nie:isStoredAs ?file;"
+-                         "    nie:mimeType ?mime");
++                         "  GRAPH ?g {"
++                         "    ?content nie:isStoredAs ?file;"
++                         "      nie:mimeType ?mime"
++                         "  }");
+     }
+ 
+     if (features & SEARCH_FEATURE_TERMS)
+@@ -376,14 +368,23 @@ create_statement (NautilusSearchProvider *provider,
+         {
+             g_string_append (sparql,
+                              " { "
+-                             "   ?content nie:isStoredAs ?file ."
+-                             "   ?content fts:match ~match ."
+-                             "   BIND(fts:rank(?content) AS ?rank) ."
+-                             "   BIND(fts:snippet(?content,"
+-                             "                    '_NAUTILUS_SNIPPET_DELIM_START_',"
+-                             "                    '_NAUTILUS_SNIPPET_DELIM_END_',"
+-                             "                    '…',"
+-                             "                    20) AS ?snippet)"
++                             "   SELECT ?file " VARIABLES " {"
++                             "     GRAPH tracker:Documents {"
++                             "       ?file a nfo:FileDataObject ."
++                             "       ?content nie:isStoredAs ?file ."
++                             "       ?content fts:match ~match ."
++                             "       BIND(fts:rank(?content) AS ?rank) ."
++                             "       BIND(fts:snippet(?content,"
++                             "                        '_NAUTILUS_SNIPPET_DELIM_START_',"
++                             "                        '_NAUTILUS_SNIPPET_DELIM_END_',"
++                             "                        '…',"
++                             "                        20) AS ?snippet)"
++                             "     }"
++                             "     GRAPH tracker:FileSystem {"
++                             TRIPLE_PATTERN
++                             "     }"
++                             "   }"
++                             "   ORDER BY DESC (?rank)"
+                              " } UNION");
+         }
+ 
+@@ -394,8 +395,22 @@ create_statement (NautilusSearchProvider *provider,
+          */
+         g_string_append (sparql,
+                          " {"
+-                         "   ?file fts:match ~match ."
+-                         "   BIND(fts:rank(?file) AS ?rank) ."
++                         "   SELECT ?file " VARIABLES " {"
++                         "     GRAPH tracker:FileSystem {"
++                         TRIPLE_PATTERN
++                         "       ?file fts:match ~match ."
++                         "       BIND(fts:rank(?file) AS ?rank) ."
++                         "     }"
++                         "   }"
++                         "   ORDER BY DESC (?rank)"
++                         " }");
++    }
++    else
++    {
++        g_string_append (sparql,
++                         " GRAPH tracker:FileSystem {"
++                         TRIPLE_PATTERN
++                         "   BIND (0 AS ?rank)"
+                          " }");
+     }
+ 
+@@ -440,7 +455,7 @@ create_statement (NautilusSearchProvider *provider,
+         g_string_append (sparql, " && CONTAINS(~mimeTypes, ?mime)");
+     }
+ 
+-    g_string_append (sparql, ")} ORDER BY DESC (?rank)");
++    g_string_append (sparql, ")}");
+ 
+     stmt = tracker_sparql_connection_query_statement (tracker->connection,
+                                                       sparql->str,
+-- 
+GitLab
+
+
+From 2d27d5a8ff157fc9809860b16e94c9b3b82051fd Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Thu, 18 May 2023 13:48:37 +0200
+Subject: [PATCH 09/10] search-engine: Do not check "available" sources
+
+By default, the filesystem miner only indexes folders within the
+user homedir which are always considered available. Getting anything
+else here means the user fiddled directly with dconf settings not
+exposed anywhere and indexed mountpoints with intermitent availability.
+
+Accounting for the remote possibility of this being ever false
+means we have to jump a few hops to reach from content to file to its
+data source, which may become a noticeable bottleneck if the FTS search
+terms match a lot of files.
+
+While indexing of removable devices has plenty of room for improvement
+(starting with the tracker-miners side) and should be a prime feature,
+it remains a niche option. Do not optimize for the unlikely and
+optimize for large result sets.
+---
+ src/nautilus-search-engine-tracker.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 13746238a1..6fb4b7d8b9 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -348,7 +348,6 @@ create_statement (NautilusSearchProvider *provider,
+         "  nfo:fileLastModified ?mtime;" \
+         "  nfo:fileLastAccessed ?atime;" \
+         "  nfo:fileCreated ?ctime;" \
+-        "  nie:dataSource/tracker:available true;" \
+         "  nie:url ?url."
+ 
+     sparql = g_string_new ("SELECT DISTINCT " VARIABLES " WHERE {");
+-- 
+GitLab
+
+
+From 2c1c7882d74ce955a126c33004ccb05c72a61965 Mon Sep 17 00:00:00 2001
+From: Carlos Garnacho <carlosg@gnome.org>
+Date: Sun, 12 Mar 2023 13:57:50 +0100
+Subject: [PATCH 10/10] query-editor: Do not artificially delay search
+
+With the changes done in the previous commits, the Tracker search
+engine can take quite a pounding without breaking a sweat. Worrying
+about spamming search engines is no longer a concern with queries
+done the right way, so we do not need to artificially delay search.
+
+The goal is that search feels responsive even to a fast typist.
+
+Since this delay also applied to showing the search entry after
+starting type-to-search, this also fixes the apparent stall when
+one started typing.
+---
+ src/nautilus-query-editor.c | 19 ++++++-------------
+ 1 file changed, 6 insertions(+), 13 deletions(-)
+
+diff --git a/src/nautilus-query-editor.c b/src/nautilus-query-editor.c
+index 67afcc9ce6..8496792b37 100644
+--- a/src/nautilus-query-editor.c
++++ b/src/nautilus-query-editor.c
+@@ -49,7 +49,7 @@ struct _NautilusQueryEditor
+     GtkWidget *mime_types_tag;
+     GtkWidget *date_range_tag;
+ 
+-    guint search_changed_timeout_id;
++    guint search_changed_idle_id;
+     gboolean change_frozen;
+ 
+     GFile *location;
+@@ -80,12 +80,6 @@ static void nautilus_query_editor_changed (NautilusQueryEditor *editor);
+ 
+ G_DEFINE_TYPE (NautilusQueryEditor, nautilus_query_editor, GTK_TYPE_WIDGET);
+ 
+-/* A hunt-and-peck typist types at 25-35 words per minute, which means 342 to 480ms between strokes.
+- * An average touch typist types at 50-70 wpm, which means 171 to 240ms "under ideal conditions".
+- * A 150ms default search triggering delay is too short even for fast typists in general,
+- * so wait 400ms after typing, to improve performance by not spamming search engines: */
+-#define SEARCH_CHANGED_TIMEOUT 400
+-
+ static void
+ update_fts_sensitivity (NautilusQueryEditor *editor)
+ {
+@@ -138,7 +132,7 @@ nautilus_query_editor_dispose (GObject *object)
+ 
+     editor = NAUTILUS_QUERY_EDITOR (object);
+ 
+-    g_clear_handle_id (&editor->search_changed_timeout_id, g_source_remove);
++    g_clear_handle_id (&editor->search_changed_idle_id, g_source_remove);
+ 
+     gtk_widget_unparent (gtk_widget_get_first_child (GTK_WIDGET (editor)));
+     g_clear_pointer (&editor->tags_box, gtk_widget_unparent);
+@@ -384,7 +378,7 @@ entry_changed_internal (NautilusQueryEditor *editor)
+     const gchar *text = gtk_editable_get_text (GTK_EDITABLE (editor->text));
+     gboolean is_empty = (text == NULL && *text == '\0');
+ 
+-    editor->search_changed_timeout_id = 0;
++    editor->search_changed_idle_id = 0;
+ 
+     gtk_widget_set_child_visible (editor->clear_icon, !is_empty);
+ 
+@@ -412,10 +406,9 @@ entry_changed_cb (GtkWidget           *entry,
+         return;
+     }
+ 
+-    g_clear_handle_id (&editor->search_changed_timeout_id, g_source_remove);
+-    editor->search_changed_timeout_id = g_timeout_add (SEARCH_CHANGED_TIMEOUT,
+-                                                       G_SOURCE_FUNC (entry_changed_internal),
+-                                                       editor);
++    g_clear_handle_id (&editor->search_changed_idle_id, g_source_remove);
++    editor->search_changed_idle_id = g_idle_add (G_SOURCE_FUNC (entry_changed_internal),
++                                                 editor);
+ }
+ 
+ static GtkWidget *
+-- 
+GitLab
+

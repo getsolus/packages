@@ -1,0 +1,717 @@
+From c1d5937814318f38c65d1ffe9f515447d77f503c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ant=C3=B3nio=20Fernandes?= <antoniof@gnome.org>
+Date: Sat, 20 May 2023 21:54:24 +0100
+Subject: [PATCH 1/5] search-hit: Rank current folder hits by name match alone
+
+We boost recent files in search results, because they are more likely
+to be relevant than older files, especially when recursive search
+gets many results.
+
+However, this becomes problematic in the cases when the users look for
+files in the current folder whose name they know, because a more recent
+file can get ranked above an exact prefix match.
+
+Let's skip recency ranking for hits from current folder to make name
+matching the sole relevance difference among them.
+
+Fixes: https://gitlab.gnome.org/GNOME/nautilus/-/issues/2949
+---
+ src/nautilus-search-hit.c | 78 ++++++++++++++++++++-------------------
+ 1 file changed, 41 insertions(+), 37 deletions(-)
+
+diff --git a/src/nautilus-search-hit.c b/src/nautilus-search-hit.c
+index 98ac14261e..761c4af294 100644
+--- a/src/nautilus-search-hit.c
++++ b/src/nautilus-search-hit.c
+@@ -60,9 +60,9 @@ void
+ nautilus_search_hit_compute_scores (NautilusSearchHit *hit,
+                                     NautilusQuery     *query)
+ {
+-    GDateTime *now;
+     GFile *query_location;
+     GFile *hit_location;
++    guint dir_count = 0;
+     GTimeSpan m_diff = G_MAXINT64;
+     GTimeSpan a_diff = G_MAXINT64;
+     GTimeSpan t_diff = G_MAXINT64;
+@@ -76,7 +76,6 @@ nautilus_search_hit_compute_scores (NautilusSearchHit *hit,
+     if (g_file_has_prefix (hit_location, query_location))
+     {
+         GFile *parent, *location;
+-        guint dir_count = 0;
+ 
+         parent = g_file_get_parent (hit_location);
+ 
+@@ -96,41 +95,47 @@ nautilus_search_hit_compute_scores (NautilusSearchHit *hit,
+     }
+     g_object_unref (hit_location);
+ 
+-    now = g_date_time_new_now_local ();
+-    if (hit->modification_time != NULL)
+-    {
+-        m_diff = g_date_time_difference (now, hit->modification_time);
+-    }
+-    if (hit->access_time != NULL)
+-    {
+-        a_diff = g_date_time_difference (now, hit->access_time);
+-    }
+-    m_diff /= G_TIME_SPAN_DAY;
+-    a_diff /= G_TIME_SPAN_DAY;
+-    t_diff = MIN (m_diff, a_diff);
+-    if (t_diff > 90)
+-    {
+-        recent_bonus = 0.0;
+-    }
+-    else if (t_diff > 30)
+-    {
+-        recent_bonus = 10.0;
+-    }
+-    else if (t_diff > 14)
+-    {
+-        recent_bonus = 30.0;
+-    }
+-    else if (t_diff > 7)
+-    {
+-        recent_bonus = 50.0;
+-    }
+-    else if (t_diff > 1)
+-    {
+-        recent_bonus = 70.0;
+-    }
+-    else
++    /* Recency bonus is useful for recursive search, but unwanted for results
++     * from the current folder, which should always sort by filename match,
++     * which makes prefix matches sort first. */
++    if (dir_count != 0)
+     {
+-        recent_bonus = 100.0;
++        g_autoptr (GDateTime) now = g_date_time_new_now_local ();
++        if (hit->modification_time != NULL)
++        {
++            m_diff = g_date_time_difference (now, hit->modification_time);
++        }
++        if (hit->access_time != NULL)
++        {
++            a_diff = g_date_time_difference (now, hit->access_time);
++        }
++        m_diff /= G_TIME_SPAN_DAY;
++        a_diff /= G_TIME_SPAN_DAY;
++        t_diff = MIN (m_diff, a_diff);
++        if (t_diff > 90)
++        {
++            recent_bonus = 0.0;
++        }
++        else if (t_diff > 30)
++        {
++            recent_bonus = 10.0;
++        }
++        else if (t_diff > 14)
++        {
++            recent_bonus = 30.0;
++        }
++        else if (t_diff > 7)
++        {
++            recent_bonus = 50.0;
++        }
++        else if (t_diff > 1)
++        {
++            recent_bonus = 70.0;
++        }
++        else
++        {
++            recent_bonus = 100.0;
++        }
+     }
+ 
+     if (hit->fts_rank > 0)
+@@ -146,7 +151,6 @@ nautilus_search_hit_compute_scores (NautilusSearchHit *hit,
+     DEBUG ("Hit %s computed relevance %.2f (%.2f + %.2f + %.2f)", hit->uri, hit->relevance,
+            proximity_bonus, recent_bonus, match_bonus);
+ 
+-    g_date_time_unref (now);
+     g_object_unref (query_location);
+ }
+ 
+-- 
+GitLab
+
+
+From c55642397d291a770221e4ac462e5205c0752da4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ant=C3=B3nio=20Fernandes?= <antoniof@gnome.org>
+Date: Sun, 21 May 2023 09:49:11 +0100
+Subject: [PATCH 2/5] search-engine-simple: Delay starting IO
+
+While the user types a search query, we restart our search engines for
+every key stroke. This is desirable for quick results.
+
+But unlike other engines, starting the simple engine multiple times in
+rapid succession can put some stress on system resources.
+Depending on the hardware and windowing system, this may result in user
+perception of poor performance.
+
+Previously, we've dealt with this by setting the delay directly in the
+search entry. But that was a bad solution because it draged down the
+responsiveness of other search engines.
+
+Instead, let's save resources by starting the simple engine IO thread
+half a second later, if not cancelled/restated before that.
+
+Bump glib minimum version to use "once" source helpers.
+---
+ meson.build                         |  2 +-
+ src/nautilus-search-engine-simple.c | 29 ++++++++++++++++++++++++-----
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 4ba4f4e679..5395132c9a 100644
+--- a/meson.build
++++ b/meson.build
+@@ -88,7 +88,7 @@ pkgconfig = import('pkgconfig')
+ ################
+ # Dependencies #
+ ################
+-glib_ver = '>= 2.72.0'
++glib_ver = '>= 2.74.0'
+ 
+ libm = cc.find_library('m')
+ 
+diff --git a/src/nautilus-search-engine-simple.c b/src/nautilus-search-engine-simple.c
+index 794178ec07..e818a93294 100644
+--- a/src/nautilus-search-engine-simple.c
++++ b/src/nautilus-search-engine-simple.c
+@@ -34,6 +34,7 @@
+ #include <gio/gio.h>
+ 
+ #define BATCH_SIZE 500
++#define CREATE_THREAD_DELAY_MS 500
+ 
+ enum
+ {
+@@ -58,7 +59,6 @@ typedef struct
+     GList *hits;
+ 
+     NautilusQuery *query;
+-
+     gint processing_id;
+     GMutex idle_mutex;
+     /* The following data can be accessed from different threads
+@@ -73,6 +73,7 @@ struct _NautilusSearchEngineSimple
+ {
+     GObject parent_instance;
+     NautilusQuery *query;
++    guint create_thread_timeout_id;
+ 
+     SearchThreadData *active_search;
+ };
+@@ -90,6 +91,7 @@ finalize (GObject *object)
+ {
+     NautilusSearchEngineSimple *simple = NAUTILUS_SEARCH_ENGINE_SIMPLE (object);
+     g_clear_object (&simple->query);
++    g_clear_handle_id (&simple->create_thread_timeout_id, g_source_remove);
+ 
+     G_OBJECT_CLASS (nautilus_search_engine_simple_parent_class)->finalize (object);
+ }
+@@ -504,12 +506,21 @@ search_thread_func (gpointer user_data)
+     return NULL;
+ }
+ 
++static void
++create_thread_timeout (gpointer user_data)
++{
++    NautilusSearchEngineSimple *simple = user_data;
++    g_autoptr (GThread) thread = NULL;
++
++    simple->create_thread_timeout_id = 0;
++    thread = g_thread_new ("nautilus-search-simple", search_thread_func, simple->active_search);
++}
++
+ static void
+ nautilus_search_engine_simple_start (NautilusSearchProvider *provider)
+ {
+     NautilusSearchEngineSimple *simple;
+     SearchThreadData *data;
+-    GThread *thread;
+ 
+     simple = NAUTILUS_SEARCH_ENGINE_SIMPLE (provider);
+ 
+@@ -522,12 +533,12 @@ nautilus_search_engine_simple_start (NautilusSearchProvider *provider)
+ 
+     data = search_thread_data_new (simple, simple->query);
+ 
+-    thread = g_thread_new ("nautilus-search-simple", search_thread_func, data);
+     simple->active_search = data;
++    simple->create_thread_timeout_id = g_timeout_add_once (CREATE_THREAD_DELAY_MS,
++                                                           create_thread_timeout,
++                                                           simple);
+ 
+     g_object_notify (G_OBJECT (provider), "running");
+-
+-    g_thread_unref (thread);
+ }
+ 
+ static void
+@@ -539,6 +550,14 @@ nautilus_search_engine_simple_stop (NautilusSearchProvider *provider)
+     {
+         DEBUG ("Simple engine stop");
+         g_cancellable_cancel (simple->active_search->cancellable);
++
++        if (simple->create_thread_timeout_id != 0)
++        {
++            /* Thread wasn't started, so we must call this directly from here.*/
++            search_thread_done (simple->active_search);
++
++            g_clear_handle_id (&simple->create_thread_timeout_id, g_source_remove);
++        }
+     }
+ }
+ 
+-- 
+GitLab
+
+
+From 4c4e2a1cb04c8172ddb77d0969e782179b76831f Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ant=C3=B3nio=20Fernandes?= <antoniof@gnome.org>
+Date: Sun, 21 May 2023 10:26:21 +0100
+Subject: [PATCH 3/5] search-engine: Use recent engine only for shell search
+
+The recent engine has been introduced mainly for systems without
+tracker, which used to be the case with Ubuntu.
+
+But nowadays we don't really support not running tracker.
+
+So the only value this engine might bring is for shell search
+provider, where we don't want to run the IO-intense simple engine
+as fallback. In that case, the recent engine may find files that
+are not indexed by tracker.
+
+In all other cases, these files are going to be found by the simple
+engine anyway. Not only is the recent engine doing futile IO on
+every keystroke, it's another engine which we need to cancel and
+wait to finishe before restarting all engines.
+
+Also add some missing debug messages which helped diagnose this.
+---
+ src/nautilus-search-engine-recent.c  |  2 ++
+ src/nautilus-search-engine.c         | 17 +++++++++++++++++
+ src/nautilus-search-engine.h         |  3 ++-
+ src/nautilus-shell-search-provider.c |  1 +
+ 4 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/src/nautilus-search-engine-recent.c b/src/nautilus-search-engine-recent.c
+index 8fe50c7e5b..79394bb7d6 100644
+--- a/src/nautilus-search-engine-recent.c
++++ b/src/nautilus-search-engine-recent.c
+@@ -112,6 +112,7 @@ search_thread_add_hits_idle (gpointer user_data)
+     g_clear_object (&self->cancellable);
+     g_free (search_hits);
+ 
++    DEBUG ("Recent engine finished");
+     nautilus_search_provider_finished (provider,
+                                        NAUTILUS_SEARCH_PROVIDER_STATUS_NORMAL);
+     g_object_notify (G_OBJECT (provider), "running");
+@@ -368,6 +369,7 @@ nautilus_search_engine_recent_start (NautilusSearchProvider *provider)
+     g_return_if_fail (self->query);
+     g_return_if_fail (self->cancellable == NULL);
+ 
++    DEBUG ("Recent engine start");
+     location = nautilus_query_get_location (self->query);
+ 
+     if (!is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
+diff --git a/src/nautilus-search-engine.c b/src/nautilus-search-engine.c
+index 48bfa1f356..02fc014fc0 100644
+--- a/src/nautilus-search-engine.c
++++ b/src/nautilus-search-engine.c
+@@ -46,6 +46,7 @@ typedef struct
+ 
+     gboolean running;
+     gboolean restart;
++    gboolean recent_enabled;
+ } NautilusSearchEnginePrivate;
+ 
+ enum
+@@ -117,6 +118,10 @@ search_engine_start_real_recent (NautilusSearchEngine *engine)
+     NautilusSearchEnginePrivate *priv;
+ 
+     priv = nautilus_search_engine_get_instance_private (engine);
++    if (!priv->recent_enabled)
++    {
++        return;
++    }
+ 
+     priv->providers_running++;
+     nautilus_search_provider_start (NAUTILUS_SEARCH_PROVIDER (priv->recent));
+@@ -525,6 +530,10 @@ nautilus_search_engine_init (NautilusSearchEngine *engine)
+ 
+     priv->recent = nautilus_search_engine_recent_new ();
+     connect_provider_signals (engine, NAUTILUS_SEARCH_PROVIDER (priv->recent));
++
++    /* The recent engine is really only meant for the shell search provider,
++     * where it might get search hits that are not indexed by tracker. */
++    priv->recent_enabled = FALSE;
+ }
+ 
+ NautilusSearchEngine *
+@@ -547,6 +556,14 @@ nautilus_search_engine_get_model_provider (NautilusSearchEngine *engine)
+     return priv->model;
+ }
+ 
++void
++nautilus_search_engine_enable_recent (NautilusSearchEngine *engine)
++{
++    NautilusSearchEnginePrivate *priv = nautilus_search_engine_get_instance_private (engine);
++
++    priv->recent_enabled = TRUE;
++}
++
+ gboolean
+ is_recursive_search (NautilusSearchEngineType  engine_type,
+                      NautilusQueryRecursive    recursive,
+diff --git a/src/nautilus-search-engine.h b/src/nautilus-search-engine.h
+index 33c3644be3..997e739349 100644
+--- a/src/nautilus-search-engine.h
++++ b/src/nautilus-search-engine.h
+@@ -41,8 +41,9 @@ struct _NautilusSearchEngineClass
+ NautilusSearchEngine *nautilus_search_engine_new                (void);
+ NautilusSearchEngineModel *
+                       nautilus_search_engine_get_model_provider (NautilusSearchEngine *engine);
++void                  nautilus_search_engine_enable_recent (NautilusSearchEngine *engine);
+ 
+ G_END_DECLS
+ 
+ void nautilus_search_engine_start_by_target (NautilusSearchProvider     *provider,
+-                                             NautilusSearchEngineTarget  taregt_engine);
+\ No newline at end of file
++                                             NautilusSearchEngineTarget  taregt_engine);
+diff --git a/src/nautilus-shell-search-provider.c b/src/nautilus-shell-search-provider.c
+index 55e9e1aff9..c8a2cb7998 100644
+--- a/src/nautilus-shell-search-provider.c
++++ b/src/nautilus-shell-search-provider.c
+@@ -502,6 +502,7 @@ execute_search (NautilusShellSearchProvider  *self,
+ 
+     /* start searching */
+     g_debug ("*** Search engine search started");
++    nautilus_search_engine_enable_recent (pending_search->engine);
+     nautilus_search_provider_set_query (NAUTILUS_SEARCH_PROVIDER (pending_search->engine),
+                                         query);
+     nautilus_search_provider_start (NAUTILUS_SEARCH_PROVIDER (pending_search->engine));
+-- 
+GitLab
+
+
+From 4508eae5b2577859c445fbe60251d2a53b653995 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ant=C3=B3nio=20Fernandes?= <antoniof@gnome.org>
+Date: Wed, 24 May 2023 00:14:04 +0100
+Subject: [PATCH 4/5] search-engine-recent: Don't check recursive setting
+
+Now that this engine is only used in shell search, which is
+always recursive, there is no need for this check.
+
+Also, this check might be doing synchronous IO in the main
+thread to check whether the file is local, as detailed in
+https://gitlab.gnome.org/GNOME/nautilus/-/issues/2967
+---
+ src/nautilus-search-engine-recent.c | 11 -----------
+ 1 file changed, 11 deletions(-)
+
+diff --git a/src/nautilus-search-engine-recent.c b/src/nautilus-search-engine-recent.c
+index 79394bb7d6..b44450e008 100644
+--- a/src/nautilus-search-engine-recent.c
++++ b/src/nautilus-search-engine-recent.c
+@@ -22,7 +22,6 @@
+ #include "nautilus-search-hit.h"
+ #include "nautilus-search-provider.h"
+ #include "nautilus-search-engine-recent.h"
+-#include "nautilus-search-engine-private.h"
+ #include "nautilus-ui-utilities.h"
+ #define DEBUG_FLAG NAUTILUS_DEBUG_SEARCH
+ #include "nautilus-debug.h"
+@@ -363,22 +362,12 @@ static void
+ nautilus_search_engine_recent_start (NautilusSearchProvider *provider)
+ {
+     NautilusSearchEngineRecent *self = NAUTILUS_SEARCH_ENGINE_RECENT (provider);
+-    g_autoptr (GFile) location = NULL;
+     g_autoptr (GThread) thread = NULL;
+ 
+     g_return_if_fail (self->query);
+     g_return_if_fail (self->cancellable == NULL);
+ 
+     DEBUG ("Recent engine start");
+-    location = nautilus_query_get_location (self->query);
+-
+-    if (!is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
+-                              nautilus_query_get_recursive (self->query),
+-                              location))
+-    {
+-        search_add_hits_idle (self, NULL);
+-        return;
+-    }
+ 
+     self->running = TRUE;
+     self->cancellable = g_cancellable_new ();
+-- 
+GitLab
+
+
+From d1f5b2ddf76ce805d3c6816d38dca7257e36aac5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ant=C3=B3nio=20Fernandes?= <antoniof@gnome.org>
+Date: Wed, 24 May 2023 00:40:19 +0100
+Subject: [PATCH 5/5] search-engine-tracker: Don't block main thread on start
+
+We check whether to recurse right when we start the tracker engine.
+
+But when recursive search is local-only (the default option), this
+means we need to check whether the file is local. Currently, we do
+this using sync GIO API. But the start method happens in the main
+thread, and doing sync IO in the main thread is going to block
+everything, causing serious performance issues for some setups.
+
+Instead, it can just use the filesystem info that's already cached
+by the NautilusFile instance for the searched directory.
+
+This means the only consumer of search-engine-private.h becomes
+NautilusSearchEngineSimple, which safely performs the check in
+another thread, so we can move the whole logic there to simplify.
+
+This effectively reverts [0], but also reapplies the bugfix
+from [1] in form given by [2].
+
+Fixes https://gitlab.gnome.org/GNOME/nautilus/-/issues/2967
+
+[0] de36e000f4bf38fdf4698126bae0dcc49bd9ffbc
+[1] 62ba6d83df162b149785ed10a13d242ee1a13dc1
+[2] f0759d6fe9bb405c3e9a5a5cf2e9509514f4eb6f
+---
+ src/meson.build                      |  1 -
+ src/nautilus-search-engine-private.h | 31 ---------------------
+ src/nautilus-search-engine-simple.c  | 33 +++++++++++++++++-----
+ src/nautilus-search-engine-tracker.c | 21 ++++++++++----
+ src/nautilus-search-engine.c         | 41 ----------------------------
+ 5 files changed, 41 insertions(+), 86 deletions(-)
+ delete mode 100644 src/nautilus-search-engine-private.h
+
+diff --git a/src/meson.build b/src/meson.build
+index b1a63fd305..d6c0c90aeb 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -220,7 +220,6 @@ libnautilus_sources = [
+   'nautilus-search-provider.h',
+   'nautilus-search-engine.c',
+   'nautilus-search-engine.h',
+-  'nautilus-search-engine-private.h',
+   'nautilus-search-engine-model.c',
+   'nautilus-search-engine-model.h',
+   'nautilus-search-engine-recent.c',
+diff --git a/src/nautilus-search-engine-private.h b/src/nautilus-search-engine-private.h
+deleted file mode 100644
+index e5f989fce1..0000000000
+--- a/src/nautilus-search-engine-private.h
++++ /dev/null
+@@ -1,31 +0,0 @@
+-/*
+- * Copyright (C) 2018 Canonical Ltd.
+- *
+- * Nautilus is free software; you can redistribute it and/or
+- * modify it under the terms of the GNU General Public License as
+- * published by the Free Software Foundation; either version 2 of the
+- * License, or (at your option) any later version.
+- *
+- * Nautilus is distributed in the hope that it will be useful,
+- * but WITHOUT ANY WARRANTY; without even the implied warranty of
+- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+- * General Public License for more details.
+- *
+- * You should have received a copy of the GNU General Public
+- * License along with this program; see the file COPYING.  If not,
+- * see <http://www.gnu.org/licenses/>.
+- *
+- * Author: Marco Trevisan <marco@ubuntu.com>
+- *
+- */
+-
+-#pragma once
+-
+-#include "nautilus-query.h"
+-
+-typedef enum {
+-        NAUTILUS_SEARCH_ENGINE_TYPE_NON_INDEXED,
+-        NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
+-} NautilusSearchEngineType;
+-
+-gboolean is_recursive_search (NautilusSearchEngineType engine_type, NautilusQueryRecursive recursive, GFile *location);
+diff --git a/src/nautilus-search-engine-simple.c b/src/nautilus-search-engine-simple.c
+index e818a93294..2951960685 100644
+--- a/src/nautilus-search-engine-simple.c
++++ b/src/nautilus-search-engine-simple.c
+@@ -22,7 +22,6 @@
+ #include <config.h>
+ #include "nautilus-search-engine-simple.h"
+ 
+-#include "nautilus-search-engine-private.h"
+ #include "nautilus-search-hit.h"
+ #include "nautilus-search-provider.h"
+ #include "nautilus-ui-utilities.h"
+@@ -288,7 +287,7 @@ visit_directory (GFile            *dir,
+ {
+     g_autoptr (GPtrArray) date_range = NULL;
+     NautilusQuerySearchType type;
+-    NautilusQueryRecursive recursive;
++    NautilusQueryRecursive recursive_flag;
+     GFileEnumerator *enumerator;
+     GFileInfo *info;
+     GFile *child;
+@@ -318,7 +317,7 @@ visit_directory (GFile            *dir,
+     }
+ 
+     type = nautilus_query_get_search_type (data->query);
+-    recursive = nautilus_query_get_recursive (data->query);
++    recursive_flag = nautilus_query_get_recursive (data->query);
+     date_range = nautilus_query_get_date_range (data->query);
+ 
+     while ((info = g_file_enumerator_next_file (enumerator, data->cancellable, NULL)) != NULL)
+@@ -326,6 +325,7 @@ visit_directory (GFile            *dir,
+         g_autoptr (GDateTime) mtime = NULL;
+         g_autoptr (GDateTime) atime = NULL;
+         g_autoptr (GDateTime) ctime = NULL;
++        gboolean recursive = FALSE;
+ 
+         display_name = g_file_info_get_display_name (info);
+         if (display_name == NULL)
+@@ -431,10 +431,29 @@ visit_directory (GFile            *dir,
+             send_batch_in_idle (data);
+         }
+ 
+-        if (recursive != NAUTILUS_QUERY_RECURSIVE_NEVER &&
+-            g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY &&
+-            is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_NON_INDEXED,
+-                                 recursive, child))
++        if (recursive_flag != NAUTILUS_QUERY_RECURSIVE_NEVER &&
++            g_file_info_get_file_type (info) == G_FILE_TYPE_DIRECTORY)
++        {
++            if (recursive_flag == NAUTILUS_QUERY_RECURSIVE_ALWAYS)
++            {
++                recursive = TRUE;
++            }
++            else if (recursive_flag == NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY)
++            {
++                g_autoptr (GFileInfo) file_system_info = NULL;
++
++                file_system_info = g_file_query_filesystem_info (child,
++                                                                 G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE,
++                                                                 NULL, NULL);
++                if (file_system_info != NULL)
++                {
++                    recursive = !g_file_info_get_attribute_boolean (file_system_info,
++                                                                    G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE);
++                }
++            }
++        }
++
++        if (recursive)
+         {
+             id = g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_ID_FILE);
+             visited = FALSE;
+diff --git a/src/nautilus-search-engine-tracker.c b/src/nautilus-search-engine-tracker.c
+index 6fb4b7d8b9..28e8f869d9 100644
+--- a/src/nautilus-search-engine-tracker.c
++++ b/src/nautilus-search-engine-tracker.c
+@@ -22,7 +22,7 @@
+ #include <config.h>
+ #include "nautilus-search-engine-tracker.h"
+ 
+-#include "nautilus-search-engine-private.h"
++#include "nautilus-file.h"
+ #include "nautilus-search-hit.h"
+ #include "nautilus-search-provider.h"
+ #include "nautilus-tracker-utilities.h"
+@@ -631,18 +631,27 @@ static void
+ nautilus_search_engine_tracker_set_query (NautilusSearchProvider *provider,
+                                           NautilusQuery          *query)
+ {
+-    g_autoptr (GFile) location = NULL;
+     NautilusSearchEngineTracker *tracker;
++    NautilusQueryRecursive recursive;
+ 
+     tracker = NAUTILUS_SEARCH_ENGINE_TRACKER (provider);
+-    location = nautilus_query_get_location (query);
++    recursive = nautilus_query_get_recursive (query);
+ 
+     g_clear_object (&tracker->query);
+ 
+     tracker->query = g_object_ref (query);
+-    tracker->recursive = is_recursive_search (NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED,
+-                                              nautilus_query_get_recursive (query),
+-                                              location);
++
++    if (recursive == NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY)
++    {
++        g_autoptr (GFile) location = nautilus_query_get_location (query);
++        g_autoptr (NautilusFile) location_file = nautilus_file_get (location);
++        tracker->recursive = !nautilus_file_is_remote (location_file);
++    }
++    else
++    {
++        tracker->recursive = recursive == NAUTILUS_QUERY_RECURSIVE_ALWAYS ||
++                             recursive == NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY;
++    }
+ }
+ 
+ static gboolean
+diff --git a/src/nautilus-search-engine.c b/src/nautilus-search-engine.c
+index 02fc014fc0..e6c0010752 100644
+--- a/src/nautilus-search-engine.c
++++ b/src/nautilus-search-engine.c
+@@ -21,7 +21,6 @@
+ 
+ #include <config.h>
+ #include "nautilus-search-engine.h"
+-#include "nautilus-search-engine-private.h"
+ 
+ #include "nautilus-file-utilities.h"
+ #include "nautilus-search-engine-model.h"
+@@ -563,43 +562,3 @@ nautilus_search_engine_enable_recent (NautilusSearchEngine *engine)
+ 
+     priv->recent_enabled = TRUE;
+ }
+-
+-gboolean
+-is_recursive_search (NautilusSearchEngineType  engine_type,
+-                     NautilusQueryRecursive    recursive,
+-                     GFile                    *location)
+-{
+-    switch (recursive)
+-    {
+-        case NAUTILUS_QUERY_RECURSIVE_NEVER:
+-        {
+-            return FALSE;
+-        }
+-
+-        case NAUTILUS_QUERY_RECURSIVE_ALWAYS:
+-        {
+-            return TRUE;
+-        }
+-
+-        case NAUTILUS_QUERY_RECURSIVE_INDEXED_ONLY:
+-        {
+-            return engine_type == NAUTILUS_SEARCH_ENGINE_TYPE_INDEXED;
+-        }
+-
+-        case NAUTILUS_QUERY_RECURSIVE_LOCAL_ONLY:
+-        {
+-            g_autoptr (GFileInfo) file_system_info = NULL;
+-
+-            file_system_info = g_file_query_filesystem_info (location,
+-                                                             G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE,
+-                                                             NULL, NULL);
+-            if (file_system_info != NULL)
+-            {
+-                return !g_file_info_get_attribute_boolean (file_system_info,
+-                                                           G_FILE_ATTRIBUTE_FILESYSTEM_REMOTE);
+-            }
+-        }
+-    }
+-
+-    return TRUE;
+-}
+-- 
+GitLab
+
