@@ -1,0 +1,70 @@
+name       : moby
+version    : 23.0.6
+release    : 1
+source     :
+    - https://github.com/moby/moby/archive/v23.0.6.tar.gz : 3bbd32f401f652cc15084d3c09bd7acd381571802beac9333fd63d803dc66c3e
+    - https://github.com/docker/cli/archive/refs/tags/v23.0.6.tar.gz#docker-cli.tar.gz : b31eb0343e8bb587e921a7630baa659896602072a77ad97720e5f2a8e48005e9
+license    : Apache-2.0
+component  : virt
+summary    : The open-source application container engine
+description: |
+    The open-source application container engine. This package contains the Docker server
+strip      : no
+networking : yes
+builddeps  :
+    - pkgconfig(libsystemd)
+    - go-md2man
+    - golang
+    - linux-headers
+rundeps    :
+    - containerd
+    - dnsmasq
+    - tini
+environment: |
+    export AUTO_GOPATH=1
+    export GITCOMMIT="9dbdbd4b6d7681bd18c897a6ba0376073c2a72ff"
+    export DOCKER_GITCOMMIT=$GITCOMMIT
+
+    export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw -ldflags=-linkmode=external"
+
+    export GO111MODULE=auto
+setup      : |
+    mkdir docker-cli
+    tar -xf $sources/docker-cli.tar.gz -C docker-cli --strip-components 1
+build      : |
+    # Build daemon
+    PLATFORM="Docker Engine - Community" \
+    VERSION=${version} \
+    DOCKER_BUILDTAGS="journald exclude_graphdriver_aufs exclude_graphdriver_devicemapper exclude_graphdriver_overlay" \
+    DISABLE_WARN_OUTSIDE_CONTAINER=1 \
+      ./hack/make.sh dynbinary
+
+    # Build manpages
+    cd docker-cli
+    ./scripts/docs/generate-man.sh
+install    : |
+    # Main docker daemon
+    install -Dm00755 bundles/dynbinary-daemon/dockerd $installdir/usr/bin/dockerd
+
+    # Now install docker-init
+    ln -s /usr/bin/tini-static $installdir/usr/bin/docker-init
+
+    # Now install proxy service
+    install -Dm00755 $workdir/bundles/dynbinary-daemon/docker-proxy $installdir/usr/bin/docker-proxy
+
+    # Now install systemd units
+    install -Dm00644 $pkgfiles/docker.service -t $installdir/%libdir%/systemd/system/
+    install -Dm00644 contrib/init/systemd/docker.socket -t $installdir/%libdir%/systemd/system/
+
+    install -Dm644 $pkgfiles/docker.preset $installdir/usr/lib/systemd/system-preset/docker.preset
+
+
+    # Enable socket activation by default
+    install -Ddm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
+    ln -sv ../docker.socket $installdir/%libdir%/systemd/system/sockets.target.wants/docker.socket
+
+    # Add the docker group
+    install -Dm00644 $pkgfiles/docker.sysusers $installdir/%libdir%/sysusers.d/docker.conf
+
+    # Install manpage
+    install -Dm00644 docker-cli/man/man8/dockerd.8 -t $installdir/usr/share/man/man8/
