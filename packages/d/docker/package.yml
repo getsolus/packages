@@ -1,11 +1,8 @@
 name       : docker
-version    : 20.10.24
-release    : 43
+version    : 23.0.6
+release    : 44
 source     :
-    - https://github.com/moby/moby/archive/v20.10.24.tar.gz : 5c586d9f352bbe3a16bce27dd4856baa0ef02de58433bb3e1af9976c04c7eaae
-    - git|https://github.com/docker/cli.git : v20.10.24
-    - git|https://github.com/moby/libnetwork.git : c5aa85f9b25f0acaec8591ced679cb9fb5b9e32c
-    - git|https://github.com/krallin/tini.git : v0.19.0
+    - https://github.com/docker/cli/archive/refs/tags/v23.0.6.tar.gz : b31eb0343e8bb587e921a7630baa659896602072a77ad97720e5f2a8e48005e9
 license    : Apache-2.0
 component  : virt
 summary    : Open source application container engine
@@ -14,98 +11,46 @@ description: |
 
     Docker containers are both hardware-agnostic and platform-agnostic. This means they can run anywhere, from your laptop to the largest cloud compute instance and everything in between - and they don't require you to use a particular language, framework or packaging system. That makes them great building blocks for deploying and scaling web apps, databases, and backend services without depending on a particular stack or provider.
 strip      : no
+networking : yes
 builddeps  :
-    - pkgconfig(devmapper)
-    - btrfs-progs-devel
     - go-md2man
     - golang
 rundeps    :
-    - btrfs-progs
-    - containerd
-    - dnsmasq
     - docker-buildx
+    - moby
 environment: |
-    export PLATFORM="Docker Engine - Community"
-    export AUTO_GOPATH=1
-    export DISABLE_WARN_OUTSIDE_CONTAINER=1
-    export GITCOMMIT="5d6db842238e3c4f5f9fb9ad70ea46b35227d084"
+    export GITCOMMIT="ef23cbc4315ae76c744e02d687c09548ede461bd"
     export DOCKER_GITCOMMIT=$GITCOMMIT
+    export DISABLE_WARN_OUTSIDE_CONTAINER=1
+
+    export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw -ldflags=-linkmode=external"
+
     export GO111MODULE=auto
-    export GOPATH="${workdir}"
-    unset LDFLAGS
+setup      : |
+    mkdir -p src/github.com/docker/
+    ln -s `pwd` src/github.com/docker/cli
 build      : |
-    mkdir -p src/github.com/docker
-
-    # Build proxy
-    ln -sv $sources/libnetwork.git src/github.com/docker/libnetwork
-    go build -o $workdir/docker-proxy github.com/docker/libnetwork/cmd/proxy
-    rm -v src/github.com/docker/libnetwork
-
-    # Build daemon
-    export VERSION=${version}
-    ./hack/make.sh dynbinary
-
-    # Build docker-init
-    mkdir -p src/github.com/krallin/tini
-    cp -r $sources/tini.git/. src/github.com/krallin/tini/
-    pushd src/github.com/krallin/tini
-    %cmake .
-    %make tini-static
-    popd
+    cd src/github.com/docker/cli
+    export GOPATH=`pwd`
 
     # Build CLI
-    mkdir -p src/github.com/docker/cli
-    cp -R $sources/cli.git/* src/github.com/docker/cli/
-    pushd src/github.com/docker/cli/
-    %make dynbinary
-    popd
+    PLATFORM="Docker Engine - Community" \
+    VERSION=${version} \
+        make dynbinary
 
-    # Build manpages
-    pushd src/github.com/docker/cli
-    ./man/md2man-all.sh
-    popd
+    # man pages
+    make manpages
 install    : |
-    # Required directories
-    install -Ddm00755 $installdir/usr/bin
-    install -Ddm00755 $installdir/%libdir%/systemd/system
-
     # Install docker client
-    install -m00755 src/github.com/docker/cli/build/docker-linux-amd64 $installdir/usr/bin/docker
+    install -Dm00755 build/docker-linux-amd64 $installdir/usr/bin/docker
 
-    # Main docker daemon
-    install -m00755 bundles/dynbinary-daemon/dockerd-${version} $installdir/usr/bin/dockerd
-
-    # Now install docker-init
-    install -m00755 $workdir/src/github.com/krallin/tini/tini-static $installdir/usr/bin/docker-init
-
-    # Now install proxy service
-    install -m00755 $workdir/docker-proxy $installdir/usr/bin/docker-proxy
-
-    # Now install systemd units
-    install -m00644 contrib/init/systemd/docker.service $installdir/%libdir%/systemd/system/.
-    install -m00644 contrib/init/systemd/docker.socket $installdir/%libdir%/systemd/system/.
-
-    # Enable socket activation by default
-    install -Ddm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
-    ln -sv ../docker.socket $installdir/%libdir%/systemd/system/sockets.target.wants/docker.socket
-
-    # Add the docker group
-    install -Dm00644 $pkgfiles/docker.sysusers $installdir/%libdir%/sysusers.d/docker.conf
-
-    # containerd integration
-    ln -s containerd $installdir/usr/bin/docker-containerd
-    ln -s containerd-shim $installdir/usr/bin/docker-containerd-shim
-    ln -s ctr $installdir/usr/bin/docker-containerd-ctr
-    ln -s runc $installdir/usr/bin/docker-runc
+    install -Dm00644 man/man1/*.1 -t $installdir/usr/man/man1
+    install -Dm00644 man/man5/*.5 -t $installdir/usr/man/man5
 
     # Install completions
-    pushd src/github.com/docker/cli
     install -Dm00644 contrib/completion/bash/docker $installdir/usr/share/bash-completion/completions/docker
     install -Dm00644 contrib/completion/zsh/_docker $installdir/usr/share/zsh/site-functions/_docker
     install -Dm00644 contrib/completion/fish/docker.fish $installdir/usr/share/fish/vendor_completions.d/docker.fish
 
-    # Install manpages
-    for i in 1 5 8; do
-      install -Dm00644 man/man$i/*.$i -t $installdir/usr/share/man/man$i
-    done
-    popd
+    # Install nanorc
+    install -Dm00644 $pkgfiles/Dockerfile.nanorc -t $installdir/usr/share/nano/
