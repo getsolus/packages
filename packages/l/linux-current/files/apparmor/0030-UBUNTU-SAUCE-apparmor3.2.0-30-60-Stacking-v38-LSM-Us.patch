@@ -1,0 +1,154 @@
+From a94171b2558d9d8dc152a9922fa38579febf0460 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:52:53 -0700
+Subject: [PATCH 30/60] UBUNTU: SAUCE: apparmor3.2.0 [30/60]: Stacking v38:
+ LSM: Use lsmcontext in security_inode_getsecctx
+
+Change the security_inode_getsecctx() interface to fill
+a lsmcontext structure instead of data and length pointers.
+This provides the information about which LSM created the
+context so that security_release_secctx() can use the
+correct hook.
+
+Acked-by: Stephen Smalley <stephen.smalley.work@gmail.com>
+Acked-by: Paul Moore <paul@paul-moore.com>
+Acked-by: Chuck Lever <chuck.lever@oracle.com>
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: John Johansen <john.johansen@canonical.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Cc: linux-nfs@vger.kernel.org
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ fs/nfsd/nfs4xdr.c        | 23 +++++++++--------------
+ include/linux/security.h |  5 +++--
+ security/security.c      | 13 +++++++++++--
+ 3 files changed, 23 insertions(+), 18 deletions(-)
+
+diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
+index 6a96e06dd628..35b3cb85defa 100644
+--- a/fs/nfsd/nfs4xdr.c
++++ b/fs/nfsd/nfs4xdr.c
+@@ -2827,11 +2827,11 @@ nfsd4_encode_layout_types(struct xdr_stream *xdr, u32 layout_types)
+ #ifdef CONFIG_NFSD_V4_SECURITY_LABEL
+ static inline __be32
+ nfsd4_encode_security_label(struct xdr_stream *xdr, struct svc_rqst *rqstp,
+-			    void *context, int len)
++			    struct lsmcontext *context)
+ {
+ 	__be32 *p;
+ 
+-	p = xdr_reserve_space(xdr, len + 4 + 4 + 4);
++	p = xdr_reserve_space(xdr, context->len + 4 + 4 + 4);
+ 	if (!p)
+ 		return nfserr_resource;
+ 
+@@ -2841,13 +2841,13 @@ nfsd4_encode_security_label(struct xdr_stream *xdr, struct svc_rqst *rqstp,
+ 	 */
+ 	*p++ = cpu_to_be32(0); /* lfs */
+ 	*p++ = cpu_to_be32(0); /* pi */
+-	p = xdr_encode_opaque(p, context, len);
++	p = xdr_encode_opaque(p, context->context, context->len);
+ 	return 0;
+ }
+ #else
+ static inline __be32
+ nfsd4_encode_security_label(struct xdr_stream *xdr, struct svc_rqst *rqstp,
+-			    void *context, int len)
++			    struct lsmcontext *context)
+ { return 0; }
+ #endif
+ 
+@@ -2946,9 +2946,7 @@ nfsd4_encode_fattr(struct xdr_stream *xdr, struct svc_fh *fhp,
+ 	int err;
+ 	struct nfs4_acl *acl = NULL;
+ #ifdef CONFIG_NFSD_V4_SECURITY_LABEL
+-	struct lsmcontext scaff; /* scaffolding */
+-	void *context = NULL;
+-	int contextlen;
++	struct lsmcontext context = { };
+ #endif
+ 	bool contextsupport = false;
+ 	struct nfsd4_compoundres *resp = rqstp->rq_resp;
+@@ -3011,7 +3009,7 @@ nfsd4_encode_fattr(struct xdr_stream *xdr, struct svc_fh *fhp,
+ 	     bmval0 & FATTR4_WORD0_SUPPORTED_ATTRS) {
+ 		if (exp->ex_flags & NFSEXP_SECURITY_LABEL)
+ 			err = security_inode_getsecctx(d_inode(dentry),
+-						&context, &contextlen);
++						       &context);
+ 		else
+ 			err = -EOPNOTSUPP;
+ 		contextsupport = (err == 0);
+@@ -3436,8 +3434,7 @@ nfsd4_encode_fattr(struct xdr_stream *xdr, struct svc_fh *fhp,
+ 
+ #ifdef CONFIG_NFSD_V4_SECURITY_LABEL
+ 	if (bmval2 & FATTR4_WORD2_SECURITY_LABEL) {
+-		status = nfsd4_encode_security_label(xdr, rqstp, context,
+-								contextlen);
++		status = nfsd4_encode_security_label(xdr, rqstp, &context);
+ 		if (status)
+ 			goto out;
+ 	}
+@@ -3457,10 +3454,8 @@ nfsd4_encode_fattr(struct xdr_stream *xdr, struct svc_fh *fhp,
+ 
+ out:
+ #ifdef CONFIG_NFSD_V4_SECURITY_LABEL
+-	if (context) {
+-		lsmcontext_init(&scaff, context, contextlen, 0); /*scaffolding*/
+-		security_release_secctx(&scaff);
+-	}
++	if (context.context)
++		security_release_secctx(&context);
+ #endif /* CONFIG_NFSD_V4_SECURITY_LABEL */
+ 	kfree(acl);
+ 	if (tempfh) {
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 9b4a2494919c..617d865b4279 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -652,7 +652,7 @@ void security_release_secctx(struct lsmcontext *cp);
+ void security_inode_invalidate_secctx(struct inode *inode);
+ int security_inode_notifysecctx(struct inode *inode, void *ctx, u32 ctxlen);
+ int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen);
+-int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen);
++int security_inode_getsecctx(struct inode *inode, struct lsmcontext *cp);
+ int security_locked_down(enum lockdown_reason what);
+ int security_lock_kernel_down(const char *where, enum lockdown_reason level);
+ #else /* CONFIG_SECURITY */
+@@ -1568,7 +1568,8 @@ static inline int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32
+ {
+ 	return -EOPNOTSUPP;
+ }
+-static inline int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
++static inline int security_inode_getsecctx(struct inode *inode,
++					   struct lsmcontext *cp)
+ {
+ 	return -EOPNOTSUPP;
+ }
+diff --git a/security/security.c b/security/security.c
+index 705929e51068..4f72eb33330f 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -2499,9 +2499,18 @@ int security_inode_setsecctx(struct dentry *dentry, void *ctx, u32 ctxlen)
+ }
+ EXPORT_SYMBOL(security_inode_setsecctx);
+ 
+-int security_inode_getsecctx(struct inode *inode, void **ctx, u32 *ctxlen)
++int security_inode_getsecctx(struct inode *inode, struct lsmcontext *cp)
+ {
+-	return call_int_hook(inode_getsecctx, -EOPNOTSUPP, inode, ctx, ctxlen);
++	struct security_hook_list *hp;
++
++	memset(cp, 0, sizeof(*cp));
++
++	hlist_for_each_entry(hp, &security_hook_heads.inode_getsecctx, list) {
++		cp->slot = hp->lsmid->slot;
++		return hp->hook.inode_getsecctx(inode, (void **)&cp->context,
++						&cp->len);
++	}
++	return -EOPNOTSUPP;
+ }
+ EXPORT_SYMBOL(security_inode_getsecctx);
+ 
+-- 
+2.40.1
+

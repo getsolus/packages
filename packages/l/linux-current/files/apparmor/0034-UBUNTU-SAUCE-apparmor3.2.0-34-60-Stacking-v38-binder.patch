@@ -1,0 +1,73 @@
+From 50f737cc32e08278976184216c9ce419b99afa25 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:54:54 -0700
+Subject: [PATCH 34/60] UBUNTU: SAUCE: apparmor3.2.0 [34/60]: Stacking v38:
+ binder: Pass LSM identifier for confirmation
+
+Send an identifier for the security module interface_lsm
+along with the security context. This allows the receiver
+to verify that the receiver and the sender agree on which
+security module's context is being used. If they don't
+agree the message is rejected.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ drivers/android/binder.c          | 21 +++++++++++++++++++++
+ drivers/android/binder_internal.h |  1 +
+ 2 files changed, 22 insertions(+)
+
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 4ebdc290d54a..a3395f5cd11c 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -3230,6 +3230,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 				    ALIGN(extra_buffers_size, sizeof(void *)) -
+ 				    ALIGN(lsmctx.len, sizeof(u64));
+ 
++		t->security_interface = lsm_task_ilsm(current);
+ 		t->security_ctx = (uintptr_t)t->buffer->user_data + buf_offset;
+ 		err = binder_alloc_copy_to_buffer(&target_proc->alloc,
+ 						  t->buffer, buf_offset,
+@@ -4684,6 +4685,26 @@ static int binder_thread_read(struct binder_proc *proc,
+ 
+ 		tr.secctx = t->security_ctx;
+ 		if (t->security_ctx) {
++			int to_ilsm = lsm_task_ilsm(current);
++			int from_ilsm = t->security_interface;
++
++			if (to_ilsm == LSMBLOB_INVALID)
++				to_ilsm = 0;
++			if (from_ilsm == LSMBLOB_INVALID)
++				from_ilsm = 0;
++			/*
++			 * The sender provided a security context from
++			 * a different security module than the one this
++			 * process wants to report if these don't match.
++			 */
++			if (from_ilsm != to_ilsm) {
++				if (t_from)
++					binder_thread_dec_tmpref(t_from);
++
++				binder_cleanup_transaction(t, "security context mismatch",
++							   BR_FAILED_REPLY);
++				return -EINVAL;
++			}
+ 			cmd = BR_TRANSACTION_SEC_CTX;
+ 			trsize = sizeof(tr);
+ 		}
+diff --git a/drivers/android/binder_internal.h b/drivers/android/binder_internal.h
+index 55784ff553ea..ca4507207bf0 100644
+--- a/drivers/android/binder_internal.h
++++ b/drivers/android/binder_internal.h
+@@ -530,6 +530,7 @@ struct binder_transaction {
+ 	long    saved_priority;
+ 	kuid_t  sender_euid;
+ 	struct list_head fd_fixups;
++	int	security_interface;
+ 	binder_uintptr_t security_ctx;
+ 	/**
+ 	 * @lock:  protects @from, @to_proc, and @to_thread
+-- 
+2.40.1
+

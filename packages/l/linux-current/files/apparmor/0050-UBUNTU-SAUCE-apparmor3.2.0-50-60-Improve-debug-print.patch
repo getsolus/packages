@@ -1,0 +1,463 @@
+From 2ee8d5b0533c1794cea45a8bca9485a189cdede8 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Fri, 23 Sep 2022 16:36:10 -0700
+Subject: [PATCH 50/60] UBUNTU: SAUCE: apparmor3.2.0 [50/60]: Improve debug
+ print infrastructure
+
+Make it so apparmor debug output can be controlled by class flags
+as well as the debug flag on labels. This provides much finer
+control at what is being output so apparmor doesn't flood the
+logs with information that is not needed, making it hard to find
+what is important.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/domain.c           | 19 +++---
+ security/apparmor/include/apparmor.h |  2 +-
+ security/apparmor/include/lib.h      | 37 +++++++----
+ security/apparmor/label.c            | 12 ++--
+ security/apparmor/lib.c              | 91 ++++++++++++++++++++++++++++
+ security/apparmor/lsm.c              | 36 ++++++++++-
+ security/apparmor/policy.c           |  6 +-
+ security/apparmor/policy_ns.c        |  2 +-
+ security/apparmor/procattr.c         |  6 +-
+ 9 files changed, 177 insertions(+), 34 deletions(-)
+
+diff --git a/security/apparmor/domain.c b/security/apparmor/domain.c
+index 543105cf7e33..fc4fefaa1049 100644
+--- a/security/apparmor/domain.c
++++ b/security/apparmor/domain.c
+@@ -650,7 +650,7 @@ static struct aa_label *profile_transition(const struct cred *subj_cred,
+ 	if (error) {
+ 		if (profile_unconfined(profile) ||
+ 		    (profile->label.flags & FLAG_IX_ON_NAME_ERROR)) {
+-			AA_DEBUG("name lookup ix on error");
++			AA_DEBUG(DEBUG_DOMAIN, "name lookup ix on error");
+ 			error = 0;
+ 			new = aa_get_newest_label(&profile->label);
+ 		}
+@@ -662,10 +662,10 @@ static struct aa_label *profile_transition(const struct cred *subj_cred,
+ 		new = find_attach(bprm, profile->ns,
+ 				  &profile->ns->base.profiles, name, &info);
+ 		if (new) {
+-			AA_DEBUG("unconfined attached to new label");
++			AA_DEBUG(DEBUG_DOMAIN, "unconfined attached to new label");
+ 			return new;
+ 		}
+-		AA_DEBUG("unconfined exec no attachment");
++		AA_DEBUG(DEBUG_DOMAIN, "unconfined exec no attachment");
+ 		return aa_get_newest_label(&profile->label);
+ 	}
+ 
+@@ -761,7 +761,7 @@ static int profile_onexec(const struct cred *subj_cred,
+ 	if (error) {
+ 		if (profile_unconfined(profile) ||
+ 		    (profile->label.flags & FLAG_IX_ON_NAME_ERROR)) {
+-			AA_DEBUG("name lookup ix on error");
++			AA_DEBUG(DEBUG_DOMAIN, "name lookup ix on error");
+ 			error = 0;
+ 		}
+ 		xname = bprm->filename;
+@@ -1225,7 +1225,8 @@ int aa_change_hat(const char *hats[], int count, u64 token, int flags)
+ 		if (task_no_new_privs(current) && !unconfined(label) &&
+ 		    !aa_label_is_unconfined_subset(new, ctx->nnp)) {
+ 			/* not an apparmor denial per se, so don't log it */
+-			AA_DEBUG("no_new_privs - change_hat denied");
++			AA_DEBUG(DEBUG_DOMAIN,
++				 "no_new_privs - change_hat denied");
+ 			error = -EPERM;
+ 			goto out;
+ 		}
+@@ -1246,7 +1247,8 @@ int aa_change_hat(const char *hats[], int count, u64 token, int flags)
+ 		if (task_no_new_privs(current) && !unconfined(label) &&
+ 		    !aa_label_is_unconfined_subset(previous, ctx->nnp)) {
+ 			/* not an apparmor denial per se, so don't log it */
+-			AA_DEBUG("no_new_privs - change_hat denied");
++			AA_DEBUG(DEBUG_DOMAIN,
++				 "no_new_privs - change_hat denied");
+ 			error = -EPERM;
+ 			goto out;
+ 		}
+@@ -1350,7 +1352,7 @@ int aa_change_profile(const char *fqname, int flags)
+ 
+ 	if (!fqname || !*fqname) {
+ 		aa_put_label(label);
+-		AA_DEBUG("no profile name");
++		AA_DEBUG(DEBUG_DOMAIN, "no profile name");
+ 		return -EINVAL;
+ 	}
+ 
+@@ -1447,7 +1449,8 @@ int aa_change_profile(const char *fqname, int flags)
+ 		if (task_no_new_privs(current) && !unconfined(label) &&
+ 		    !aa_label_is_unconfined_subset(new, ctx->nnp)) {
+ 			/* not an apparmor denial per se, so don't log it */
+-			AA_DEBUG("no_new_privs - change_hat denied");
++			AA_DEBUG(DEBUG_DOMAIN,
++				 "no_new_privs - change_hat denied");
+ 			error = -EPERM;
+ 			goto out;
+ 		}
+diff --git a/security/apparmor/include/apparmor.h b/security/apparmor/include/apparmor.h
+index 57d18d79b98a..8a37494ec564 100644
+--- a/security/apparmor/include/apparmor.h
++++ b/security/apparmor/include/apparmor.h
+@@ -43,7 +43,7 @@
+ /* Control parameters settable through module/boot flags */
+ extern enum audit_mode aa_g_audit;
+ extern bool aa_g_audit_header;
+-extern bool aa_g_debug;
++extern int aa_g_debug;
+ extern bool aa_g_hash_policy;
+ extern bool aa_g_export_binary;
+ extern int aa_g_rawdata_compression_level;
+diff --git a/security/apparmor/include/lib.h b/security/apparmor/include/lib.h
+index f1a29ab7ea1b..77424b28499f 100644
+--- a/security/apparmor/include/lib.h
++++ b/security/apparmor/include/lib.h
+@@ -16,23 +16,35 @@
+ 
+ #include "match.h"
+ 
+-/*
+- * DEBUG remains global (no per profile flag) since it is mostly used in sysctl
+- * which is not related to profile accesses.
+- */
+-
+-#define DEBUG_ON (aa_g_debug)
+ /*
+  * split individual debug cases out in preparation for finer grained
+  * debug controls in the future.
+  */
+-#define AA_DEBUG_LABEL DEBUG_ON
+ #define dbg_printk(__fmt, __args...) pr_debug(__fmt, ##__args)
+-#define AA_DEBUG(fmt, args...)						\
++
++#define DEBUG_NONE 0
++#define DEBUG_LABEL_ABS_ROOT 1
++#define DEBUG_LABEL 2
++#define DEBUG_DOMAIN 4
++#define DEBUG_POLICY 8
++#define DEBUG_INTERFACE 0x10
++
++#define DEBUG_ALL 0x1f		/* update if new DEBUG_X added */
++#define DEBUG_PARSE_ERROR (-1)
++
++#define DEBUG_ON (aa_g_debug != DEBUG_NONE)
++#define DEBUG_ABS_ROOT (aa_g_debug & DEBUG_LABEL_ABS_ROOT)
++
++#define AA_DEBUG(opt, fmt, args...)					\
+ 	do {								\
+-		if (DEBUG_ON)						\
+-			pr_debug_ratelimited("AppArmor: " fmt, ##args);	\
++		if (aa_g_debug & opt)					\
++			pr_warn_ratelimited("%s: " fmt, __func__, ##args); \
+ 	} while (0)
++#define AA_DEBUG_LABEL(LAB, X, fmt, args)				\
++do {									\
++	if ((LAB)->flags & FLAG_DEBUG1)					\
++		AA_DEBUG(X, fmt, args);					\
++} while (0)
+ 
+ #define AA_WARN(X) WARN((X), "APPARMOR WARN %s: %s\n", __func__, #X)
+ 
+@@ -49,6 +61,9 @@
+ #define AA_BUG_FMT(X, fmt, args...) no_printk(fmt, ##args)
+ #endif
+ 
++int aa_parse_debug_params(const char *str);
++int aa_print_debug_params(char *buffer);
++
+ #define AA_ERROR(fmt, args...)						\
+ 	pr_err_ratelimited("AppArmor: " fmt, ##args)
+ 
+@@ -280,7 +295,7 @@ __cleanup:								\
+ 	}								\
+ __done:									\
+ 	if (!__new_)							\
+-		AA_DEBUG("label build failed\n");			\
++		AA_DEBUG(DEBUG_LABEL, "label build failed\n");		\
+ 	(__new_);							\
+ })
+ 
+diff --git a/security/apparmor/label.c b/security/apparmor/label.c
+index 8a2af96f4da5..60471f820616 100644
+--- a/security/apparmor/label.c
++++ b/security/apparmor/label.c
+@@ -429,7 +429,7 @@ struct aa_label *aa_label_alloc(int size, struct aa_proxy *proxy, gfp_t gfp)
+ 
+ 	/*  + 1 for null terminator entry on vec */
+ 	new = kzalloc(struct_size(new, vec, size + 1), gfp);
+-	AA_DEBUG("%s (%p)\n", __func__, new);
++	AA_DEBUG(DEBUG_LABEL, "%s (%p)\n", __func__, new);
+ 	if (!new)
+ 		goto fail;
+ 
+@@ -1632,7 +1632,7 @@ int aa_label_snxprint(char *str, size_t size, struct aa_ns *ns,
+ 	AA_BUG(!str && size != 0);
+ 	AA_BUG(!label);
+ 
+-	if (AA_DEBUG_LABEL && (flags & FLAG_ABS_ROOT)) {
++	if (DEBUG_ABS_ROOT && (flags & FLAG_ABS_ROOT)) {
+ 		ns = root_ns;
+ 		len = snprintf(str, size, "_");
+ 		update_for_len(total, len, size, str);
+@@ -1746,7 +1746,7 @@ void aa_label_xaudit(struct audit_buffer *ab, struct aa_ns *ns,
+ 	    display_mode(ns, label, flags)) {
+ 		len  = aa_label_asxprint(&name, ns, label, flags, gfp);
+ 		if (len < 0) {
+-			AA_DEBUG("label print error");
++			AA_DEBUG(DEBUG_LABEL, "label print error");
+ 			return;
+ 		}
+ 		str = name;
+@@ -1774,7 +1774,7 @@ void aa_label_seq_xprint(struct seq_file *f, struct aa_ns *ns,
+ 
+ 		len = aa_label_asxprint(&str, ns, label, flags, gfp);
+ 		if (len < 0) {
+-			AA_DEBUG("label print error");
++			AA_DEBUG(DEBUG_LABEL, "label print error");
+ 			return;
+ 		}
+ 		seq_puts(f, str);
+@@ -1797,7 +1797,7 @@ void aa_label_xprintk(struct aa_ns *ns, struct aa_label *label, int flags,
+ 
+ 		len = aa_label_asxprint(&str, ns, label, flags, gfp);
+ 		if (len < 0) {
+-			AA_DEBUG("label print error");
++			AA_DEBUG(DEBUG_LABEL, "label print error");
+ 			return;
+ 		}
+ 		pr_info("%s", str);
+@@ -1896,7 +1896,7 @@ struct aa_label *aa_label_strn_parse(struct aa_label *base, const char *str,
+ 	AA_BUG(!str);
+ 
+ 	str = skipn_spaces(str, n);
+-	if (str == NULL || (AA_DEBUG_LABEL && *str == '_' &&
++	if (str == NULL || (DEBUG_ABS_ROOT && *str == '_' &&
+ 			    base != &root_ns->unconfined->label))
+ 		return ERR_PTR(-EINVAL);
+ 
+diff --git a/security/apparmor/lib.c b/security/apparmor/lib.c
+index 889c6f79bb81..5600e8564aad 100644
+--- a/security/apparmor/lib.c
++++ b/security/apparmor/lib.c
+@@ -25,6 +25,97 @@ struct aa_perms allperms = { .allow = ALL_PERMS_MASK,
+ 			     .quiet = ALL_PERMS_MASK,
+ 			     .hide = ALL_PERMS_MASK };
+ 
++struct val_table_ent {
++	const char *str;
++	int value;
++};
++
++struct val_table_ent debug_values_table[] = {
++	{ "N", DEBUG_NONE },
++	{ "none", DEBUG_NONE },
++	{ "n", DEBUG_NONE },
++	{ "0", DEBUG_NONE },
++	{ "all", DEBUG_ALL },
++	{ "Y", DEBUG_ALL },
++	{ "y", DEBUG_ALL },
++	{ "1", DEBUG_ALL },
++	{ "abs_root", DEBUG_LABEL_ABS_ROOT },
++	{ "label", DEBUG_LABEL },
++	{ "domain", DEBUG_DOMAIN },
++	{ "policy", DEBUG_POLICY },
++	{ "interface", DEBUG_INTERFACE },
++	{ NULL, 0 }
++};
++
++static struct val_table_ent *val_table_find_ent(struct val_table_ent *table,
++						const char *name, size_t len)
++{
++	struct val_table_ent *entry;
++
++	for (entry = table; entry->str != NULL; entry++) {
++		if (strncmp(entry->str, name, len) == 0 &&
++		    strlen(entry->str) == len)
++			return entry;
++	}
++	return NULL;
++}
++
++int aa_parse_debug_params(const char *str)
++{
++	struct val_table_ent *ent;
++	const char *next;
++	int val = 0;
++
++	do {
++		size_t n = strcspn(str, "\r\n,");
++
++		next = str + n;
++		ent = val_table_find_ent(debug_values_table, str, next - str);
++		if (ent)
++			val |= ent->value;
++		else
++			AA_DEBUG(DEBUG_INTERFACE, "unknown debug type '%.*s'",
++				 (int)(next - str), str);
++		str = next + 1;
++	} while (*next != 0);
++	return val;
++}
++
++/**
++ * aa_mask_to_str - convert a perm mask to its short string
++ * @str: character buffer to store string in (at least 10 characters)
++ * @str_size: size of the @str buffer
++ * @chrs: NUL-terminated character buffer of permission characters
++ * @mask: permission mask to convert
++ */
++static int val_mask_to_str(char *str, size_t size,
++			   const struct val_table_ent *table, u32 mask)
++{
++	const struct val_table_ent *ent;
++	int total = 0;
++
++	for (ent = table; ent->str; ent++) {
++		if (ent->value && (ent->value & mask) == ent->value) {
++			int len = scnprintf(str, size, "%s%s", total ? "," : "",
++					    ent->str);
++			size -= len;
++			str += len;
++			total += len;
++			mask &= ~ent->value;
++		}
++	}
++
++	return total;
++}
++
++int aa_print_debug_params(char *buffer)
++{
++	if (!aa_g_debug)
++		return sprintf(buffer, "N");
++	return val_mask_to_str(buffer, PAGE_SIZE, debug_values_table,
++			       aa_g_debug);
++}
++
+ /**
+  * aa_free_str_table - free entries str table
+  * @str: the string table to free  (MAYBE NULL)
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 4ea276de9360..e6671a4a89c4 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -1712,6 +1712,9 @@ static const struct kernel_param_ops param_ops_aalockpolicy = {
+ 	.get = param_get_aalockpolicy
+ };
+ 
++static int param_set_debug(const char *val, const struct kernel_param *kp);
++static int param_get_debug(char *buffer, const struct kernel_param *kp);
++
+ static int param_set_audit(const char *val, const struct kernel_param *kp);
+ static int param_get_audit(char *buffer, const struct kernel_param *kp);
+ 
+@@ -1745,8 +1748,9 @@ module_param_named(rawdata_compression_level, aa_g_rawdata_compression_level,
+ 		   aacompressionlevel, 0400);
+ 
+ /* Debug mode */
+-bool aa_g_debug = IS_ENABLED(CONFIG_SECURITY_APPARMOR_DEBUG_MESSAGES);
+-module_param_named(debug, aa_g_debug, aabool, S_IRUSR | S_IWUSR);
++int aa_g_debug;
++module_param_call(debug, param_set_debug, param_get_debug,
++		  &aa_g_debug, S_IRUSR | S_IWUSR);
+ 
+ /* Audit mode */
+ enum audit_mode aa_g_audit;
+@@ -1939,6 +1943,34 @@ static int param_get_aacompressionlevel(char *buffer,
+ 	return param_get_int(buffer, kp);
+ }
+ 
++static int param_get_debug(char *buffer, const struct kernel_param *kp)
++{
++	if (!apparmor_enabled)
++		return -EINVAL;
++	if (apparmor_initialized && !aa_current_policy_view_capable(NULL))
++		return -EPERM;
++	return aa_print_debug_params(buffer);
++}
++
++static int param_set_debug(const char *val, const struct kernel_param *kp)
++{
++	int i;
++
++	if (!apparmor_enabled)
++		return -EINVAL;
++	if (!val)
++		return -EINVAL;
++	if (apparmor_initialized && !aa_current_policy_admin_capable(NULL))
++		return -EPERM;
++
++	i = aa_parse_debug_params(val);
++	if (i == DEBUG_PARSE_ERROR)
++		return -EINVAL;
++
++	aa_g_debug = i;
++	return 0;
++}
++
+ static int param_get_audit(char *buffer, const struct kernel_param *kp)
+ {
+ 	if (!apparmor_enabled)
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index c18f324ad7c0..3c1ceca7b2f1 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -247,7 +247,7 @@ void aa_free_profile(struct aa_profile *profile)
+ 	struct aa_ruleset *rule, *tmp;
+ 	struct rhashtable *rht;
+ 
+-	AA_DEBUG("%s(%p)\n", __func__, profile);
++	AA_DEBUG(DEBUG_POLICY, "%s(%p)\n", __func__, profile);
+ 
+ 	if (!profile)
+ 		return;
+@@ -804,8 +804,8 @@ bool aa_policy_admin_capable(const struct cred *subj_cred,
+ 	bool capable = policy_ns_capable(subj_cred, label, user_ns,
+ 					 CAP_MAC_ADMIN) == 0;
+ 
+-	AA_DEBUG("cap_mac_admin? %d\n", capable);
+-	AA_DEBUG("policy locked? %d\n", aa_g_lock_policy);
++	AA_DEBUG(DEBUG_POLICY, "cap_mac_admin? %d\n", capable);
++	AA_DEBUG(DEBUG_POLICY, "policy locked? %d\n", aa_g_lock_policy);
+ 
+ 	return aa_policy_view_capable(subj_cred, label, ns) && capable &&
+ 		!aa_g_lock_policy;
+diff --git a/security/apparmor/policy_ns.c b/security/apparmor/policy_ns.c
+index fd5b7afbcb48..6d1b360d8ea1 100644
+--- a/security/apparmor/policy_ns.c
++++ b/security/apparmor/policy_ns.c
+@@ -107,7 +107,7 @@ static struct aa_ns *alloc_ns(const char *prefix, const char *name)
+ 	struct aa_ns *ns;
+ 
+ 	ns = kzalloc(sizeof(*ns), GFP_KERNEL);
+-	AA_DEBUG("%s(%p)\n", __func__, ns);
++	AA_DEBUG(DEBUG_POLICY, "%s(%p)\n", __func__, ns);
+ 	if (!ns)
+ 		return NULL;
+ 	if (!aa_policy_init(&ns->base, prefix, name, GFP_KERNEL))
+diff --git a/security/apparmor/procattr.c b/security/apparmor/procattr.c
+index 197d41f9c32b..a58abec677f5 100644
+--- a/security/apparmor/procattr.c
++++ b/security/apparmor/procattr.c
+@@ -123,12 +123,14 @@ int aa_setprocattr_changehat(char *args, size_t size, int flags)
+ 		for (count = 0; (hat < end) && count < 16; ++count) {
+ 			char *next = hat + strlen(hat) + 1;
+ 			hats[count] = hat;
+-			AA_DEBUG("%s: (pid %d) Magic 0x%llx count %d hat '%s'\n"
++			AA_DEBUG(DEBUG_DOMAIN,
++				 "%s: (pid %d) Magic 0x%llx count %d hat '%s'\n"
+ 				 , __func__, current->pid, token, count, hat);
+ 			hat = next;
+ 		}
+ 	} else
+-		AA_DEBUG("%s: (pid %d) Magic 0x%llx count %d Hat '%s'\n",
++		AA_DEBUG(DEBUG_DOMAIN,
++			 "%s: (pid %d) Magic 0x%llx count %d Hat '%s'\n",
+ 			 __func__, current->pid, token, count, "<NULL>");
+ 
+ 	return aa_change_hat(hats, count, token, flags);
+-- 
+2.40.1
+

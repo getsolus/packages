@@ -1,0 +1,99 @@
+From 8253925175eb2df407a5c46240933cfc1d9a1264 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:45:45 -0700
+Subject: [PATCH 16/60] UBUNTU: SAUCE: apparmor3.2.0 [16/60]: Stacking v38:
+ LSM: provide lsm name and id slot mappings
+
+Provide interfaces to map LSM slot numbers and LSM names.
+Update the LSM registration code to save this information.
+
+Acked-by: Paul Moore <paul@paul-moore.com>
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/linux/security.h |  4 ++++
+ security/security.c      | 45 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 49 insertions(+)
+
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 7caf564a1451..f5f40450cc82 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -217,6 +217,10 @@ static inline bool lsmblob_equal(const struct lsmblob *bloba,
+ 	return !memcmp(bloba, blobb, sizeof(*bloba));
+ }
+ 
++/* Map lsm names to blob slot numbers */
++extern int lsm_name_to_slot(char *name);
++extern const char *lsm_slot_to_name(int slot);
++
+ /* These functions are in security/commoncap.c */
+ extern int cap_capable(const struct cred *cred, struct user_namespace *ns,
+ 		       int cap, unsigned int opts);
+diff --git a/security/security.c b/security/security.c
+index 63794b28e751..d612ae595aa4 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -516,6 +516,50 @@ static int lsm_append(const char *new, char **result)
+  * Current index to use while initializing the lsmblob secid list.
+  */
+ static int lsm_slot __lsm_ro_after_init;
++static struct lsm_id *lsm_slotlist[LSMBLOB_ENTRIES] __lsm_ro_after_init;
++
++/**
++ * lsm_name_to_slot - Report the slot number for a security module
++ * @name: name of the security module
++ *
++ * Look up the slot number for the named security module.
++ * Returns the slot number or LSMBLOB_INVALID if @name is not
++ * a registered security module name.
++ */
++int lsm_name_to_slot(char *name)
++{
++	int i;
++
++	for (i = 0; i < lsm_slot; i++)
++		if (strcmp(lsm_slotlist[i]->lsm, name) == 0)
++			return i;
++
++	return LSMBLOB_INVALID;
++}
++
++/**
++ * lsm_slot_to_name - Get the name of the security module in a slot
++ * @slot: index into the interface LSM slot list.
++ *
++ * Provide the name of the security module associated with
++ * a interface LSM slot.
++ *
++ * If @slot is LSMBLOB_INVALID return the value
++ * for slot 0 if it has been set, otherwise NULL.
++ *
++ * Returns a pointer to the name string or NULL.
++ */
++const char *lsm_slot_to_name(int slot)
++{
++	if (slot == LSMBLOB_INVALID)
++		slot = 0;
++	else if (slot >= LSMBLOB_ENTRIES || slot < 0)
++		return NULL;
++
++	if (lsm_slotlist[slot] == NULL)
++		return NULL;
++	return lsm_slotlist[slot]->lsm;
++}
+ 
+ /**
+  * security_add_hooks - Add a modules hooks to the hook lists.
+@@ -547,6 +591,7 @@ void __init security_add_hooks(struct security_hook_list *hooks, int count,
+ 	if (lsmid->slot == LSMBLOB_NEEDED) {
+ 		if (lsm_slot >= LSMBLOB_ENTRIES)
+ 			panic("%s Too many LSMs registered.\n", __func__);
++		lsm_slotlist[lsm_slot] = lsmid;
+ 		lsmid->slot = lsm_slot++;
+ 		init_debug("%s assigned lsmblob slot %d\n", lsmid->lsm,
+ 			   lsmid->slot);
+-- 
+2.40.1
+

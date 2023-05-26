@@ -1,0 +1,175 @@
+From b7ebafa203e1d9c16a609a7bd7e28982431a287b Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:49:46 -0700
+Subject: [PATCH 24/60] UBUNTU: SAUCE: apparmor3.2.0 [24/60]: Stacking v38:
+ LSM: Use lsmblob in security_inode_getsecid
+
+Change the security_inode_getsecid() interface to fill in a
+lsmblob structure instead of a u32 secid. This allows for its
+callers to gather data from all registered LSMs. Data is provided
+for IMA and audit.
+
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Stephen Smalley <stephen.smalley.work@gmail.com>
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Cc: linux-integrity@vger.kernel.org
+Cc: linux-audit@redhat.com
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/linux/security.h            | 13 +++++++------
+ kernel/auditsc.c                    |  6 +++++-
+ security/integrity/ima/ima_policy.c |  9 +++++----
+ security/security.c                 | 19 +++++++++++++------
+ 4 files changed, 30 insertions(+), 17 deletions(-)
+
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 3d9a9184f19c..8e68f19b3445 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -502,7 +502,7 @@ int security_inode_getsecurity(struct mnt_idmap *idmap,
+ 			       void **buffer, bool alloc);
+ int security_inode_setsecurity(struct inode *inode, const char *name, const void *value, size_t size, int flags);
+ int security_inode_listsecurity(struct inode *inode, char *buffer, size_t buffer_size);
+-void security_inode_getsecid(struct inode *inode, u32 *secid);
++void security_inode_getsecid(struct inode *inode, struct lsmblob *blob);
+ int security_inode_copy_up(struct dentry *src, struct cred **new);
+ int security_inode_copy_up_xattr(const char *name);
+ int security_kernfs_init_security(struct kernfs_node *kn_dir,
+@@ -1074,9 +1074,10 @@ static inline int security_inode_listsecurity(struct inode *inode, char *buffer,
+ 	return 0;
+ }
+ 
+-static inline void security_inode_getsecid(struct inode *inode, u32 *secid)
++static inline void security_inode_getsecid(struct inode *inode,
++					   struct lsmblob *blob)
+ {
+-	*secid = 0;
++	lsmblob_init(blob, 0);
+ }
+ 
+ static inline int security_inode_copy_up(struct dentry *src, struct cred **new)
+@@ -2108,8 +2109,8 @@ static inline void security_audit_rule_free(struct audit_lsm_rules *lsmrules)
+ #if defined(CONFIG_IMA_LSM_RULES) && defined(CONFIG_SECURITY)
+ int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule,
+ 			 int lsmslot);
+-int ima_filter_rule_match(u32 secid, u32 field, u32 op, void *lsmrule,
+-			  int lsmslot);
++int ima_filter_rule_match(struct lsmblob *blob, u32 field, u32 op,
++			  void *lsmrule, int lsmslot);
+ void ima_filter_rule_free(void *lsmrule, int lsmslot);
+ 
+ #else
+@@ -2120,7 +2121,7 @@ static inline int ima_filter_rule_init(u32 field, u32 op, char *rulestr,
+ 	return 0;
+ }
+ 
+-static inline int ima_filter_rule_match(u32 secid, u32 field, u32 op,
++static inline int ima_filter_rule_match(struct lsmblob *blob, u32 field, u32 op,
+ 					void *lsmrule, int lsmslot)
+ {
+ 	return 0;
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index 67085ac84ea4..9eedeabb2d1f 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -2281,13 +2281,17 @@ static void audit_copy_inode(struct audit_names *name,
+ 			     const struct dentry *dentry,
+ 			     struct inode *inode, unsigned int flags)
+ {
++	struct lsmblob blob;
++
+ 	name->ino   = inode->i_ino;
+ 	name->dev   = inode->i_sb->s_dev;
+ 	name->mode  = inode->i_mode;
+ 	name->uid   = inode->i_uid;
+ 	name->gid   = inode->i_gid;
+ 	name->rdev  = inode->i_rdev;
+-	security_inode_getsecid(inode, &name->osid);
++	security_inode_getsecid(inode, &blob);
++	/* scaffolding until osid is updated */
++	name->osid = lsmblob_first(&blob);
+ 	if (flags & AUDIT_INODE_NOEVAL) {
+ 		name->fcap_ver = -1;
+ 		return;
+diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
+index 35582db5a167..48fdc2c36dcc 100644
+--- a/security/integrity/ima/ima_policy.c
++++ b/security/integrity/ima/ima_policy.c
+@@ -662,7 +662,7 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		return false;
+ 	for (i = 0; i < MAX_LSM_RULES; i++) {
+ 		int rc = 0;
+-		u32 osid;
++		struct lsmblob lsmdata;
+ 
+ 		if (!lsm_rule->lsm[i].rule) {
+ 			if (!lsm_rule->lsm[i].args_p)
+@@ -676,8 +676,9 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		case LSM_OBJ_USER:
+ 		case LSM_OBJ_ROLE:
+ 		case LSM_OBJ_TYPE:
+-			security_inode_getsecid(inode, &osid);
+-			rc = ima_filter_rule_match(osid, lsm_rule->lsm[i].type,
++			security_inode_getsecid(inode, &lsmdata);
++			rc = ima_filter_rule_match(&lsmdata,
++						   lsm_rule->lsm[i].type,
+ 						   Audit_equal,
+ 						   lsm_rule->lsm[i].rule,
+ 						   lsm_rule->lsm[i].rules_lsm);
+@@ -685,7 +686,7 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+ 		case LSM_SUBJ_USER:
+ 		case LSM_SUBJ_ROLE:
+ 		case LSM_SUBJ_TYPE:
+-			rc = ima_filter_rule_match(lsmblob_first(blob),
++			rc = ima_filter_rule_match(blob,
+ 						   lsm_rule->lsm[i].type,
+ 						   Audit_equal,
+ 						   lsm_rule->lsm[i].rule,
+diff --git a/security/security.c b/security/security.c
+index 83ab9a9b5f01..2755ae7e9344 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -1655,9 +1655,16 @@ int security_inode_listsecurity(struct inode *inode, char *buffer, size_t buffer
+ }
+ EXPORT_SYMBOL(security_inode_listsecurity);
+ 
+-void security_inode_getsecid(struct inode *inode, u32 *secid)
++void security_inode_getsecid(struct inode *inode, struct lsmblob *blob)
+ {
+-	call_void_hook(inode_getsecid, inode, secid);
++	struct security_hook_list *hp;
++
++	lsmblob_init(blob, 0);
++	hlist_for_each_entry(hp, &security_hook_heads.inode_getsecid, list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		hp->hook.inode_getsecid(inode, &blob->secid[hp->lsmid->slot]);
++	}
+ }
+ 
+ int security_inode_copy_up(struct dentry *src, struct cred **new)
+@@ -2914,15 +2921,15 @@ void ima_filter_rule_free(void *lsmrule, int lsmslot)
+ 	}
+ }
+ 
+-int ima_filter_rule_match(u32 secid, u32 field, u32 op, void *lsmrule,
+-			  int lsmslot)
++int ima_filter_rule_match(struct lsmblob *blob, u32 field, u32 op,
++			  void *lsmrule, int lsmslot)
+ {
+ 	struct security_hook_list *hp;
+ 
+ 	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_match, list)
+ 		if (hp->lsmid->slot == lsmslot)
+-			return hp->hook.audit_rule_match(secid, field, op,
+-							 lsmrule);
++			return hp->hook.audit_rule_match(blob->secid[lsmslot],
++							 field, op, lsmrule);
+ 
+ 	return 0;
+ }
+-- 
+2.40.1
+

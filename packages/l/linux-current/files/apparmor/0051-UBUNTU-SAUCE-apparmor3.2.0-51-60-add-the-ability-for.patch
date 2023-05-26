@@ -1,0 +1,446 @@
+From c8468a82ed295daded2a56b0dc749a21661413d5 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Sun, 18 Sep 2022 23:55:00 -0700
+Subject: [PATCH 51/60] UBUNTU: SAUCE: apparmor3.2.0 [51/60]: add the ability
+ for profiles to have a learning cache
+
+To support a better complain mode allow caching learned entries off
+of the profile. This can be used to dedup complain messages and
+also as a basis for bulk delivery of complain messages to userspace
+through a non audit logging interface.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c         |  20 +++
+ security/apparmor/audit.c              | 227 +++++++++++++++++++++++++
+ security/apparmor/include/apparmorfs.h |   1 +
+ security/apparmor/include/audit.h      |  32 +++-
+ security/apparmor/include/label.h      |   1 +
+ security/apparmor/include/policy.h     |   2 +
+ security/apparmor/label.c              |   6 +-
+ security/apparmor/policy.c             |   3 +
+ 8 files changed, 285 insertions(+), 7 deletions(-)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 3e9da71472d3..c38024f73c62 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -1122,10 +1122,24 @@ static int seq_profile_hash_show(struct seq_file *seq, void *v)
+ 	return 0;
+ }
+ 
++static int seq_profile_learning_count_show(struct seq_file *seq, void *v)
++{
++	struct aa_proxy *proxy = seq->private;
++	struct aa_label *label = aa_get_label_rcu(&proxy->label);
++	struct aa_profile *profile = labels_profile(label);
++	int count = READ_ONCE(profile->learning_cache.size);
++
++	seq_printf(seq, "%d\n", count);
++	aa_put_label(label);
++
++	return 0;
++}
++
+ SEQ_PROFILE_FOPS(name);
+ SEQ_PROFILE_FOPS(mode);
+ SEQ_PROFILE_FOPS(attach);
+ SEQ_PROFILE_FOPS(hash);
++SEQ_PROFILE_FOPS(learning_count);
+ 
+ /*
+  * namespace based files
+@@ -1740,6 +1754,12 @@ int __aafs_profile_mkdir(struct aa_profile *profile, struct dentry *parent)
+ 		goto fail;
+ 	profile->dents[AAFS_PROF_ATTACH] = dent;
+ 
++	dent = create_profile_file(dir, "learning_count", profile,
++				   &seq_profile_learning_count_fops);
++	if (IS_ERR(dent))
++		goto fail;
++	profile->dents[AAFS_PROF_LEARNING_COUNT] = dent;
++
+ 	if (profile->hash) {
+ 		dent = create_profile_file(dir, "sha1", profile,
+ 					   &seq_profile_hash_fops);
+diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
+index fd75706a1c8b..d8f11b22236e 100644
+--- a/security/apparmor/audit.c
++++ b/security/apparmor/audit.c
+@@ -289,3 +289,230 @@ int aa_audit_rule_match(u32 sid, u32 field, u32 op, void *vrule)
+ 	}
+ 	return 0;
+ }
++
++/****************************** audit cache *******************************/
++
++static int uid_cmp(kuid_t lhs, kuid_t rhs)
++{
++	if (uid_lt(lhs, rhs))
++		return -1;
++	if (uid_gt(lhs, rhs))
++		return 1;
++	return 0;
++}
++
++/* std C cmp.  negative is less than, 0 is equal, positive greater than */
++long aa_audit_data_cmp(struct apparmor_audit_data *lhs,
++		       struct apparmor_audit_data *rhs)
++{
++	long res;
++
++	res = lhs->type - rhs->type;
++	if (res)
++		return res;
++	res = lhs->class - rhs->class;
++	if (res)
++		return res;
++	/* op uses static pointers so direct ptr comparison */
++	res = lhs->op - rhs->op;
++	if (res)
++		return res;
++	res = strcmp(lhs->name, rhs->name);
++	if (res)
++		return res;
++	res = aa_label_cmp(lhs->subj_label, rhs->subj_label);
++	if (res)
++		return res;
++	switch (lhs->class) {
++	case AA_CLASS_FILE:
++		if (lhs->subj_cred) {
++			if (rhs->subj_cred) {
++				return uid_cmp(lhs->subj_cred->fsuid,
++					       rhs->subj_cred->fsuid);
++			} else {
++				return 1;
++			}
++		} else if (rhs->subj_cred) {
++			return -1;
++		}
++		res = uid_cmp(lhs->fs.ouid, rhs->fs.ouid);
++		if (res)
++			return res;
++		res = lhs->fs.target - rhs->fs.target;
++		if (res)
++			return res;
++	}
++	return 0;
++}
++
++void aa_audit_node_free(struct aa_audit_node *node)
++{
++	if (!node)
++		return;
++
++	AA_BUG(!list_empty(&node->list));
++
++	/* common data that needs freed */
++	kfree(node->data.name);
++	aa_put_label(node->data.subj_label);
++	if (node->data.subj_cred)
++		put_cred(node->data.subj_cred);
++
++	/* class specific data that needs freed */
++	switch (node->data.class) {
++	case AA_CLASS_FILE:
++		aa_put_label(node->data.peer);
++		kfree(node->data.fs.target);
++	}
++
++	kmem_cache_free(aa_audit_slab, node);
++}
++
++struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
++					gfp_t gfp)
++{
++	struct aa_audit_node *copy;
++
++	copy = kmem_cache_zalloc(aa_audit_slab, gfp);
++	if (!copy)
++		return NULL;
++
++	INIT_LIST_HEAD(&copy->list);
++	/* copy class early so aa_free_audit_node can use switch on failure */
++	copy->data.class = orig->class;
++
++	/* handle anything with possible failure first */
++	if (orig->name) {
++		copy->data.name = kstrdup(orig->name, gfp);
++		if (!copy->data.name)
++			goto fail;
++	}
++	/* don't dup info */
++	switch (orig->class) {
++	case AA_CLASS_FILE:
++		if (orig->fs.target) {
++			copy->data.fs.target = kstrdup(orig->fs.target, gfp);
++			if (!copy->data.fs.target)
++				goto fail;
++		}
++		break;
++	case AA_CLASS_MOUNT:
++		if (orig->mnt.src_name) {
++			copy->data.mnt.src_name = kstrdup(orig->mnt.src_name, gfp);
++			if (!copy->data.mnt.src_name)
++				goto fail;
++		}
++		if (orig->mnt.type) {
++			copy->data.mnt.type = kstrdup(orig->mnt.type, gfp);
++			if (!copy->data.mnt.type)
++				goto fail;
++		}
++		// copy->mnt.trans; not used atm
++		if (orig->mnt.data) {
++			copy->data.mnt.data = kstrdup(orig->mnt.data, gfp);
++			if (!copy->data.mnt.data)
++				goto fail;
++		}
++		break;
++	}
++
++	/* now inc counts, and copy data that can't fail */
++	// don't copy error
++	copy->data.type = orig->type;
++	copy->data.request = orig->request;
++	copy->data.denied = orig->denied;
++	copy->data.subj_label = aa_get_label(orig->subj_label);
++	copy->data.op = orig->op;
++	if (orig->subj_cred)
++		copy->data.subj_cred = get_cred(orig->subj_cred);
++
++	switch (orig->class) {
++	case AA_CLASS_NET:
++		/*
++		 * peer_sk;
++		 * addr;
++		 */
++		fallthrough;
++	case AA_CLASS_FILE:
++		copy->data.fs.ouid = orig->fs.ouid;
++		break;
++	case AA_CLASS_RLIMITS:
++	case AA_CLASS_SIGNAL:
++	case AA_CLASS_POSIX_MQUEUE:
++		copy->data.peer = aa_get_label(orig->peer);
++		break;
++/*
++ *	case AA_CLASS_IFACE:
++ *		copy->data.iface.profile = aa_get_label(orig.iface.profile);
++ *		break;
++ */
++	};
++
++
++	return copy;
++fail:
++	aa_audit_node_free(copy);
++	return NULL;
++}
++
++#define __audit_cache_find(C, AD, COND...)				\
++({									\
++	struct aa_audit_node *__node;					\
++	list_for_each_entry_rcu(__node, &(C)->head, list, COND) {	\
++		if (aa_audit_data_cmp(&__node->data, AD) == 0)		\
++			break;						\
++	}								\
++	__node;								\
++})
++
++struct aa_audit_node *aa_audit_cache_find(struct aa_audit_cache *cache,
++					  struct apparmor_audit_data *ad)
++{
++	struct aa_audit_node *node;
++
++	rcu_read_lock();
++	node = __audit_cache_find(cache, ad);
++	rcu_read_unlock();
++
++	return node;
++}
++
++/**
++ * aa_audit_cache_insert - insert an audit node into the cache
++ * @cache: the cache to insert into
++ * @node: the audit node to insert into the cache
++ *
++ * Returns: matching node in cache OR @node if @node was inserted.
++ */
++
++struct aa_audit_node *aa_audit_cache_insert(struct aa_audit_cache *cache,
++					    struct aa_audit_node *node)
++
++{
++	struct aa_audit_node *tmp;
++
++	spin_lock(&cache->lock);
++	tmp = __audit_cache_find(cache, &node->data,
++				 spin_is_lock(&cache->lock));
++	if (!tmp) {
++		list_add_rcu(&node->list, &cache->head);
++		tmp = node;
++		cache->size++;
++	}
++	/* else raced another insert */
++	spin_unlock(&cache->lock);
++
++	return tmp;
++}
++
++/* assumes rcu callback has already happened and list can not be walked */
++void aa_audit_cache_destroy(struct aa_audit_cache *cache)
++{
++	struct aa_audit_node *node, *tmp;
++
++	list_for_each_entry_safe(node, tmp, &cache->head, list) {
++		list_del_init(&node->list);
++		aa_audit_node_free(node);
++	}
++	cache->size = 0;
++}
+diff --git a/security/apparmor/include/apparmorfs.h b/security/apparmor/include/apparmorfs.h
+index 1e94904f68d9..a21855ad7fb8 100644
+--- a/security/apparmor/include/apparmorfs.h
++++ b/security/apparmor/include/apparmorfs.h
+@@ -89,6 +89,7 @@ enum aafs_prof_type {
+ 	AAFS_PROF_RAW_DATA,
+ 	AAFS_PROF_RAW_HASH,
+ 	AAFS_PROF_RAW_ABI,
++	AAFS_PROF_LEARNING_COUNT,
+ 	AAFS_PROF_SIZEOF,
+ };
+ 
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index 8d250f44da47..7b556d38fb61 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -167,16 +167,33 @@ struct aa_audit_node {
+ };
+ extern struct kmem_cache *aa_audit_slab;
+ 
+-static inline void aa_free_audit_node(struct aa_audit_node *node)
++static inline struct aa_audit_node *aa_alloc_audit_node(gfp_t gfp)
+ {
+-	kmem_cache_free(aa_audit_slab, node);
++	return kmem_cache_zalloc(aa_audit_slab, gfp);
+ }
+ 
+-static inline struct aa_audit_node *aa_alloc_audit_node(gfp_t gfp)
++
++struct aa_audit_cache {
++	spinlock_t lock;
++	int size;
++	struct list_head head;
++};
++
++static inline void aa_audit_cache_init(struct aa_audit_cache *cache)
+ {
+-	return kmem_cache_zalloc(aa_audit_slab, gfp);
++	cache->size = 0;
++	spin_lock_init(&cache->lock);
++	INIT_LIST_HEAD(&cache->head);
+ }
+ 
++struct aa_audit_node *aa_audit_cache_find(struct aa_audit_cache *cache,
++					  struct apparmor_audit_data *ad);
++struct aa_audit_node *aa_audit_cache_insert(struct aa_audit_cache *cache,
++					    struct aa_audit_node *node);
++void aa_audit_cache_destroy(struct aa_audit_cache *cache);
++
++
++
+ /* macros for dealing with  apparmor_audit_data structure */
+ #define aad(SA) (container_of(SA, struct apparmor_audit_data, common))
+ #define DEFINE_AUDIT_DATA(NAME, T, C, X)				\
+@@ -215,4 +232,11 @@ int aa_audit_rule_init(u32 field, u32 op, char *rulestr, void **vrule);
+ int aa_audit_rule_known(struct audit_krule *rule);
+ int aa_audit_rule_match(u32 sid, u32 field, u32 op, void *vrule);
+ 
++
++void aa_audit_node_free(struct aa_audit_node *node);
++struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
++					gfp_t gfp);
++long aa_audit_data_cmp(struct apparmor_audit_data *lhs,
++		       struct apparmor_audit_data *rhs);
++
+ #endif /* __AA_AUDIT_H */
+diff --git a/security/apparmor/include/label.h b/security/apparmor/include/label.h
+index 1ac9e1066fc9..3e7064d06727 100644
+--- a/security/apparmor/include/label.h
++++ b/security/apparmor/include/label.h
+@@ -273,6 +273,7 @@ for ((I).i = (I).j = 0;							\
+ })
+ 
+ 
++int aa_label_cmp(struct aa_label *a, struct aa_label *b);
+ void aa_labelset_destroy(struct aa_labelset *ls);
+ void aa_labelset_init(struct aa_labelset *ls);
+ void __aa_labelset_update_subtree(struct aa_ns *ns);
+diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
+index 62d9a255dfa6..84d95ca32c89 100644
+--- a/security/apparmor/include/policy.h
++++ b/security/apparmor/include/policy.h
+@@ -215,6 +215,8 @@ struct aa_profile {
+ 	struct list_head rules;
+ 	struct aa_net_compat *net_compat;
+ 
++	struct aa_audit_cache learning_cache;
++
+ 	struct aa_loaddata *rawdata;
+ 	unsigned char *hash;
+ 	char *dirname;
+diff --git a/security/apparmor/label.c b/security/apparmor/label.c
+index 60471f820616..590381f813bd 100644
+--- a/security/apparmor/label.c
++++ b/security/apparmor/label.c
+@@ -455,7 +455,7 @@ struct aa_label *aa_label_alloc(int size, struct aa_proxy *proxy, gfp_t gfp)
+ 
+ 
+ /**
+- * label_cmp - label comparison for set ordering
++ * aa_label_cmp - label comparison for set ordering
+  * @a: label to compare (NOT NULL)
+  * @b: label to compare (NOT NULL)
+  *
+@@ -463,7 +463,7 @@ struct aa_label *aa_label_alloc(int size, struct aa_proxy *proxy, gfp_t gfp)
+  *          ==0 if a == b
+  *          >0  if a > b
+  */
+-static int label_cmp(struct aa_label *a, struct aa_label *b)
++int aa_label_cmp(struct aa_label *a, struct aa_label *b)
+ {
+ 	AA_BUG(!b);
+ 
+@@ -677,7 +677,7 @@ static struct aa_label *__label_insert(struct aa_labelset *ls,
+ 	new = &ls->root.rb_node;
+ 	while (*new) {
+ 		struct aa_label *this = rb_entry(*new, struct aa_label, node);
+-		int result = label_cmp(label, this);
++		int result = aa_label_cmp(label, this);
+ 
+ 		parent = *new;
+ 		if (result == 0) {
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index 3c1ceca7b2f1..488095962c5a 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -282,6 +282,7 @@ void aa_free_profile(struct aa_profile *profile)
+ 	kfree_sensitive(profile->hash);
+ 	aa_put_loaddata(profile->rawdata);
+ 	aa_label_destroy(&profile->label);
++	aa_audit_cache_destroy(&profile->learning_cache);
+ 
+ 	kfree_sensitive(profile);
+ }
+@@ -330,6 +331,8 @@ struct aa_profile *aa_alloc_profile(const char *hname, struct aa_proxy *proxy,
+ 	profile->label.flags |= FLAG_PROFILE;
+ 	profile->label.vec[0] = profile;
+ 
++	aa_audit_cache_init(&profile->learning_cache);
++
+ 	/* refcount released by caller */
+ 	return profile;
+ 
+-- 
+2.40.1
+

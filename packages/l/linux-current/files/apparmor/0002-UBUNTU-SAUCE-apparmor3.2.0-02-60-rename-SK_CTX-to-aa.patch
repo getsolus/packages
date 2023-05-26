@@ -1,0 +1,124 @@
+From 9fa9186853f4273587ddf520138f17e2296246b5 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Mon, 6 Mar 2023 07:27:55 -0800
+Subject: [PATCH 02/60] UBUNTU: SAUCE: apparmor3.2.0 [02/60]: rename SK_CTX()
+ to aa_sock and make it an inline fn
+
+In preparation for LSM stacking rework the macro to an inline fn
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/include/net.h |  6 +++++-
+ security/apparmor/lsm.c         | 22 +++++++++++-----------
+ 2 files changed, 16 insertions(+), 12 deletions(-)
+
+diff --git a/security/apparmor/include/net.h b/security/apparmor/include/net.h
+index 6fa440b5daed..dc1b33dc644d 100644
+--- a/security/apparmor/include/net.h
++++ b/security/apparmor/include/net.h
+@@ -51,7 +51,11 @@ struct aa_sk_ctx {
+ 	struct aa_label *peer;
+ };
+ 
+-#define SK_CTX(X) ((X)->sk_security)
++static inline struct aa_sk_ctx *aa_sock(const struct sock *sk)
++{
++	return sk->sk_security;
++}
++
+ #define SOCK_ctx(X) SOCK_INODE(X)->i_security
+ #define DEFINE_AUDIT_NET(NAME, OP, SK, F, T, P)				  \
+ 	struct lsm_network_audit NAME ## _net = { .sk = (SK),		  \
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index d6cc4812ca53..c789c791a9e6 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -829,7 +829,7 @@ static int apparmor_sk_alloc_security(struct sock *sk, int family, gfp_t flags)
+ 	if (!ctx)
+ 		return -ENOMEM;
+ 
+-	SK_CTX(sk) = ctx;
++	sk->sk_security = ctx;
+ 
+ 	return 0;
+ }
+@@ -839,9 +839,9 @@ static int apparmor_sk_alloc_security(struct sock *sk, int family, gfp_t flags)
+  */
+ static void apparmor_sk_free_security(struct sock *sk)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
+ 
+-	SK_CTX(sk) = NULL;
++	sk->sk_security = NULL;
+ 	aa_put_label(ctx->label);
+ 	aa_put_label(ctx->peer);
+ 	kfree(ctx);
+@@ -853,8 +853,8 @@ static void apparmor_sk_free_security(struct sock *sk)
+ static void apparmor_sk_clone_security(const struct sock *sk,
+ 				       struct sock *newsk)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
+-	struct aa_sk_ctx *new = SK_CTX(newsk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
++	struct aa_sk_ctx *new = aa_sock(newsk);
+ 
+ 	if (new->label)
+ 		aa_put_label(new->label);
+@@ -907,7 +907,7 @@ static int apparmor_socket_post_create(struct socket *sock, int family,
+ 		label = aa_get_current_label();
+ 
+ 	if (sock->sk) {
+-		struct aa_sk_ctx *ctx = SK_CTX(sock->sk);
++		struct aa_sk_ctx *ctx = aa_sock(sock->sk);
+ 
+ 		aa_put_label(ctx->label);
+ 		ctx->label = aa_get_label(label);
+@@ -1092,7 +1092,7 @@ static int apparmor_socket_shutdown(struct socket *sock, int how)
+  */
+ static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
+ 
+ 	if (!skb->secmark)
+ 		return 0;
+@@ -1105,7 +1105,7 @@ static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
+ 
+ static struct aa_label *sk_peer_label(struct sock *sk)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
+ 
+ 	if (ctx->peer)
+ 		return ctx->peer;
+@@ -1186,7 +1186,7 @@ static int apparmor_socket_getpeersec_dgram(struct socket *sock,
+  */
+ static void apparmor_sock_graft(struct sock *sk, struct socket *parent)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
+ 
+ 	if (!ctx->label)
+ 		ctx->label = aa_get_current_label();
+@@ -1196,7 +1196,7 @@ static void apparmor_sock_graft(struct sock *sk, struct socket *parent)
+ static int apparmor_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
+ 				      struct request_sock *req)
+ {
+-	struct aa_sk_ctx *ctx = SK_CTX(sk);
++	struct aa_sk_ctx *ctx = aa_sock(sk);
+ 
+ 	if (!skb->secmark)
+ 		return 0;
+@@ -1815,7 +1815,7 @@ static unsigned int apparmor_ip_postroute(void *priv,
+ 	if (sk == NULL)
+ 		return NF_ACCEPT;
+ 
+-	ctx = SK_CTX(sk);
++	ctx = aa_sock(sk);
+ 	if (!apparmor_secmark_check(ctx->label, OP_SENDMSG, AA_MAY_SEND,
+ 				    skb->secmark, sk))
+ 		return NF_ACCEPT;
+-- 
+2.40.1
+

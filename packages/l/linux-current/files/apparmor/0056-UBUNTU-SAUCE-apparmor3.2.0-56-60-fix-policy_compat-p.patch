@@ -1,0 +1,52 @@
+From c548f1e5884cf94e6cab0d00e3e859cedfb8196a Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Mon, 17 Apr 2023 02:22:49 -0700
+Subject: [PATCH 56/60] UBUNTU: SAUCE: apparmor3.2.0 [56/60]: fix policy_compat
+ perms remap for file dfa
+
+This fixes a patch in the out of tree apparmor prompting patchset that
+ubuntu carries. This can only be trigger by some (not all) policies
+that use prompting. It causes a heisenbug by causing the wrong
+permission table to be referenced, which can result in wrong
+permissions being granted or a reference beyond the bounds of the
+table.
+
+Unfortunately while the file dfa check works for the case where the
+permission table does not exist and the accept table needs to be
+remapped, it fails for the case where the file dfa exists and the file
+perm table both exist. In this case they should be used instead of
+falling back to the policydb dfa or the nulldfa.
+
+BugLink: http://bugs.launchpad.net/bugs/2017903
+Fixes: b67242b43ee8 ("UBUNTU: SAUCE: apparmor: fix policy_compat permission remap with extended permissions")
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/policy_unpack.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/security/apparmor/policy_unpack.c b/security/apparmor/policy_unpack.c
+index 062958bb968c..a6956574c3d9 100644
+--- a/security/apparmor/policy_unpack.c
++++ b/security/apparmor/policy_unpack.c
+@@ -1054,11 +1054,13 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
+ 	error = unpack_pdb(e, &rules->file, false, true, &info);
+ 	if (error) {
+ 		goto fail;
+-	} else if (rules->file.dfa && !rules->file.perms) {
+-		error = aa_compat_map_file(&rules->file);
+-		if (error) {
+-			info = "failed to remap file permission table";
+-			goto fail;
++	} else if (rules->file.dfa) {
++		if (!rules->file.perms) {
++			error = aa_compat_map_file(&rules->file);
++			if (error) {
++				info = "failed to remap file permission table";
++				goto fail;
++			}
+ 		}
+ 	} else if (rules->policy.dfa &&
+ 		   rules->policy.start[AA_CLASS_FILE]) {
+-- 
+2.40.1
+
