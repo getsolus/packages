@@ -253,7 +253,7 @@ publish() {
     set -e
 
     # Download initial index
-    INDEX_XZ_URL="https://mirrors.rit.edu/solus/packages/unstable/eopkg-index.xml.xz"
+    INDEX_XZ_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz"
     curl -s $INDEX_XZ_URL -o /tmp/rebuilds-unstable-index.xml.xz
     unxz /tmp/rebuilds-unstable-index.xml.xz -k -f
 
