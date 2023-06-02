@@ -1,0 +1,399 @@
+From 85a1bcbb1ab680e292da093876765a08899810db Mon Sep 17 00:00:00 2001
+From: Brice Videau <bvideau@anl.gov>
+Date: Tue, 27 Sep 2022 13:37:07 -0500
+Subject: [PATCH 1/3] Added support for system layers.
+
+---
+ Makefile.am            |   3 +-
+ configure.ac           |  17 ++++++
+ doc/Makefile.am        |   1 +
+ doc/libOpenCL.7.txt.in |   6 +-
+ ocl_icd_loader.c       | 125 +++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 150 insertions(+), 2 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index c3aff21..9bb7100 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -42,7 +42,8 @@ stamp-generator: icd_generator.rb
+ # ignore the warning in OpenCL headers when using old interface
+ libOpenCL_la_CFLAGS= $(NO_DEPRECATED_DECLARATIONS_FLAGS) \
+ 	$(AM_CFLAGS) $(PTHREAD_CFLAGS) \
+-	-DETC_OPENCL_VENDORS=\"@OCL_ICD_VENDORDIR@\"
++	-DETC_OPENCL_VENDORS=\"@OCL_ICD_VENDORDIR@\" \
++	-DETC_OPENCL_LAYERS=\"@OCL_ICD_LAYERDIR@\"
+ 
+ libOpenCL_la_SOURCES = ocl_icd_loader.c ocl_icd_loader.h ocl_icd_debug.h
+ nodist_libOpenCL_la_SOURCES = ocl_icd_loader_gen.c ocl_icd.h
+diff --git a/configure.ac b/configure.ac
+index 3ec80f4..1679f36 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -178,6 +178,23 @@ AS_IF([test x"$OCL_ICD_VENDORDIR" = x"/etc/OpenCL/vendors" ], [
+   AC_MSG_NOTICE([using an unofficial custom default vendors directory ($OCL_ICD_VENDORDIR)])
+ ])
+ 
++# --enable-custom-layerdir
++AC_ARG_ENABLE([custom-layerdir],
++  [AS_HELP_STRING([--enable-custom-layerdir],
++                  [use the given directory instead of /etc/OpenCL/layers to look for .lay files])],
++  [AS_CASE(["$enableval"],
++    [yes], [OCL_ICD_LAYERDIR="$sysconfdir/OpenCL/layers"],
++    [no], [OCL_ICD_LAYERDIR='/etc/OpenCL/layers'],
++    [OCL_ICD_LAYERDIR=$enableval])],
++  [OCL_ICD_LAYERDIR=/etc/OpenCL/layers])
++AC_SUBST([OCL_ICD_LAYERDIR])
++
++AS_IF([test x"$OCL_ICD_LAYERDIR" = x"/etc/OpenCL/layers"], [
++  AC_MSG_NOTICE([using the official default layers directory ($OCL_ICD_LAYERDIR)])
++], [
++  AC_MSG_NOTICE([using an unofficial custom default layers directory ($OCL_ICD_LAYERDIR)])
++])
++
+ # always use versionned symbols (check required for MacOSX)
+ if test "x$macos" == xyes ; then
+ AM_CONDITIONAL([USE_MAP], [false])
+diff --git a/doc/Makefile.am b/doc/Makefile.am
+index 536f511..b97088c 100644
+--- a/doc/Makefile.am
++++ b/doc/Makefile.am
+@@ -27,6 +27,7 @@ libOpenCL.7.txt: libOpenCL.7.txt.in Makefile
+ 	fi && \
+ 	$(SED) \
+ 	    -e 's|[@]OCL_ICD_VENDORDIR@|@OCL_ICD_VENDORDIR@|g' \
++	    -e 's|[@]OCL_ICD_LAYERDIR@|@OCL_ICD_LAYERDIR@|g' \
+ 	    -e "/^@@$$REMOVE: /d" \
+ 	    -e "s/^@@$$KEEP: //" \
+ 	    < "$<" > "$@"
+diff --git a/doc/libOpenCL.7.txt.in b/doc/libOpenCL.7.txt.in
+index 5367862..fcd332b 100644
+--- a/doc/libOpenCL.7.txt.in
++++ b/doc/libOpenCL.7.txt.in
+@@ -69,7 +69,11 @@ c. else libOpenCL.so will try to load *$OCL_ICD_VENDORS* as the ICD shared
+ 
+ *OPENCL_LAYERS*::
+ This variable allows one to specify a colon separated list of layers to load,
+-specifying their path. This support is experimental.
++specifying their path.
++
++*OPENCL_LAYER_PATH*::
++This variable allows one to override the default system layer search path
++('`@OCL_ICD_LAYERDIR@`').
+ 
+ *OCL_ICD_ASSUME_ICD_EXTENSION*::
+ If set to an non-empty value, contrary the Khronos specification, the
+diff --git a/ocl_icd_loader.c b/ocl_icd_loader.c
+index b90f799..b6199ef 100644
+--- a/ocl_icd_loader.c
++++ b/ocl_icd_loader.c
+@@ -185,6 +185,14 @@ static inline int _string_end_with_icd(const char* str) {
+   return 1;
+ }
+ 
++static inline int _string_end_with_lay(const char* str) {
++  size_t len = strlen(str);
++  if( len<5 || strcmp(str + len - 4, ".lay" ) != 0 ) {
++    return 0;
++  }
++  return 1;
++}
++
+ static inline int _string_with_slash(const char* str) {
+   return strchr(str, '/') != NULL;
+ }
+@@ -201,6 +209,23 @@ static inline unsigned int _find_num_icds(DIR *dir) {
+   RETURN(num_icds);
+ }
+ 
++static inline unsigned int _find_num_lays(DIR *dir) {
++  unsigned int num_lays = 0;
++  struct dirent *ent;
++  while( (ent=readdir(dir)) != NULL ){
++    if (_string_end_with_lay(ent->d_name)) {
++      num_lays++;
++    }
++  }
++  rewinddir(dir);
++  RETURN(num_lays);
++}
++
++static int compare_path(const void *a, const void *b)
++{
++      return strcoll(*(const char **)a, *(const char **)b);
++}
++
+ static inline unsigned int _load_icd(int num_icds, const char* lib_path) {
+   unsigned int ret=0;
+   debug(D_LOG, "Loading ICD '%s'", lib_path);
+@@ -681,7 +706,107 @@ static void __initLayer(char * layer_path) {
+ }
+ 
+ static void __initLayers( void ) {
++  struct stat buf;
++  cl_uint num_lays = 0;
++  int ret;
++  struct dirent *ent;
++  DIR *dir = NULL;
+   char* layers_path=getenv("OPENCL_LAYERS");
++  const char* opencl_layer_path=getenv("OPENCL_LAYER_PATH");
++  if (! opencl_layer_path || opencl_layer_path[0]==0) {
++    opencl_layer_path=ETC_OPENCL_LAYERS;
++    debug(D_DUMP, "OPENCL_LAYER_PATH unset or empty. Using hard-coded path '%s'", opencl_layer_path);
++  } else {
++    debug(D_DUMP, "OPENCL_LAYER_PATH set to '%s', using it", opencl_layer_path);
++  }
++  debug(D_LOG,"Reading lay list from '%s'", opencl_layer_path);
++
++  ret=stat(opencl_layer_path, &buf);
++  if (ret != 0) {
++    debug(D_WARN, "Cannot stat '%s'. Aborting", opencl_layer_path);
++    goto layer_list;
++  }
++  if (!S_ISDIR(buf.st_mode)) {
++    debug(D_WARN, "'%s' is not a directory. Aborting", opencl_layer_path);
++    goto layer_list;
++  }
++  debug(D_LOG,"Reading lay list from '%s'", opencl_layer_path);
++  dir = opendir(opencl_layer_path);
++  if(dir == NULL) {
++    if (errno == ENOTDIR) {
++      debug(D_DUMP, "%s is not a directory. Aborting", opencl_layer_path);
++    }
++    goto layer_list;
++  }
++
++  num_lays = _find_num_lays(dir);
++  if(num_lays == 0) {
++    goto layer_list;
++  }
++
++  char **dir_elems = NULL;
++  cl_uint real_num_lays = 0;
++  dir_elems = (char **)malloc(num_lays*sizeof(char *));
++  if(!dir_elems) {
++    goto layer_list;
++  }
++  while( (ent=readdir(dir)) != NULL && real_num_lays < num_lays){
++    char * lib_path;
++    unsigned int lib_path_length;
++    if (!_string_end_with_lay(ent->d_name)) {
++      continue;
++    }
++    lib_path_length = strlen(opencl_layer_path) + strlen(ent->d_name) + 2;
++    lib_path = malloc(lib_path_length*sizeof(char));
++    if (!lib_path) {
++      free(lib_path);
++      continue;
++    }
++    sprintf(lib_path,"%s/%s", opencl_layer_path, ent->d_name);
++    debug(D_LOG, "Considering file '%s'", lib_path);
++    dir_elems[real_num_lays] = lib_path;
++    real_num_lays++;
++  }
++  qsort(dir_elems, real_num_lays, sizeof(char *), compare_path);
++  for(cl_uint j = 0; j < real_num_lays; j++) {
++    unsigned int lib_path_length;
++    char * err;
++    char * lib_path = dir_elems[j];
++    FILE *f = fopen(lib_path,"r");
++    free(lib_path);
++    if (f==NULL) {
++      continue;
++    }
++    fseek(f, 0, SEEK_END);
++    lib_path_length = ftell(f)+1;
++    fseek(f, 0, SEEK_SET);
++    if(lib_path_length == 1) {
++      debug(D_WARN, "File contents too short, skipping LAY");
++      fclose(f);
++      continue;
++    }
++    lib_path = malloc(lib_path_length*sizeof(char));
++    if (!lib_path) {
++      continue;
++    }
++    err = fgets(lib_path, lib_path_length*sizeof(char), f);
++    if( err == NULL ) {
++      free(lib_path);
++      debug(D_WARN, "Error while loading file contents, skipping LAY");
++      continue;
++    }
++
++    lib_path_length = strnlen(lib_path, lib_path_length);
++
++    if( lib_path[lib_path_length-1] == '\n' )
++      lib_path[lib_path_length-1] = '\0';
++
++    __initLayer(lib_path);
++    free(lib_path);
++  }
++  free(dir_elems);
++
++layer_list:
+   if (layers_path) {
+     char* layer_path = layers_path;
+     char* next_layer_path = strchr(layers_path, ':');
+
+From 4e67537dc935965b133d7bb97b6a2af0acb42caf Mon Sep 17 00:00:00 2001
+From: Brice Videau <bvideau@anl.gov>
+Date: Wed, 28 Sep 2022 11:00:30 -0500
+Subject: [PATCH 2/3] Remove code duplication in directory scan code.
+
+---
+ ocl_icd_loader.c | 41 ++++++++++++++++++++++-------------------
+ 1 file changed, 22 insertions(+), 19 deletions(-)
+
+diff --git a/ocl_icd_loader.c b/ocl_icd_loader.c
+index b6199ef..f440280 100644
+--- a/ocl_icd_loader.c
++++ b/ocl_icd_loader.c
+@@ -177,47 +177,50 @@ static char* _clerror2string (cl_int error) {
+ #endif
+ }
+ 
+-static inline int _string_end_with_icd(const char* str) {
++static inline int _string_end_with(const char* str, const char* suffix) {
+   size_t len = strlen(str);
+-  if( len<5 || strcmp(str + len - 4, ".icd" ) != 0 ) {
++  size_t len_suff = strlen(suffix);
++  if (len < len_suff + 1 || strcmp(str + len - len_suff, suffix) != 0) {
+     return 0;
+   }
+   return 1;
+ }
+ 
++#define ICD_EXTENSION ".icd"
++#define LAY_EXTENSION ".lay"
++
++static inline int _string_end_with_icd(const char* str) {
++  return _string_end_with(str, ICD_EXTENSION);
++}
++
+ static inline int _string_end_with_lay(const char* str) {
+-  size_t len = strlen(str);
+-  if( len<5 || strcmp(str + len - 4, ".lay" ) != 0 ) {
+-    return 0;
+-  }
+-  return 1;
++  return _string_end_with(str, LAY_EXTENSION);
+ }
+ 
+ static inline int _string_with_slash(const char* str) {
+   return strchr(str, '/') != NULL;
+ }
+ 
+-static inline unsigned int _find_num_icds(DIR *dir) {
+-  unsigned int num_icds = 0;
++
++static inline unsigned int _find_num_suffix_match(DIR *dir, const char* suffix) {
++  unsigned int num_matches = 0;
+   struct dirent *ent;
+   while( (ent=readdir(dir)) != NULL ){
+-    if (_string_end_with_icd(ent->d_name)) {
+-      num_icds++;
++    if (_string_end_with(ent->d_name, suffix)) {
++      num_matches++;
+     }
+   }
+   rewinddir(dir);
++  return num_matches;
++}
++
++static inline unsigned int _find_num_icds(DIR *dir) {
++  unsigned int num_icds = _find_num_suffix_match(dir, ICD_EXTENSION);
+   RETURN(num_icds);
+ }
+ 
+ static inline unsigned int _find_num_lays(DIR *dir) {
+-  unsigned int num_lays = 0;
+-  struct dirent *ent;
+-  while( (ent=readdir(dir)) != NULL ){
+-    if (_string_end_with_lay(ent->d_name)) {
+-      num_lays++;
+-    }
+-  }
+-  rewinddir(dir);
++  unsigned int num_lays = _find_num_suffix_match(dir, LAY_EXTENSION);
+   RETURN(num_lays);
+ }
+ 
+
+From 3c3cdecb163987d9efbc8c64c8907547a6af293f Mon Sep 17 00:00:00 2001
+From: Brice Videau <bvideau@anl.gov>
+Date: Wed, 28 Sep 2022 11:01:40 -0500
+Subject: [PATCH 3/3] Put system layer initialization in its own subroutine.
+
+---
+ ocl_icd_loader.c | 19 +++++++++++--------
+ 1 file changed, 11 insertions(+), 8 deletions(-)
+
+diff --git a/ocl_icd_loader.c b/ocl_icd_loader.c
+index f440280..50c053b 100644
+--- a/ocl_icd_loader.c
++++ b/ocl_icd_loader.c
+@@ -708,13 +708,12 @@ static void __initLayer(char * layer_path) {
+   }
+ }
+ 
+-static void __initLayers( void ) {
++static void __initSystemLayers( void ) {
+   struct stat buf;
+   cl_uint num_lays = 0;
+   int ret;
+   struct dirent *ent;
+   DIR *dir = NULL;
+-  char* layers_path=getenv("OPENCL_LAYERS");
+   const char* opencl_layer_path=getenv("OPENCL_LAYER_PATH");
+   if (! opencl_layer_path || opencl_layer_path[0]==0) {
+     opencl_layer_path=ETC_OPENCL_LAYERS;
+@@ -727,11 +726,11 @@ static void __initLayers( void ) {
+   ret=stat(opencl_layer_path, &buf);
+   if (ret != 0) {
+     debug(D_WARN, "Cannot stat '%s'. Aborting", opencl_layer_path);
+-    goto layer_list;
++    return;
+   }
+   if (!S_ISDIR(buf.st_mode)) {
+     debug(D_WARN, "'%s' is not a directory. Aborting", opencl_layer_path);
+-    goto layer_list;
++    return;
+   }
+   debug(D_LOG,"Reading lay list from '%s'", opencl_layer_path);
+   dir = opendir(opencl_layer_path);
+@@ -739,19 +738,19 @@ static void __initLayers( void ) {
+     if (errno == ENOTDIR) {
+       debug(D_DUMP, "%s is not a directory. Aborting", opencl_layer_path);
+     }
+-    goto layer_list;
++    return;
+   }
+ 
+   num_lays = _find_num_lays(dir);
+   if(num_lays == 0) {
+-    goto layer_list;
++    return;
+   }
+ 
+   char **dir_elems = NULL;
+   cl_uint real_num_lays = 0;
+   dir_elems = (char **)malloc(num_lays*sizeof(char *));
+   if(!dir_elems) {
+-    goto layer_list;
++    return;
+   }
+   while( (ent=readdir(dir)) != NULL && real_num_lays < num_lays){
+     char * lib_path;
+@@ -808,8 +807,12 @@ static void __initLayers( void ) {
+     free(lib_path);
+   }
+   free(dir_elems);
++}
+ 
+-layer_list:
++static void __initLayers( void ) {
++  __initSystemLayers();
++
++  char* layers_path=getenv("OPENCL_LAYERS");
+   if (layers_path) {
+     char* layer_path = layers_path;
+     char* next_layer_path = strchr(layers_path, ':');
