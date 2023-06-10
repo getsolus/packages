@@ -9,7 +9,6 @@
 AFFECTED=()
 ARGS="$1"
 DAYS=
-DETECTCHANGES=""
 # Define it here because bash doesn't like quotes in pattern matching expressions ('=~' below)
 NUMERIC='(^[[:digit:]]+$)'
 
@@ -28,6 +27,7 @@ function parse-cmd-line-args () {
         echo -en "# Nonsense argument specified (${ARGS}), "
         DAYS=7
     fi
+    echo -en "using $DAYS days.\n#\n"
 }
 
 function check-dir () {
@@ -42,10 +42,11 @@ function find-affected () {
     local output
     for i in $(find . -maxdepth 2 -name .git); do
         nom="$(dirname ${i})"
-        output="$(git -C ${nom} log -1 --date=short --after=@{$DAYS.days.ago})"
+        output="$(git -c color.ui=always -C ${nom} log -1 --pretty=format:'%C(yellow)%h%Creset %ad | %Cgreen%s%Creset %Cred%d%Creset %Cblue[%an]%Creset' --date=short --after=@{$DAYS.days.ago})"
         if [[ -z "${output}" ]]; then
             continue
         fi
+        echo -e "# $nom:\n# $output\n#"
         AFFECTED+="${nom} "
     done
     unset nom
@@ -55,8 +56,6 @@ function find-affected () {
 # main
 check-dir
 parse-cmd-line-args
-echo -en "using $DAYS.\n"
-echo -e "#\n# change-detection command: git -C \$nom log -1 --date=short --after=@{$DAYS.days.ago}\n#"
 find-affected
 
 echo "# Repos affected in the last ${DAYS} days:"
