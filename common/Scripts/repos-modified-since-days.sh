@@ -59,6 +59,6 @@ echo -en "using $DAYS.\n"
 echo -e "#\n# change-detection command: git -C \$nom log -1 --date=short --after=@{$DAYS.days.ago}\n#"
 find-affected
 
-echo "# Packages affected in the last ${DAYS} days:"
+echo "# Repos affected in the last ${DAYS} days:"
 echo "${AFFECTED[@]}"|tr ' ' '\n'|sort|uniq
 
