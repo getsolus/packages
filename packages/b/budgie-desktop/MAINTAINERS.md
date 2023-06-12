@@ -3,3 +3,6 @@ This file is used to indicate responsibility for the maintenance of this package
 - Evan Maddock
   - Matrix: @ebonjaeger:matrix.org
   - Email: maddock.evan@vivaldi.net
+- Joshua Strobl
+  - Matrix: @joshuastrobl:matrix.org
+  - Email: joshua@getsol.us
