@@ -1,0 +1,242 @@
+
+From 11d24327c2d7ad7f24fcc44fb00e1fa91ebf6525 Mon Sep 17 00:00:00 2001
+From: Ratchanan Srirattanamet <peathot@hotmail.com>
+Date: Wed, 24 May 2023 04:11:56 +0700
+Subject: drm/nouveau: don't detect DSM for non-NVIDIA device
+
+The call site of nouveau_dsm_pci_probe() uses single set of output
+variables for all invocations. So, we must not write anything to them
+unless it's an NVIDIA device. Otherwise, if we are called with another
+device after the NVIDIA device, we'll clober the result of the NVIDIA
+device.
+
+For example, if the other device doesn't have _PR3 resources, the
+detection later would miss the presence of power resource support, and
+the rest of the code will keep using Optimus DSM, breaking power
+management for that machine.
+
+Also, because we're detecting NVIDIA's DSM, it doesn't make sense to run
+this detection on a non-NVIDIA device anyway. Thus, check at the
+beginning of the detection code if this is an NVIDIA card, and just
+return if it isn't.
+
+This, together with commit d22915d22ded ("drm/nouveau/devinit/tu102-:
+wait for GFW_BOOT_PROGRESS == COMPLETED") developed independently and
+landed earlier, fixes runtime power management of the NVIDIA card in
+Lenovo Legion 5-15ARH05. Without this patch, the GPU resumption code
+will "timeout", sometimes hanging userspace.
+
+As a bonus, we'll also stop preventing _PR3 usage from the bridge for
+unrelated devices, which is always nice, I guess.
+
+Fixes: ccfc2d5cdb02 ("drm/nouveau: Use generic helper to check _PR3 presence")
+Signed-off-by: Ratchanan Srirattanamet <peathot@hotmail.com>
+Closes: https://gitlab.freedesktop.org/drm/nouveau/-/issues/79
+Reviewed-by: Karol Herbst <kherbst@redhat.com>
+Signed-off-by: Karol Herbst <kherbst@redhat.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/DM6PR19MB2780805D4BE1E3F9B3AC96D0BC409@DM6PR19MB2780.namprd19.prod.outlook.com
+---
+ drivers/gpu/drm/nouveau/nouveau_acpi.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_acpi.c b/drivers/gpu/drm/nouveau/nouveau_acpi.c
+index 8cf096f841a90..a2ae8c21e4dce 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_acpi.c
++++ b/drivers/gpu/drm/nouveau/nouveau_acpi.c
+@@ -220,6 +220,9 @@ static void nouveau_dsm_pci_probe(struct pci_dev *pdev, acpi_handle *dhandle_out
+ 	int optimus_funcs;
+ 	struct pci_dev *parent_pdev;
+ 
++	if (pdev->vendor != PCI_VENDOR_ID_NVIDIA)
++		return;
++
+ 	*has_pr3 = false;
+ 	parent_pdev = pci_upstream_bridge(pdev);
+ 	if (parent_pdev) {
+-- 
+cgit 
+
+
+From 95011f267c44a4d1f9ca1769e8a29ab2c559e004 Mon Sep 17 00:00:00 2001
+From: Su Hui <suhui@nfschina.com>
+Date: Thu, 8 Jun 2023 09:24:43 +0800
+Subject: drm/bridge: ti-sn65dsi86: Avoid possible buffer overflow
+
+Smatch error:buffer overflow 'ti_sn_bridge_refclk_lut' 5 <= 5.
+
+Fixes: cea86c5bb442 ("drm/bridge: ti-sn65dsi86: Implement the pwm_chip")
+Signed-off-by: Su Hui <suhui@nfschina.com>
+Reviewed-by: Douglas Anderson <dianders@chromium.org>
+Signed-off-by: Douglas Anderson <dianders@chromium.org>
+Link: https://patchwork.freedesktop.org/patch/msgid/20230608012443.839372-1-suhui@nfschina.com
+---
+ drivers/gpu/drm/bridge/ti-sn65dsi86.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/ti-sn65dsi86.c b/drivers/gpu/drm/bridge/ti-sn65dsi86.c
+index 7a748785c5459..4676cf2900dfd 100644
+--- a/drivers/gpu/drm/bridge/ti-sn65dsi86.c
++++ b/drivers/gpu/drm/bridge/ti-sn65dsi86.c
+@@ -298,6 +298,10 @@ static void ti_sn_bridge_set_refclk_freq(struct ti_sn65dsi86 *pdata)
+ 		if (refclk_lut[i] == refclk_rate)
+ 			break;
+ 
++	/* avoid buffer overflow and "1" is the default rate in the datasheet. */
++	if (i >= refclk_lut_size)
++		i = 1;
++
+ 	regmap_update_bits(pdata->regmap, SN_DPPLL_SRC_REG, REFCLK_FREQ_MASK,
+ 			   REFCLK_FREQ(i));
+ 
+-- 
+cgit 
+
+
+From 20a2ce87fbaf81e4c3dcb631d738e423959eb320 Mon Sep 17 00:00:00 2001
+From: Natalia Petrova <n.petrova@fintech.ru>
+Date: Fri, 12 May 2023 14:15:26 +0300
+Subject: drm/nouveau/dp: check for NULL nv_connector->native_mode
+
+Add checking for NULL before calling nouveau_connector_detect_depth() in
+nouveau_connector_get_modes() function because nv_connector->native_mode
+could be dereferenced there since connector pointer passed to
+nouveau_connector_detect_depth() and the same value of
+nv_connector->native_mode is used there.
+
+Found by Linux Verification Center (linuxtesting.org) with SVACE.
+
+Fixes: d4c2c99bdc83 ("drm/nouveau/dp: remove broken display depth function, use the improved one")
+
+Signed-off-by: Natalia Petrova <n.petrova@fintech.ru>
+Reviewed-by: Lyude Paul <lyude@redhat.com>
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20230512111526.82408-1-n.petrova@fintech.ru
+---
+ drivers/gpu/drm/nouveau/nouveau_connector.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_connector.c b/drivers/gpu/drm/nouveau/nouveau_connector.c
+index 086b66b60d918..5dbf025e68737 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_connector.c
++++ b/drivers/gpu/drm/nouveau/nouveau_connector.c
+@@ -966,7 +966,7 @@ nouveau_connector_get_modes(struct drm_connector *connector)
+ 	/* Determine display colour depth for everything except LVDS now,
+ 	 * DP requires this before mode_valid() is called.
+ 	 */
+-	if (connector->connector_type != DRM_MODE_CONNECTOR_LVDS)
++	if (connector->connector_type != DRM_MODE_CONNECTOR_LVDS && nv_connector->native_mode)
+ 		nouveau_connector_detect_depth(connector);
+ 
+ 	/* Find the native mode if this is a digital panel, if we didn't
+@@ -987,7 +987,7 @@ nouveau_connector_get_modes(struct drm_connector *connector)
+ 	 * "native" mode as some VBIOS tables require us to use the
+ 	 * pixel clock as part of the lookup...
+ 	 */
+-	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)
++	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS && nv_connector->native_mode)
+ 		nouveau_connector_detect_depth(connector);
+ 
+ 	if (nv_encoder->dcb->type == DCB_OUTPUT_TV)
+-- 
+cgit
+
+
+From 55b94bb8c42464bad3d2217f6874aa1a85664eac Mon Sep 17 00:00:00 2001
+From: Natalia Petrova <n.petrova@fintech.ru>
+Date: Fri, 12 May 2023 13:33:20 +0300
+Subject: drm/nouveau: add nv_encoder pointer check for NULL
+
+Pointer nv_encoder could be dereferenced at nouveau_connector.c
+in case it's equal to NULL by jumping to goto label.
+This patch adds a NULL-check to avoid it.
+
+Found by Linux Verification Center (linuxtesting.org) with SVACE.
+
+Fixes: 3195c5f9784a ("drm/nouveau: set encoder for lvds")
+Signed-off-by: Natalia Petrova <n.petrova@fintech.ru>
+Reviewed-by: Lyude Paul <lyude@redhat.com>
+[Fixed patch title]
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+Link: https://patchwork.freedesktop.org/patch/msgid/20230512103320.82234-1-n.petrova@fintech.ru
+---
+ drivers/gpu/drm/nouveau/nouveau_connector.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_connector.c b/drivers/gpu/drm/nouveau/nouveau_connector.c
+index 5dbf025e68737..f75c6f09dd2af 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_connector.c
++++ b/drivers/gpu/drm/nouveau/nouveau_connector.c
+@@ -730,7 +730,8 @@ out:
+ #endif
+ 
+ 	nouveau_connector_set_edid(nv_connector, edid);
+-	nouveau_connector_set_encoder(connector, nv_encoder);
++	if (nv_encoder)
++		nouveau_connector_set_encoder(connector, nv_encoder);
+ 	return status;
+ }
+
+-- 
+cgit
+
+
+From c8a5d5ea3ba6a18958f8d76430e4cd68eea33943 Mon Sep 17 00:00:00 2001
+From: Dave Airlie <airlied@redhat.com>
+Date: Thu, 15 Jun 2023 12:22:11 +1000
+Subject: nouveau: fix client work fence deletion race
+
+This seems to have existed for ever but is now more apparant after
+commit 9bff18d13473 ("drm/ttm: use per BO cleanup workers")
+
+My analysis: two threads are running, one in the irq signalling the
+fence, in dma_fence_signal_timestamp_locked, it has done the
+DMA_FENCE_FLAG_SIGNALLED_BIT setting, but hasn't yet reached the
+callbacks.
+
+The second thread in nouveau_cli_work_ready, where it sees the fence is
+signalled, so then puts the fence, cleanups the object and frees the
+work item, which contains the callback.
+
+Thread one goes again and tries to call the callback and causes the
+use-after-free.
+
+Proposed fix: lock the fence signalled check in nouveau_cli_work_ready,
+so either the callbacks are done or the memory is freed.
+
+Reviewed-by: Karol Herbst <kherbst@redhat.com>
+Fixes: 11e451e74050 ("drm/nouveau: remove fence wait code from deferred client work handler")
+Cc: stable@vger.kernel.org
+Signed-off-by: Dave Airlie <airlied@redhat.com>
+Link: https://lore.kernel.org/dri-devel/20230615024008.1600281-1-airlied@gmail.com/
+---
+ drivers/gpu/drm/nouveau/nouveau_drm.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/nouveau/nouveau_drm.c b/drivers/gpu/drm/nouveau/nouveau_drm.c
+index cc7c5b4a05fd8..7aac9384600ed 100644
+--- a/drivers/gpu/drm/nouveau/nouveau_drm.c
++++ b/drivers/gpu/drm/nouveau/nouveau_drm.c
+@@ -137,10 +137,16 @@ nouveau_name(struct drm_device *dev)
+ static inline bool
+ nouveau_cli_work_ready(struct dma_fence *fence)
+ {
+-	if (!dma_fence_is_signaled(fence))
+-		return false;
+-	dma_fence_put(fence);
+-	return true;
++	bool ret = true;
++
++	spin_lock_irq(fence->lock);
++	if (!dma_fence_is_signaled_locked(fence))
++		ret = false;
++	spin_unlock_irq(fence->lock);
++
++	if (ret == true)
++		dma_fence_put(fence);
++	return ret;
+ }
+ 
+ static void
+-- 
+cgit 
+
