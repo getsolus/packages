@@ -21,7 +21,7 @@ def install():
     do_chmod("/home", 0755)
     do_chmod("/media", 0755)
     do_chmod("/proc", 0555)
-    do_chmod("/root", 0770) # owned by root:root, consistent with /home/<user> 0770 permissions
+    do_chmod("/root", 0700) # owned by root:root, consistent with /home/<user> 0700 permissions
     do_chmod("/run", 0755)
     do_chmod("/run/lock", 0775)
     do_chmod("/sys", 0755)
