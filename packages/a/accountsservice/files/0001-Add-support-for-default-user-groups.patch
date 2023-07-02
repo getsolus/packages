@@ -1,0 +1,109 @@
+From 25d71bcde6c1a50103d978b932c9551e3a56eb9f Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sun, 2 Jul 2023 11:25:49 +0100
+Subject: [PATCH 1/1] Add support for default user groups
+
+---
+ meson.build       |  4 ++++
+ meson_options.txt |  1 +
+ src/daemon.c      | 31 ++++++++++++++++++++++++++++---
+ 3 files changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index 4a509e7..df9203e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -203,6 +203,10 @@ extra_admin_groups = ','.join(get_option('extra_admin_groups'))
+ config_h.set_quoted('ADMIN_GROUP', admin_group)
+ config_h.set_quoted('EXTRA_ADMIN_GROUPS', extra_admin_groups)
+ 
++default_user_groups = ','.join(get_option('default_user_groups'))
++
++config_h.set_quoted('DEFAULT_USER_GROUPS', default_user_groups)
++
+ config_h.set('MINIMUM_UID', get_option('minimum_uid'))
+ 
+ # GDM
+diff --git a/meson_options.txt b/meson_options.txt
+index b34a0fa..05fc204 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -4,6 +4,7 @@ option('lightdmconffile', type: 'string', value: '/etc/lightdm/lightdm.conf', de
+ 
+ option('admin_group', type: 'string', value: '', description: 'Set group for administrative accounts')
+ option('extra_admin_groups', type: 'array', value: [], description: 'Comma-separated list of extra groups that administrator users are part of')
++option('default_user_groups', type: 'array', value: [], description: 'Comma-separated list of groups that users are automatically part of')
+ option('minimum_uid', type: 'integer', value: 1000, description: 'Set minimum uid for human users')
+ 
+ option('elogind', type: 'boolean', value: false, description: 'Use elogind')
+diff --git a/src/daemon.c b/src/daemon.c
+index ce60745..bbe9fab 100644
+--- a/src/daemon.c
++++ b/src/daemon.c
+@@ -1311,6 +1311,7 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+         g_autoptr (GError) error = NULL;
+         const gchar *argv[9];
+         g_autofree gchar *admin_groups = NULL;
++        g_autofree gchar *user_groups = NULL;
+ 
+         if (getpwnam (cd->user_name) != NULL) {
+                 throw_error (context, ERROR_USER_EXISTS, "A user with name '%s' already exists", cd->user_name);
+@@ -1323,11 +1324,32 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+         argv[1] = "-m";
+         argv[2] = "-c";
+         argv[3] = cd->real_name;
++
++        /* Build default user groups */
++        g_auto (GStrv) user_groups_array = NULL;
++        g_autoptr (GStrvBuilder) user_groups_builder = g_strv_builder_new ();
++
++        if (DEFAULT_USER_GROUPS != NULL && DEFAULT_USER_GROUPS[0] != '\0') {
++                g_auto (GStrv) default_user_groups = NULL;
++                default_user_groups = g_strsplit (DEFAULT_USER_GROUPS, ",", 0);
++
++                for (gsize i = 0; default_user_groups[i] != NULL; i++) {
++                        if (getgrnam (default_user_groups[i]) != NULL)
++                                g_strv_builder_add (user_groups_builder, default_user_groups[i]);
++                        else
++                                g_warning ("Default group %s doesn’t exist: not adding the user to it", default_user_groups[i]);
++                }
++        }
++        user_groups_array = g_strv_builder_end (user_groups_builder);
++        user_groups = g_strjoinv (",", user_groups_array);
++
+         if (cd->account_type == ACCOUNT_TYPE_ADMINISTRATOR) {
+                 g_auto (GStrv) admin_groups_array = NULL;
+                 g_autoptr (GStrvBuilder) admin_groups_builder = g_strv_builder_new ();
+ 
+                 g_strv_builder_add (admin_groups_builder, ADMIN_GROUP);
++                /* Add default user groups to admin groups */
++                g_strv_builder_add (admin_groups_builder, user_groups);
+ 
+                 if (EXTRA_ADMIN_GROUPS != NULL && EXTRA_ADMIN_GROUPS[0] != '\0') {
+                         g_auto (GStrv) extra_admin_groups = NULL;
+@@ -1340,6 +1362,7 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+                                         g_warning ("Extra admin group %s doesn’t exist: not adding the user to it", extra_admin_groups[i]);
+                         }
+                 }
++
+                 admin_groups_array = g_strv_builder_end (admin_groups_builder);
+                 admin_groups = g_strjoinv (",", admin_groups_array);
+ 
+@@ -1349,9 +1372,11 @@ daemon_create_user_authorized_cb (Daemon                *daemon,
+                 argv[7] = cd->user_name;
+                 argv[8] = NULL;
+         } else if (cd->account_type == ACCOUNT_TYPE_STANDARD) {
+-                argv[4] = "--";
+-                argv[5] = cd->user_name;
+-                argv[6] = NULL;
++                argv[4] = "-G";
++                argv[5] = user_groups;
++                argv[6] = "--";
++                argv[7] = cd->user_name;
++                argv[8] = NULL;
+         } else {
+                 throw_error (context, ERROR_FAILED, "Don't know how to add user of type %d", cd->account_type);
+                 return;
+-- 
+2.40.1
+
