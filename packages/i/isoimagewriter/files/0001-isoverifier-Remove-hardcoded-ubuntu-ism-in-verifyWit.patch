@@ -1,0 +1,111 @@
+From 3739e33915f96baaf086739c7f4985851aa5468b Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Mon, 10 Jul 2023 16:14:51 +0100
+Subject: [PATCH 1/2] isoverifier: Remove hardcoded ubuntu-ism in
+ verifyWithSha256Sum function
+
+This will allow adding support for other distributions which use
+signatures against sha256sum files.
+---
+ isoimagewriter/isoverifier.cpp | 23 +++++++++++++++--------
+ isoimagewriter/isoverifier.h   |  2 +-
+ 2 files changed, 16 insertions(+), 9 deletions(-)
+
+diff --git a/isoimagewriter/isoverifier.cpp b/isoimagewriter/isoverifier.cpp
+index 5a23732..c5e9f65 100644
+--- a/isoimagewriter/isoverifier.cpp
++++ b/isoimagewriter/isoverifier.cpp
+@@ -39,7 +39,10 @@ void IsoVerifier::verifyIso()
+     QFileInfo fileInfo(m_filePath);
+     QString fileName = fileInfo.fileName();
+     QString keyFingerprint;
++    QString shaFile;
++    QString sigFile;
+ 
++    /* FIXME: Find some way to clean this up before it gets out of hand */
+     if (fileName.startsWith("neon-")
+         && importSigningKey("neon-signing-key.gpg", keyFingerprint)) {
+         m_verificationMean = VerificationMean::DotSigFile;
+@@ -49,9 +52,13 @@ void IsoVerifier::verifyIso()
+     } else if (fileName.startsWith("kubuntu-")
+                && importSigningKey("ubuntu-signing-key.gpg", keyFingerprint)) {
+         m_verificationMean = VerificationMean::Sha256SumsFile;
++        shaFile = QString("SHA256SUMS");
++        sigFile = QString("SHA256SUMS.gpg");
+     } else if (fileName.startsWith("ubuntu-")
+                && importSigningKey("ubuntu-signing-key.gpg", keyFingerprint)) {
+         m_verificationMean = VerificationMean::Sha256SumsFile;
++        shaFile = QString("SHA256SUMS");
++        sigFile = QString("SHA256SUMS.gpg");
+     } else if (fileName.startsWith("netrunner-")) {
+         m_verificationMean = VerificationMean::Sha256SumInput;
+     } else {
+@@ -64,7 +71,7 @@ void IsoVerifier::verifyIso()
+         verifyWithDotSigFile(keyFingerprint);
+         break;
+     case VerificationMean::Sha256SumsFile:
+-        verifyWithSha256SumsFile(keyFingerprint);
++        verifyWithSha256SumsFile(keyFingerprint, shaFile, sigFile);
+         break;
+     case VerificationMean::Sha256SumInput:
+         emit inputRequested(i18n("SHA256 Checksum"),
+@@ -173,12 +180,12 @@ void IsoVerifier::verifyWithDotSigFile(const QString &keyFingerprint)
+     emit finished(m_isIsoValid, m_error);
+ }
+ 
+-void IsoVerifier::verifyWithSha256SumsFile(const QString &keyFingerprint)
++void IsoVerifier::verifyWithSha256SumsFile(const QString &keyFingerprint, const QString &shaFile, const QString &sigFile)
+ {
+     QFileInfo fileInfo(m_filePath);
+-    QFile checksumsFile(fileInfo.absolutePath() + "/SHA256SUMS");
++    QFile checksumsFile(fileInfo.absolutePath() + "/" + shaFile);
+     if (!checksumsFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+-        m_error = i18n("Could not open SHA256SUMS file, please download to same directory");
++        m_error = i18n("Could not find %1, please download to same directory", shaFile);
+         emit finished(m_isIsoValid, m_error); return;
+     }
+ 
+@@ -192,7 +199,7 @@ void IsoVerifier::verifyWithSha256SumsFile(const QString &keyFingerprint)
+     if (match.hasMatch()) {
+         checksum = match.captured(1);
+     } else {
+-        m_error = i18n("Could not find checksum in SHA256SUMS file");
++        m_error = i18n("Could not find checksum in %1", shaFile);
+         emit finished(m_isIsoValid, m_error); return;
+     }
+ 
+@@ -209,15 +216,15 @@ void IsoVerifier::verifyWithSha256SumsFile(const QString &keyFingerprint)
+     }
+     QByteArray hashResult = hash.result();
+     if (checksum != hashResult.toHex()) {
+-        m_error = i18n("Checksum of .iso file does not match value in SHA256SUMS file");
++        m_error = i18n("Checksum of .iso file does not match value in %1", shaFile);
+         emit finished(m_isIsoValid, m_error); return;
+     }
+ 
+     // Check GPG signature
+     QString isoFileName = fileInfo.fileName();
+-    QFile signatureFile(fileInfo.absolutePath() + "/SHA256SUMS.gpg");
++    QFile signatureFile(fileInfo.absolutePath() + "/" + sigFile);
+     if (!signatureFile.open(QIODevice::ReadOnly)) {
+-        m_error = i18n("Could not find SHA256SUMS.gpg, please download PGP signature file to same directory.");
++        m_error = i18n("Could not find %1, please download PGP signature file to same directory.", sigFile);
+         emit finished(m_isIsoValid, m_error); return;
+     }
+ 
+diff --git a/isoimagewriter/isoverifier.h b/isoimagewriter/isoverifier.h
+index e69fd1b..2e886c3 100644
+--- a/isoimagewriter/isoverifier.h
++++ b/isoimagewriter/isoverifier.h
+@@ -47,7 +47,7 @@ private:
+ 
+     bool importSigningKey(const QString &fileName, QString &keyFingerPrint);
+     void verifyWithDotSigFile(const QString &keyFingerPrint);
+-    void verifyWithSha256SumsFile(const QString &keyFingerPrint);
++    void verifyWithSha256SumsFile(const QString &keyFingerPrint, const QString &shaFile, const QString &sigFile);
+     void verifyWithSha256Sum(bool ok, const QString &checksum);
+ };
+ 
+-- 
+2.40.1
+
