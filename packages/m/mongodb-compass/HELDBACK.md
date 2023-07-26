@@ -1,1 +1,0 @@
-Compass now requires npm workspaces during the build step, which is available in npm 7+. As Solus ships with the latest nodejs LTS, which ships with npm v6, Compass is being held back until the next LTS release.
