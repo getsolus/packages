@@ -37,7 +37,7 @@ func PausePrompt() {
 }
 
 func main() {
-	fmt.Println("This script will attempt to update all your git URLs for repos to point to getsol.us.")
+	fmt.Println("This script will attempt to update all your git URLs for repos to point to github.com/solus-packages.")
 	fmt.Println("In the event this is not successful, please reclone common and re-run make clone.")
 	PausePrompt()
 
@@ -84,9 +84,9 @@ func main() {
 
 						if configReadErr == nil {
 							config := string(configContents[:])                                                              // Convert to a string
-							config = strings.Replace(config, "http://dev.solus-project.com/", "https://dev.getsol.us/", -1)  // Replace HTTP with HTTPS
-							config = strings.Replace(config, "https://dev.solus-project.com/", "https://dev.getsol.us/", -1) // Replace HTTPS
-							config = strings.Replace(config, "ssh://vcs@dev.solus-project.com/", "ssh://vcs@dev.getsol.us:2222/", -1)
+							config = strings.Replace(config, "http://dev.getsol.us/", "https://dev.getsol.us/", -1)  // Replace HTTP with HTTPS
+							config = strings.Replace(config, "https://dev.getsol.us/", "https://dev.getsol.us/", -1) // Replace HTTPS
+							config = strings.Replace(config, "ssh://vcs@dev.getsol.us:2222/", "git@github.com:solus-packages/nano.git", -1)
 
 							writeErr := ioutil.WriteFile(repoGitConfigPath, []byte(config), 0644)
 
