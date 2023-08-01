@@ -1,7 +1,7 @@
-From 1af00f947760dc6a57f5b38807a92121d82c5013 Mon Sep 17 00:00:00 2001
+From 5093497cd5ae4680ebfb8f9daa602a80b946adb6 Mon Sep 17 00:00:00 2001
 From: Casey Schaufler <casey@schaufler-ca.com>
 Date: Mon, 26 Sep 2022 17:02:08 -0700
-Subject: [PATCH 26/60] UBUNTU: SAUCE: apparmor3.2.0 [26/60]: Stacking v38:
+Subject: [PATCH 26/57] UBUNTU: SAUCE: apparmor3.2.0 [26/60]: Stacking v38:
  LSM: Specify which LSM to display
 
 Create two new prctl() options PR_LSM_ATTR_SET and PR_LSM_ATTR_GET
@@ -28,13 +28,13 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
  include/linux/security.h            |  17 ++++
  include/uapi/linux/prctl.h          |   4 +
  security/apparmor/lsm.c             |  45 ++++++++++
- security/security.c                 | 127 ++++++++++++++++++++++++----
+ security/security.c                 | 131 ++++++++++++++++++++++------
  security/selinux/hooks.c            |  21 +++++
  security/selinux/include/classmap.h |   3 +-
- 6 files changed, 199 insertions(+), 18 deletions(-)
+ 6 files changed, 195 insertions(+), 26 deletions(-)
 
 diff --git a/include/linux/security.h b/include/linux/security.h
-index 857b99245f03..3dbf2d9689f1 100644
+index ce5adae90f3d..197cb83bc143 100644
 --- a/include/linux/security.h
 +++ b/include/linux/security.h
 @@ -260,6 +260,23 @@ static inline u32 lsmblob_first(const struct lsmblob *blob)
@@ -62,7 +62,7 @@ index 857b99245f03..3dbf2d9689f1 100644
  extern int cap_capable(const struct cred *cred, struct user_namespace *ns,
  		       int cap, unsigned int opts);
 diff --git a/include/uapi/linux/prctl.h b/include/uapi/linux/prctl.h
-index 1312a137f7fb..fb3b901c07d2 100644
+index f23d9a16507f..4353a93fc59c 100644
 --- a/include/uapi/linux/prctl.h
 +++ b/include/uapi/linux/prctl.h
 @@ -287,6 +287,10 @@ struct prctl_mm_map {
@@ -77,7 +77,7 @@ index 1312a137f7fb..fb3b901c07d2 100644
  # define PR_SET_VMA_ANON_NAME		0
  
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index 31330f37fbab..6b7a7323c9eb 100644
+index 097b40c543a3..f4af2964dd3a 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
 @@ -15,6 +15,7 @@
@@ -138,8 +138,8 @@ index 31330f37fbab..6b7a7323c9eb 100644
  static int apparmor_setprocattr(const char *name, void *value,
  				size_t size)
  {
-@@ -1517,6 +1561,7 @@ static struct lsm_id apparmor_lsmid __lsm_ro_after_init = {
- static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
+@@ -1518,6 +1562,7 @@ static struct lsm_id apparmor_lsmid __ro_after_init = {
+ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(ptrace_access_check, apparmor_ptrace_access_check),
  	LSM_HOOK_INIT(ptrace_traceme, apparmor_ptrace_traceme),
 +	LSM_HOOK_INIT(task_prctl, apparmor_task_prctl),
@@ -147,10 +147,10 @@ index 31330f37fbab..6b7a7323c9eb 100644
  	LSM_HOOK_INIT(capable, apparmor_capable),
  
 diff --git a/security/security.c b/security/security.c
-index 9310b35e89db..37633e35898c 100644
+index c02d87e6609f..2da84c5538ce 100644
 --- a/security/security.c
 +++ b/security/security.c
-@@ -28,6 +28,7 @@
+@@ -29,6 +29,7 @@
  #include <linux/backing-dev.h>
  #include <linux/string.h>
  #include <linux/msg.h>
@@ -158,11 +158,11 @@ index 9310b35e89db..37633e35898c 100644
  #include <uapi/linux/lsm.h>
  #include <net/flow.h>
  #include <net/sock.h>
-@@ -83,7 +84,16 @@ static struct kmem_cache *lsm_file_cache;
+@@ -84,7 +85,16 @@ static struct kmem_cache *lsm_file_cache;
  static struct kmem_cache *lsm_inode_cache;
  
  char *lsm_names;
--static struct lsm_blob_sizes blob_sizes __lsm_ro_after_init;
+-static struct lsm_blob_sizes blob_sizes __ro_after_init;
 +
 +/*
 + * The task blob includes the "interface_lsm" slot used for
@@ -170,13 +170,13 @@ index 9310b35e89db..37633e35898c 100644
 + * Using a long to avoid potential alignment issues with
 + * module assigned task blobs.
 + */
-+static struct lsm_blob_sizes blob_sizes __lsm_ro_after_init = {
++static struct lsm_blob_sizes blob_sizes __ro_after_init = {
 +	.lbs_task = sizeof(long),
 +};
  
  /* Boot-time LSM user choice */
  static __initdata const char *chosen_lsm_order;
-@@ -721,6 +731,8 @@ int lsm_inode_alloc(struct inode *inode)
+@@ -729,6 +739,8 @@ int lsm_inode_alloc(struct inode *inode)
   */
  static int lsm_task_alloc(struct task_struct *task)
  {
@@ -185,7 +185,7 @@ index 9310b35e89db..37633e35898c 100644
  	if (blob_sizes.lbs_task == 0) {
  		task->security = NULL;
  		return 0;
-@@ -729,6 +741,15 @@ static int lsm_task_alloc(struct task_struct *task)
+@@ -737,6 +749,15 @@ static int lsm_task_alloc(struct task_struct *task)
  	task->security = kzalloc(blob_sizes.lbs_task, GFP_KERNEL);
  	if (task->security == NULL)
  		return -ENOMEM;
@@ -201,8 +201,8 @@ index 9310b35e89db..37633e35898c 100644
  	return 0;
  }
  
-@@ -1847,14 +1868,26 @@ int security_file_truncate(struct file *file)
- 
+@@ -2940,14 +2961,26 @@ int security_file_truncate(struct file *file)
+  */
  int security_task_alloc(struct task_struct *task, unsigned long clone_flags)
  {
 +	int *oilsm = current->security;
@@ -230,10 +230,10 @@ index 9310b35e89db..37633e35898c 100644
 +	return 0;
  }
  
- void security_task_free(struct task_struct *task)
-@@ -2113,10 +2146,15 @@ int security_task_kill(struct task_struct *p, struct kernel_siginfo *info,
+ /**
+@@ -3515,10 +3548,15 @@ int security_task_kill(struct task_struct *p, struct kernel_siginfo *info,
  int security_task_prctl(int option, unsigned long arg2, unsigned long arg3,
- 			 unsigned long arg4, unsigned long arg5)
+ 			unsigned long arg4, unsigned long arg5)
  {
 +	int *ilsm = current->security;
  	int thisrc;
@@ -247,7 +247,7 @@ index 9310b35e89db..37633e35898c 100644
  	hlist_for_each_entry(hp, &security_hook_heads.task_prctl, list) {
  		thisrc = hp->hook.task_prctl(option, arg2, arg3, arg4, arg5);
  		if (thisrc != LSM_RET_DEFAULT(task_prctl)) {
-@@ -2125,6 +2163,25 @@ int security_task_prctl(int option, unsigned long arg2, unsigned long arg3,
+@@ -3527,6 +3565,25 @@ int security_task_prctl(int option, unsigned long arg2, unsigned long arg3,
  				break;
  		}
  	}
@@ -273,7 +273,7 @@ index 9310b35e89db..37633e35898c 100644
  	return rc;
  }
  
-@@ -2296,22 +2353,45 @@ int security_getprocattr(struct task_struct *p, int lsmid, const char *name,
+@@ -3924,34 +3981,45 @@ int security_getprocattr(struct task_struct *p, int lsmid, const char *name,
  			 char **value)
  {
  	struct security_hook_list *hp;
@@ -291,20 +291,28 @@ index 9310b35e89db..37633e35898c 100644
  	return LSM_RET_DEFAULT(getprocattr);
  }
  
-+/**
-+ * security_setprocattr - Set process attributes via /proc
+ /**
+- * security_setprocattr() - Set an attribute for a task
+- * @lsmid: LSM ID
+- * @name: attribute name
+- * @value: attribute value
+- * @size: attribute value size
++ * security_setprocattr - Set process attributes for a task via /proc
 + * @lsmid: LSM ID of module involved
 + * @name: name of the attribute
 + * @value: value to set the attribute to
 + * @size: size of the value
-+ *
+  *
+- * Write (set) the current task's attribute @name to @value, size @size if
+- * allowed.
 + * Set the process attribute for the specified security module
 + * to the specified value. Note that this can only be used to set
 + * the process attributes for the current, or "self" process.
 + * The /proc code has already done this check.
-+ *
+  *
+- * Return: Returns bytes written on success, a negative value otherwise.
 + * Returns 0 on success, an appropriate code otherwise.
-+ */
+  */
  int security_setprocattr(int lsmid, const char *name, void *value, size_t size)
  {
  	struct security_hook_list *hp;
@@ -319,7 +327,7 @@ index 9310b35e89db..37633e35898c 100644
  		return hp->hook.setprocattr(name, value, size);
  	}
  	return LSM_RET_DEFAULT(setprocattr);
-@@ -2331,15 +2411,15 @@ EXPORT_SYMBOL(security_ismaclabel);
+@@ -4005,15 +4073,15 @@ EXPORT_SYMBOL(security_ismaclabel);
  int security_secid_to_secctx(struct lsmblob *blob, char **secdata, u32 *seclen)
  {
  	struct security_hook_list *hp;
@@ -340,7 +348,7 @@ index 9310b35e89db..37633e35898c 100644
  	}
  
  	return LSM_RET_DEFAULT(secid_to_secctx);
-@@ -2350,16 +2430,15 @@ int security_secctx_to_secid(const char *secdata, u32 seclen,
+@@ -4034,16 +4102,15 @@ int security_secctx_to_secid(const char *secdata, u32 seclen,
  			     struct lsmblob *blob)
  {
  	struct security_hook_list *hp;
@@ -361,8 +369,8 @@ index 9310b35e89db..37633e35898c 100644
  	}
  	return 0;
  }
-@@ -2367,7 +2446,14 @@ EXPORT_SYMBOL(security_secctx_to_secid);
- 
+@@ -4058,7 +4125,14 @@ EXPORT_SYMBOL(security_secctx_to_secid);
+  */
  void security_release_secctx(char *secdata, u32 seclen)
  {
 -	call_void_hook(release_secctx, secdata, seclen);
@@ -377,7 +385,7 @@ index 9310b35e89db..37633e35898c 100644
  }
  EXPORT_SYMBOL(security_release_secctx);
  
-@@ -2508,8 +2594,15 @@ EXPORT_SYMBOL(security_sock_rcv_skb);
+@@ -4488,8 +4562,15 @@ EXPORT_SYMBOL(security_sock_rcv_skb);
  int security_socket_getpeersec_stream(struct socket *sock, sockptr_t optval,
  				      sockptr_t optlen, unsigned int len)
  {
@@ -394,9 +402,9 @@ index 9310b35e89db..37633e35898c 100644
 +	return -ENOPROTOOPT;
  }
  
- int security_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *skb,
+ /**
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
-index 5ab2ca3adb85..aaf186dae877 100644
+index 7e65a070cb6f..f4ea72b34a10 100644
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
 @@ -92,6 +92,7 @@
@@ -407,7 +415,7 @@ index 5ab2ca3adb85..aaf186dae877 100644
  #include <uapi/linux/lsm.h>
  
  #include "avc.h"
-@@ -6391,6 +6392,24 @@ static int selinux_getprocattr(struct task_struct *p,
+@@ -6268,6 +6269,24 @@ static int selinux_getprocattr(struct task_struct *p,
  	return error;
  }
  
@@ -425,22 +433,22 @@ index 5ab2ca3adb85..aaf186dae877 100644
 +	 * the actual update to the interface_lsm value is handled by the
 +	 * LSM framework.
 +	 */
-+	return avc_has_perm(&selinux_state, mysid, mysid, SECCLASS_PROCESS2,
++	return avc_has_perm(mysid, mysid, SECCLASS_PROCESS2,
 +			    PROCESS2__SETINTERFACE_LSM, NULL);
 +}
 +
  static int selinux_setprocattr(const char *name, void *value, size_t size)
  {
  	struct task_security_struct *tsec;
-@@ -6402,6 +6421,7 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+@@ -6279,6 +6298,7 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
  	/*
  	 * Basic control over ability to set these attributes at all.
  	 */
 +
  	if (!strcmp(name, "exec"))
- 		error = avc_has_perm(&selinux_state,
- 				     mysid, mysid, SECCLASS_PROCESS,
-@@ -7058,6 +7078,7 @@ static struct security_hook_list selinux_hooks[] __lsm_ro_after_init = {
+ 		error = avc_has_perm(mysid, mysid, SECCLASS_PROCESS,
+ 				     PROCESS__SETEXEC, NULL);
+@@ -6916,6 +6936,7 @@ static struct security_hook_list selinux_hooks[] __ro_after_init = {
  
  	LSM_HOOK_INIT(ptrace_access_check, selinux_ptrace_access_check),
  	LSM_HOOK_INIT(ptrace_traceme, selinux_ptrace_traceme),
@@ -463,5 +471,5 @@ index a3c380775d41..b3763171ab0f 100644
  	  { "ipc_info", "syslog_read", "syslog_mod",
  	    "syslog_console", "module_request", "module_load", NULL } },
 -- 
-2.40.1
+2.41.0
 

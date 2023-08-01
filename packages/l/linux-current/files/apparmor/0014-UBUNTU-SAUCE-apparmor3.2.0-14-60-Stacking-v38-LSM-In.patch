@@ -1,7 +1,7 @@
-From cd4f4b0d600f8b3d98223b3c946f830692cd494c Mon Sep 17 00:00:00 2001
+From 0202f566edf53448e46c39ca62970a8c932f24b4 Mon Sep 17 00:00:00 2001
 From: Casey Schaufler <casey@schaufler-ca.com>
 Date: Tue, 20 Sep 2022 09:10:04 -0700
-Subject: [PATCH 14/60] UBUNTU: SAUCE: apparmor3.2.0 [14/60]: Stacking v38:
+Subject: [PATCH 14/57] UBUNTU: SAUCE: apparmor3.2.0 [14/60]: Stacking v38:
  LSM: Infrastructure management of the sock security
 
 Move management of the sock->sk_security blob out
@@ -19,7 +19,7 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
 ---
  include/linux/lsm_hooks.h         |  1 +
  security/apparmor/include/net.h   |  2 +-
- security/apparmor/lsm.c           | 20 +-------
+ security/apparmor/lsm.c           | 19 +-------
  security/security.c               | 36 ++++++++++++++-
  security/selinux/hooks.c          | 76 ++++++++++++++-----------------
  security/selinux/include/objsec.h |  5 ++
@@ -27,13 +27,13 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
  security/smack/smack.h            |  5 ++
  security/smack/smack_lsm.c        | 66 +++++++++++++--------------
  security/smack/smack_netfilter.c  |  4 +-
- 10 files changed, 128 insertions(+), 110 deletions(-)
+ 10 files changed, 128 insertions(+), 109 deletions(-)
 
 diff --git a/include/linux/lsm_hooks.h b/include/linux/lsm_hooks.h
-index ec48bd280c20..ef4d19ad4dc0 100644
+index 16137ee7fb4e..16cfe42a5d51 100644
 --- a/include/linux/lsm_hooks.h
 +++ b/include/linux/lsm_hooks.h
-@@ -1698,6 +1698,7 @@ struct lsm_blob_sizes {
+@@ -68,6 +68,7 @@ struct lsm_blob_sizes {
  	int	lbs_cred;
  	int	lbs_file;
  	int	lbs_inode;
@@ -55,7 +55,7 @@ index d2d5cad7aa14..46f9d2a62707 100644
  
  #define SOCK_ctx(X) SOCK_INODE(X)->i_security
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index 6e3784c0c5b0..0041917e7f9d 100644
+index 077fabb626bd..82b46458fa7a 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
 @@ -1010,22 +1010,6 @@ static int apparmor_userns_create(const struct cred *cred)
@@ -81,7 +81,7 @@ index 6e3784c0c5b0..0041917e7f9d 100644
  /**
   * apparmor_sk_free_security - free the sk_security field
   */
-@@ -1033,11 +1017,9 @@ static void apparmor_sk_free_security(struct sock *sk)
+@@ -1033,7 +1017,6 @@ static void apparmor_sk_free_security(struct sock *sk)
  {
  	struct aa_sk_ctx *ctx = aa_sock(sk);
  
@@ -89,19 +89,15 @@ index 6e3784c0c5b0..0041917e7f9d 100644
  	aa_put_label(ctx->label);
  	aa_put_label(ctx->peer);
  	path_put(&ctx->path);
--	kfree(ctx);
- }
- 
- /**
-@@ -1522,6 +1504,7 @@ struct lsm_blob_sizes apparmor_blob_sizes __lsm_ro_after_init = {
+@@ -1522,6 +1505,7 @@ struct lsm_blob_sizes apparmor_blob_sizes __ro_after_init = {
  	.lbs_ipc = sizeof(struct aa_ipc_sec),
  	.lbs_msg_msg = sizeof(struct aa_msg_sec),
  	.lbs_superblock = sizeof(struct aa_superblock_sec),
 +	.lbs_sock = sizeof(struct aa_sk_ctx),
  };
  
- static struct lsm_id apparmor_lsmid __lsm_ro_after_init = {
-@@ -1575,7 +1558,6 @@ static struct security_hook_list apparmor_hooks[] __lsm_ro_after_init = {
+ static struct lsm_id apparmor_lsmid __ro_after_init = {
+@@ -1575,7 +1559,6 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(getprocattr, apparmor_getprocattr),
  	LSM_HOOK_INIT(setprocattr, apparmor_setprocattr),
  
@@ -110,10 +106,10 @@ index 6e3784c0c5b0..0041917e7f9d 100644
  	LSM_HOOK_INIT(sk_clone_security, apparmor_sk_clone_security),
  
 diff --git a/security/security.c b/security/security.c
-index f80c52bf96c5..8c7be6dc5089 100644
+index dbd8814c6767..c25288f0f2da 100644
 --- a/security/security.c
 +++ b/security/security.c
-@@ -30,6 +30,7 @@
+@@ -31,6 +31,7 @@
  #include <linux/msg.h>
  #include <uapi/linux/lsm.h>
  #include <net/flow.h>
@@ -121,7 +117,7 @@ index f80c52bf96c5..8c7be6dc5089 100644
  
  #define MAX_LSM_EVM_XATTR	2
  
-@@ -210,6 +211,7 @@ static void __init lsm_set_blob_sizes(struct lsm_blob_sizes *needed)
+@@ -211,6 +212,7 @@ static void __init lsm_set_blob_sizes(struct lsm_blob_sizes *needed)
  	lsm_set_blob_size(&needed->lbs_inode, &blob_sizes.lbs_inode);
  	lsm_set_blob_size(&needed->lbs_ipc, &blob_sizes.lbs_ipc);
  	lsm_set_blob_size(&needed->lbs_msg_msg, &blob_sizes.lbs_msg_msg);
@@ -129,7 +125,7 @@ index f80c52bf96c5..8c7be6dc5089 100644
  	lsm_set_blob_size(&needed->lbs_superblock, &blob_sizes.lbs_superblock);
  	lsm_set_blob_size(&needed->lbs_task, &blob_sizes.lbs_task);
  }
-@@ -375,6 +377,7 @@ static void __init ordered_lsm_init(void)
+@@ -383,6 +385,7 @@ static void __init ordered_lsm_init(void)
  	init_debug("inode blob size      = %d\n", blob_sizes.lbs_inode);
  	init_debug("ipc blob size        = %d\n", blob_sizes.lbs_ipc);
  	init_debug("msg_msg blob size    = %d\n", blob_sizes.lbs_msg_msg);
@@ -137,7 +133,7 @@ index f80c52bf96c5..8c7be6dc5089 100644
  	init_debug("superblock blob size = %d\n", blob_sizes.lbs_superblock);
  	init_debug("task blob size       = %d\n", blob_sizes.lbs_task);
  
-@@ -708,6 +711,28 @@ static int lsm_msg_msg_alloc(struct msg_msg *mp)
+@@ -716,6 +719,28 @@ static int lsm_msg_msg_alloc(struct msg_msg *mp)
  	return 0;
  }
  
@@ -166,8 +162,8 @@ index f80c52bf96c5..8c7be6dc5089 100644
  /**
   * lsm_early_task - during initialization allocate a composite task blob
   * @task: the task that needs a blob
-@@ -2380,12 +2405,21 @@ EXPORT_SYMBOL(security_socket_getpeersec_dgram);
- 
+@@ -4386,7 +4411,14 @@ EXPORT_SYMBOL(security_socket_getpeersec_dgram);
+  */
  int security_sk_alloc(struct sock *sk, int family, gfp_t priority)
  {
 -	return call_int_hook(sk_alloc_security, 0, sk, family, priority);
@@ -181,6 +177,8 @@ index f80c52bf96c5..8c7be6dc5089 100644
 +	return rc;
  }
  
+ /**
+@@ -4398,6 +4430,8 @@ int security_sk_alloc(struct sock *sk, int family, gfp_t priority)
  void security_sk_free(struct sock *sk)
  {
  	call_void_hook(sk_free_security, sk);
@@ -188,12 +186,12 @@ index f80c52bf96c5..8c7be6dc5089 100644
 +	sk->sk_security = NULL;
  }
  
- void security_sk_clone(const struct sock *sk, struct sock *newsk)
+ /**
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
-index 171b59184f97..1147d8e07e4d 100644
+index ba5b78c31f25..73aea4855dea 100644
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -4558,7 +4558,7 @@ static int socket_sockcreate_sid(const struct task_security_struct *tsec,
+@@ -4474,7 +4474,7 @@ static int socket_sockcreate_sid(const struct task_security_struct *tsec,
  
  static int sock_has_perm(struct sock *sk, u32 perms)
  {
@@ -202,7 +200,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	struct common_audit_data ad;
  	struct lsm_network_audit net = {0,};
  
-@@ -4615,7 +4615,7 @@ static int selinux_socket_post_create(struct socket *sock, int family,
+@@ -4529,7 +4529,7 @@ static int selinux_socket_post_create(struct socket *sock, int family,
  	isec->initialized = LABEL_INITIALIZED;
  
  	if (sock->sk) {
@@ -211,7 +209,7 @@ index 171b59184f97..1147d8e07e4d 100644
  		sksec->sclass = sclass;
  		sksec->sid = sid;
  		/* Allows detection of the first association on this socket */
-@@ -4631,8 +4631,8 @@ static int selinux_socket_post_create(struct socket *sock, int family,
+@@ -4545,8 +4545,8 @@ static int selinux_socket_post_create(struct socket *sock, int family,
  static int selinux_socket_socketpair(struct socket *socka,
  				     struct socket *sockb)
  {
@@ -222,7 +220,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	sksec_a->peer_sid = sksec_b->sid;
  	sksec_b->peer_sid = sksec_a->sid;
-@@ -4647,7 +4647,7 @@ static int selinux_socket_socketpair(struct socket *socka,
+@@ -4561,7 +4561,7 @@ static int selinux_socket_socketpair(struct socket *socka,
  static int selinux_socket_bind(struct socket *sock, struct sockaddr *address, int addrlen)
  {
  	struct sock *sk = sock->sk;
@@ -231,7 +229,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u16 family;
  	int err;
  
-@@ -4782,7 +4782,7 @@ static int selinux_socket_connect_helper(struct socket *sock,
+@@ -4694,7 +4694,7 @@ static int selinux_socket_connect_helper(struct socket *sock,
  					 struct sockaddr *address, int addrlen)
  {
  	struct sock *sk = sock->sk;
@@ -240,7 +238,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	int err;
  
  	err = sock_has_perm(sk, SOCKET__CONNECT);
-@@ -4961,9 +4961,9 @@ static int selinux_socket_unix_stream_connect(struct sock *sock,
+@@ -4872,9 +4872,9 @@ static int selinux_socket_unix_stream_connect(struct sock *sock,
  					      struct sock *other,
  					      struct sock *newsk)
  {
@@ -253,7 +251,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	struct common_audit_data ad;
  	struct lsm_network_audit net = {0,};
  	int err;
-@@ -4995,8 +4995,8 @@ static int selinux_socket_unix_stream_connect(struct sock *sock,
+@@ -4905,8 +4905,8 @@ static int selinux_socket_unix_stream_connect(struct sock *sock,
  static int selinux_socket_unix_may_send(struct socket *sock,
  					struct socket *other)
  {
@@ -264,7 +262,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	struct common_audit_data ad;
  	struct lsm_network_audit net = {0,};
  
-@@ -5038,7 +5038,7 @@ static int selinux_sock_rcv_skb_compat(struct sock *sk, struct sk_buff *skb,
+@@ -4945,7 +4945,7 @@ static int selinux_sock_rcv_skb_compat(struct sock *sk, struct sk_buff *skb,
  				       u16 family)
  {
  	int err = 0;
@@ -273,7 +271,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u32 sk_sid = sksec->sid;
  	struct common_audit_data ad;
  	struct lsm_network_audit net = {0,};
-@@ -5071,7 +5071,7 @@ static int selinux_sock_rcv_skb_compat(struct sock *sk, struct sk_buff *skb,
+@@ -4977,7 +4977,7 @@ static int selinux_sock_rcv_skb_compat(struct sock *sk, struct sk_buff *skb,
  static int selinux_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
  {
  	int err;
@@ -282,7 +280,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u16 family = sk->sk_family;
  	u32 sk_sid = sksec->sid;
  	struct common_audit_data ad;
-@@ -5146,7 +5146,7 @@ static int selinux_socket_getpeersec_stream(struct socket *sock,
+@@ -5050,7 +5050,7 @@ static int selinux_socket_getpeersec_stream(struct socket *sock,
  	int err = 0;
  	char *scontext = NULL;
  	u32 scontext_len;
@@ -291,7 +289,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u32 peer_sid = SECSID_NULL;
  
  	if (sksec->sclass == SECCLASS_UNIX_STREAM_SOCKET ||
-@@ -5204,34 +5204,27 @@ static int selinux_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *
+@@ -5108,34 +5108,27 @@ static int selinux_socket_getpeersec_dgram(struct socket *sock, struct sk_buff *
  
  static int selinux_sk_alloc_security(struct sock *sk, int family, gfp_t priority)
  {
@@ -330,7 +328,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	newsksec->sid = sksec->sid;
  	newsksec->peer_sid = sksec->peer_sid;
-@@ -5245,7 +5238,7 @@ static void selinux_sk_getsecid(struct sock *sk, u32 *secid)
+@@ -5149,7 +5142,7 @@ static void selinux_sk_getsecid(struct sock *sk, u32 *secid)
  	if (!sk)
  		*secid = SECINITSID_ANY_SOCKET;
  	else {
@@ -339,7 +337,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  		*secid = sksec->sid;
  	}
-@@ -5255,7 +5248,7 @@ static void selinux_sock_graft(struct sock *sk, struct socket *parent)
+@@ -5159,7 +5152,7 @@ static void selinux_sock_graft(struct sock *sk, struct socket *parent)
  {
  	struct inode_security_struct *isec =
  		inode_security_novalidate(SOCK_INODE(parent));
@@ -348,7 +346,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	if (sk->sk_family == PF_INET || sk->sk_family == PF_INET6 ||
  	    sk->sk_family == PF_UNIX)
-@@ -5272,7 +5265,7 @@ static int selinux_sctp_process_new_assoc(struct sctp_association *asoc,
+@@ -5176,7 +5169,7 @@ static int selinux_sctp_process_new_assoc(struct sctp_association *asoc,
  {
  	struct sock *sk = asoc->base.sk;
  	u16 family = sk->sk_family;
@@ -357,7 +355,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	struct common_audit_data ad;
  	struct lsm_network_audit net = {0,};
  	int err;
-@@ -5330,7 +5323,7 @@ static int selinux_sctp_process_new_assoc(struct sctp_association *asoc,
+@@ -5233,7 +5226,7 @@ static int selinux_sctp_process_new_assoc(struct sctp_association *asoc,
  static int selinux_sctp_assoc_request(struct sctp_association *asoc,
  				      struct sk_buff *skb)
  {
@@ -366,7 +364,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u32 conn_sid;
  	int err;
  
-@@ -5363,7 +5356,7 @@ static int selinux_sctp_assoc_request(struct sctp_association *asoc,
+@@ -5266,7 +5259,7 @@ static int selinux_sctp_assoc_request(struct sctp_association *asoc,
  static int selinux_sctp_assoc_established(struct sctp_association *asoc,
  					  struct sk_buff *skb)
  {
@@ -375,7 +373,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	if (!selinux_policycap_extsockclass())
  		return 0;
-@@ -5462,8 +5455,8 @@ static int selinux_sctp_bind_connect(struct sock *sk, int optname,
+@@ -5365,8 +5358,8 @@ static int selinux_sctp_bind_connect(struct sock *sk, int optname,
  static void selinux_sctp_sk_clone(struct sctp_association *asoc, struct sock *sk,
  				  struct sock *newsk)
  {
@@ -386,7 +384,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	/* If policy does not support SECCLASS_SCTP_SOCKET then call
  	 * the non-sctp clone version.
-@@ -5480,7 +5473,7 @@ static void selinux_sctp_sk_clone(struct sctp_association *asoc, struct sock *sk
+@@ -5383,7 +5376,7 @@ static void selinux_sctp_sk_clone(struct sctp_association *asoc, struct sock *sk
  static int selinux_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
  				     struct request_sock *req)
  {
@@ -395,7 +393,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	int err;
  	u16 family = req->rsk_ops->family;
  	u32 connsid;
-@@ -5501,7 +5494,7 @@ static int selinux_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
+@@ -5404,7 +5397,7 @@ static int selinux_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
  static void selinux_inet_csk_clone(struct sock *newsk,
  				   const struct request_sock *req)
  {
@@ -404,7 +402,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	newsksec->sid = req->secid;
  	newsksec->peer_sid = req->peer_secid;
-@@ -5518,7 +5511,7 @@ static void selinux_inet_csk_clone(struct sock *newsk,
+@@ -5421,7 +5414,7 @@ static void selinux_inet_csk_clone(struct sock *newsk,
  static void selinux_inet_conn_established(struct sock *sk, struct sk_buff *skb)
  {
  	u16 family = sk->sk_family;
@@ -413,7 +411,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	/* handle mapped IPv4 packets arriving via IPv6 sockets */
  	if (family == PF_INET6 && skb->protocol == htons(ETH_P_IP))
-@@ -5602,7 +5595,7 @@ static int selinux_tun_dev_attach_queue(void *security)
+@@ -5502,7 +5495,7 @@ static int selinux_tun_dev_attach_queue(void *security)
  static int selinux_tun_dev_attach(struct sock *sk, void *security)
  {
  	struct tun_security_struct *tunsec = security;
@@ -422,7 +420,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	/* we don't currently perform any NetLabel based labeling here and it
  	 * isn't clear that we would want to do so anyway; while we could apply
-@@ -5731,7 +5724,7 @@ static unsigned int selinux_ip_output(void *priv, struct sk_buff *skb,
+@@ -5628,7 +5621,7 @@ static unsigned int selinux_ip_output(void *priv, struct sk_buff *skb,
  			return NF_ACCEPT;
  
  		/* standard practice, label using the parent socket */
@@ -431,7 +429,7 @@ index 171b59184f97..1147d8e07e4d 100644
  		sid = sksec->sid;
  	} else
  		sid = SECINITSID_KERNEL;
-@@ -5754,7 +5747,7 @@ static unsigned int selinux_ip_postroute_compat(struct sk_buff *skb,
+@@ -5651,7 +5644,7 @@ static unsigned int selinux_ip_postroute_compat(struct sk_buff *skb,
  	sk = skb_to_full_sk(skb);
  	if (sk == NULL)
  		return NF_ACCEPT;
@@ -440,7 +438,7 @@ index 171b59184f97..1147d8e07e4d 100644
  
  	ad.type = LSM_AUDIT_DATA_NET;
  	ad.u.net = &net;
-@@ -5847,7 +5840,7 @@ static unsigned int selinux_ip_postroute(void *priv,
+@@ -5743,7 +5736,7 @@ static unsigned int selinux_ip_postroute(void *priv,
  		u32 skb_sid;
  		struct sk_security_struct *sksec;
  
@@ -449,7 +447,7 @@ index 171b59184f97..1147d8e07e4d 100644
  		if (selinux_skb_peerlbl_sid(skb, family, &skb_sid))
  			return NF_DROP;
  		/* At this point, if the returned skb peerlbl is SECSID_NULL
-@@ -5876,7 +5869,7 @@ static unsigned int selinux_ip_postroute(void *priv,
+@@ -5772,7 +5765,7 @@ static unsigned int selinux_ip_postroute(void *priv,
  	} else {
  		/* Locally generated packet, fetch the security label from the
  		 * associated socket. */
@@ -458,7 +456,7 @@ index 171b59184f97..1147d8e07e4d 100644
  		peer_sid = sksec->sid;
  		secmark_perm = PACKET__SEND;
  	}
-@@ -5925,7 +5918,7 @@ static int selinux_netlink_send(struct sock *sk, struct sk_buff *skb)
+@@ -5818,7 +5811,7 @@ static int selinux_netlink_send(struct sock *sk, struct sk_buff *skb)
  	unsigned int data_len = skb->len;
  	unsigned char *data = skb->data;
  	struct nlmsghdr *nlh;
@@ -467,7 +465,7 @@ index 171b59184f97..1147d8e07e4d 100644
  	u16 sclass = sksec->sclass;
  	u32 perm;
  
-@@ -6918,6 +6911,7 @@ struct lsm_blob_sizes selinux_blob_sizes __lsm_ro_after_init = {
+@@ -6776,6 +6769,7 @@ struct lsm_blob_sizes selinux_blob_sizes __ro_after_init = {
  	.lbs_inode = sizeof(struct inode_security_struct),
  	.lbs_ipc = sizeof(struct ipc_security_struct),
  	.lbs_msg_msg = sizeof(struct msg_security_struct),
@@ -490,7 +488,7 @@ index 2953132408bf..007d1ae7ee27 100644
 +
  #endif /* _SELINUX_OBJSEC_H_ */
 diff --git a/security/selinux/netlabel.c b/security/selinux/netlabel.c
-index 1321f15799e2..800ab4b4239e 100644
+index 767c670d33ea..afa5435c37b8 100644
 --- a/security/selinux/netlabel.c
 +++ b/security/selinux/netlabel.c
 @@ -17,6 +17,7 @@
@@ -510,7 +508,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct netlbl_lsm_secattr *secattr;
  
  	if (sksec->nlbl_secattr != NULL)
-@@ -101,7 +102,7 @@ static struct netlbl_lsm_secattr *selinux_netlbl_sock_getattr(
+@@ -100,7 +101,7 @@ static struct netlbl_lsm_secattr *selinux_netlbl_sock_getattr(
  							const struct sock *sk,
  							u32 sid)
  {
@@ -519,7 +517,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct netlbl_lsm_secattr *secattr = sksec->nlbl_secattr;
  
  	if (secattr == NULL)
-@@ -236,7 +237,7 @@ int selinux_netlbl_skbuff_setsid(struct sk_buff *skb,
+@@ -235,7 +236,7 @@ int selinux_netlbl_skbuff_setsid(struct sk_buff *skb,
  	 * being labeled by it's parent socket, if it is just exit */
  	sk = skb_to_full_sk(skb);
  	if (sk != NULL) {
@@ -528,7 +526,7 @@ index 1321f15799e2..800ab4b4239e 100644
  
  		if (sksec->nlbl_state != NLBL_REQSKB)
  			return 0;
-@@ -274,7 +275,7 @@ int selinux_netlbl_sctp_assoc_request(struct sctp_association *asoc,
+@@ -272,7 +273,7 @@ int selinux_netlbl_sctp_assoc_request(struct sctp_association *asoc,
  {
  	int rc;
  	struct netlbl_lsm_secattr secattr;
@@ -537,7 +535,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct sockaddr_in addr4;
  	struct sockaddr_in6 addr6;
  
-@@ -355,7 +356,7 @@ int selinux_netlbl_inet_conn_request(struct request_sock *req, u16 family)
+@@ -351,7 +352,7 @@ int selinux_netlbl_inet_conn_request(struct request_sock *req, u16 family)
   */
  void selinux_netlbl_inet_csk_clone(struct sock *sk, u16 family)
  {
@@ -546,7 +544,7 @@ index 1321f15799e2..800ab4b4239e 100644
  
  	if (family == PF_INET)
  		sksec->nlbl_state = NLBL_LABELED;
-@@ -373,8 +374,8 @@ void selinux_netlbl_inet_csk_clone(struct sock *sk, u16 family)
+@@ -369,8 +370,8 @@ void selinux_netlbl_inet_csk_clone(struct sock *sk, u16 family)
   */
  void selinux_netlbl_sctp_sk_clone(struct sock *sk, struct sock *newsk)
  {
@@ -557,7 +555,7 @@ index 1321f15799e2..800ab4b4239e 100644
  
  	newsksec->nlbl_state = sksec->nlbl_state;
  }
-@@ -392,7 +393,7 @@ void selinux_netlbl_sctp_sk_clone(struct sock *sk, struct sock *newsk)
+@@ -388,7 +389,7 @@ void selinux_netlbl_sctp_sk_clone(struct sock *sk, struct sock *newsk)
  int selinux_netlbl_socket_post_create(struct sock *sk, u16 family)
  {
  	int rc;
@@ -566,7 +564,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct netlbl_lsm_secattr *secattr;
  
  	if (family != PF_INET && family != PF_INET6)
-@@ -507,7 +508,7 @@ int selinux_netlbl_socket_setsockopt(struct socket *sock,
+@@ -502,7 +503,7 @@ int selinux_netlbl_socket_setsockopt(struct socket *sock,
  {
  	int rc = 0;
  	struct sock *sk = sock->sk;
@@ -575,7 +573,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct netlbl_lsm_secattr secattr;
  
  	if (selinux_netlbl_option(level, optname) &&
-@@ -545,7 +546,7 @@ static int selinux_netlbl_socket_connect_helper(struct sock *sk,
+@@ -540,7 +541,7 @@ static int selinux_netlbl_socket_connect_helper(struct sock *sk,
  						struct sockaddr *addr)
  {
  	int rc;
@@ -584,7 +582,7 @@ index 1321f15799e2..800ab4b4239e 100644
  	struct netlbl_lsm_secattr *secattr;
  
  	/* connected sockets are allowed to disconnect when the address family
-@@ -584,7 +585,7 @@ static int selinux_netlbl_socket_connect_helper(struct sock *sk,
+@@ -579,7 +580,7 @@ static int selinux_netlbl_socket_connect_helper(struct sock *sk,
  int selinux_netlbl_socket_connect_locked(struct sock *sk,
  					 struct sockaddr *addr)
  {
@@ -610,10 +608,10 @@ index e2239be7bd60..6cb73aae0167 100644
   * Is the directory transmuting?
   */
 diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
-index 1989210dd4f3..a12f2a521a53 100644
+index 9e51ca82f02d..cdb350164d80 100644
 --- a/security/smack/smack_lsm.c
 +++ b/security/smack/smack_lsm.c
-@@ -1495,7 +1495,7 @@ static int smack_inode_getsecurity(struct mnt_idmap *idmap,
+@@ -1479,7 +1479,7 @@ static int smack_inode_getsecurity(struct mnt_idmap *idmap,
  		if (sock == NULL || sock->sk == NULL)
  			return -EOPNOTSUPP;
  
@@ -622,7 +620,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  		if (strcmp(name, XATTR_SMACK_IPIN) == 0)
  			isp = ssp->smk_in;
-@@ -1878,7 +1878,7 @@ static int smack_file_receive(struct file *file)
+@@ -1862,7 +1862,7 @@ static int smack_file_receive(struct file *file)
  
  	if (inode->i_sb->s_magic == SOCKFS_MAGIC) {
  		sock = SOCKET_I(inode);
@@ -631,7 +629,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  		tsp = smack_cred(current_cred());
  		/*
  		 * If the receiving process can't write to the
-@@ -2298,11 +2298,7 @@ static void smack_task_to_inode(struct task_struct *p, struct inode *inode)
+@@ -2282,11 +2282,7 @@ static void smack_task_to_inode(struct task_struct *p, struct inode *inode)
  static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
  {
  	struct smack_known *skp = smk_of_current();
@@ -644,7 +642,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  	/*
  	 * Sockets created by kernel threads receive web label.
-@@ -2316,11 +2312,10 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
+@@ -2300,11 +2296,10 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
  	}
  	ssp->smk_packet = NULL;
  
@@ -657,7 +655,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  /**
   * smack_sk_free_security - Free a socket blob
   * @sk: the socket
-@@ -2329,7 +2324,6 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
+@@ -2313,7 +2308,6 @@ static int smack_sk_alloc_security(struct sock *sk, int family, gfp_t gfp_flags)
   */
  static void smack_sk_free_security(struct sock *sk)
  {
@@ -665,7 +663,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smk_port_label *spp;
  
  	if (sk->sk_family == PF_INET6) {
-@@ -2342,9 +2336,8 @@ static void smack_sk_free_security(struct sock *sk)
+@@ -2326,9 +2320,8 @@ static void smack_sk_free_security(struct sock *sk)
  		}
  		rcu_read_unlock();
  	}
@@ -676,7 +674,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  /**
   * smack_sk_clone_security - Copy security context
-@@ -2472,7 +2465,7 @@ static struct smack_known *smack_ipv6host_label(struct sockaddr_in6 *sip)
+@@ -2456,7 +2449,7 @@ static struct smack_known *smack_ipv6host_label(struct sockaddr_in6 *sip)
   */
  static int smack_netlbl_add(struct sock *sk)
  {
@@ -685,7 +683,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smack_known *skp = ssp->smk_out;
  	int rc;
  
-@@ -2504,7 +2497,7 @@ static int smack_netlbl_add(struct sock *sk)
+@@ -2488,7 +2481,7 @@ static int smack_netlbl_add(struct sock *sk)
   */
  static void smack_netlbl_delete(struct sock *sk)
  {
@@ -694,7 +692,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  	/*
  	 * Take the label off the socket if one is set.
-@@ -2536,7 +2529,7 @@ static int smk_ipv4_check(struct sock *sk, struct sockaddr_in *sap)
+@@ -2520,7 +2513,7 @@ static int smk_ipv4_check(struct sock *sk, struct sockaddr_in *sap)
  	struct smack_known *skp;
  	int rc = 0;
  	struct smack_known *hkp;
@@ -703,7 +701,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smk_audit_info ad;
  
  	rcu_read_lock();
-@@ -2609,7 +2602,7 @@ static void smk_ipv6_port_label(struct socket *sock, struct sockaddr *address)
+@@ -2593,7 +2586,7 @@ static void smk_ipv6_port_label(struct socket *sock, struct sockaddr *address)
  {
  	struct sock *sk = sock->sk;
  	struct sockaddr_in6 *addr6;
@@ -712,7 +710,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smk_port_label *spp;
  	unsigned short port = 0;
  
-@@ -2697,7 +2690,7 @@ static int smk_ipv6_port_check(struct sock *sk, struct sockaddr_in6 *address,
+@@ -2681,7 +2674,7 @@ static int smk_ipv6_port_check(struct sock *sk, struct sockaddr_in6 *address,
  				int act)
  {
  	struct smk_port_label *spp;
@@ -721,7 +719,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smack_known *skp = NULL;
  	unsigned short port;
  	struct smack_known *object;
-@@ -2791,7 +2784,7 @@ static int smack_inode_setsecurity(struct inode *inode, const char *name,
+@@ -2775,7 +2768,7 @@ static int smack_inode_setsecurity(struct inode *inode, const char *name,
  	if (sock == NULL || sock->sk == NULL)
  		return -EOPNOTSUPP;
  
@@ -730,7 +728,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  	if (strcmp(name, XATTR_SMACK_IPIN) == 0)
  		ssp->smk_in = skp;
-@@ -2839,7 +2832,7 @@ static int smack_socket_post_create(struct socket *sock, int family,
+@@ -2823,7 +2816,7 @@ static int smack_socket_post_create(struct socket *sock, int family,
  	 * Sockets created by kernel threads receive web label.
  	 */
  	if (unlikely(current->flags & PF_KTHREAD)) {
@@ -739,7 +737,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  		ssp->smk_in = &smack_known_web;
  		ssp->smk_out = &smack_known_web;
  	}
-@@ -2864,8 +2857,8 @@ static int smack_socket_post_create(struct socket *sock, int family,
+@@ -2848,8 +2841,8 @@ static int smack_socket_post_create(struct socket *sock, int family,
  static int smack_socket_socketpair(struct socket *socka,
  		                   struct socket *sockb)
  {
@@ -750,7 +748,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  	asp->smk_packet = bsp->smk_out;
  	bsp->smk_packet = asp->smk_out;
-@@ -2928,7 +2921,7 @@ static int smack_socket_connect(struct socket *sock, struct sockaddr *sap,
+@@ -2912,7 +2905,7 @@ static int smack_socket_connect(struct socket *sock, struct sockaddr *sap,
  		if (__is_defined(SMACK_IPV6_SECMARK_LABELING))
  			rsp = smack_ipv6host_label(sip);
  		if (rsp != NULL) {
@@ -759,7 +757,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  			rc = smk_ipv6_check(ssp->smk_out, rsp, sip,
  					    SMK_CONNECTING);
-@@ -3659,9 +3652,9 @@ static int smack_unix_stream_connect(struct sock *sock,
+@@ -3643,9 +3636,9 @@ static int smack_unix_stream_connect(struct sock *sock,
  {
  	struct smack_known *skp;
  	struct smack_known *okp;
@@ -772,7 +770,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smk_audit_info ad;
  	int rc = 0;
  #ifdef CONFIG_AUDIT
-@@ -3707,8 +3700,8 @@ static int smack_unix_stream_connect(struct sock *sock,
+@@ -3691,8 +3684,8 @@ static int smack_unix_stream_connect(struct sock *sock,
   */
  static int smack_unix_may_send(struct socket *sock, struct socket *other)
  {
@@ -783,7 +781,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smk_audit_info ad;
  	int rc;
  
-@@ -3745,7 +3738,7 @@ static int smack_socket_sendmsg(struct socket *sock, struct msghdr *msg,
+@@ -3729,7 +3722,7 @@ static int smack_socket_sendmsg(struct socket *sock, struct msghdr *msg,
  	struct sockaddr_in6 *sap = (struct sockaddr_in6 *) msg->msg_name;
  #endif
  #ifdef SMACK_IPV6_SECMARK_LABELING
@@ -792,7 +790,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smack_known *rsp;
  #endif
  	int rc = 0;
-@@ -3957,7 +3950,7 @@ static struct smack_known *smack_from_netlbl(const struct sock *sk, u16 family,
+@@ -3941,7 +3934,7 @@ static struct smack_known *smack_from_netlbl(const struct sock *sk, u16 family,
  	netlbl_secattr_init(&secattr);
  
  	if (sk)
@@ -801,7 +799,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  
  	if (netlbl_skbuff_getattr(skb, family, &secattr) == 0) {
  		skp = smack_from_secattr(&secattr, ssp);
-@@ -3979,7 +3972,7 @@ static struct smack_known *smack_from_netlbl(const struct sock *sk, u16 family,
+@@ -3963,7 +3956,7 @@ static struct smack_known *smack_from_netlbl(const struct sock *sk, u16 family,
   */
  static int smack_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
  {
@@ -810,7 +808,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smack_known *skp = NULL;
  	int rc = 0;
  	struct smk_audit_info ad;
-@@ -4083,7 +4076,7 @@ static int smack_socket_getpeersec_stream(struct socket *sock,
+@@ -4067,7 +4060,7 @@ static int smack_socket_getpeersec_stream(struct socket *sock,
  	u32 slen = 1;
  	int rc = 0;
  
@@ -819,7 +817,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	if (ssp->smk_packet != NULL) {
  		rcp = ssp->smk_packet->smk_known;
  		slen = strlen(rcp) + 1;
-@@ -4133,7 +4126,7 @@ static int smack_socket_getpeersec_dgram(struct socket *sock,
+@@ -4117,7 +4110,7 @@ static int smack_socket_getpeersec_dgram(struct socket *sock,
  
  	switch (family) {
  	case PF_UNIX:
@@ -828,7 +826,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  		s = ssp->smk_out->smk_secid;
  		break;
  	case PF_INET:
-@@ -4182,7 +4175,7 @@ static void smack_sock_graft(struct sock *sk, struct socket *parent)
+@@ -4166,7 +4159,7 @@ static void smack_sock_graft(struct sock *sk, struct socket *parent)
  	    (sk->sk_family != PF_INET && sk->sk_family != PF_INET6))
  		return;
  
@@ -837,7 +835,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	ssp->smk_in = skp;
  	ssp->smk_out = skp;
  	/* cssp->smk_packet is already set in smack_inet_csk_clone() */
-@@ -4202,7 +4195,7 @@ static int smack_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
+@@ -4186,7 +4179,7 @@ static int smack_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
  {
  	u16 family = sk->sk_family;
  	struct smack_known *skp;
@@ -846,7 +844,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct sockaddr_in addr;
  	struct iphdr *hdr;
  	struct smack_known *hskp;
-@@ -4288,7 +4281,7 @@ static int smack_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
+@@ -4272,7 +4265,7 @@ static int smack_inet_conn_request(const struct sock *sk, struct sk_buff *skb,
  static void smack_inet_csk_clone(struct sock *sk,
  				 const struct request_sock *req)
  {
@@ -855,7 +853,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	struct smack_known *skp;
  
  	if (req->peer_secid != 0) {
-@@ -4854,6 +4847,7 @@ struct lsm_blob_sizes smack_blob_sizes __lsm_ro_after_init = {
+@@ -4838,6 +4831,7 @@ struct lsm_blob_sizes smack_blob_sizes __ro_after_init = {
  	.lbs_inode = sizeof(struct inode_smack),
  	.lbs_ipc = sizeof(struct smack_known *),
  	.lbs_msg_msg = sizeof(struct smack_known *),
@@ -863,7 +861,7 @@ index 1989210dd4f3..a12f2a521a53 100644
  	.lbs_superblock = sizeof(struct superblock_smack),
  };
  
-@@ -4973,7 +4967,9 @@ static struct security_hook_list smack_hooks[] __lsm_ro_after_init = {
+@@ -4957,7 +4951,9 @@ static struct security_hook_list smack_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(socket_getpeersec_stream, smack_socket_getpeersec_stream),
  	LSM_HOOK_INIT(socket_getpeersec_dgram, smack_socket_getpeersec_dgram),
  	LSM_HOOK_INIT(sk_alloc_security, smack_sk_alloc_security),
@@ -889,5 +887,5 @@ index b945c1d3a743..bad71b7e648d 100644
  		skb->secmark = skp->smk_secid;
  	}
 -- 
-2.40.1
+2.41.0
 
