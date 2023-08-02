@@ -1,6 +1,6 @@
 # common 
 
-See [this page](https://getsol.us/articles/packaging/building-a-package/en/#setting-up-common) for setup documentation.
+See [this page](https://help.getsol.us/docs/packaging/#setting-up-common) for setup documentation.
 
 ## Repositories
 
