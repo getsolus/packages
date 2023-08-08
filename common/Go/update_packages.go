@@ -42,6 +42,7 @@ var excludes = []string{
 	"solus-image-i3",
 	"solus-image-mate",
 	"solus-image-plasma",
+	"solus-image-xfce",
 	"solus-secureboot-keys",
 	"solus-site",
 	"solus-site-backend",
