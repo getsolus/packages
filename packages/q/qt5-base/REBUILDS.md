@@ -1,5 +1,8 @@
 This is a list of packages which need to be rebuild by every new update
 
+You should update the following too:
+* shiboken2
+
 QT Minor Update (eg 5.15.7 -> 5.15.8):
 
 * python3-qt5 (needs always an update to the same QT Version)
