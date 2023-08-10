@@ -18,7 +18,7 @@ import os
 import xml.dom.minidom as minidom
 import datetime
 import commands
-from configobj import ConfigObj
+import ConfigParser
 
 ''' Example config file
 ~/.config/solus/packager
@@ -49,9 +49,10 @@ if __name__ == "__main__":
             print "Config file could not be found."
             sys.exit(1)
 
-    config = ConfigObj(use_conf)
-    newname = config["Packager"]["Name"]
-    newemail = config["Packager"]["Email"]
+    c = ConfigParser.ConfigParser()
+    c.readfp(open(use_conf))
+    newname = c.get("Packager", "Name")
+    newemail = c.get("Packager", "Email")
 
     if not os.path.exists("pspec.xml"):
         print "pspec.xml doesn\'t exist - aborting"
