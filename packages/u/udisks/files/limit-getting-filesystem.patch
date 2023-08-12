@@ -1,0 +1,79 @@
+From 66f468639f1b5fadcca1e74d431f7cd07fc3fc87 Mon Sep 17 00:00:00 2001
+From: Vojtech Trefny <vtrefny@redhat.com>
+Date: Sat, 15 Jul 2023 18:58:54 +0200
+Subject: [PATCH] Limit getting filesystem size only to Ext and XFS
+
+We switched to using bd_fs_get_size in 2.10 which added support
+for getting size on NTFS, exFAT, VFAT and btrfs, which is already
+causing issues, we should limit the filesystem where we try to
+get the size manually using the filesystems tools to Ext and XFS
+which we already did in 2.9. We can still get the data from udev
+where possible.
+---
+ src/tests/dbus-tests/test_80_filesystem.py | 6 ------
+ src/udiskslinuxfilesystem.c                | 7 +++++++
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/src/tests/dbus-tests/test_80_filesystem.py b/src/tests/dbus-tests/test_80_filesystem.py
+index 171e859e8..71c011ae0 100644
+--- a/src/tests/dbus-tests/test_80_filesystem.py
++++ b/src/tests/dbus-tests/test_80_filesystem.py
+@@ -1553,7 +1553,6 @@ def test_mount_fstab_user_option(self):
+ class VFATTestCase(NonPOSIXTestCase):
+     _fs_signature = 'vfat'
+     _can_mount = True
+-    _can_query_size = True and UdisksFSTestCase.command_exists('fsck.vfat')
+ 
+     def _invalid_label(self, disk):
+         label = 'a' * 12  # at most 11 characters
+@@ -1576,7 +1575,6 @@ def test_repair_resize_check(self):
+ class EXFATTestCase(NonPOSIXTestCase):
+     _fs_signature = 'exfat'
+     _can_mount = True
+-    _can_query_size = True and UdisksFSTestCase.command_exists('fsck.exfat')
+ 
+     def _gen_uuid(self):
+         return str.format("%04X-%04X" % (random.randint(0, 0xffff), random.randint(0, 0xffff)))
+@@ -1586,7 +1584,6 @@ class NTFSTestCase(UdisksFSTestCase):
+     _fs_signature = 'ntfs'
+     _fs_name = 'ntfs'
+     _can_mount = True
+-    _can_query_size = True and UdisksFSTestCase.command_exists('ntfscluster')
+ 
+     @classmethod
+     def setUpClass(cls):
+@@ -1609,7 +1606,6 @@ class NTFS3TestCase(UdisksFSTestCase):
+     _fs_signature = 'ntfs'
+     _fs_name = 'ntfs3'
+     _can_mount = True
+-    _can_query_size = True and UdisksFSTestCase.command_exists('ntfscluster')
+     _have_ntfs3g = UdisksFSTestCase.command_exists('ntfs-3g')
+ 
+     @classmethod
+@@ -1670,8 +1666,6 @@ def test_userspace_mount_options(self):
+ class F2FSTestCase(UdisksFSTestCase):
+     _fs_signature = 'f2fs'
+     _can_mount = True and udiskstestcase.UdisksTestCase.module_available('f2fs')
+-    _can_query_size = True and UdisksFSTestCase.command_exists('dump.f2fs') and \
+-                      UdisksFSTestCase._get_fstool_version('dump.f2fs -V', r'dump.f2fs ([\d\.]+)') <= Version('1.14.0')
+ 
+ 
+ class UDFTestCase(UdisksFSTestCase):
+diff --git a/src/udiskslinuxfilesystem.c b/src/udiskslinuxfilesystem.c
+index f2e5eb608..9f74da94a 100644
+--- a/src/udiskslinuxfilesystem.c
++++ b/src/udiskslinuxfilesystem.c
+@@ -211,6 +211,13 @@ get_filesystem_size (UDisksLinuxFilesystem *filesystem)
+   if (!filesystem->cached_device_file || !filesystem->cached_fs_type)
+     return 0;
+ 
++  /* manually getting size is supported only for Ext and XFS */
++  if (g_strcmp0 (filesystem->cached_fs_type, "ext2") != 0 &&
++      g_strcmp0 (filesystem->cached_fs_type, "ext3") != 0 &&
++      g_strcmp0 (filesystem->cached_fs_type, "ext4") != 0 &&
++      g_strcmp0 (filesystem->cached_fs_type, "xfs") != 0)
++      return 0;
++
+   /* if the drive is ATA and is sleeping, skip filesystem size check to prevent
+    * drive waking up - nothing has changed anyway since it's been sleeping...
+    */
