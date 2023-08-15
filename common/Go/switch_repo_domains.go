@@ -112,7 +112,7 @@ func main() {
 		config := string(configContents[:])                                                                  // Convert to a string
 		config = strings.Replace(config, "http://dev.getsol.us/", "https://github.com/solus-packages/", -1)  // Replace HTTP with HTTPS
 		config = strings.Replace(config, "https://dev.getsol.us/", "https://github.com/solus-packages/", -1) // Replace HTTPS
-		config = strings.Replace(config, "ssh://vcs@dev.getsol.us:2222/", "git@github.com:solus-packages/", -1)
+		config = strings.Replace(config, "ssh://vcs@dev.getsol.us:2222/", "git@github.com:solus-packages/", -1) // Replace SSH
 		writeErr := ioutil.WriteFile(repoGitConfigPath, []byte(config), 0644)
 		if writeErr != nil {
 			fmt.Println("Failed to write the config. Adding to a report at the end.")
