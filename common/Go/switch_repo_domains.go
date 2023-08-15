@@ -74,6 +74,11 @@ func main() {
 	counter := 0
 	for _, dir := range dirNames { // For each directory
 
+		// These live on getsolus github org
+		if dir == "common" || dir == "infrastructure-tooling" {
+			continue
+		}
+
 		repoPath := filepath.Join(workDir, dir)
 		repoGitConfigPath := filepath.Join(repoPath, ".git", "config") // Combine the paths to get to .git/config
 
