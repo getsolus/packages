@@ -110,9 +110,9 @@ func main() {
 
 		fmt.Printf("\033[35mAttempting to update: %s\033[0m\n", dir)
 		config := string(configContents[:])                                                                  // Convert to a string
-		config = strings.Replace(config, "http://dev.getsol.us/", "https://github.com/solus-packages/", -1)  // Replace HTTP with HTTPS
-		config = strings.Replace(config, "https://dev.getsol.us/", "https://github.com/solus-packages/", -1) // Replace HTTPS
-		config = strings.Replace(config, "ssh://vcs@dev.getsol.us:2222/", "git@github.com:solus-packages/", -1) // Replace SSH
+		config = strings.Replace(config, "http://dev.getsol.us/source/", "https://github.com/solus-packages/", -1)  // Replace HTTP with HTTPS
+		config = strings.Replace(config, "https://dev.getsol.us/source/", "https://github.com/solus-packages/", -1) // Replace HTTPS
+		config = strings.Replace(config, "ssh://vcs@dev.getsol.us:2222/source/", "git@github.com:solus-packages/", -1) // Replace SSH
 		writeErr := ioutil.WriteFile(repoGitConfigPath, []byte(config), 0644)
 		if writeErr != nil {
 			fmt.Println("Failed to write the config. Adding to a report at the end.")
