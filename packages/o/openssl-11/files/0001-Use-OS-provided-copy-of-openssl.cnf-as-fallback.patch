@@ -1,0 +1,75 @@
+From 495c83fb9932967a3515aaadedc304bbd528c1a5 Mon Sep 17 00:00:00 2001
+From: Auke Kok <auke-jan.h.kok@intel.com>
+Date: Sat, 3 Nov 2018 20:00:42 -0700
+Subject: [PATCH] Use OS provided copy of openssl.cnf as fallback.
+
+This will be used only if OPENSSL_CONF is not set and if
+/etc/openssl.cnf is not found. If either one of those is the case, they
+will be used and create an error if there is something wrong with them.
+---
+ apps/apps.c            | 3 +++
+ apps/openssl.c         | 7 ++++++-
+ crypto/conf/conf_mod.c | 7 ++++++-
+ 3 files changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/apps/apps.c b/apps/apps.c
+index f2447fb0be..9ac2a66fe0 100644
+--- a/apps/apps.c
++++ b/apps/apps.c
+@@ -515,6 +515,9 @@ int app_load_modules(const CONF *config)
+ 
+     if (config == NULL)
+         config = to_free = app_load_config_quiet(default_config_file);
++    /* clearlinux: use OS defaults if no explicit or /etc/ cnf found */
++    if (config == NULL)
++        config = to_free = app_load_config_quiet("/usr/share/defaults/etc/ssl/openssl.cnf");
+     if (config == NULL)
+         return 1;
+ 
+diff --git a/apps/openssl.c b/apps/openssl.c
+index f35d57f264..a11cbf0a88 100644
+--- a/apps/openssl.c
++++ b/apps/openssl.c
+@@ -113,7 +113,12 @@ static char *make_config_name(void)
+ #endif
+     strcat(p, OPENSSL_CONF);
+ 
+-    return p;
++    if (access(p, R_OK) == 0)
++        return p;
++
++    OPENSSL_free(p);
++
++    return OPENSSL_strdup("/usr/share/defaults/etc/ssl/openssl.cnf");
+ }
+ 
+ int main(int argc, char *argv[])
+diff --git a/crypto/conf/conf_mod.c b/crypto/conf/conf_mod.c
+index e703d97f54..33ead6be2e 100644
+--- a/crypto/conf/conf_mod.c
++++ b/crypto/conf/conf_mod.c
+@@ -9,6 +9,7 @@
+ 
+ #include "internal/cryptlib.h"
+ #include <stdio.h>
++#include <unistd.h>
+ #include <ctype.h>
+ #include <openssl/crypto.h>
+ #include "internal/conf.h"
+@@ -499,8 +500,12 @@ char *CONF_get1_default_config_file(void)
+         return NULL;
+     BIO_snprintf(file, len + 1, "%s%s%s", X509_get_default_cert_area(),
+                  sep, OPENSSL_CONF);
++    if (access(file, R_OK) == 0)
++        return file;
+ 
+-    return file;
++    OPENSSL_free(file);
++
++    return OPENSSL_strdup("/usr/share/defaults/etc/ssl/openssl.cnf");
+ }
+ 
+ /*
+-- 
+2.41.0
+

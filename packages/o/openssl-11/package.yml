@@ -1,32 +1,59 @@
 name       : openssl-11
 version    : 1.1.1v
-release    : 19
+release    : 20
 source     :
     - https://www.openssl.org/source/openssl-1.1.1v.tar.gz : d6697e2871e77238460402e9362d47d18382b15ef9f246aba6c7bd780d38a6b0
 license    : OpenSSL
-summary    : Cryptographic tools required by many packages
+summary    : Legacy cryptographic tools required by many packages
 description: |
-    The OpenSSL package contains management tools and libraries relating to cryptography. These are useful for providing cryptography functions to other packages, such as OpenSSH, email applications and web browsers (for accessing HTTPS sites).
+    This is a legacy OpenSSL 1.1 series package. Building against this library is not supported and is only intended for legacy usecases or transitions between 1.1 series and 3.x.
 component  :
     - system.base
     - devel : system.devel
 emul32     : yes
 mancompress: yes
 patterns   :
-    - devel : /usr/share/man/man3
+    - devel :
+        - /usr/lib64/openssl-1.1/libcrypto.a
+        - /usr/lib64/openssl-1.1/libcrypto.so
+        - /usr/lib64/openssl-1.1/libssl.a
+        - /usr/lib64/openssl-1.1/libssl.so
+        - /usr/lib64/openssl-1.1/pkgconfig/
+    - 32bit-devel:
+        - /usr/lib32/openssl-1.1/libcrypto.a
+        - /usr/lib32/openssl-1.1/libcrypto.so
+        - /usr/lib32/openssl-1.1/libssl.a
+        - /usr/lib32/openssl-1.1/libssl.so
+        - /usr/lib32/openssl-1.1/pkgconfig/
 builddeps  :
     - pkgconfig32(zlib)
     - glibc-32bit-devel
     - libgcc-32bit
 setup      : |
+    %patch -p1 -i $pkgfiles/0001-Use-OS-provided-copy-of-openssl.cnf-as-fallback.patch
     if [[ -z "${EMUL32BUILD}" ]]; then
-        ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib64 no-ssl3-method enable-weak-ssl-ciphers shared zlib-dynamic "-Wa,--noexecstack ${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
+        ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib64/openssl-1.1 no-ssl3-method enable-weak-ssl-ciphers shared zlib-dynamic "-Wa,--noexecstack ${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
     else
-        ./Configure --prefix=/usr --openssldir=/etc/ssl --libdir=lib32 no-ssl3-method enable-weak-ssl-ciphers shared linux-elf zlib-dynamic "-Wa,--noexecstack ${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
+        ./Configure --prefix=/usr --openssldir=/etc/ssl --libdir=lib32/openssl-1.1 no-ssl3-method enable-weak-ssl-ciphers shared linux-elf zlib-dynamic "-Wa,--noexecstack ${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
     fi
 build      : |
-    make
+    %make
 install    : |
-    %make_install INSTALL_PREFIX="$installdir" MANDIR=/usr/share/man -j1
-    mv $installdir/usr/share/man/man1/passwd.1 $installdir/usr/share/man/man1/passwd.openssl.1
-    rm -rf $installdir/usr/share/doc
+    %make install_sw DESTDIR="$installdir" INSTALL_PREFIX="$installdir"
+
+    # Move some things around
+    mv $installdir/usr/bin/openssl $installdir/usr/bin/openssl-1.1
+    rm $installdir/usr/bin/c_rehash
+    mv $installdir/usr/include/openssl $installdir/usr/include/openssl-1.1
+    mv $installdir/%libdir%/openssl-1.1/libcrypto.so.1.1 $installdir/%libdir%/
+    mv $installdir/%libdir%/openssl-1.1/libssl.so.1.1 $installdir/%libdir%/
+    ln -sf ../libssl.so.1.1 $installdir/%libdir%/openssl-1.1/libssl.so
+    ln -sf ../libcrypto.so.1.1 $installdir/%libdir%/openssl-1.1/libcrypto.so
+
+    # Update includedir in pkgconfigs
+    sed -e 's|/include$|/include/openssl-1.1|' -i $installdir/%libdir%/openssl-1.1/pkgconfig/*.pc
+    # Create versioned pkgconfigs
+    cd $installdir/%libdir%/openssl-1.1/pkgconfig
+    for FILE in *; do
+        mv $FILE "${FILE//.pc/-1.1.pc}"
+    done
