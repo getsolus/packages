@@ -28,7 +28,7 @@ tasks:
         echo "         Do NOT publish packages or Differentials built against -stable!!!"
         echo "=========================================================================="
 
-  build-local:
+  local:
     desc: "Build the current package against the unstable and the default local repo"
     cmds:
       - task: build
@@ -38,26 +38,61 @@ tasks:
   # Modify packages
   bump:
     desc: Bump current release
-    dir: '{{ .TASKFILE_DIR }}'
+    dir: '{{ .USER_WORKING_DIR }}'
     cmds:
       - |
         if [[ -e package.yml ]]; then
-        	python /usr/share/ypkg/ybump.py package.yml;
+          echo "package.yml present!"
+        	python /usr/share/ypkg/ybump.py /package.yml;
         else
-        	./Scripts/pbump.py pspec.xml;
+        	./common/Scripts/pbump.py pspec.xml;
         fi;
   
   convert:
     desc: Convert pspec to package.yml
-    dir: '{{ .TASKFILE_DIR }}'
+    dir: '{{ .USER_WORKING_DIR }}'
     preconditions:
       - test -f pspec.xml
     cmds:
-      - ./Scripts/yconvert.py pspec.xml
+      - |
+        "{{ .TASKFILE_DIR }}/common/Scripts/yconvert.py" pspec.xml
+
+  # For packagers
+  publish:
+    dir: '{{ .USER_WORKING_DIR }}'
+    conditions:
+      - test -f package.yml || test -f pspec.xml
+      # We're on master branch
+      - test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
+      # Tag has not been created
+      - 
+    cmds:
+      - 
+
+  republish:
+    desc: Rebuild existing tag
+    dir: '{{ .USER_WORKING_DIR }}'
+    conditions:
+      - test -f package.yml || test -f pspec.xml
+      # We're on master branch
+      - test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
+    cmds:
+      - task: push
+
+  push:
+    desc: Push package to the build server
+    internal: true
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      SOURCE: '{{ .USER_WORKING_DIR }}'
+      TAG:
+    cmds:
+      - ssh build-controller@build.getsol.us build "{{ .SOURCE }}" "{{ .TAG }}"
 
   # Other utilities
   clean:
     desc: Clean current tree
+    dir: '{{ .USER_WORKING_DIR }}'
     preconditions:
       - test -f *.eopkg
     cmds:
@@ -65,11 +100,13 @@ tasks:
 
   pull:
     desc: Pull/rebase latest changes
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - test -d .git
     cmds:
       - git pull --rebase
 
   switch-domains:
     desc: Update local repositories to use correct hostname
-    dir: '{{ .TASKFILE_DIR }}'
     cmds:
-      - go run ./Go/switch_repo_domains.go
+      - go run "{{ .TASKFILE_DIR }}/common/Go/switch_repo_domains.go"
