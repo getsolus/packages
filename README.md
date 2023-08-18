@@ -10,6 +10,7 @@
 
 - [Report a Bug / Defect][Bug] - for problems with Solus or applications
 - [Request a Package][Package] - for submitting requests to package software
+- [Request a Package Update][Update] - for submitting requests to update packaged software
 - [Report a Security Issue][Security] - for security related issues
 - [Report an issue][Issue] - if you aren't sure what your issue falls under, use this
 - [Packaging documentation][Packaging] - check before submitting patches
@@ -52,7 +53,8 @@ Donations are welcome on our [Open Collective].
 [Report Bugs]: https://help.getsol.us/docs/user/contributing/getting-involved#report-bugs
 [Solus Packages]: https://github.com/solus-packages
 [Issue tracker]: https://github.com/getsolus/packages/issues
-[Bug]: https://github.com/getsolus/packages/issues/new
-[Package]: https://github.com/getsolus/packages/issues/new
+[Bug]: https://github.com/getsolus/packages/issues/new?template=bug.yaml
+[Package]: https://github.com/getsolus/packages/issues/new?template=request-new-package.yaml
+[Update]: https://github.com/getsolus/packages/issues/new?template=request-package-update.yaml
 [Security]: https://github.com/getsolus/packages/issues/new
 [Issue]: https://github.com/getsolus/packages/issues/new
