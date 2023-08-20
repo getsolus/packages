@@ -375,6 +375,32 @@ checkDeleteCache() {
     fi
 }
 
+# Update all kdeframeworks packages
+kf_update() {
+    if [[ -z "${KF_VERSION}" ]]; then
+        echo -e "${ERROR} Set KF_VERSION first e.g 1.108.0 ${NC}"
+        exit 1
+    fi
+
+    a=( ${KF_VERSION//./ } )
+    KF_VERSION_MAJOR="${a[0]}.${a[1]}"
+
+    pushd ~/rebuilds/${MAINPAK}
+    for i in ${PACKAGES}
+      do
+        pushd ${i}
+          if yupdate ${KF_VERSION} https://cdn.download.kde.org/stable/frameworks/${KF_VERSION_MAJOR}/${i}-${KF_VERSION}.tar.xz; then
+            echo "success"
+          elif yupdate ${KF_VERSION} https://cdn.download.kde.org/stable/frameworks/${KF_VERSION_MAJOR}/portingAids/${i}-${KF_VERSION}.tar.xz; then
+            echo "success"
+          else
+            echo "not found"
+            exit 1
+          fi
+        popd
+      done
+}
+
 # Display Help
 Help() {
 cat << EOF
