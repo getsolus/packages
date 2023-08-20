@@ -62,7 +62,7 @@ setup() {
         echo -e "${INFO} > Setting up build repo...${NC}"
         mkdir -p ~/rebuilds/${MAINPAK}
         pushd ~/rebuilds/${MAINPAK}
-        git clone ssh://vcs@dev.getsol.us:2222/source/common.git --depth=1
+        git clone https://github.com/getsolus/common.git --depth=1
         ln -sv common/Makefile.common .
         ln -sv common/Makefile.toplevel Makefile
         ln -sv common/Makefile.iso .
