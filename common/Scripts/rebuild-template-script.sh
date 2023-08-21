@@ -411,6 +411,32 @@ kf_update() {
       done
 }
 
+# Update all plasma packages
+plasma_update() {
+      if [[ -z "${PLASMA_VERSION}" ]]; then
+        echo -e "${ERROR} Set PLASMA_VERSION first e.g 5.25.4 ${NC}"
+        exit 1
+    fi
+
+    pushd ~/rebuilds/${MAINPAK}
+    for i in ${PACKAGES}
+      do
+        pushd ${i}
+          if [[ ${i} = "breeze-gtk-theme" ]]; then
+              yupdate ${PLASMA_VERSION} https://cdn.download.kde.org/stable/plasma/${PLASMA_VERSION}/breeze-gtk-${PLASMA_VERSION}.tar.xz
+          elif [[ ${i} = "polkit-kde-agent" ]]; then
+              yupdate ${PLASMA_VERSION} https://cdn.download.kde.org/stable/plasma/${PLASMA_VERSION}/${i}-1-${PLASMA_VERSION}.tar.xz
+          else
+              yupdate ${PLASMA_VERSION} https://cdn.download.kde.org/stable/plasma/${PLASMA_VERSION}/${i}-${PLASMA_VERSION}.tar.xz
+          fi
+          if [[ $? -ne 0 ]]; then
+              echo "not found"
+              exit 1
+          fi
+        popd
+      done
+}
+
 # Display Help
 Help() {
 cat << EOF
