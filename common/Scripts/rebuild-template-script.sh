@@ -111,6 +111,11 @@ bump() {
 # Check if the eopkg already exists before attempting to build and skip if it does.
 build() {
 
+    gsi=$(which gnome-session-inhibit 2>/dev/null)
+    if [[ $XDG_CURRENT_DESKTOP = "GNOME" ]] && [[ ! -z ${gsi} ]]; then
+      GNOME=1
+    fi
+
     # Get sudo
     sudo -p "Enter sudo password: " printf "" || exit 1
 
@@ -141,7 +146,12 @@ build() {
             # Check if the eopkg already exists before building.
             if [[ ! $(ls /var/lib/solbuild/local-${MAINPAK}/${EOPKG}) ]]; then
                 echo -e "${INFO} Package doesn't exist, building: ${i} ${NC}"
-                sudo solbuild build package.yml -p local-unstable-${MAINPAK}-x86_64;
+                if [[ $GNOME = "1" ]]; then
+                    gnome-session-inhibit --inhibit "logout:suspend:idle" --app-id solbuild --reason "Build in progress" \
+                    sudo solbuild build package.yml -p local-unstable-${MAINPAK}-x86_64;
+                else
+                    sudo solbuild build package.yml -p local-unstable-${MAINPAK}-x86_64;
+                fi
                 sudo mv *.eopkg /var/lib/solbuild/local-${MAINPAK}/
             fi;
         popd
