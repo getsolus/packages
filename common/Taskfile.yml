@@ -1,22 +1,39 @@
 version : '3'
 
+set: [pipefail]
+
+vars:
+  SPECFILE:
+    sh: if [ -f "{{ .USER_WORKING_DIR }}/package.yml" ]; then echo "package.yml"; else echo "pspec.xml"; fi;
+
 tasks:
+  # Utility tasks, mainly for precondition checks
+  package-file:
+    internal: true
+    desc: |
+      Check that either `package.yml` or `pspec.xml` exists in the current directory
+    dir: '{{ .USER_WORKING_DIR }}'
+    requires:
+      vars: [SPECFILE]
+    preconditions:
+      - sh: test -f package.yml || test -f pspec.xml
+        msg: Either `package.yml` or `pspec.xml` must exists in the current directory
 
   # Build packages
   build: 
     desc: Build the current package against the unstable repo
+    aliases: [default]
     dir: '{{ .USER_WORKING_DIR }}'
     vars:
       PROFILE: '{{ default "unstable-x86_64" .PROFILE }}'
-      SPECFILE:
-        sh: if [ -f package.yml ]; then echo "package.yml"; else echo "pspec.xml"; fi;
-    preconditions:
-      - test -f package.yml || test -f pspec.xml
+    deps:
+      - package-file
     cmds:
       - sudo solbuild build {{ .SPECFILE }} -p {{ .PROFILE }} {{ .CLI_ARGS }}
 
   build-stable:
     desc: Build the current package against the stable repo (do NOT use for official submissions!)
+    aliases: [stable]
     cmds:
       - task: build
         vars: 
@@ -28,8 +45,9 @@ tasks:
         echo "         Do NOT publish packages or Differentials built against -stable!!!"
         echo "=========================================================================="
 
-  local:
+  build-local:
     desc: "Build the current package against the unstable and the default local repo"
+    aliases: [local]
     cmds:
       - task: build
         vars: 
@@ -39,62 +57,83 @@ tasks:
   bump:
     desc: Bump current release
     dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      YBUMP: "/usr/share/ypkg/ybump.py"
+      PBUMP: "{{ .TASKFILE_DIR }}/common/Scripts/pbump.py"
+      BUMP_SCRIPT: '{{ eq .SPECFILE "package.yml" | ternary .YBUMP .PBUMP }}'
+    deps:
+      - package-file
     cmds:
-      - |
-        if [[ -e package.yml ]]; then
-          echo "package.yml present!"
-        	python /usr/share/ypkg/ybump.py /package.yml;
-        else
-        	./common/Scripts/pbump.py pspec.xml;
-        fi;
+      - python {{ .BUMP_SCRIPT }} {{ .SPECFILE }}
   
   convert:
     desc: Convert pspec to package.yml
     dir: '{{ .USER_WORKING_DIR }}'
     preconditions:
-      - test -f pspec.xml
+      - sh: test -f pspec.xml
+        msg: "`pspec.xml` must in the current directory to perform conversion"
     cmds:
       - |
         "{{ .TASKFILE_DIR }}/common/Scripts/yconvert.py" pspec.xml
 
   # For packagers
   publish:
+    desc: Tag and publish a release
     dir: '{{ .USER_WORKING_DIR }}'
-    conditions:
-      - test -f package.yml || test -f pspec.xml
-      # We're on master branch
-      - test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
-      # Tag has not been created
-      - 
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
+        msg: Not on master branch
+      - sh: '! git show-ref --quiet --tags {{ .TAG }}'
+        msg: Tag already exists! Did you mean to call `go-task republish`?
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    deps:
+      - package-file
+    vars:
+      TAG:
+        sh: if [[ -f {{ .SPECFILE }} ]]; then {{ .TASKFILE_DIR }}/common/Scripts/gettag.py {{ .USER_WORKING_DIR }}/{{ .SPECFILE }}; fi;
+      SIGNTAG:
+        sh: if [ "$(git config commit.gpgsign)" == "true" ]; then echo "-s"; else echo " "; fi;
     cmds:
-      - 
+      - git tag {{ .SIGNTAG }} -a -m "Publish {{ .TAG }}" {{ .TAG }}
+      - git push --follow-tags
+      - task: push
+        vars:
+          SOURCE: '{{ .USER_WORKING_DIR }}'
+          TAG: '{{ .TAG }}'
 
   republish:
     desc: Rebuild existing tag
     dir: '{{ .USER_WORKING_DIR }}'
-    conditions:
-      - test -f package.yml || test -f pspec.xml
-      # We're on master branch
-      - test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/master"
+        msg: Not on master branch
+      - sh: git show-ref --quiet --tags {{ .TAG }}
+        msg: Tag doesn't exists! Did you mean to call `go-task publish`?
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    vars:
+      TAG:
+        sh: if [[ -f {{ .SPECFILE }} ]]; then {{ .TASKFILE_DIR }}/common/Scripts/gettag.py {{ .USER_WORKING_DIR }}/{{ .SPECFILE }}; fi;
     cmds:
       - task: push
+        vars:
+          SOURCE: '{{ .USER_WORKING_DIR }}'
+          TAG: '{{ .TAG }}'
 
   push:
     desc: Push package to the build server
     internal: true
     dir: '{{ .USER_WORKING_DIR }}'
-    vars:
-      SOURCE: '{{ .USER_WORKING_DIR }}'
-      TAG:
+    requires:
+      vars: [SOURCE, TAG]
     cmds:
-      - ssh build-controller@build.getsol.us build "{{ .SOURCE }}" "{{ .TAG }}"
+      - ssx build-controller@build.getsol.us build "{{ .SOURCE }}" "{{ .TAG }}"
 
   # Other utilities
   clean:
     desc: Clean current tree
     dir: '{{ .USER_WORKING_DIR }}'
-    preconditions:
-      - test -f *.eopkg
     cmds:
       - rm *.eopkg -fv
 
