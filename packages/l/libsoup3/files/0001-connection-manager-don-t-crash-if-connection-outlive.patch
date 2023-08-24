@@ -1,0 +1,79 @@
+From 31d415ca44349fe8c4d2e0b2fb56f84501ec9524 Mon Sep 17 00:00:00 2001
+From: Michael Catanzaro <mcatanzaro@redhat.com>
+Date: Mon, 21 Aug 2023 12:54:53 -0500
+Subject: [PATCH] connection-manager: don't crash if connection outlives its
+ manager
+
+I have no clue whether SoupConnections are expected to outlive
+SoupConnectionManager or not, but it's happening, and it doesn't seem too
+surprising; after all, SoupConnection is a GObject, and things can keep
+references to it. Guard against this by disconnecting from the signals
+of each SoupConnection when destroying the SoupConnectionManager.
+
+Probably fixes #361
+---
+ libsoup/soup-connection-manager.c | 34 +++++++++++++++++++++----------
+ 1 file changed, 23 insertions(+), 11 deletions(-)
+
+diff --git a/libsoup/soup-connection-manager.c b/libsoup/soup-connection-manager.c
+index e6f7caa7..5c4ec741 100644
+--- a/libsoup/soup-connection-manager.c
++++ b/libsoup/soup-connection-manager.c
+@@ -206,6 +206,26 @@ soup_connection_manager_get_or_create_host_for_item (SoupConnectionManager *mana
+         return host;
+ }
+ 
++static void
++soup_connection_manager_drop_connection (SoupConnectionManager *manager,
++                                         SoupConnection        *conn)
++{
++        g_signal_handlers_disconnect_by_data (conn, manager);
++        manager->num_conns--;
++        g_object_unref (conn);
++
++        g_cond_broadcast (&manager->cond);
++}
++
++static void
++remove_connection (gpointer key,
++                   gpointer value,
++                   gpointer user_data)
++{
++        SoupConnectionManager *manager = user_data;
++        soup_connection_manager_drop_connection (manager, key);
++}
++
+ SoupConnectionManager *
+ soup_connection_manager_new (SoupSession *session,
+                              guint        max_conns,
+@@ -235,6 +255,9 @@ soup_connection_manager_new (SoupSession *session,
+ void
+ soup_connection_manager_free (SoupConnectionManager *manager)
+ {
++        g_hash_table_foreach (manager->conns, remove_connection, manager);
++        g_assert (manager->num_conns == 0);
++
+         g_clear_object (&manager->remote_connectable);
+         g_hash_table_destroy (manager->http_hosts);
+         g_hash_table_destroy (manager->https_hosts);
+@@ -293,17 +316,6 @@ soup_connection_manager_get_num_conns (SoupConnectionManager *manager)
+         return manager->num_conns;
+ }
+ 
+-static void
+-soup_connection_manager_drop_connection (SoupConnectionManager *manager,
+-                                         SoupConnection        *conn)
+-{
+-        g_signal_handlers_disconnect_by_data (conn, manager);
+-        manager->num_conns--;
+-        g_object_unref (conn);
+-
+-        g_cond_broadcast (&manager->cond);
+-}
+-
+ static void
+ soup_connection_list_disconnect_all (GList *conns)
+ {
+-- 
+2.41.0
+
