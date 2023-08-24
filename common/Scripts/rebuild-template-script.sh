@@ -437,6 +437,29 @@ plasma_update() {
       done
 }
 
+kdegear_update() {
+    if [[ -z "${KDEGEAR_VERSION}" ]]; then
+        echo -e "${ERROR} Set KDEGEAR_VERSION first e.g 23.04.2 ${NC}"
+        exit 1
+    fi
+
+    pushd ~/rebuilds/${MAINPAK}
+    for i in ${PACKAGES}
+      do
+        pushd ${i}
+          if [[ ${i} = "kdeconnect" ]]; then
+              yupdate ${KDEGEAR_VERSION} https://cdn.download.kde.org/stable/release-service/${KDEGEAR_VERSION}/src/kdeconnect-kde-${KDEGEAR_VERSION}.tar.xz
+          else
+              yupdate ${KDEGEAR_VERSION} https://cdn.download.kde.org/stable/release-service/${KDEGEAR_VERSION}/src/${i}-${KDEGEAR_VERSION}.tar.xz
+          fi
+          if [[ $? -ne 0 ]]; then
+              echo "not found"
+              exit 1
+          fi
+        popd
+      done
+}
+
 # Display Help
 Help() {
 cat << EOF
