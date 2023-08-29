@@ -32,6 +32,7 @@ for i in *.xpi ; do
     eid="langpack-${ln}@firefox.mozilla.org"
     unzip $i -d "${eid}"
     find "${eid}" -type f | xargs chmod 644
+    find "${eid}" | xargs touch --no-dereference --date="@0"
     pushd "${eid}"
     zip -qq -r9mX "../${eid}.xpi" *
     rm ../$i
@@ -41,11 +42,15 @@ done
 
 popd
 
-tar cvfJ firefox-${VER}-langpacks.tar.xz ff_lang_pack
+# Fully reproducible
+tar --sort=name \
+    --mtime="@0" \
+    --owner=0 --group=0 --numeric-owner \
+    -acvf firefox-${VER}-langpacks.tar.zst ff_lang_pack
 
 rm -fr ff_lang_pack
 
-SHASUM=$(sha256sum firefox-${VER}-langpacks.tar.xz)
+SHASUM=$(sha256sum firefox-${VER}-langpacks.tar.zst)
 echo ""
-echo "firefox-${VER}-langpacks.tar.xz : ${SHASUM%% *}"
+echo "firefox-${VER}-langpacks.tar.zst : ${SHASUM%% *}"
 
