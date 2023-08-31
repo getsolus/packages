@@ -258,6 +258,7 @@ version    : %(VERSION)s
 release    : 1
 source     :
     - %(SOURCE)s : %(SHA256SUM)s
+homepage   : PLEASE FILL ME IN
 license    : GPL-2.0-or-later # CHECK ME
 component  : %(COMPONENT)s\n""" % mapping
 
