@@ -52,7 +52,7 @@ The Solus samba config supports setting up shares via the desktop environment fi
 
 ## Running tests
 
-Once the setup prerequisites have been sorted, navigate into the `./nosetests_/` directory in your upstream clone direcotry and run the tests with:
+Once the setup prerequisites have been sorted, navigate into the `./nosetests_/` directory in your upstream clone directory and run the tests with:
 
 `nosetests`
 
