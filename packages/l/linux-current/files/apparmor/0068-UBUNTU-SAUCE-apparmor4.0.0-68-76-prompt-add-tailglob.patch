@@ -1,0 +1,264 @@
+From f9649e032229046d29eca5d4e3d12e609655250c Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Thu, 4 May 2023 02:28:09 -0700
+Subject: [PATCH 68/76] UBUNTU: SAUCE: apparmor4.0.0 [68/76]: prompt - add
+ tailglob on name for cache support
+
+Allow the cache to cover more than a single rejection by allowing
+an entry to match everything that would match a tailglob expression.
+This allows a reduction of cache entries and a reduction of prompts
+to userspace when access to a directory hierarchy should be allowed
+or denied.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/uapi/linux/apparmor.h     |   6 +-
+ security/apparmor/audit.c         |   7 +-
+ security/apparmor/include/audit.h |   4 +-
+ security/apparmor/notify.c        | 124 ++++++++++++++++++++++++------
+ 4 files changed, 116 insertions(+), 25 deletions(-)
+
+diff --git a/include/uapi/linux/apparmor.h b/include/uapi/linux/apparmor.h
+index 8fb8b28b2527..c0c9b13a548f 100644
+--- a/include/uapi/linux/apparmor.h
++++ b/include/uapi/linux/apparmor.h
+@@ -45,6 +45,7 @@ struct apparmor_notif_filter {
+ #define URESPONSE_NO_CACHE 1
+ #define URESPONSE_LOOKUP 2
+ #define URESPONSE_PROFILE 4
++#define URESPONSE_TAILGLOB 8
+ 
+ struct apparmor_notif {
+ 	struct apparmor_notif_common base;
+@@ -70,7 +71,10 @@ struct apparmor_notif_resp_perm {
+ } __attribute__((packed));
+ 
+ struct apparmor_notif_resp_name {
+-	struct apparmor_notif_resp_perm perm;
++	union {
++		struct apparmor_notif base;
++		struct apparmor_notif_resp_perm perm;
++	};
+ 	__u32 name;
+ 	__u8 data[];
+ } __attribute__((packed));
+diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
+index f34e8b70a7e4..21cd86d58e31 100644
+--- a/security/apparmor/audit.c
++++ b/security/apparmor/audit.c
+@@ -314,7 +314,11 @@ long aa_audit_data_cmp(struct apparmor_audit_data *lhs,
+ 	if (res)
+ 		return res;
+ 	/* don't compare op */
+-	res = strcmp(lhs->name, rhs->name);
++	if (lhs->flags & AUDIT_TAILGLOB_NAME)
++		/* lhs glob matches strings longer than it */
++		res = strncmp(lhs->name, rhs->name, strlen(lhs->name));
++	else
++		res = strcmp(lhs->name, rhs->name);
+ 	if (res)
+ 		return res;
+ 	res = aa_label_cmp(lhs->subj_label, rhs->subj_label);
+@@ -386,6 +390,7 @@ struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
+ 	INIT_LIST_HEAD(&copy->list);
+ 	/* copy class early so aa_free_audit_node can use switch on failure */
+ 	copy->data.class = orig->class;
++	copy->data.flags = orig->flags;
+ 
+ 	/* handle anything with possible failure first */
+ 	if (orig->name) {
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index 0146170356f6..7dcfcf4de478 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -107,7 +107,9 @@ enum audit_type {
+ 
+ #define OP_USERNS_CREATE "userns_create"
+ 
++#define AUDIT_TAILGLOB_NAME 1
+ struct apparmor_audit_data {
++	u32 flags;		/* control flags not part of actual data */
+ 	int error;
+ 	int type;
+ 	u16 class;
+@@ -118,7 +120,7 @@ struct apparmor_audit_data {
+ 	const char *info;
+ 	u32 request;
+ 	u32 denied;
+-  //u8 flags;		/* temporary - move to audit_node or knotif */
++
+ 	struct task_struct *subjtsk;
+ 
+ 	union {
+diff --git a/security/apparmor/notify.c b/security/apparmor/notify.c
+index fb55eaa36012..7ea92d2163b7 100644
+--- a/security/apparmor/notify.c
++++ b/security/apparmor/notify.c
+@@ -574,20 +574,32 @@ static bool response_is_valid_name(struct apparmor_notif_resp_name *reply,
+ 		return -EINVAL;
+ 	}
+ 	/* currently supported flags */
+-	if (reply->perm.base.flags != (URESPONSE_LOOKUP | URESPONSE_PROFILE)) {
++	if ((reply->perm.base.flags != (URESPONSE_LOOKUP | URESPONSE_PROFILE)) ||
++	    (reply->perm.base.flags != (URESPONSE_TAILGLOB))) {
+ 		AA_DEBUG(DEBUG_UPCALL,
+ 			 "id %lld: reply bad flags 0x%x expected 0x%x",
+ 			 knotif->id, reply->perm.base.flags,
+ 			 URESPONSE_LOOKUP | URESPONSE_PROFILE);
+ 		return -EINVAL;
+ 	}
++
++	if ((reply->perm.base.flags == URESPONSE_TAILGLOB) &&
++	    !response_is_valid_perm(&reply->perm, knotif, size)) {
++		AA_DEBUG(DEBUG_UPCALL,
++			 "id %lld: reply bad tail glob perms",
++			 knotif->id);
++		return false;
++	}
++
+ 	/* check name for terminating null */
+ 	for (i = reply->name - sizeof(*reply); i < size - sizeof(*reply); i++) {
+ 		if (reply->data[i] == 0)
+ 			return true;
+ 	}
+ 	/* reached end of data without finding null */
+-	return -EINVAL;
++	AA_DEBUG(DEBUG_UPCALL,
++		 "id %lld: reply bad no terminating null on name",
++		 knotif->id);
+ 
+ 	return false;
+ }
+@@ -709,41 +721,109 @@ struct aa_ruleset *aa_clone_ruleset(struct aa_ruleset *rules)
+ }
+ 
+ static long knotif_update_from_uresp_name(struct aa_knotif *knotif,
+-				struct apparmor_notif_resp_name *uresp,
++				struct apparmor_notif_resp_name *reply,
+ 				u16 size)
+ {
+ 	struct aa_ruleset *rules;
+ 	struct aa_profile *profile;
+ 	struct aa_ns *ns;
+-	char *name;
++	char *name, *glob;
++	struct aa_audit_node *clone;
+ 	struct aa_audit_node *node = container_of(knotif,
+ 						  struct aa_audit_node,
+ 						  knotif);
+ 
+ 	ns = aa_get_current_ns();
+-	name = (char *) &uresp->data[uresp->name - sizeof(*uresp)];
+-	profile = aa_lookup_profile(ns, name);
+-	if (!profile) {
++	name = (char *) &reply->data[reply->name - sizeof(*reply)];
++
++	if (reply->perm.base.flags == (URESPONSE_LOOKUP | URESPONSE_PROFILE)) {
++		profile = aa_lookup_profile(ns, name);
++		if (!profile) {
++			aa_put_ns(ns);
++			return -ENOENT;
++		}
+ 		aa_put_ns(ns);
+-		return -ENOENT;
+-	}
+-	aa_put_ns(ns);
+ 
+-	rules = aa_clone_ruleset(list_first_entry(&profile->rules,
+-						  typeof(*rules), list));
+-	if (!rules) {
++		rules = aa_clone_ruleset(list_first_entry(&profile->rules,
++							  typeof(*rules), list));
++		if (!rules) {
++			aa_put_profile(profile);
++			return -ENOMEM;
++		}
++		AA_DEBUG(DEBUG_UPCALL,
++			 "id %lld: cloned profile '%s' rule set", knotif->id,
++			 profile->base.hname);
+ 		aa_put_profile(profile);
+-		return -ENOMEM;
+-	}
+-	AA_DEBUG(DEBUG_UPCALL,
+-		 "id %lld: cloned profile '%s' rule set", knotif->id,
+-		 profile->base.hname);
+-	aa_put_profile(profile);
+ 
+-	/* add list to profile rules TODO: improve locking*/
+-	profile = labels_profile(node->data.subj_label);
+-	list_add_tail_entry(rules, &profile->rules, list);
++		/* add list to profile rules TODO: improve locking*/
++		profile = labels_profile(node->data.subj_label);
++		list_add_tail_entry(rules, &profile->rules, list);
++	} else if (reply->perm.base.flags == URESPONSE_TAILGLOB) {
++		// TODO: dedup with cache update in perm
++		struct aa_audit_node *node = container_of(knotif,
++							  struct aa_audit_node,
++							  knotif);
++		struct aa_audit_node *hit;
++		struct aa_profile *profile = labels_profile(node->data.subj_label);
+ 
++		clone = aa_dup_audit_data(&node->data, GFP_KERNEL);
++		glob = kstrdup(name, GFP_KERNEL);
++		if (!name)
++			return -ENOMEM;
++		if (!clone) {
++			kfree(name);
++			return -ENOMEM;
++		}
++		kfree(clone->data.name);
++		clone->data.name = glob;
++		clone->data.flags = AUDIT_TAILGLOB_NAME;
++		clone->knotif.id = knotif->id;
++		clone->knotif.ntype = knotif->ntype;
++		node = clone;
++		knotif = &clone->knotif;
++
++		// now add it to the cache
++		AA_DEBUG(DEBUG_UPCALL,
++			 "notif %lld: response allow/reply 0x%x/0x%x, denied/reply 0x%x/0x%x, error %d/%d",
++			 knotif->id, knotif->ad->request, reply->perm.allow,
++			 knotif->ad->denied, reply->perm.deny, knotif->ad->error,
++			 reply->base.error);
++
++		knotif->ad->denied = reply->perm.deny;
++		knotif->ad->request = reply->perm.allow | reply->perm.deny;
++
++		if (!knotif->ad->denied) {
++			/* no more denial, clear the error*/
++			knotif->ad->error = 0;
++			AA_DEBUG(DEBUG_UPCALL,
++				 "notif %lld: response allowed, clearing error\n",
++				 knotif->id);
++		} else {
++			AA_DEBUG(DEBUG_UPCALL,
++				 "notif %lld: response denied returning error %d\n",
++				 knotif->id, knotif->ad->error);
++		}
++
++		AA_DEBUG(DEBUG_UPCALL, "id %lld: inserting cache entry requ 0x%x  denied 0x%x",
++			 knotif->id, node->data.request, node->data.denied);
++		hit = aa_audit_cache_insert(&profile->learning_cache,
++					    node);
++		AA_DEBUG(DEBUG_UPCALL, "id %lld: cache insert %s: name %s node %s\n",
++			 knotif->id, hit != node ? "lost race" : "",
++			 hit->data.name, node->data.name);
++		if (hit != node) {
++			AA_DEBUG(DEBUG_UPCALL,
++				 "id %lld: updating existing cache entry",
++				 knotif->id);
++			aa_audit_cache_update_ent(&profile->learning_cache,
++						  hit, &node->data);
++			aa_put_audit_node(hit);
++		} else {
++
++			AA_DEBUG(DEBUG_UPCALL, "inserted into cache");
++		}
++		aa_put_audit_node(clone);
++	}
+ 	return size;
+ }
+ 
+-- 
+2.42.0
+

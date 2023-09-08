@@ -1,0 +1,107 @@
+From 485689e217af15490c33ac23173f7bd6ef4fbc8f Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 14:00:57 -0700
+Subject: [PATCH 43/76] UBUNTU: SAUCE: apparmor4.0.0 [43/76]: Stacking v38:
+ netlabel: Use a struct lsmblob in audit data
+
+Remove scaffolding in netlabel audit by keeping subject
+lsm information in an lsmblob structure instead of a secid.
+
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/net/netlabel.h            | 2 +-
+ net/netlabel/netlabel_unlabeled.c | 4 +---
+ net/netlabel/netlabel_user.c      | 4 +---
+ net/netlabel/netlabel_user.h      | 6 +-----
+ security/smack/smackfs.c          | 2 +-
+ 5 files changed, 5 insertions(+), 13 deletions(-)
+
+diff --git a/include/net/netlabel.h b/include/net/netlabel.h
+index 73fc25b4042b..d9aaa264e29c 100644
+--- a/include/net/netlabel.h
++++ b/include/net/netlabel.h
+@@ -97,7 +97,7 @@ struct calipso_doi;
+ 
+ /* NetLabel audit information */
+ struct netlbl_audit {
+-	u32 secid;
++	struct lsmblob lsmblob;
+ 	kuid_t loginuid;
+ 	unsigned int sessionid;
+ };
+diff --git a/net/netlabel/netlabel_unlabeled.c b/net/netlabel/netlabel_unlabeled.c
+index 8b14fac4c886..3b3e97245908 100644
+--- a/net/netlabel/netlabel_unlabeled.c
++++ b/net/netlabel/netlabel_unlabeled.c
+@@ -1530,13 +1530,11 @@ int __init netlbl_unlabel_defconf(void)
+ 	int ret_val;
+ 	struct netlbl_dom_map *entry;
+ 	struct netlbl_audit audit_info;
+-	struct lsmblob blob;
+ 
+ 	/* Only the kernel is allowed to call this function and the only time
+ 	 * it is called is at bootup before the audit subsystem is reporting
+ 	 * messages so don't worry to much about these values. */
+-	security_current_getsecid_subj(&blob);
+-	audit_info.secid = lsmblob_first(&blob);
++	security_current_getsecid_subj(&audit_info.lsmblob);
+ 	audit_info.loginuid = GLOBAL_ROOT_UID;
+ 	audit_info.sessionid = 0;
+ 
+diff --git a/net/netlabel/netlabel_user.c b/net/netlabel/netlabel_user.c
+index 42812bdfc31a..e72dfe2da77a 100644
+--- a/net/netlabel/netlabel_user.c
++++ b/net/netlabel/netlabel_user.c
+@@ -84,7 +84,6 @@ struct audit_buffer *netlbl_audit_start_common(int type,
+ 					       struct netlbl_audit *audit_info)
+ {
+ 	struct audit_buffer *audit_buf;
+-	struct lsmblob blob;
+ 
+ 	if (audit_enabled == AUDIT_OFF)
+ 		return NULL;
+@@ -97,8 +96,7 @@ struct audit_buffer *netlbl_audit_start_common(int type,
+ 			 from_kuid(&init_user_ns, audit_info->loginuid),
+ 			 audit_info->sessionid);
+ 
+-	lsmblob_init(&blob, audit_info->secid);
+-	audit_log_subject_context(audit_buf, &blob);
++	audit_log_subject_context(audit_buf, &audit_info->lsmblob);
+ 
+ 	return audit_buf;
+ }
+diff --git a/net/netlabel/netlabel_user.h b/net/netlabel/netlabel_user.h
+index 34bb6572f33b..56a634244a6e 100644
+--- a/net/netlabel/netlabel_user.h
++++ b/net/netlabel/netlabel_user.h
+@@ -32,11 +32,7 @@
+  */
+ static inline void netlbl_netlink_auditinfo(struct netlbl_audit *audit_info)
+ {
+-	struct lsmblob blob;
+-
+-	security_current_getsecid_subj(&blob);
+-	/* scaffolding until secid is converted */
+-	audit_info->secid = lsmblob_first(&blob);
++	security_current_getsecid_subj(&audit_info->lsmblob);
+ 	audit_info->loginuid = audit_get_loginuid(current);
+ 	audit_info->sessionid = audit_get_sessionid(current);
+ }
+diff --git a/security/smack/smackfs.c b/security/smack/smackfs.c
+index f3bb1d0f04e9..d3fc5fc747e7 100644
+--- a/security/smack/smackfs.c
++++ b/security/smack/smackfs.c
+@@ -186,7 +186,7 @@ static void smk_netlabel_audit_set(struct netlbl_audit *nap)
+ 
+ 	nap->loginuid = audit_get_loginuid(current);
+ 	nap->sessionid = audit_get_sessionid(current);
+-	nap->secid = skp->smk_secid;
++	nap->lsmblob.secid[smack_lsmid.slot] = skp->smk_secid;
+ }
+ 
+ /*
+-- 
+2.42.0
+

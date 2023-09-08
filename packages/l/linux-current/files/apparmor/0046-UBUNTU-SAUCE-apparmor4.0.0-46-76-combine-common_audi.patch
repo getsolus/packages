@@ -1,0 +1,1788 @@
+From 67410c3891ec03fa813ccd79ae0bf9637f4ec957 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Wed, 14 Sep 2022 00:20:12 -0700
+Subject: [PATCH 46/76] UBUNTU: SAUCE: apparmor4.0.0 [46/76]: combine
+ common_audit_data and apparmor_audit_data
+
+Everywhere where common_audit_data is used apparmor audit_data is also
+used. We can simplify the code and drop the use of the aad macro
+everywhere by combining the two structures.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/af_unix.c       | 83 +++++++++++++++---------------
+ security/apparmor/audit.c         | 63 +++++++++++------------
+ security/apparmor/capability.c    | 24 ++++-----
+ security/apparmor/file.c          | 84 +++++++++++++++----------------
+ security/apparmor/include/audit.h | 32 ++++++------
+ security/apparmor/include/ipc.h   |  2 +-
+ security/apparmor/include/net.h   | 13 ++---
+ security/apparmor/include/perms.h |  8 +--
+ security/apparmor/include/task.h  |  3 +-
+ security/apparmor/ipc.c           | 74 ++++++++++++++-------------
+ security/apparmor/lib.c           | 51 ++++++++++---------
+ security/apparmor/lsm.c           | 28 +++++------
+ security/apparmor/mount.c         | 41 +++++++--------
+ security/apparmor/net.c           | 67 ++++++++++++------------
+ security/apparmor/policy.c        | 19 +++----
+ security/apparmor/policy_unpack.c | 29 +++++------
+ security/apparmor/resource.c      | 23 +++++----
+ security/apparmor/task.c          | 59 +++++++++++-----------
+ 18 files changed, 359 insertions(+), 344 deletions(-)
+
+diff --git a/security/apparmor/af_unix.c b/security/apparmor/af_unix.c
+index 5fff22bb27d3..67dfafbae5f8 100644
+--- a/security/apparmor/af_unix.c
++++ b/security/apparmor/af_unix.c
+@@ -189,7 +189,7 @@ static inline unsigned int match_to_peer(struct aa_dfa *dfa,
+ 
+ static int do_perms(struct aa_profile *profile, struct aa_ruleset *rule,
+ 		    unsigned int state, u32 request,
+-		    struct common_audit_data *sa)
++		    struct apparmor_audit_data *ad)
+ {
+ 	struct aa_perms perms;
+ 
+@@ -197,26 +197,26 @@ static int do_perms(struct aa_profile *profile, struct aa_ruleset *rule,
+ 
+ 	perms = *aa_lookup_perms(&rule->policy, state);
+ 	aa_apply_modes_to_perms(profile, &perms);
+-	return aa_check_perms(profile, &perms, request, sa,
++	return aa_check_perms(profile, &perms, request, ad,
+ 			      audit_net_cb);
+ }
+ 
+ static int match_label(struct aa_profile *profile, struct aa_ruleset *rule,
+ 		       struct aa_profile *peer, unsigned int state, u32 request,
+-		       struct common_audit_data *sa)
++		       struct apparmor_audit_data *ad)
+ {
+ 	AA_BUG(!profile);
+ 	AA_BUG(!peer);
+ 
+-	aad(sa)->peer = &peer->label;
++	ad->peer = &peer->label;
+ 
+ 	if (state) {
+ 		state = aa_dfa_match(rule->policy.dfa, state,
+ 				     peer->base.hname);
+ 		if (!state)
+-			aad(sa)->info = "failed peer label match";
++			ad->info = "failed peer label match";
+ 	}
+-	return do_perms(profile, rule, state, request, sa);
++	return do_perms(profile, rule, state, request, ad);
+ }
+ 
+ 
+@@ -231,7 +231,7 @@ static int profile_create_perm(struct aa_profile *profile, int family,
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	aa_state_t state;
+-	DEFINE_AUDIT_NET(sa, OP_CREATE, NULL, family, type, protocol);
++	DEFINE_AUDIT_NET(ad, OP_CREATE, NULL, family, type, protocol);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(profile_unconfined(profile));
+@@ -239,11 +239,11 @@ static int profile_create_perm(struct aa_profile *profile, int family,
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+ 		state = match_to_prot(rules->policy.dfa, state, type, protocol,
+-				      &aad(&sa)->info);
+-		return do_perms(profile, rules, state, AA_MAY_CREATE, &sa);
++				      &ad.info);
++		return do_perms(profile, rules, state, AA_MAY_CREATE, &ad);
+ 	}
+ 
+-	return aa_profile_af_perm(profile, &sa, AA_MAY_CREATE, family, type);
++	return aa_profile_af_perm(profile, &ad, AA_MAY_CREATE, family, type);
+ }
+ 
+ int aa_unix_create_perm(struct aa_label *label, int family, int type,
+@@ -266,7 +266,7 @@ static inline int profile_sk_perm(struct aa_profile *profile, const char *op,
+ 						    typeof(*rules),
+ 						    list);
+ 	unsigned int state;
+-	DEFINE_AUDIT_SK(sa, op, sk);
++	DEFINE_AUDIT_SK(ad, op, sk);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(!sk);
+@@ -276,11 +276,11 @@ static inline int profile_sk_perm(struct aa_profile *profile, const char *op,
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+ 		state = match_to_sk(rules->policy.dfa, state, unix_sk(sk),
+-				    &aad(&sa)->info);
+-		return do_perms(profile, rules, state, request, &sa);
++				    &ad.info);
++		return do_perms(profile, rules, state, request, &ad);
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, &sa, request, sk);
++	return aa_profile_af_sk_perm(profile, &ad, request, sk);
+ }
+ 
+ int aa_unix_label_sk_perm(struct aa_label *label, const char *op, u32 request,
+@@ -322,7 +322,7 @@ static int profile_bind_perm(struct aa_profile *profile, struct sock *sk,
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	unsigned int state;
+-	DEFINE_AUDIT_SK(sa, OP_BIND, sk);
++	DEFINE_AUDIT_SK(ad, OP_BIND, sk);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(!sk);
+@@ -333,17 +333,17 @@ static int profile_bind_perm(struct aa_profile *profile, struct sock *sk,
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+ 		/* bind for abstract socket */
+-		aad(&sa)->net.addr = unix_addr(addr);
+-		aad(&sa)->net.addrlen = addrlen;
++		ad.net.addr = unix_addr(addr);
++		ad.net.addrlen = addrlen;
+ 
+ 		state = match_to_local(rules->policy.dfa, state,
+ 				       sk->sk_type, sk->sk_protocol,
+ 				       unix_addr(addr), addrlen,
+-				       &aad(&sa)->info);
+-		return do_perms(profile, rules, state, AA_MAY_BIND, &sa);
++				       &ad.info);
++		return do_perms(profile, rules, state, AA_MAY_BIND, &ad);
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, &sa, AA_MAY_BIND, sk);
++	return aa_profile_af_sk_perm(profile, &ad, AA_MAY_BIND, sk);
+ }
+ 
+ int aa_unix_bind_perm(struct socket *sock, struct sockaddr *address,
+@@ -380,7 +380,7 @@ static int profile_listen_perm(struct aa_profile *profile, struct sock *sk,
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	unsigned int state;
+-	DEFINE_AUDIT_SK(sa, OP_LISTEN, sk);
++	DEFINE_AUDIT_SK(ad, OP_LISTEN, sk);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(!sk);
+@@ -392,17 +392,17 @@ static int profile_listen_perm(struct aa_profile *profile, struct sock *sk,
+ 		__be16 b = cpu_to_be16(backlog);
+ 
+ 		state = match_to_cmd(rules->policy.dfa, state, unix_sk(sk),
+-				     CMD_LISTEN, &aad(&sa)->info);
++				     CMD_LISTEN, &ad.info);
+ 		if (state) {
+ 			state = aa_dfa_match_len(rules->policy.dfa, state,
+ 						 (char *) &b, 2);
+ 			if (!state)
+-				aad(&sa)->info = "failed listen backlog match";
++				ad.info = "failed listen backlog match";
+ 		}
+-		return do_perms(profile, rules, state, AA_MAY_LISTEN, &sa);
++		return do_perms(profile, rules, state, AA_MAY_LISTEN, &ad);
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, &sa, AA_MAY_LISTEN, sk);
++	return aa_profile_af_sk_perm(profile, &ad, AA_MAY_LISTEN, sk);
+ }
+ 
+ int aa_unix_listen_perm(struct socket *sock, int backlog)
+@@ -429,7 +429,7 @@ static inline int profile_accept_perm(struct aa_profile *profile,
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	unsigned int state;
+-	DEFINE_AUDIT_SK(sa, OP_ACCEPT, sk);
++	DEFINE_AUDIT_SK(ad, OP_ACCEPT, sk);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(!sk);
+@@ -439,11 +439,11 @@ static inline int profile_accept_perm(struct aa_profile *profile,
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+ 		state = match_to_sk(rules->policy.dfa, state, unix_sk(sk),
+-				    &aad(&sa)->info);
+-		return do_perms(profile, rules, state, AA_MAY_ACCEPT, &sa);
++				    &ad.info);
++		return do_perms(profile, rules, state, AA_MAY_ACCEPT, &ad);
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, &sa, AA_MAY_ACCEPT, sk);
++	return aa_profile_af_sk_perm(profile, &ad, AA_MAY_ACCEPT, sk);
+ }
+ 
+ /* ability of sock to connect, not peer address binding */
+@@ -481,7 +481,7 @@ static int profile_opt_perm(struct aa_profile *profile, const char *op, u32 requ
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	unsigned int state;
+-	DEFINE_AUDIT_SK(sa, op, sk);
++	DEFINE_AUDIT_SK(ad, op, sk);
+ 
+ 	AA_BUG(!profile);
+ 	AA_BUG(!sk);
+@@ -493,17 +493,17 @@ static int profile_opt_perm(struct aa_profile *profile, const char *op, u32 requ
+ 		__be16 b = cpu_to_be16(optname);
+ 
+ 		state = match_to_cmd(rules->policy.dfa, state, unix_sk(sk),
+-				     CMD_OPT, &aad(&sa)->info);
++				     CMD_OPT, &ad.info);
+ 		if (state) {
+ 			state = aa_dfa_match_len(rules->policy.dfa, state,
+ 						 (char *) &b, 2);
+ 			if (!state)
+-				aad(&sa)->info = "failed sockopt match";
++				ad.info = "failed sockopt match";
+ 		}
+-		return do_perms(profile, rules, state, request, &sa);
++		return do_perms(profile, rules, state, request, &ad);
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, &sa, request, sk);
++	return aa_profile_af_sk_perm(profile, &ad, request, sk);
+ }
+ 
+ int aa_unix_opt_perm(const char *op, u32 request, struct socket *sock, int level,
+@@ -527,7 +527,7 @@ int aa_unix_opt_perm(const char *op, u32 request, struct socket *sock, int level
+ static int profile_peer_perm(struct aa_profile *profile, const char *op, u32 request,
+ 			     struct sock *sk, struct sock *peer_sk,
+ 			     struct aa_label *peer_label,
+-			     struct common_audit_data *sa)
++			     struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+@@ -551,15 +551,15 @@ static int profile_peer_perm(struct aa_profile *profile, const char *op, u32 req
+ 			len = unix_sk(peer_sk)->addr->len;
+ 		}
+ 		state = match_to_peer(rules->policy.dfa, state, unix_sk(sk),
+-				      addr, len, &aad(sa)->info);
++				      addr, len, &ad->info);
+ 		if (!peer_label)
+ 			peer_label = peer_ctx->label;
+ 		return fn_for_each_in_ns(peer_label, peerp,
+ 				match_label(profile, rules, peerp, state,
+-					    request, sa));
++					    request, ad));
+ 	}
+ 
+-	return aa_profile_af_sk_perm(profile, sa, request, sk);
++	return aa_profile_af_sk_perm(profile, ad, request, sk);
+ }
+ 
+ /**
+@@ -583,9 +583,10 @@ int aa_unix_peer_perm(struct aa_label *label, const char *op, u32 request,
+ 		return unix_fs_perm(op, request, label, u, 0);
+ 	} else {
+ 		struct aa_profile *profile;
+-		DEFINE_AUDIT_SK(sa, op, sk);
++		DEFINE_AUDIT_SK(ad, op, sk);
+ 
+-		aad(&sa)->net.peer_sk = peer_sk;
++		ad.net.peer_sk = peer_sk;
++		ad.net.peer_sk = peer_sk;
+ 		/* TODO: ns!!! */
+ 		if (!net_eq(sock_net(sk), sock_net(peer_sk)))
+ 			;
+@@ -595,7 +596,7 @@ int aa_unix_peer_perm(struct aa_label *label, const char *op, u32 request,
+ 
+ 		return fn_for_each_confined(label, profile,
+ 				profile_peer_perm(profile, op, request, sk,
+-						  peer_sk, peer_label, &sa));
++						  peer_sk, peer_label, &ad));
+ 	}
+ }
+ 
+diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
+index c955bf809751..78078b84acad 100644
+--- a/security/apparmor/audit.c
++++ b/security/apparmor/audit.c
+@@ -92,30 +92,30 @@ static const char *const aa_class_names[] = {
+ static void audit_pre(struct audit_buffer *ab, void *ca)
+ {
+ 	struct common_audit_data *sa = ca;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+ 	if (aa_g_audit_header) {
+ 		audit_log_format(ab, "apparmor=\"%s\"",
+-				 aa_audit_type[aad(sa)->type]);
++				 aa_audit_type[ad->type]);
+ 	}
+ 
+-	if (aad(sa)->op) {
+-		audit_log_format(ab, " operation=\"%s\"", aad(sa)->op);
+-	}
++	if (ad->op)
++		audit_log_format(ab, " operation=\"%s\"", ad->op);
+ 
+-	if (aad(sa)->class)
++	if (ad->class)
+ 		audit_log_format(ab, " class=\"%s\"",
+-				 aad(sa)->class <= AA_CLASS_LAST ?
+-				 aa_class_names[aad(sa)->class] :
++				 ad->class <= AA_CLASS_LAST ?
++				 aa_class_names[ad->class] :
+ 				 "unknown");
+ 
+-	if (aad(sa)->info) {
+-		audit_log_format(ab, " info=\"%s\"", aad(sa)->info);
+-		if (aad(sa)->error)
+-			audit_log_format(ab, " error=%d", aad(sa)->error);
++	if (ad->info) {
++		audit_log_format(ab, " info=\"%s\"", ad->info);
++		if (ad->error)
++			audit_log_format(ab, " error=%d", ad->error);
+ 	}
+ 
+-	if (aad(sa)->label) {
+-		struct aa_label *label = aad(sa)->label;
++	if (ad->label) {
++		struct aa_label *label = ad->label;
+ 
+ 		if (label_isprofile(label)) {
+ 			struct aa_profile *profile = labels_profile(label);
+@@ -134,42 +134,43 @@ static void audit_pre(struct audit_buffer *ab, void *ca)
+ 		}
+ 	}
+ 
+-	if (aad(sa)->name) {
++	if (ad->name) {
+ 		audit_log_format(ab, " name=");
+-		audit_log_untrustedstring(ab, aad(sa)->name);
++		audit_log_untrustedstring(ab, ad->name);
+ 	}
+ }
+ 
+ /**
+  * aa_audit_msg - Log a message to the audit subsystem
+- * @sa: audit event structure (NOT NULL)
++ * @ad: audit event structure (NOT NULL)
+  * @cb: optional callback fn for type specific fields (MAYBE NULL)
+  */
+-void aa_audit_msg(int type, struct common_audit_data *sa,
++void aa_audit_msg(int type, struct apparmor_audit_data *ad,
+ 		  void (*cb) (struct audit_buffer *, void *))
+ {
+-	aad(sa)->type = type;
+-	common_lsm_audit(sa, audit_pre, cb);
++	ad->type = type;
++	common_lsm_audit(&ad->common, audit_pre, cb);
+ }
+ 
+ /**
+  * aa_audit - Log a profile based audit event to the audit subsystem
+  * @type: audit type for the message
+  * @profile: profile to check against (NOT NULL)
+- * @sa: audit event (NOT NULL)
++ * @ad: audit event (NOT NULL)
+  * @cb: optional callback fn for type specific fields (MAYBE NULL)
+  *
+  * Handle default message switching based off of audit mode flags
+  *
+  * Returns: error on failure
+  */
+-int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
++int aa_audit(int type, struct aa_profile *profile,
++	     struct apparmor_audit_data *ad,
+ 	     void (*cb) (struct audit_buffer *, void *))
+ {
+ 	AA_BUG(!profile);
+ 
+ 	if (type == AUDIT_APPARMOR_AUTO) {
+-		if (likely(!aad(sa)->error)) {
++		if (likely(!ad->error)) {
+ 			if (AUDIT_MODE(profile) != AUDIT_ALL)
+ 				return 0;
+ 			type = AUDIT_APPARMOR_AUDIT;
+@@ -181,24 +182,24 @@ int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
+ 	if (AUDIT_MODE(profile) == AUDIT_QUIET ||
+ 	    (type == AUDIT_APPARMOR_DENIED &&
+ 	     AUDIT_MODE(profile) == AUDIT_QUIET_DENIED))
+-		return aad(sa)->error;
++		return ad->error;
+ 
+ 	if (KILL_MODE(profile) && type == AUDIT_APPARMOR_DENIED)
+ 		type = AUDIT_APPARMOR_KILL;
+ 
+-	aad(sa)->label = &profile->label;
++	ad->label = &profile->label;
+ 
+-	aa_audit_msg(type, sa, cb);
++	aa_audit_msg(type, ad, cb);
+ 
+-	if (aad(sa)->type == AUDIT_APPARMOR_KILL)
++	if (ad->type == AUDIT_APPARMOR_KILL)
+ 		(void)send_sig_info(SIGKILL, NULL,
+-			sa->type == LSM_AUDIT_DATA_TASK && sa->u.tsk ?
+-				    sa->u.tsk : current);
++			ad->common.type == LSM_AUDIT_DATA_TASK &&
++			ad->common.u.tsk ? ad->common.u.tsk : current);
+ 
+-	if (aad(sa)->type == AUDIT_APPARMOR_ALLOWED)
+-		return complain_error(aad(sa)->error);
++	if (ad->type == AUDIT_APPARMOR_ALLOWED)
++		return complain_error(ad->error);
+ 
+-	return aad(sa)->error;
++	return ad->error;
+ }
+ 
+ struct aa_audit_rule {
+diff --git a/security/apparmor/capability.c b/security/apparmor/capability.c
+index 326a51838ef2..58490cca035d 100644
+--- a/security/apparmor/capability.c
++++ b/security/apparmor/capability.c
+@@ -51,7 +51,7 @@ static void audit_cb(struct audit_buffer *ab, void *va)
+ 
+ /**
+  * audit_caps - audit a capability
+- * @sa: audit data
++ * @as: audit data
+  * @profile: profile being tested for confinement (NOT NULL)
+  * @cap: capability tested
+  * @error: error code returned by test
+@@ -59,9 +59,9 @@ static void audit_cb(struct audit_buffer *ab, void *va)
+  * Do auditing of capability and handle, audit/complain/kill modes switching
+  * and duplicate message elimination.
+  *
+- * Returns: 0 or sa->error on success,  error code on failure
++ * Returns: 0 or ad->error on success,  error code on failure
+  */
+-static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
++static int audit_caps(struct apparmor_audit_data *ad, struct aa_profile *profile,
+ 		      int cap, int error)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+@@ -69,7 +69,7 @@ static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
+ 	struct audit_cache *ent;
+ 	int type = AUDIT_APPARMOR_AUTO;
+ 
+-	aad(sa)->error = error;
++	ad->error = error;
+ 
+ 	if (likely(!error)) {
+ 		/* test if auditing is being forced */
+@@ -101,7 +101,7 @@ static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
+ 	}
+ 	put_cpu_var(audit_cache);
+ 
+-	return aa_audit(type, profile, sa, audit_cb);
++	return aa_audit(type, profile, ad, audit_cb);
+ }
+ 
+ /**
+@@ -109,12 +109,12 @@ static int audit_caps(struct common_audit_data *sa, struct aa_profile *profile,
+  * @profile: profile being enforced    (NOT NULL, NOT unconfined)
+  * @cap: capability to test if allowed
+  * @opts: CAP_OPT_NOAUDIT bit determines whether audit record is generated
+- * @sa: audit data (MAY BE NULL indicating no auditing)
++ * @ad: audit data (MAY BE NULL indicating no auditing)
+  *
+  * Returns: 0 if allowed else -EPERM
+  */
+ static int profile_capable(struct aa_profile *profile, int cap,
+-			   unsigned int opts, struct common_audit_data *sa)
++			   unsigned int opts, struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+@@ -132,10 +132,10 @@ static int profile_capable(struct aa_profile *profile, int cap,
+ 		/* audit the cap request in complain mode but note that it
+ 		 * should be optional.
+ 		 */
+-		aad(sa)->info = "optional: no audit";
++		ad->info = "optional: no audit";
+ 	}
+ 
+-	return audit_caps(sa, profile, cap, error);
++	return audit_caps(ad, profile, cap, error);
+ }
+ 
+ /**
+@@ -152,11 +152,11 @@ int aa_capable(struct aa_label *label, int cap, unsigned int opts)
+ {
+ 	struct aa_profile *profile;
+ 	int error = 0;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_CAP, AA_CLASS_CAP, OP_CAPABLE);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_CAP, AA_CLASS_CAP, OP_CAPABLE);
+ 
+-	sa.u.cap = cap;
++	ad.common.u.cap = cap;
+ 	error = fn_for_each_confined(label, profile,
+-			profile_capable(profile, cap, opts, &sa));
++			profile_capable(profile, cap, opts, &ad));
+ 
+ 	return error;
+ }
+diff --git a/security/apparmor/file.c b/security/apparmor/file.c
+index 2061295f50f6..a8b7808f5696 100644
+--- a/security/apparmor/file.c
++++ b/security/apparmor/file.c
+@@ -46,33 +46,34 @@ static u32 map_mask_to_chr_mask(u32 mask)
+ static void file_audit_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 	kuid_t fsuid = current_fsuid();
+ 	char str[10];
+ 
+-	if (aad(sa)->request & AA_AUDIT_FILE_MASK) {
++	if (ad->request & AA_AUDIT_FILE_MASK) {
+ 		aa_perm_mask_to_str(str, sizeof(str), aa_file_perm_chrs,
+-				    map_mask_to_chr_mask(aad(sa)->request));
++				    map_mask_to_chr_mask(ad->request));
+ 		audit_log_format(ab, " requested_mask=\"%s\"", str);
+ 	}
+-	if (aad(sa)->denied & AA_AUDIT_FILE_MASK) {
++	if (ad->denied & AA_AUDIT_FILE_MASK) {
+ 		aa_perm_mask_to_str(str, sizeof(str), aa_file_perm_chrs,
+-				    map_mask_to_chr_mask(aad(sa)->denied));
++				    map_mask_to_chr_mask(ad->denied));
+ 		audit_log_format(ab, " denied_mask=\"%s\"", str);
+ 	}
+-	if (aad(sa)->request & AA_AUDIT_FILE_MASK) {
++	if (ad->request & AA_AUDIT_FILE_MASK) {
+ 		audit_log_format(ab, " fsuid=%d",
+ 				 from_kuid(&init_user_ns, fsuid));
+ 		audit_log_format(ab, " ouid=%d",
+-				 from_kuid(&init_user_ns, aad(sa)->fs.ouid));
++				 from_kuid(&init_user_ns, ad->fs.ouid));
+ 	}
+ 
+-	if (aad(sa)->peer) {
++	if (ad->peer) {
+ 		audit_log_format(ab, " target=");
+-		aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++		aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 				FLAG_VIEW_SUBNS, GFP_KERNEL);
+-	} else if (aad(sa)->fs.target) {
++	} else if (ad->fs.target) {
+ 		audit_log_format(ab, " target=");
+-		audit_log_untrustedstring(ab, aad(sa)->fs.target);
++		audit_log_untrustedstring(ab, ad->fs.target);
+ 	}
+ }
+ 
+@@ -97,50 +98,49 @@ int aa_audit_file(struct aa_profile *profile, struct aa_perms *perms,
+ 		  kuid_t ouid, const char *info, int error)
+ {
+ 	int type = AUDIT_APPARMOR_AUTO;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_TASK, AA_CLASS_FILE, op);
+-
+-	sa.u.tsk = NULL;
+-	aad(&sa)->request = request;
+-	aad(&sa)->name = name;
+-	aad(&sa)->fs.target = target;
+-	aad(&sa)->peer = tlabel;
+-	aad(&sa)->fs.ouid = ouid;
+-	aad(&sa)->info = info;
+-	aad(&sa)->error = error;
+-	sa.u.tsk = NULL;
+-
+-	if (likely(!aad(&sa)->error)) {
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_FILE, op);
++
++	ad.request = request;
++	ad.name = name;
++	ad.fs.target = target;
++	ad.peer = tlabel;
++	ad.fs.ouid = ouid;
++	ad.info = info;
++	ad.error = error;
++	ad.common.u.tsk = NULL;
++
++	if (likely(!ad.error)) {
+ 		u32 mask = perms->audit;
+ 
+ 		if (unlikely(AUDIT_MODE(profile) == AUDIT_ALL))
+ 			mask = 0xffff;
+ 
+ 		/* mask off perms that are not being force audited */
+-		aad(&sa)->request &= mask;
++		ad.request &= mask;
+ 
+-		if (likely(!aad(&sa)->request))
++		if (likely(!ad.request))
+ 			return 0;
+ 		type = AUDIT_APPARMOR_AUDIT;
+ 	} else {
+ 		/* only report permissions that were denied */
+-		aad(&sa)->request = aad(&sa)->request & ~perms->allow;
+-		AA_BUG(!aad(&sa)->request);
++		ad.request = ad.request & ~perms->allow;
++		AA_BUG(!ad.request);
+ 
+-		if (aad(&sa)->request & perms->kill)
++		if (ad.request & perms->kill)
+ 			type = AUDIT_APPARMOR_KILL;
+ 
+ 		/* quiet known rejects, assumes quiet and kill do not overlap */
+-		if ((aad(&sa)->request & perms->quiet) &&
++		if ((ad.request & perms->quiet) &&
+ 		    AUDIT_MODE(profile) != AUDIT_NOQUIET &&
+ 		    AUDIT_MODE(profile) != AUDIT_ALL)
+-			aad(&sa)->request &= ~perms->quiet;
++			ad.request &= ~perms->quiet;
+ 
+-		if (!aad(&sa)->request)
+-			return aad(&sa)->error;
++		if (!ad.request)
++			return ad.error;
+ 	}
+ 
+-	aad(&sa)->denied = aad(&sa)->request & ~perms->allow;
+-	return aa_audit(type, profile, &sa, file_audit_cb);
++	ad.denied = ad.request & ~perms->allow;
++	return aa_audit(type, profile, &ad, file_audit_cb);
+ }
+ 
+ static int path_name(const char *op, struct aa_label *label,
+@@ -546,7 +546,7 @@ static int __file_mqueue_perm(const char *op, struct aa_label *label,
+ 	struct aa_profile *profile;
+ 	char *buffer;
+ 	int error;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
+ 
+ 	/* revalidation due to label out of date. No revocation at this time */
+ 	if (!denied && aa_label_is_subset(flabel, label))
+@@ -557,15 +557,15 @@ static int __file_mqueue_perm(const char *op, struct aa_label *label,
+ 	if (!buffer)
+ 		return -ENOMEM;
+ 
+-	aad(&sa)->request = request;
+-	aad(&sa)->peer = NULL;
+-	aad(&sa)->mq.ouid = file_inode(file)->i_uid;
+-	aad(&sa)->mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
++	ad.request = request;
++	ad.peer = NULL;
++	ad.mq.ouid = file_inode(file)->i_uid;
++	ad.mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
+ 
+ 	/* check every profile in task label not in current cache */
+ 	error = fn_for_each_not_in_set(flabel, label, profile,
+ 			aa_profile_mqueue_perm(profile, &file->f_path,
+-					       request, buffer, &sa));
++					       request, buffer, &ad));
+ 	if (denied && !error) {
+ 		/*
+ 		 * check every profile in file label that was not tested
+@@ -578,11 +578,11 @@ static int __file_mqueue_perm(const char *op, struct aa_label *label,
+ 		if (label == flabel)
+ 			error = fn_for_each(label, profile,
+ 				aa_profile_mqueue_perm(profile, &file->f_path,
+-						       request, buffer, &sa));
++						       request, buffer, &ad));
+ 		else
+ 			error = fn_for_each_not_in_set(label, flabel, profile,
+ 				aa_profile_mqueue_perm(profile, &file->f_path,
+-						       request, buffer, &sa));
++						       request, buffer, &ad));
+ 	}
+ 	if (!error)
+ 		update_file_ctx(file_ctx(file), label, request);
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index 9b3efc10130c..f1e9dfbfedab 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -157,33 +157,33 @@ struct apparmor_audit_data {
+ 			unsigned long flags;
+ 		} mnt;
+ 	};
++
++	struct common_audit_data common;
+ };
+ 
+ /* macros for dealing with  apparmor_audit_data structure */
+-#define aad(SA) ((SA)->apparmor_audit_data)
++#define aad(SA) (container_of(SA, struct apparmor_audit_data, common))
+ #define DEFINE_AUDIT_DATA(NAME, T, C, X)				\
+ 	/* TODO: cleanup audit init so we don't need _aad = {0,} */	\
+-	struct apparmor_audit_data NAME ## _aad = {                     \
++	struct apparmor_audit_data NAME = {				\
+ 		.class = (C),						\
+ 		.op = (X),                                              \
+-	};                                                              \
+-	struct common_audit_data NAME =					\
+-	{								\
+-	.type = (T),							\
+-	.u.tsk = NULL,							\
+-	};								\
+-	NAME.apparmor_audit_data = &(NAME ## _aad)
+-
+-void aa_audit_msg(int type, struct common_audit_data *sa,
++		.common.type = (T),					\
++		.common.u.tsk = NULL,					\
++		.common.apparmor_audit_data = &NAME,			\
++	};
++
++void aa_audit_msg(int type, struct apparmor_audit_data *ad,
+ 		  void (*cb) (struct audit_buffer *, void *));
+-int aa_audit(int type, struct aa_profile *profile, struct common_audit_data *sa,
++int aa_audit(int type, struct aa_profile *profile,
++	     struct apparmor_audit_data *ad,
+ 	     void (*cb) (struct audit_buffer *, void *));
+ 
+-#define aa_audit_error(ERROR, SA, CB)				\
++#define aa_audit_error(ERROR, AD, CB)				\
+ ({								\
+-	aad((SA))->error = (ERROR);				\
+-	aa_audit_msg(AUDIT_APPARMOR_ERROR, (SA), (CB));		\
+-	aad((SA))->error;					\
++	(AD)->error = (ERROR);					\
++	aa_audit_msg(AUDIT_APPARMOR_ERROR, (AD), (CB));		\
++	(AD)->error;					\
+ })
+ 
+ 
+diff --git a/security/apparmor/include/ipc.h b/security/apparmor/include/ipc.h
+index 2e8c440a9df3..9affd87419de 100644
+--- a/security/apparmor/include/ipc.h
++++ b/security/apparmor/include/ipc.h
+@@ -67,7 +67,7 @@ int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig);
+ int aa_profile_mqueue_perm(struct aa_profile *profile,
+ 			   const struct path *path,
+ 			   u32 request, char *buffer,
+-			   struct common_audit_data *sa);
++			   struct apparmor_audit_data *ad);
+ 
+ int aa_mqueue_perm(const char *op, struct aa_label *label,
+ 		   const struct path *path, u32 request);
+diff --git a/security/apparmor/include/net.h b/security/apparmor/include/net.h
+index 46f9d2a62707..9ce23e706f89 100644
+--- a/security/apparmor/include/net.h
++++ b/security/apparmor/include/net.h
+@@ -66,9 +66,9 @@ static inline struct aa_sk_ctx *aa_sock(const struct sock *sk)
+ 						     LSM_AUDIT_DATA_NONE, \
+ 						     AA_CLASS_NET,        \
+ 			  OP);						  \
+-	NAME.u.net = &(NAME ## _net);					  \
+-	aad(&NAME)->net.type = (T);					  \
+-	aad(&NAME)->net.protocol = (P)
++	NAME.common.u.net = &(NAME ## _net);				  \
++	NAME.net.type = (T);						  \
++	NAME.net.protocol = (P)
+ 
+ #define DEFINE_AUDIT_SK(NAME, OP, SK)					\
+ 	DEFINE_AUDIT_NET(NAME, OP, SK, (SK)->sk_family, (SK)->sk_type,	\
+@@ -109,16 +109,17 @@ extern struct aa_sfs_entry aa_sfs_entry_network[];
+ extern struct aa_sfs_entry aa_sfs_entry_network_compat[];
+ 
+ void audit_net_cb(struct audit_buffer *ab, void *va);
+-int aa_profile_af_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_af_perm(struct aa_profile *profile,
++		       struct apparmor_audit_data *ad,
+ 		       u32 request, u16 family, int type);
+ int aa_af_perm(struct aa_label *label, const char *op, u32 request, u16 family,
+ 	       int type, int protocol);
+ static inline int aa_profile_af_sk_perm(struct aa_profile *profile,
+-					struct common_audit_data *sa,
++					struct apparmor_audit_data *ad,
+ 					u32 request,
+ 					struct sock *sk)
+ {
+-	return aa_profile_af_perm(profile, sa, request, sk->sk_family,
++	return aa_profile_af_perm(profile, ad, request, sk->sk_family,
+ 				  sk->sk_type);
+ }
+ int aa_sk_perm(const char *op, u32 request, struct sock *sk);
+diff --git a/security/apparmor/include/perms.h b/security/apparmor/include/perms.h
+index 560685f0d4ce..f719e99f0327 100644
+--- a/security/apparmor/include/perms.h
++++ b/security/apparmor/include/perms.h
+@@ -195,13 +195,13 @@ static inline void aa_perms_accum(struct aa_perms *accum,
+ 
+ 
+ extern struct aa_perms default_perms;
+-
++struct apparmor_audit_data;
+ 
+ void aa_perm_mask_to_str(char *str, size_t str_size, const char *chrs,
+ 			 u32 mask);
+ void aa_audit_perm_names(struct audit_buffer *ab, const char * const *names,
+ 			 u32 mask);
+-void aa_audit_perms(struct audit_buffer *ab,  struct common_audit_data *sa,
++void aa_audit_perms(struct audit_buffer *ab,  struct apparmor_audit_data *ad,
+ 		    const char *chrs, u32 chrsmask, const char * const *names,
+ 		    u32 namesmask);
+ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
+@@ -215,7 +215,7 @@ void aa_profile_match_label(struct aa_profile *profile,
+ 			    int type, u32 request, struct aa_perms *perms);
+ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+ 			  u32 request, int type, u32 *deny,
+-			  struct common_audit_data *sa);
++			  struct apparmor_audit_data *ad);
+ 
+ static inline u32 denied_perms(struct aa_perms *perms, u32 request)
+ {
+@@ -223,6 +223,6 @@ static inline u32 denied_perms(struct aa_perms *perms, u32 request)
+ }
+ 
+ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
+-		   u32 request, struct common_audit_data *sa,
++		   u32 request, struct apparmor_audit_data *ad,
+ 		   void (*cb)(struct audit_buffer *, void *));
+ #endif /* __AA_PERM_H */
+diff --git a/security/apparmor/include/task.h b/security/apparmor/include/task.h
+index c420abd6a4d0..9cbbb7f131ed 100644
+--- a/security/apparmor/include/task.h
++++ b/security/apparmor/include/task.h
+@@ -98,7 +98,8 @@ int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
+ 
+ #define AA_USERNS_CREATE	8
+ 
+-int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_ns_perm(struct aa_profile *profile,
++		       struct apparmor_audit_data *ad,
+ 		       u32 request);
+ 
+ #endif /* __AA_TASK_H */
+diff --git a/security/apparmor/ipc.c b/security/apparmor/ipc.c
+index bd7d03880cf9..9134edd76b24 100644
+--- a/security/apparmor/ipc.c
++++ b/security/apparmor/ipc.c
+@@ -55,31 +55,32 @@ static const char *audit_signal_mask(u32 mask)
+ static void audit_signal_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->request & AA_SIGNAL_PERM_MASK) {
++	if (ad->request & AA_SIGNAL_PERM_MASK) {
+ 		audit_log_format(ab, " requested_mask=\"%s\"",
+-				 audit_signal_mask(aad(sa)->request));
+-		if (aad(sa)->denied & AA_SIGNAL_PERM_MASK) {
++				 audit_signal_mask(ad->request));
++		if (ad->denied & AA_SIGNAL_PERM_MASK) {
+ 			audit_log_format(ab, " denied_mask=\"%s\"",
+-					 audit_signal_mask(aad(sa)->denied));
++					 audit_signal_mask(ad->denied));
+ 		}
+ 	}
+-	if (aad(sa)->signal == SIGUNKNOWN)
++	if (ad->signal == SIGUNKNOWN)
+ 		audit_log_format(ab, "signal=unknown(%d)",
+-				 aad(sa)->unmappedsig);
+-	else if (aad(sa)->signal < MAXMAPPED_SIGNAME)
+-		audit_log_format(ab, " signal=%s", sig_names[aad(sa)->signal]);
++				 ad->unmappedsig);
++	else if (ad->signal < MAXMAPPED_SIGNAME)
++		audit_log_format(ab, " signal=%s", sig_names[ad->signal]);
+ 	else
+ 		audit_log_format(ab, " signal=rtmin+%d",
+-				 aad(sa)->signal - SIGRT_BASE);
++				 ad->signal - SIGRT_BASE);
+ 	audit_log_format(ab, " peer=");
+-	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++	aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 			FLAGS_NONE, GFP_ATOMIC);
+ }
+ 
+ static int profile_signal_perm(struct aa_profile *profile,
+ 			       struct aa_label *peer, u32 request,
+-			       struct common_audit_data *sa)
++			       struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+@@ -90,53 +91,54 @@ static int profile_signal_perm(struct aa_profile *profile,
+ 	    !ANY_RULE_MEDIATES(&profile->rules, AA_CLASS_SIGNAL))
+ 		return 0;
+ 
+-	aad(sa)->peer = peer;
++	ad->peer = peer;
+ 	/* TODO: secondary cache check <profile, profile, perm> */
+ 	state = aa_dfa_next(rules->policy.dfa,
+ 			    rules->policy.start[AA_CLASS_SIGNAL],
+-			    aad(sa)->signal);
++			    ad->signal);
+ 	aa_label_match(profile, rules, peer, state, false, request, &perms);
+ 	aa_apply_modes_to_perms(profile, &perms);
+-	return aa_check_perms(profile, &perms, request, sa, audit_signal_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_signal_cb);
+ }
+ 
+ int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig)
+ {
+ 	struct aa_profile *profile;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_SIGNAL, OP_SIGNAL);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_SIGNAL, OP_SIGNAL);
+ 
+-	aad(&sa)->signal = map_signal_num(sig);
+-	aad(&sa)->unmappedsig = sig;
++	ad.signal = map_signal_num(sig);
++	ad.unmappedsig = sig;
+ 	return xcheck_labels(sender, target, profile,
+-			profile_signal_perm(profile, target, MAY_WRITE, &sa),
+-			profile_signal_perm(profile, sender, MAY_READ, &sa));
++			profile_signal_perm(profile, target, MAY_WRITE, &ad),
++			profile_signal_perm(profile, sender, MAY_READ, &ad));
+ }
+ 
+ 
+ static void audit_mqueue_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	aa_audit_perms(ab, sa, NULL, 0, NULL, AA_AUDIT_POSIX_MQUEUE_MASK);
++	aa_audit_perms(ab, ad, NULL, 0, NULL, AA_AUDIT_POSIX_MQUEUE_MASK);
+ 
+ 	/* move class into generic audit framse work */
+ 	audit_log_format(ab, "class=\"posix_mqueue\"");
+-	if (aad(sa)->request & AA_AUDIT_FILE_MASK) {
++	if (ad->request & AA_AUDIT_FILE_MASK) {
+ 		audit_log_format(ab, " fsuid=%u",
+-				 from_kuid(&init_user_ns, aad(sa)->mq.fsuid));
++				 from_kuid(&init_user_ns, ad->mq.fsuid));
+ 		audit_log_format(ab, " ouid=%u",
+-				 from_kuid(&init_user_ns, aad(sa)->mq.ouid));
++				 from_kuid(&init_user_ns, ad->mq.ouid));
+ 	}
+-	if (aad(sa)->peer) {
++	if (ad->peer) {
+ 		audit_log_format(ab, " olabel=");
+-		aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++		aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 				FLAGS_NONE, GFP_ATOMIC);
+ 	}
+ }
+ 
+ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 			   u32 request, char *buffer,
+-			   struct common_audit_data *sa)
++			   struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+@@ -148,7 +150,7 @@ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 	    !RULE_MEDIATES(rules, AA_CLASS_POSIX_MQUEUE))
+ 		return 0;
+ 
+-	aad(sa)->label = &profile->label;
++	ad->label = &profile->label;
+ 
+ 	name = dentry_path_raw(path->dentry, buffer, aa_g_path_max);
+ 	if (IS_ERR(name))
+@@ -158,7 +160,7 @@ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 		pr_warn("apparmor mqueue disconnected TODO\n");
+ 	}
+ 
+-	aad(sa)->name = name;
++	ad->name = name;
+ 
+ 	state = aa_dfa_match(rules->policy.dfa,
+ 			     rules->policy.start[AA_CLASS_POSIX_MQUEUE],
+@@ -169,7 +171,7 @@ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 		/* early bailout sufficient perms no need to do further
+ 		 * checks
+ 		 */
+-		return aa_check_perms(profile, &perms, request, sa,
++		return aa_check_perms(profile, &perms, request, ad,
+ 				      audit_mqueue_cb);
+ 	}
+ 	/* continue check to see if we have label perms */
+@@ -177,7 +179,7 @@ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 	//aa_apply_modes_to_perms(profile, &perms);
+ 
+ 	// this will just cause failure without above label check
+-	return aa_check_perms(profile, &perms, request, sa, audit_mqueue_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_mqueue_cb);
+ }
+ 
+ /* mqueue - no label caching test */
+@@ -187,7 +189,7 @@ int aa_mqueue_perm(const char *op, struct aa_label *label,
+ 	struct aa_profile *profile;
+ 	char *buffer;
+ 	int error;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
+ 
+ 	// do we need delegate deleted with mqueues? probably
+ 	//flags |= PATH_DELEGATE_DELETED;
+@@ -201,16 +203,16 @@ int aa_mqueue_perm(const char *op, struct aa_label *label,
+ 		return -ENOMEM;
+ 
+ 	/* audit fields that won't change during iteration */
+-	aad(&sa)->request = request;
+-	aad(&sa)->peer = NULL;
+-	aad(&sa)->mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
+-	aad(&sa)->mq.ouid = d_backing_inode(path->dentry) ?
++	ad.request = request;
++	ad.peer = NULL;
++	ad.mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
++	ad.mq.ouid = d_backing_inode(path->dentry) ?
+ 					d_backing_inode(path->dentry)->i_uid :
+ 					current_fsuid();
+ 
+ 	error = fn_for_each_confined(label, profile,
+ 			aa_profile_mqueue_perm(profile, path, request,
+-					       buffer, &sa));
++					       buffer, &ad));
+ 	aa_put_buffer(buffer);
+ 
+ 	return error;
+diff --git a/security/apparmor/lib.c b/security/apparmor/lib.c
+index 58f3a94e262b..6e3f91db14b8 100644
+--- a/security/apparmor/lib.c
++++ b/security/apparmor/lib.c
+@@ -143,10 +143,10 @@ const char *aa_splitn_fqname(const char *fqname, size_t n, const char **ns_name,
+ void aa_info_message(const char *str)
+ {
+ 	if (audit_enabled) {
+-		DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
++		DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
+ 
+-		aad(&sa)->info = str;
+-		aa_audit_msg(AUDIT_APPARMOR_STATUS, &sa, NULL);
++		ad.info = str;
++		aa_audit_msg(AUDIT_APPARMOR_STATUS, &ad, NULL);
+ 	}
+ 	printk(KERN_INFO "AppArmor: %s\n", str);
+ }
+@@ -277,18 +277,18 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
+ 	audit_log_format(ab, "\"");
+ }
+ 
+-void aa_audit_perms(struct audit_buffer *ab, struct common_audit_data *sa,
++void aa_audit_perms(struct audit_buffer *ab, struct apparmor_audit_data *ad,
+ 		    const char *chrs, u32 chrsmask, const char * const *names,
+ 		    u32 namesmask)
+ {
+-	if (aad(sa)->request) {
++	if (ad->request) {
+ 		audit_log_format(ab, " requested=");
+-		aa_audit_perm_mask(ab, aad(sa)->request, chrs, chrsmask,
++		aa_audit_perm_mask(ab, ad->request, chrs, chrsmask,
+ 				   names, namesmask);
+ 	}
+-	if (aad(sa)->denied) {
++	if (ad->denied) {
+ 		audit_log_format(ab, " denied=");
+-		aa_audit_perm_mask(ab, aad(sa)->denied, chrs, chrsmask,
++		aa_audit_perm_mask(ab, ad->denied, chrs, chrsmask,
+ 				   names, namesmask);
+ 	}
+ }
+@@ -301,11 +301,12 @@ void aa_audit_perms(struct audit_buffer *ab, struct common_audit_data *sa,
+ static void aa_audit_perms_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	aa_audit_perms(ab, sa, aa_file_perm_chrs, PERMS_CHRS_MASK,
++	aa_audit_perms(ab, ad, aa_file_perm_chrs, PERMS_CHRS_MASK,
+ 		       aa_base_perm_names, PERMS_NAMES_MASK);
+ 	audit_log_format(ab, " peer=");
+-	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++	aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 				      FLAGS_NONE, GFP_ATOMIC);
+ }
+ 
+@@ -359,21 +360,21 @@ void aa_profile_match_label(struct aa_profile *profile,
+ /* currently unused */
+ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+ 			  u32 request, int type, u32 *deny,
+-			  struct common_audit_data *sa)
++			  struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	struct aa_perms perms;
+ 
+-	aad(sa)->label = &profile->label;
+-	aad(sa)->peer = &target->label;
+-	aad(sa)->request = request;
++	ad->label = &profile->label;
++	ad->peer = &target->label;
++	ad->request = request;
+ 
+ 	aa_profile_match_label(profile, rules, &target->label, type, request,
+ 			       &perms);
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 	*deny |= request & perms.deny;
+-	return aa_check_perms(profile, &perms, request, sa, aa_audit_perms_cb);
++	return aa_check_perms(profile, &perms, request, ad, aa_audit_perms_cb);
+ }
+ 
+ /**
+@@ -382,7 +383,7 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+  * @perms: perms computed for the request
+  * @request: requested perms
+  * @deny: Returns: explicit deny set
+- * @sa: initialized audit structure (MAY BE NULL if not auditing)
++ * @ad: initialized audit structure (MAY BE NULL if not auditing)
+  * @cb: callback fn for type specific fields (MAY BE NULL)
+  *
+  * Returns: 0 if permission else error code
+@@ -395,7 +396,7 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+  *	 with a positive value.
+  */
+ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
+-		   u32 request, struct common_audit_data *sa,
++		   u32 request, struct apparmor_audit_data *ad,
+ 		   void (*cb)(struct audit_buffer *, void *))
+ {
+ 	int type, error;
+@@ -404,7 +405,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
+ 	if (likely(!denied)) {
+ 		/* mask off perms that are not being force audited */
+ 		request &= perms->audit;
+-		if (!request || !sa)
++		if (!request || !ad)
+ 			return 0;
+ 
+ 		type = AUDIT_APPARMOR_AUDIT;
+@@ -423,16 +424,16 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
+ 			error = -ENOENT;
+ 
+ 		denied &= ~perms->quiet;
+-		if (!sa || !denied)
++		if (!ad || !denied)
+ 			return error;
+ 	}
+ 
+-	if (sa) {
+-		aad(sa)->label = &profile->label;
+-		aad(sa)->request = request;
+-		aad(sa)->denied = denied;
+-		aad(sa)->error = error;
+-		aa_audit_msg(type, sa, cb);
++	if (ad) {
++		ad->label = &profile->label;
++		ad->request = request;
++		ad->denied = denied;
++		ad->error = error;
++		aa_audit_msg(type, ad, cb);
+ 	}
+ 
+ 	if (type == AUDIT_APPARMOR_ALLOWED)
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index f93888f17afe..7c5e3050400b 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -832,7 +832,7 @@ static int apparmor_getprocattr(struct task_struct *task, const char *name,
+ 
+ 
+ static int profile_interface_lsm(struct aa_profile *profile,
+-				 struct common_audit_data *sa)
++				 struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+@@ -843,9 +843,9 @@ static int profile_interface_lsm(struct aa_profile *profile,
+ 	if (state) {
+ 		perms = *aa_lookup_perms(&rules->policy, state);
+ 		aa_apply_modes_to_perms(profile, &perms);
+-		aad(sa)->label = &profile->label;
++		ad->label = &profile->label;
+ 
+-		return aa_check_perms(profile, &perms, AA_MAY_WRITE, sa, NULL);
++		return aa_check_perms(profile, &perms, AA_MAY_WRITE, ad, NULL);
+ 	}
+ 
+ 	return 0;
+@@ -858,17 +858,17 @@ static int apparmor_task_prctl(int option, unsigned long arg2,
+ 	struct aa_profile *profile;
+ 	struct aa_label *label;
+ 	int error;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE,
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE,
+ 			  OP_SETPROCATTR);
+ 
+ 	if (option != PR_LSM_ATTR_SET)
+ 		return -ENOSYS;
+ 
+ 	/* LSM infrastructure does actual setting of interface_lsm if allowed */
+-	aad(&sa)->info = "set interface lsm";
++	ad.info = "set interface lsm";
+ 	label = begin_current_label_crit_section();
+ 	error = fn_for_each_confined(label, profile,
+-				profile_interface_lsm(profile, &sa));
++				profile_interface_lsm(profile, &ad));
+ 	end_current_label_crit_section(label);
+ 	return error;
+ }
+@@ -879,7 +879,7 @@ static int apparmor_setprocattr(const char *name, void *value,
+ 	char *command, *largs = NULL, *args = value;
+ 	size_t arg_size;
+ 	int error;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE,
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE,
+ 			  OP_SETPROCATTR);
+ 
+ 	if (size == 0)
+@@ -939,11 +939,11 @@ static int apparmor_setprocattr(const char *name, void *value,
+ 	return error;
+ 
+ fail:
+-	aad(&sa)->label = begin_current_label_crit_section();
+-	aad(&sa)->info = name;
+-	aad(&sa)->error = error = -EINVAL;
+-	aa_audit_msg(AUDIT_APPARMOR_DENIED, &sa, NULL);
+-	end_current_label_crit_section(aad(&sa)->label);
++	ad.label = begin_current_label_crit_section();
++	ad.info = name;
++	ad.error = error = -EINVAL;
++	aa_audit_msg(AUDIT_APPARMOR_DENIED, &ad, NULL);
++	end_current_label_crit_section(ad.label);
+ 	goto out;
+ }
+ 
+@@ -1040,13 +1040,13 @@ static int apparmor_userns_create(const struct cred *cred)
+ 	struct aa_label *label;
+ 	struct aa_profile *profile;
+ 	int error = 0;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
+ 			  OP_USERNS_CREATE);
+ 
+ 	label = begin_current_label_crit_section();
+ 	if (unprivileged_userns_restricted || !unconfined(label)) {
+ 		error = fn_for_each(label, profile,
+-				    aa_profile_ns_perm(profile, &sa,
++				    aa_profile_ns_perm(profile, &ad,
+ 						       AA_USERNS_CREATE));
+ 		end_current_label_crit_section(label);
+ 	}
+diff --git a/security/apparmor/mount.c b/security/apparmor/mount.c
+index cdfa430ae216..3830bceff9c8 100644
+--- a/security/apparmor/mount.c
++++ b/security/apparmor/mount.c
+@@ -86,27 +86,28 @@ static void audit_mnt_flags(struct audit_buffer *ab, unsigned long flags)
+ static void audit_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->mnt.type) {
++	if (ad->mnt.type) {
+ 		audit_log_format(ab, " fstype=");
+-		audit_log_untrustedstring(ab, aad(sa)->mnt.type);
++		audit_log_untrustedstring(ab, ad->mnt.type);
+ 	}
+-	if (aad(sa)->mnt.src_name) {
++	if (ad->mnt.src_name) {
+ 		audit_log_format(ab, " srcname=");
+-		audit_log_untrustedstring(ab, aad(sa)->mnt.src_name);
++		audit_log_untrustedstring(ab, ad->mnt.src_name);
+ 	}
+-	if (aad(sa)->mnt.trans) {
++	if (ad->mnt.trans) {
+ 		audit_log_format(ab, " trans=");
+-		audit_log_untrustedstring(ab, aad(sa)->mnt.trans);
++		audit_log_untrustedstring(ab, ad->mnt.trans);
+ 	}
+-	if (aad(sa)->mnt.flags) {
++	if (ad->mnt.flags) {
+ 		audit_log_format(ab, " flags=\"");
+-		audit_mnt_flags(ab, aad(sa)->mnt.flags);
++		audit_mnt_flags(ab, ad->mnt.flags);
+ 		audit_log_format(ab, "\"");
+ 	}
+-	if (aad(sa)->mnt.data) {
++	if (ad->mnt.data) {
+ 		audit_log_format(ab, " options=");
+-		audit_log_untrustedstring(ab, aad(sa)->mnt.data);
++		audit_log_untrustedstring(ab, ad->mnt.data);
+ 	}
+ }
+ 
+@@ -134,7 +135,7 @@ static int audit_mount(struct aa_profile *profile, const char *op,
+ 		       struct aa_perms *perms, const char *info, int error)
+ {
+ 	int audit_type = AUDIT_APPARMOR_AUTO;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_MOUNT, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_MOUNT, op);
+ 
+ 	if (likely(!error)) {
+ 		u32 mask = perms->audit;
+@@ -165,17 +166,17 @@ static int audit_mount(struct aa_profile *profile, const char *op,
+ 			return error;
+ 	}
+ 
+-	aad(&sa)->name = name;
+-	aad(&sa)->mnt.src_name = src_name;
+-	aad(&sa)->mnt.type = type;
+-	aad(&sa)->mnt.trans = trans;
+-	aad(&sa)->mnt.flags = flags;
++	ad.name = name;
++	ad.mnt.src_name = src_name;
++	ad.mnt.type = type;
++	ad.mnt.trans = trans;
++	ad.mnt.flags = flags;
+ 	if (data && (perms->audit & AA_AUDIT_DATA))
+-		aad(&sa)->mnt.data = data;
+-	aad(&sa)->info = info;
+-	aad(&sa)->error = error;
++		ad.mnt.data = data;
++	ad.info = info;
++	ad.error = error;
+ 
+-	return aa_audit(audit_type, profile, &sa, audit_cb);
++	return aa_audit(audit_type, profile, &ad, audit_cb);
+ }
+ 
+ /**
+diff --git a/security/apparmor/net.c b/security/apparmor/net.c
+index 61b0c5be11cc..24a9ee8bacd0 100644
+--- a/security/apparmor/net.c
++++ b/security/apparmor/net.c
+@@ -109,58 +109,59 @@ static void audit_unix_sk_addr(struct audit_buffer *ab, const char *str,
+ void audit_net_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (address_family_names[sa->u.net->family])
++	if (address_family_names[ad->common.u.net->family])
+ 		audit_log_format(ab, " family=\"%s\"",
+-				 address_family_names[sa->u.net->family]);
++				 address_family_names[ad->common.u.net->family]);
+ 	else
+ 		audit_log_format(ab, " family=\"unknown(%d)\"",
+-				 sa->u.net->family);
+-	if (sock_type_names[aad(sa)->net.type])
++				 ad->common.u.net->family);
++	if (sock_type_names[ad->net.type])
+ 		audit_log_format(ab, " sock_type=\"%s\"",
+-				 sock_type_names[aad(sa)->net.type]);
++				 sock_type_names[ad->net.type]);
+ 	else
+ 		audit_log_format(ab, " sock_type=\"unknown(%d)\"",
+-				 aad(sa)->net.type);
+-	audit_log_format(ab, " protocol=%d", aad(sa)->net.protocol);
++				 ad->net.type);
++	audit_log_format(ab, " protocol=%d", ad->net.protocol);
+ 
+-	if (aad(sa)->request & NET_PERMS_MASK) {
++	if (ad->request & NET_PERMS_MASK) {
+ 		audit_log_format(ab, " requested_mask=");
+-		aa_audit_perm_mask(ab, aad(sa)->request, NULL, 0,
++		aa_audit_perm_mask(ab, ad->request, NULL, 0,
+ 				   net_mask_names, NET_PERMS_MASK);
+ 
+-		if (aad(sa)->denied & NET_PERMS_MASK) {
++		if (ad->denied & NET_PERMS_MASK) {
+ 			audit_log_format(ab, " denied_mask=");
+-			aa_audit_perm_mask(ab, aad(sa)->denied, NULL, 0,
++			aa_audit_perm_mask(ab, ad->denied, NULL, 0,
+ 					   net_mask_names, NET_PERMS_MASK);
+ 		}
+ 	}
+-	if (sa->u.net->family == AF_UNIX) {
+-		if ((aad(sa)->request & ~NET_PEER_MASK) && aad(sa)->net.addr)
++	if (ad->common.u.net->family == AF_UNIX) {
++		if ((ad->request & ~NET_PEER_MASK) && ad->net.addr)
+ 			audit_unix_addr(ab, "addr",
+-					unix_addr(aad(sa)->net.addr),
+-					aad(sa)->net.addrlen);
++					unix_addr(ad->net.addr),
++					ad->net.addrlen);
+ 		else
+-			audit_unix_sk_addr(ab, "addr", sa->u.net->sk);
+-		if (aad(sa)->request & NET_PEER_MASK) {
+-			if (aad(sa)->net.addr)
++			audit_unix_sk_addr(ab, "addr", ad->common.u.net->sk);
++		if (ad->request & NET_PEER_MASK) {
++			if (ad->net.addr)
+ 				audit_unix_addr(ab, "peer_addr",
+-						unix_addr(aad(sa)->net.addr),
+-						aad(sa)->net.addrlen);
++						unix_addr(ad->net.addr),
++						ad->net.addrlen);
+ 			else
+ 				audit_unix_sk_addr(ab, "peer_addr",
+-						   aad(sa)->net.peer_sk);
++						   ad->net.peer_sk);
+ 		}
+ 	}
+-	if (aad(sa)->peer) {
++	if (ad->peer) {
+ 		audit_log_format(ab, " peer=");
+-		aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++		aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 				FLAGS_NONE, GFP_ATOMIC);
+ 	}
+ }
+ 
+ /* Generic af perm */
+-int aa_profile_af_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_af_perm(struct aa_profile *profile, struct apparmor_audit_data *ad,
+ 		       u32 request, u16 family, int type)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+@@ -195,17 +196,17 @@ int aa_profile_af_perm(struct aa_profile *profile, struct common_audit_data *sa,
+ 	}
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 
+-	return aa_check_perms(profile, &perms, request, sa, audit_net_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_net_cb);
+ }
+ 
+ int aa_af_perm(struct aa_label *label, const char *op, u32 request, u16 family,
+ 	       int type, int protocol)
+ {
+ 	struct aa_profile *profile;
+-	DEFINE_AUDIT_NET(sa, op, NULL, family, type, protocol);
++	DEFINE_AUDIT_NET(ad, op, NULL, family, type, protocol);
+ 
+ 	return fn_for_each_confined(label, profile,
+-			aa_profile_af_perm(profile, &sa, request, family,
++			aa_profile_af_perm(profile, &ad, request, family,
+ 					   type));
+ }
+ 
+@@ -220,10 +221,10 @@ static int aa_label_sk_perm(struct aa_label *label, const char *op, u32 request,
+ 
+ 	if (ctx->label != kernel_t && !unconfined(label)) {
+ 		struct aa_profile *profile;
+-		DEFINE_AUDIT_SK(sa, op, sk);
++		DEFINE_AUDIT_SK(ad, op, sk);
+ 
+ 		error = fn_for_each_confined(label, profile,
+-			    aa_profile_af_sk_perm(profile, &sa, request, sk));
++			    aa_profile_af_sk_perm(profile, &ad, request, sk));
+ 	}
+ 
+ 	return error;
+@@ -281,7 +282,7 @@ static int apparmor_secmark_init(struct aa_secmark *secmark)
+ }
+ 
+ static int aa_secmark_perm(struct aa_profile *profile, u32 request, u32 secid,
+-			   struct common_audit_data *sa)
++			   struct apparmor_audit_data *ad)
+ {
+ 	int i, ret;
+ 	struct aa_perms perms = { };
+@@ -312,17 +313,17 @@ static int aa_secmark_perm(struct aa_profile *profile, u32 request, u32 secid,
+ 
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 
+-	return aa_check_perms(profile, &perms, request, sa, audit_net_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_net_cb);
+ }
+ 
+ int apparmor_secmark_check(struct aa_label *label, char *op, u32 request,
+ 			   u32 secid, const struct sock *sk)
+ {
+ 	struct aa_profile *profile;
+-	DEFINE_AUDIT_SK(sa, op, sk);
++	DEFINE_AUDIT_SK(ad, op, sk);
+ 
+ 	return fn_for_each_confined(label, profile,
+ 				    aa_secmark_perm(profile, request, secid,
+-						    &sa));
++						    &ad));
+ }
+ #endif
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index 8bf49d307f31..3af3e61e9edc 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -725,10 +725,11 @@ static int replacement_allowed(struct aa_profile *profile, int noreplace,
+ static void audit_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->iface.ns) {
++	if (ad->iface.ns) {
+ 		audit_log_format(ab, " ns=");
+-		audit_log_untrustedstring(ab, aad(sa)->iface.ns);
++		audit_log_untrustedstring(ab, ad->iface.ns);
+ 	}
+ }
+ 
+@@ -747,15 +748,15 @@ static int audit_policy(struct aa_label *label, const char *op,
+ 			const char *ns_name, const char *name,
+ 			const char *info, int error)
+ {
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, op);
+ 
+-	aad(&sa)->iface.ns = ns_name;
+-	aad(&sa)->name = name;
+-	aad(&sa)->info = info;
+-	aad(&sa)->error = error;
+-	aad(&sa)->label = label;
++	ad.iface.ns = ns_name;
++	ad.name = name;
++	ad.info = info;
++	ad.error = error;
++	ad.label = label;
+ 
+-	aa_audit_msg(AUDIT_APPARMOR_STATUS, &sa, audit_cb);
++	aa_audit_msg(AUDIT_APPARMOR_STATUS, &ad, audit_cb);
+ 
+ 	return error;
+ }
+diff --git a/security/apparmor/policy_unpack.c b/security/apparmor/policy_unpack.c
+index 81317c89b275..690ec6b2d0bd 100644
+--- a/security/apparmor/policy_unpack.c
++++ b/security/apparmor/policy_unpack.c
+@@ -34,17 +34,18 @@
+ static void audit_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->iface.ns) {
++	if (ad->iface.ns) {
+ 		audit_log_format(ab, " ns=");
+-		audit_log_untrustedstring(ab, aad(sa)->iface.ns);
++		audit_log_untrustedstring(ab, ad->iface.ns);
+ 	}
+-	if (aad(sa)->name) {
++	if (ad->name) {
+ 		audit_log_format(ab, " name=");
+-		audit_log_untrustedstring(ab, aad(sa)->name);
++		audit_log_untrustedstring(ab, ad->name);
+ 	}
+-	if (aad(sa)->iface.pos)
+-		audit_log_format(ab, " offset=%ld", aad(sa)->iface.pos);
++	if (ad->iface.pos)
++		audit_log_format(ab, " offset=%ld", ad->iface.pos);
+ }
+ 
+ /**
+@@ -63,18 +64,18 @@ static int audit_iface(struct aa_profile *new, const char *ns_name,
+ 		       int error)
+ {
+ 	struct aa_profile *profile = labels_profile(aa_current_raw_label());
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_NONE, NULL);
+ 	if (e)
+-		aad(&sa)->iface.pos = e->pos - e->start;
+-	aad(&sa)->iface.ns = ns_name;
++		ad.iface.pos = e->pos - e->start;
++	ad.iface.ns = ns_name;
+ 	if (new)
+-		aad(&sa)->name = new->base.hname;
++		ad.name = new->base.hname;
+ 	else
+-		aad(&sa)->name = name;
+-	aad(&sa)->info = info;
+-	aad(&sa)->error = error;
++		ad.name = name;
++	ad.info = info;
++	ad.error = error;
+ 
+-	return aa_audit(AUDIT_APPARMOR_STATUS, profile, &sa, audit_cb);
++	return aa_audit(AUDIT_APPARMOR_STATUS, profile, &ad, audit_cb);
+ }
+ 
+ void __aa_loaddata_update(struct aa_loaddata *data, long revision)
+diff --git a/security/apparmor/resource.c b/security/apparmor/resource.c
+index e85948164896..f6c1cb4d6033 100644
+--- a/security/apparmor/resource.c
++++ b/security/apparmor/resource.c
+@@ -30,12 +30,13 @@ struct aa_sfs_entry aa_sfs_entry_rlimit[] = {
+ static void audit_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+ 	audit_log_format(ab, " rlimit=%s value=%lu",
+-			 rlim_names[aad(sa)->rlim.rlim], aad(sa)->rlim.max);
+-	if (aad(sa)->peer) {
++			 rlim_names[ad->rlim.rlim], ad->rlim.max);
++	if (ad->peer) {
+ 		audit_log_format(ab, " peer=");
+-		aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++		aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 				FLAGS_NONE, GFP_ATOMIC);
+ 	}
+ }
+@@ -49,22 +50,22 @@ static void audit_cb(struct audit_buffer *ab, void *va)
+  * @info: info being auditing
+  * @error: error value
+  *
+- * Returns: 0 or sa->error else other error code on failure
++ * Returns: 0 or ad->error else other error code on failure
+  */
+ static int audit_resource(struct aa_profile *profile, unsigned int resource,
+ 			  unsigned long value, struct aa_label *peer,
+ 			  const char *info, int error)
+ {
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_RLIMITS,
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_RLIMITS,
+ 			  OP_SETRLIMIT);
+ 
+-	aad(&sa)->rlim.rlim = resource;
+-	aad(&sa)->rlim.max = value;
+-	aad(&sa)->peer = peer;
+-	aad(&sa)->info = info;
+-	aad(&sa)->error = error;
++	ad.rlim.rlim = resource;
++	ad.rlim.max = value;
++	ad.peer = peer;
++	ad.info = info;
++	ad.error = error;
+ 
+-	return aa_audit(AUDIT_APPARMOR_AUTO, profile, &sa, audit_cb);
++	return aa_audit(AUDIT_APPARMOR_AUTO, profile, &ad, audit_cb);
+ }
+ 
+ /**
+diff --git a/security/apparmor/task.c b/security/apparmor/task.c
+index ffc4e6a3dea2..104892faf6f7 100644
+--- a/security/apparmor/task.c
++++ b/security/apparmor/task.c
+@@ -208,18 +208,19 @@ static const char *audit_ptrace_mask(u32 mask)
+ static void audit_ptrace_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->request & AA_PTRACE_PERM_MASK) {
++	if (ad->request & AA_PTRACE_PERM_MASK) {
+ 		audit_log_format(ab, " requested_mask=\"%s\"",
+-				 audit_ptrace_mask(aad(sa)->request));
++				 audit_ptrace_mask(ad->request));
+ 
+-		if (aad(sa)->denied & AA_PTRACE_PERM_MASK) {
++		if (ad->denied & AA_PTRACE_PERM_MASK) {
+ 			audit_log_format(ab, " denied_mask=\"%s\"",
+-					 audit_ptrace_mask(aad(sa)->denied));
++					 audit_ptrace_mask(ad->denied));
+ 		}
+ 	}
+ 	audit_log_format(ab, " peer=");
+-	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++	aa_label_xaudit(ab, labels_ns(ad->label), ad->peer,
+ 			FLAGS_NONE, GFP_ATOMIC);
+ }
+ 
+@@ -227,51 +228,51 @@ static void audit_ptrace_cb(struct audit_buffer *ab, void *va)
+ /* TODO: conditionals */
+ static int profile_ptrace_perm(struct aa_profile *profile,
+ 			     struct aa_label *peer, u32 request,
+-			     struct common_audit_data *sa)
++			     struct apparmor_audit_data *ad)
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+ 	struct aa_perms perms = { };
+ 
+-	aad(sa)->peer = peer;
++	ad->peer = peer;
+ 	aa_profile_match_label(profile, rules, peer, AA_CLASS_PTRACE, request,
+ 			       &perms);
+ 	aa_apply_modes_to_perms(profile, &perms);
+-	return aa_check_perms(profile, &perms, request, sa, audit_ptrace_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_ptrace_cb);
+ }
+ 
+ static int profile_tracee_perm(struct aa_profile *tracee,
+ 			       struct aa_label *tracer, u32 request,
+-			       struct common_audit_data *sa)
++			       struct apparmor_audit_data *ad)
+ {
+ 	if (profile_unconfined(tracee) || unconfined(tracer) ||
+ 	    !ANY_RULE_MEDIATES(&tracee->rules, AA_CLASS_PTRACE))
+ 		return 0;
+ 
+-	return profile_ptrace_perm(tracee, tracer, request, sa);
++	return profile_ptrace_perm(tracee, tracer, request, ad);
+ }
+ 
+ static int profile_tracer_perm(struct aa_profile *tracer,
+ 			       struct aa_label *tracee, u32 request,
+-			       struct common_audit_data *sa)
++			       struct apparmor_audit_data *ad)
+ {
+ 	if (profile_unconfined(tracer))
+ 		return 0;
+ 
+ 	if (ANY_RULE_MEDIATES(&tracer->rules, AA_CLASS_PTRACE))
+-		return profile_ptrace_perm(tracer, tracee, request, sa);
++		return profile_ptrace_perm(tracer, tracee, request, ad);
+ 
+ 	/* profile uses the old style capability check for ptrace */
+ 	if (&tracer->label == tracee)
+ 		return 0;
+ 
+-	aad(sa)->label = &tracer->label;
+-	aad(sa)->peer = tracee;
+-	aad(sa)->request = 0;
+-	aad(sa)->error = aa_capable(&tracer->label, CAP_SYS_PTRACE,
++	ad->label = &tracer->label;
++	ad->peer = tracee;
++	ad->request = 0;
++	ad->error = aa_capable(&tracer->label, CAP_SYS_PTRACE,
+ 				    CAP_OPT_NONE);
+ 
+-	return aa_audit(AUDIT_APPARMOR_AUTO, tracer, sa, audit_ptrace_cb);
++	return aa_audit(AUDIT_APPARMOR_AUTO, tracer, ad, audit_ptrace_cb);
+ }
+ 
+ /**
+@@ -287,39 +288,41 @@ int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
+ {
+ 	struct aa_profile *profile;
+ 	u32 xrequest = request << PTRACE_PERM_SHIFT;
+-	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_PTRACE, OP_PTRACE);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_PTRACE, OP_PTRACE);
+ 
+ 	return xcheck_labels(tracer, tracee, profile,
+-			profile_tracer_perm(profile, tracee, request, &sa),
+-			profile_tracee_perm(profile, tracer, xrequest, &sa));
++			profile_tracer_perm(profile, tracee, request, &ad),
++			profile_tracee_perm(profile, tracer, xrequest, &ad));
+ }
+ 
+ /* call back to audit ptrace fields */
+ static void audit_ns_cb(struct audit_buffer *ab, void *va)
+ {
+ 	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
+ 
+-	if (aad(sa)->request & AA_USERNS_CREATE)
++	if (ad->request & AA_USERNS_CREATE)
+ 		audit_log_format(ab, " requested=\"userns_create\"");
+ 
+-	if (aad(sa)->denied & AA_USERNS_CREATE)
++	if (ad->denied & AA_USERNS_CREATE)
+ 		audit_log_format(ab, " denied=\"userns_create\"");
+ }
+ 
+-int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_ns_perm(struct aa_profile *profile,
++		       struct apparmor_audit_data *ad,
+ 		       u32 request)
+ {
+ 	struct aa_perms perms = { };
+ 
+-	aad(sa)->label = &profile->label;
+-	aad(sa)->request = request;
++	ad->label = &profile->label;
++	ad->request = request;
+ 
+ 	if (profile_unconfined(profile)) {
+ 		if (!unprivileged_userns_restricted ||
+ 		    ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
+ 			return 0;
+ 
+-		aad(sa)->info = "User namespace creation restricted";
++		ad->info = "User namespace creation restricted";
+ 		/* don't just return: allow complain mode to override */
+ 	} else {
+ 		struct aa_ruleset *rules = list_first_entry(&profile->rules,
+@@ -327,7 +330,7 @@ int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
+ 							    list);
+ 		aa_state_t state;
+ 
+-		state = RULE_MEDIATES(rules, aad(sa)->class);
++		state = RULE_MEDIATES(rules, ad->class);
+ 		if (!state && !unprivileged_userns_restricted_force)
+ 			/* TODO: add flag to complain about unmediated */
+ 			return 0;
+@@ -337,5 +340,5 @@ int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
+ 	}
+ 
+ 	aa_apply_modes_to_perms(profile, &perms);
+-	return aa_check_perms(profile, &perms, request, sa, audit_ns_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_ns_cb);
+ }
+-- 
+2.42.0
+

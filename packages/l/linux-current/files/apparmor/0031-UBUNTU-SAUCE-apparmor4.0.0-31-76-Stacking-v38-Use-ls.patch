@@ -1,0 +1,531 @@
+From 0e848629f062425a4ba7a150aef6d7df3614df1c Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Wed, 21 Sep 2022 14:57:38 -0700
+Subject: [PATCH 31/76] UBUNTU: SAUCE: apparmor4.0.0 [31/76]: Stacking v38: Use
+ lsmcontext in security_dentry_init_security
+
+Replace the (secctx,seclen) pointer pair with a single
+lsmcontext pointer to allow return of the LSM identifier
+along with the context and context length. This allows
+security_release_secctx() to know how to release the
+context. Callers have been modified to use or save the
+returned data from the new structure.
+
+Special care is taken in the NFS code, which uses the
+same data structure for its own copied labels as it does
+for the data which comes from security_dentry_init_security().
+In the case of copied labels the data has to be freed, not
+released.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ fs/ceph/super.h          |  3 +--
+ fs/ceph/xattr.c          | 19 ++++++-------------
+ fs/fuse/dir.c            | 35 ++++++++++++++++++-----------------
+ fs/nfs/dir.c             |  2 +-
+ fs/nfs/inode.c           | 17 ++++++++++-------
+ fs/nfs/internal.h        |  8 +++++---
+ fs/nfs/nfs4proc.c        | 24 ++++++++++--------------
+ fs/nfs/nfs4xdr.c         | 22 ++++++++++++----------
+ include/linux/nfs4.h     |  8 ++++----
+ include/linux/nfs_fs.h   |  2 +-
+ include/linux/security.h | 18 ++++++++++++++----
+ security/security.c      | 14 +++++++++++---
+ 12 files changed, 93 insertions(+), 79 deletions(-)
+
+diff --git a/fs/ceph/super.h b/fs/ceph/super.h
+index 3bfddf34d488..6c538a6987b6 100644
+--- a/fs/ceph/super.h
++++ b/fs/ceph/super.h
+@@ -1097,8 +1097,7 @@ struct ceph_acl_sec_ctx {
+ 	void *acl;
+ #endif
+ #ifdef CONFIG_CEPH_FS_SECURITY_LABEL
+-	void *sec_ctx;
+-	u32 sec_ctxlen;
++	struct lsmcontext lsmctx;
+ #endif
+ 	struct ceph_pagelist *pagelist;
+ };
+diff --git a/fs/ceph/xattr.c b/fs/ceph/xattr.c
+index ac6ad7efc242..cedf802e77f2 100644
+--- a/fs/ceph/xattr.c
++++ b/fs/ceph/xattr.c
+@@ -1338,8 +1338,7 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
+ 	int err;
+ 
+ 	err = security_dentry_init_security(dentry, mode, &dentry->d_name,
+-					    &name, &as_ctx->sec_ctx,
+-					    &as_ctx->sec_ctxlen);
++					    &name, &as_ctx->lsmctx);
+ 	if (err < 0) {
+ 		WARN_ON_ONCE(err != -EOPNOTSUPP);
+ 		err = 0; /* do nothing */
+@@ -1364,7 +1363,7 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
+ 	 */
+ 	name_len = strlen(name);
+ 	err = ceph_pagelist_reserve(pagelist,
+-				    4 * 2 + name_len + as_ctx->sec_ctxlen);
++				    4 * 2 + name_len + as_ctx->lsmctx.len);
+ 	if (err)
+ 		goto out;
+ 
+@@ -1384,11 +1383,9 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
+ 		as_ctx->pagelist = pagelist;
+ 	}
+ 
+-	ceph_pagelist_encode_32(pagelist, name_len);
+-	ceph_pagelist_append(pagelist, name, name_len);
+-
+-	ceph_pagelist_encode_32(pagelist, as_ctx->sec_ctxlen);
+-	ceph_pagelist_append(pagelist, as_ctx->sec_ctx, as_ctx->sec_ctxlen);
++	ceph_pagelist_encode_32(pagelist, as_ctx->lsmctx.len);
++	ceph_pagelist_append(pagelist, as_ctx->lsmctx.context,
++			     as_ctx->lsmctx.len);
+ 
+ 	err = 0;
+ out:
+@@ -1401,16 +1398,12 @@ int ceph_security_init_secctx(struct dentry *dentry, umode_t mode,
+ 
+ void ceph_release_acl_sec_ctx(struct ceph_acl_sec_ctx *as_ctx)
+ {
+-#ifdef CONFIG_CEPH_FS_SECURITY_LABEL
+-	struct lsmcontext scaff; /* scaffolding */
+-#endif
+ #ifdef CONFIG_CEPH_FS_POSIX_ACL
+ 	posix_acl_release(as_ctx->acl);
+ 	posix_acl_release(as_ctx->default_acl);
+ #endif
+ #ifdef CONFIG_CEPH_FS_SECURITY_LABEL
+-	lsmcontext_init(&scaff, as_ctx->sec_ctx, as_ctx->sec_ctxlen, 0);
+-	security_release_secctx(&scaff);
++	security_release_secctx(&as_ctx->lsmctx);
+ #endif
+ 	if (as_ctx->pagelist)
+ 		ceph_pagelist_release(as_ctx->pagelist);
+diff --git a/fs/fuse/dir.c b/fs/fuse/dir.c
+index f67bef9d83c4..061a92dcb6b6 100644
+--- a/fs/fuse/dir.c
++++ b/fs/fuse/dir.c
+@@ -468,29 +468,29 @@ static int get_security_context(struct dentry *entry, umode_t mode,
+ {
+ 	struct fuse_secctx *fctx;
+ 	struct fuse_secctx_header *header;
+-	void *ctx = NULL, *ptr;
+-	u32 ctxlen, total_len = sizeof(*header);
++	struct lsmcontext lsmctx = { };
++	void *ptr;
++	u32 total_len = sizeof(*header);
+ 	int err, nr_ctx = 0;
+-	const char *name;
++	const char *name = NULL;
+ 	size_t namelen;
+ 
+ 	err = security_dentry_init_security(entry, mode, &entry->d_name,
+-					    &name, &ctx, &ctxlen);
+-	if (err) {
+-		if (err != -EOPNOTSUPP)
+-			goto out_err;
+-		/* No LSM is supporting this security hook. Ignore error */
+-		ctxlen = 0;
+-		ctx = NULL;
+-	}
++					    &name, &lsmctx);
++
++	/* If no LSM is supporting this security hook ignore error */
++	if (err && err != -EOPNOTSUPP)
++		goto out_err;
+ 
+-	if (ctxlen) {
++	if (lsmctx.len) {
+ 		nr_ctx = 1;
+ 		namelen = strlen(name) + 1;
+ 		err = -EIO;
+-		if (WARN_ON(namelen > XATTR_NAME_MAX + 1 || ctxlen > S32_MAX))
++		if (WARN_ON(namelen > XATTR_NAME_MAX + 1 ||
++		    lsmctx.len > S32_MAX))
+ 			goto out_err;
+-		total_len += FUSE_REC_ALIGN(sizeof(*fctx) + namelen + ctxlen);
++		total_len += FUSE_REC_ALIGN(sizeof(*fctx) + namelen +
++					    lsmctx.len);
+ 	}
+ 
+ 	err = -ENOMEM;
+@@ -503,19 +503,20 @@ static int get_security_context(struct dentry *entry, umode_t mode,
+ 	ptr += sizeof(*header);
+ 	if (nr_ctx) {
+ 		fctx = ptr;
+-		fctx->size = ctxlen;
++		fctx->size = lsmctx.len;
+ 		ptr += sizeof(*fctx);
+ 
+ 		strcpy(ptr, name);
+ 		ptr += namelen;
+ 
+-		memcpy(ptr, ctx, ctxlen);
++		memcpy(ptr, lsmctx.context, lsmctx.len);
+ 	}
+ 	ext->size = total_len;
+ 	ext->value = header;
+ 	err = 0;
+ out_err:
+-	kfree(ctx);
++	if (nr_ctx)
++		security_release_secctx(&lsmctx);
+ 	return err;
+ }
+ 
+diff --git a/fs/nfs/dir.c b/fs/nfs/dir.c
+index 8f3112e71a6a..e972913c9215 100644
+--- a/fs/nfs/dir.c
++++ b/fs/nfs/dir.c
+@@ -807,7 +807,7 @@ static int nfs_readdir_entry_decode(struct nfs_readdir_descriptor *desc,
+ 	int ret;
+ 
+ 	if (entry->fattr->label)
+-		entry->fattr->label->len = NFS4_MAXLABELLEN;
++		entry->fattr->label->lsmctx.len = NFS4_MAXLABELLEN;
+ 	ret = xdr_decode(desc, entry, stream);
+ 	if (ret || !desc->plus)
+ 		return ret;
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index 8172dd4135a1..21d557839389 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -357,14 +357,15 @@ void nfs_setsecurity(struct inode *inode, struct nfs_fattr *fattr)
+ 		return;
+ 
+ 	if ((fattr->valid & NFS_ATTR_FATTR_V4_SECURITY_LABEL) && inode->i_security) {
+-		error = security_inode_notifysecctx(inode, fattr->label->label,
+-				fattr->label->len);
++		error = security_inode_notifysecctx(inode,
++						fattr->label->lsmctx.context,
++						fattr->label->lsmctx.len);
+ 		if (error)
+ 			printk(KERN_ERR "%s() %s %d "
+ 					"security_inode_notifysecctx() %d\n",
+ 					__func__,
+-					(char *)fattr->label->label,
+-					fattr->label->len, error);
++					(char *)fattr->label->lsmctx.context,
++					fattr->label->lsmctx.len, error);
+ 		nfs_clear_label_invalid(inode);
+ 	}
+ }
+@@ -380,12 +381,14 @@ struct nfs4_label *nfs4_label_alloc(struct nfs_server *server, gfp_t flags)
+ 	if (label == NULL)
+ 		return ERR_PTR(-ENOMEM);
+ 
+-	label->label = kzalloc(NFS4_MAXLABELLEN, flags);
+-	if (label->label == NULL) {
++	label->lsmctx.context = kzalloc(NFS4_MAXLABELLEN, flags);
++	if (label->lsmctx.context == NULL) {
+ 		kfree(label);
+ 		return ERR_PTR(-ENOMEM);
+ 	}
+-	label->len = NFS4_MAXLABELLEN;
++	label->lsmctx.len = NFS4_MAXLABELLEN;
++	/* Use an invalid LSM slot as this should never be "released". */
++	label->lsmctx.slot = -1;
+ 
+ 	return label;
+ }
+diff --git a/fs/nfs/internal.h b/fs/nfs/internal.h
+index 913c09806c7f..372bf9d77ca1 100644
+--- a/fs/nfs/internal.h
++++ b/fs/nfs/internal.h
+@@ -344,13 +344,15 @@ nfs4_label_copy(struct nfs4_label *dst, struct nfs4_label *src)
+ 	if (!dst || !src)
+ 		return NULL;
+ 
+-	if (src->len > NFS4_MAXLABELLEN)
++	if (src->lsmctx.len > NFS4_MAXLABELLEN)
+ 		return NULL;
+ 
+ 	dst->lfs = src->lfs;
+ 	dst->pi = src->pi;
+-	dst->len = src->len;
+-	memcpy(dst->label, src->label, src->len);
++	/* Use an invalid LSM slot as lsmctx should never be "released" */
++	dst->lsmctx.slot = -1;
++	dst->lsmctx.len = src->lsmctx.len;
++	memcpy(dst->lsmctx.context, src->lsmctx.context, src->lsmctx.len);
+ 
+ 	return dst;
+ }
+diff --git a/fs/nfs/nfs4proc.c b/fs/nfs/nfs4proc.c
+index 195df29ea813..5173a0808883 100644
+--- a/fs/nfs/nfs4proc.c
++++ b/fs/nfs/nfs4proc.c
+@@ -124,12 +124,11 @@ nfs4_label_init_security(struct inode *dir, struct dentry *dentry,
+ 
+ 	label->lfs = 0;
+ 	label->pi = 0;
+-	label->len = 0;
+-	label->label = NULL;
++	label->lsmctx.len = 0;
++	label->lsmctx.context = NULL;
+ 
+ 	err = security_dentry_init_security(dentry, sattr->ia_mode,
+-				&dentry->d_name, NULL,
+-				(void **)&label->label, &label->len);
++				&dentry->d_name, NULL, &label->lsmctx);
+ 	if (err == 0)
+ 		return label;
+ 
+@@ -138,12 +137,8 @@ nfs4_label_init_security(struct inode *dir, struct dentry *dentry,
+ static inline void
+ nfs4_label_release_security(struct nfs4_label *label)
+ {
+-	struct lsmcontext scaff; /* scaffolding */
+-
+-	if (label) {
+-		lsmcontext_init(&scaff, label->label, label->len, 0);
+-		security_release_secctx(&scaff);
+-	}
++	if (label)
++		security_release_secctx(&label->lsmctx);
+ }
+ static inline u32 *nfs4_bitmask(struct nfs_server *server, struct nfs4_label *label)
+ {
+@@ -3804,7 +3799,7 @@ nfs4_atomic_open(struct inode *dir, struct nfs_open_context *ctx,
+ 		int open_flags, struct iattr *attr, int *opened)
+ {
+ 	struct nfs4_state *state;
+-	struct nfs4_label l, *label;
++	struct nfs4_label l = { }, *label;
+ 
+ 	label = nfs4_label_init_security(dir, ctx->dentry, attr, &l);
+ 
+@@ -6135,7 +6130,7 @@ static int _nfs4_get_security_label(struct inode *inode, void *buf,
+ 					size_t buflen)
+ {
+ 	struct nfs_server *server = NFS_SERVER(inode);
+-	struct nfs4_label label = {0, 0, buflen, buf};
++	struct nfs4_label label = {0, 0, {buf, buflen, -1} };
+ 
+ 	u32 bitmask[3] = { 0, 0, FATTR4_WORD2_SECURITY_LABEL };
+ 	struct nfs_fattr fattr = {
+@@ -6163,7 +6158,7 @@ static int _nfs4_get_security_label(struct inode *inode, void *buf,
+ 		return ret;
+ 	if (!(fattr.valid & NFS_ATTR_FATTR_V4_SECURITY_LABEL))
+ 		return -ENOENT;
+-	return label.len;
++	return label.lsmctx.len;
+ }
+ 
+ static int nfs4_get_security_label(struct inode *inode, void *buf,
+@@ -6240,7 +6235,8 @@ static int nfs4_do_set_security_label(struct inode *inode,
+ static int
+ nfs4_set_security_label(struct inode *inode, const void *buf, size_t buflen)
+ {
+-	struct nfs4_label ilabel = {0, 0, buflen, (char *)buf };
++	struct nfs4_label ilabel = {0, 0,
++				    {(char *)buf, buflen, -1}};
+ 	struct nfs_fattr *fattr;
+ 	int status;
+ 
+diff --git a/fs/nfs/nfs4xdr.c b/fs/nfs/nfs4xdr.c
+index deec76cf5afe..fe6d184ff169 100644
+--- a/fs/nfs/nfs4xdr.c
++++ b/fs/nfs/nfs4xdr.c
+@@ -1154,7 +1154,7 @@ static void encode_attrs(struct xdr_stream *xdr, const struct iattr *iap,
+ 	}
+ 
+ 	if (label && (attrmask[2] & FATTR4_WORD2_SECURITY_LABEL)) {
+-		len += 4 + 4 + 4 + (XDR_QUADLEN(label->len) << 2);
++		len += 4 + 4 + 4 + (XDR_QUADLEN(label->lsmctx.len) << 2);
+ 		bmval[2] |= FATTR4_WORD2_SECURITY_LABEL;
+ 	}
+ 
+@@ -1186,8 +1186,9 @@ static void encode_attrs(struct xdr_stream *xdr, const struct iattr *iap,
+ 	if (label && (bmval[2] & FATTR4_WORD2_SECURITY_LABEL)) {
+ 		*p++ = cpu_to_be32(label->lfs);
+ 		*p++ = cpu_to_be32(label->pi);
+-		*p++ = cpu_to_be32(label->len);
+-		p = xdr_encode_opaque_fixed(p, label->label, label->len);
++		*p++ = cpu_to_be32(label->lsmctx.len);
++		p = xdr_encode_opaque_fixed(p, label->lsmctx.context,
++					    label->lsmctx.len);
+ 	}
+ 	if (bmval[2] & FATTR4_WORD2_MODE_UMASK) {
+ 		*p++ = cpu_to_be32(iap->ia_mode & S_IALLUGO);
+@@ -4236,11 +4237,11 @@ static int decode_attr_security_label(struct xdr_stream *xdr, uint32_t *bitmap,
+ 			return -EIO;
+ 		bitmap[2] &= ~FATTR4_WORD2_SECURITY_LABEL;
+ 		if (len < NFS4_MAXLABELLEN) {
+-			if (label && label->len) {
+-				if (label->len < len)
++			if (label && label->lsmctx.len) {
++				if (label->lsmctx.len < len)
+ 					return -ERANGE;
+-				memcpy(label->label, p, len);
+-				label->len = len;
++				memcpy(label->lsmctx.context, p, len);
++				label->lsmctx.len = len;
+ 				label->pi = pi;
+ 				label->lfs = lfs;
+ 				status = NFS_ATTR_FATTR_V4_SECURITY_LABEL;
+@@ -4248,10 +4249,11 @@ static int decode_attr_security_label(struct xdr_stream *xdr, uint32_t *bitmap,
+ 		} else
+ 			printk(KERN_WARNING "%s: label too long (%u)!\n",
+ 					__func__, len);
+-		if (label && label->label)
++		if (label && label->lsmctx.context)
+ 			dprintk("%s: label=%.*s, len=%d, PI=%d, LFS=%d\n",
+-				__func__, label->len, (char *)label->label,
+-				label->len, label->pi, label->lfs);
++				__func__, label->lsmctx.len,
++				(char *)label->lsmctx.context,
++				label->lsmctx.len, label->pi, label->lfs);
+ 	}
+ 	return status;
+ }
+diff --git a/include/linux/nfs4.h b/include/linux/nfs4.h
+index 730003c4f4af..a28d3a437340 100644
+--- a/include/linux/nfs4.h
++++ b/include/linux/nfs4.h
+@@ -15,6 +15,7 @@
+ 
+ #include <linux/list.h>
+ #include <linux/uidgid.h>
++#include <linux/security.h>
+ #include <uapi/linux/nfs4.h>
+ #include <linux/sunrpc/msg_prot.h>
+ 
+@@ -44,10 +45,9 @@ struct nfs4_acl {
+ #define NFS4_MAXLABELLEN	2048
+ 
+ struct nfs4_label {
+-	uint32_t	lfs;
+-	uint32_t	pi;
+-	u32		len;
+-	char	*label;
++	uint32_t		lfs;
++	uint32_t		pi;
++	struct lsmcontext	lsmctx;
+ };
+ 
+ typedef struct { char data[NFS4_VERIFIER_SIZE]; } nfs4_verifier;
+diff --git a/include/linux/nfs_fs.h b/include/linux/nfs_fs.h
+index 279262057a92..c314fb43547f 100644
+--- a/include/linux/nfs_fs.h
++++ b/include/linux/nfs_fs.h
+@@ -457,7 +457,7 @@ static inline void nfs4_label_free(struct nfs4_label *label)
+ {
+ #ifdef CONFIG_NFS_V4_SECURITY_LABEL
+ 	if (label) {
+-		kfree(label->label);
++		kfree(label->lsmctx.context);
+ 		kfree(label);
+ 	}
+ #endif
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 64648ede8c33..b55c3634ebde 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -249,8 +249,19 @@ static inline bool lsmblob_equal(const struct lsmblob *bloba,
+ }
+ 
+ /* Map lsm names to blob slot numbers */
++#if LSMBLOB_ENTRIES > 0
+ extern int lsm_name_to_slot(char *name);
+ extern const char *lsm_slot_to_name(int slot);
++#else
++static inline int lsm_name_to_slot(char *name)
++{
++	return LSMBLOB_INVALID;
++}
++static inline const char *lsm_slot_to_name(int slot)
++{
++	return NULL;
++}
++#endif
+ 
+ /**
+  * lsmblob_value - find the first non-zero value in an lsmblob structure.
+@@ -489,8 +500,8 @@ int security_sb_clone_mnt_opts(const struct super_block *oldsb,
+ int security_move_mount(const struct path *from_path, const struct path *to_path);
+ int security_dentry_init_security(struct dentry *dentry, int mode,
+ 				  const struct qstr *name,
+-				  const char **xattr_name, void **ctx,
+-				  u32 *ctxlen);
++				  const char **xattr_name,
++				  struct lsmcontext *lsmcxt);
+ int security_dentry_create_files_as(struct dentry *dentry, int mode,
+ 					struct qstr *name,
+ 					const struct cred *old,
+@@ -913,8 +924,7 @@ static inline int security_dentry_init_security(struct dentry *dentry,
+ 						 int mode,
+ 						 const struct qstr *name,
+ 						 const char **xattr_name,
+-						 void **ctx,
+-						 u32 *ctxlen)
++						 struct lsmcontext *lsmcxt)
+ {
+ 	return -EOPNOTSUPP;
+ }
+diff --git a/security/security.c b/security/security.c
+index cc4310ac00cb..a7e85f83da30 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -534,6 +534,8 @@ static int lsm_append(const char *new, char **result)
+  * Current index to use while initializing the lsmblob secid list.
+  */
+ static int lsm_slot __ro_after_init;
++
++#if LSMBLOB_ENTRIES > 0
+ static struct lsm_id *lsm_slotlist[LSMBLOB_ENTRIES] __ro_after_init;
+ 
+ /**
+@@ -578,6 +580,7 @@ const char *lsm_slot_to_name(int slot)
+ 		return NULL;
+ 	return lsm_slotlist[slot]->lsm;
+ }
++#endif /* LSMBLOB_ENTRIES > 0 */
+ 
+ /**
+  * security_add_hooks - Add a modules hooks to the hook lists.
+@@ -606,6 +609,7 @@ void __init security_add_hooks(struct security_hook_list *hooks, int count,
+ 
+ 	WARN_ON(!lsmid->slot || !lsmid->id);
+ 
++#if LSMBLOB_ENTRIES > 0
+ 	if (lsmid->slot == LSMBLOB_NEEDED) {
+ 		if (lsm_slot >= LSMBLOB_ENTRIES)
+ 			panic("%s Too many LSMs registered.\n", __func__);
+@@ -614,6 +618,7 @@ void __init security_add_hooks(struct security_hook_list *hooks, int count,
+ 		init_debug("%s assigned lsmblob slot %d\n", lsmid->lsm,
+ 			   lsmid->slot);
+ 	}
++#endif /* LSMBLOB_ENTRIES > 0 */
+ 
+ 	for (i = 0; i < count; i++) {
+ 		hooks[i].lsmid = lsmid;
+@@ -1662,8 +1667,8 @@ void security_inode_free(struct inode *inode)
+  */
+ int security_dentry_init_security(struct dentry *dentry, int mode,
+ 				  const struct qstr *name,
+-				  const char **xattr_name, void **ctx,
+-				  u32 *ctxlen)
++				  const char **xattr_name,
++				  struct lsmcontext *lsmctx)
+ {
+ 	struct security_hook_list *hp;
+ 	int rc;
+@@ -1674,7 +1679,10 @@ int security_dentry_init_security(struct dentry *dentry, int mode,
+ 	hlist_for_each_entry(hp, &security_hook_heads.dentry_init_security,
+ 			     list) {
+ 		rc = hp->hook.dentry_init_security(dentry, mode, name,
+-						   xattr_name, ctx, ctxlen);
++						   xattr_name,
++						   (void **)&lsmctx->context,
++						   &lsmctx->len);
++		lsmctx->slot = hp->lsmid->slot;
+ 		if (rc != LSM_RET_DEFAULT(dentry_init_security))
+ 			return rc;
+ 	}
+-- 
+2.42.0
+

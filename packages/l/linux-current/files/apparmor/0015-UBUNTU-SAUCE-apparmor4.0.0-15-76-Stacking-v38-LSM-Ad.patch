@@ -1,0 +1,629 @@
+From cfae5cc06d743ac394427d63ca3b6025103b8aff Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Fri, 23 Sep 2022 09:24:05 -0700
+Subject: [PATCH 15/76] UBUNTU: SAUCE: apparmor4.0.0 [15/76]: Stacking v38:
+ LSM: Add the lsmblob data structure.
+
+When more than one security module is exporting data to
+audit and networking sub-systems a single 32 bit integer
+is no longer sufficient to represent the data. Add a
+structure to be used instead.
+
+The lsmblob structure is currently an array of
+u32 "secids". There is an entry for each of the security
+modules built into the system that would use secids if
+active. The system assigns the module a "slot" when it
+registers hooks. If modules are compiled in but not
+registered there will be unused slots. The slot number
+is added to the lsm_id structure.
+
+The audit rules data is expanded to use an array of
+security module data rather than a single instance.
+A new structure audit_lsm_rules is defined to avoid the
+confusion which commonly accompanies the use of
+void ** parameters.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/linux/audit.h        |  9 ++++-
+ include/linux/lsm_hooks.h    |  1 +
+ include/linux/security.h     | 75 +++++++++++++++++++++++++++++++++---
+ kernel/auditfilter.c         | 23 +++++------
+ kernel/auditsc.c             | 17 ++++----
+ security/apparmor/lsm.c      |  1 +
+ security/bpf/hooks.c         |  1 +
+ security/commoncap.c         |  1 +
+ security/landlock/setup.c    |  1 +
+ security/loadpin/loadpin.c   |  1 +
+ security/lockdown/lockdown.c |  1 +
+ security/safesetid/lsm.c     |  1 +
+ security/security.c          | 72 ++++++++++++++++++++++++++++++----
+ security/selinux/hooks.c     |  1 +
+ security/smack/smack_lsm.c   |  1 +
+ security/tomoyo/tomoyo.c     |  1 +
+ security/yama/yama_lsm.c     |  1 +
+ 17 files changed, 172 insertions(+), 36 deletions(-)
+
+diff --git a/include/linux/audit.h b/include/linux/audit.h
+index 6a3a9e122bb5..3c3475c6f6ea 100644
+--- a/include/linux/audit.h
++++ b/include/linux/audit.h
+@@ -11,6 +11,7 @@
+ 
+ #include <linux/sched.h>
+ #include <linux/ptrace.h>
++#include <linux/security.h>
+ #include <linux/audit_arch.h>
+ #include <uapi/linux/audit.h>
+ #include <uapi/linux/netfilter/nf_tables.h>
+@@ -60,6 +61,10 @@ struct audit_krule {
+ /* Flag to indicate legacy AUDIT_LOGINUID unset usage */
+ #define AUDIT_LOGINUID_LEGACY		0x1
+ 
++struct audit_lsm_rules {
++	void	*rule[LSMBLOB_ENTRIES];
++};
++
+ struct audit_field {
+ 	u32				type;
+ 	union {
+@@ -67,8 +72,8 @@ struct audit_field {
+ 		kuid_t			uid;
+ 		kgid_t			gid;
+ 		struct {
+-			char		*lsm_str;
+-			void		*lsm_rule;
++			char			*lsm_str;
++			struct audit_lsm_rules	lsm_rules;
+ 		};
+ 	};
+ 	u32				op;
+diff --git a/include/linux/lsm_hooks.h b/include/linux/lsm_hooks.h
+index 16cfe42a5d51..1416ac4d8b79 100644
+--- a/include/linux/lsm_hooks.h
++++ b/include/linux/lsm_hooks.h
+@@ -48,6 +48,7 @@ struct lsm_id {
+ 	const char	*lsm;		/* Name of the LSM */
+ 	int		id;		/* LSM ID */
+ 	int		features;	/* Set of LSM features */
++	int		slot;		/* Slot in lsmblob if allocated */
+ };
+ 
+ /*
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 3cf62f33c312..7bf90650a5bb 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -40,6 +40,7 @@ struct kernel_siginfo;
+ struct sembuf;
+ struct kern_ipc_perm;
+ struct audit_context;
++struct audit_lsm_rules;
+ struct super_block;
+ struct inode;
+ struct dentry;
+@@ -156,6 +157,66 @@ extern const char *const lockdown_reasons[LOCKDOWN_CONFIDENTIALITY_MAX+1];
+ extern int lsm_id;
+ extern struct lsm_id *lsm_idlist[];
+ 
++/*
++ * Data exported by the security modules
++ *
++ * Any LSM that provides secid or secctx based hooks must be included.
++ */
++#define LSMBLOB_ENTRIES ( \
++	(IS_ENABLED(CONFIG_SECURITY_SELINUX) ? 1 : 0) + \
++	(IS_ENABLED(CONFIG_SECURITY_SMACK) ? 1 : 0) + \
++	(IS_ENABLED(CONFIG_SECURITY_APPARMOR) ? 1 : 0) + \
++	(IS_ENABLED(CONFIG_BPF_LSM) ? 1 : 0))
++
++struct lsmblob {
++	u32     secid[LSMBLOB_ENTRIES];
++};
++
++#define LSMBLOB_INVALID		-1	/* Not a valid LSM slot number */
++#define LSMBLOB_NEEDED		-2	/* Slot requested on initialization */
++#define LSMBLOB_NOT_NEEDED	-3	/* Slot not requested */
++
++/**
++ * lsmblob_init - initialize a lsmblob structure
++ * @blob: Pointer to the data to initialize
++ * @secid: The initial secid value
++ *
++ * Set all secid for all modules to the specified value.
++ */
++static inline void lsmblob_init(struct lsmblob *blob, u32 secid)
++{
++	int i;
++
++	for (i = 0; i < LSMBLOB_ENTRIES; i++)
++		blob->secid[i] = secid;
++}
++
++/**
++ * lsmblob_is_set - report if there is a value in the lsmblob
++ * @blob: Pointer to the exported LSM data
++ *
++ * Returns true if there is a secid set, false otherwise
++ */
++static inline bool lsmblob_is_set(struct lsmblob *blob)
++{
++	const struct lsmblob empty = {};
++
++	return !!memcmp(blob, &empty, sizeof(*blob));
++}
++
++/**
++ * lsmblob_equal - report if the two lsmblob's are equal
++ * @bloba: Pointer to one LSM data
++ * @blobb: Pointer to the other LSM data
++ *
++ * Returns true if all entries in the two are equal, false otherwise
++ */
++static inline bool lsmblob_equal(const struct lsmblob *bloba,
++				 const struct lsmblob *blobb)
++{
++	return !memcmp(bloba, blobb, sizeof(*bloba));
++}
++
+ /* These functions are in security/commoncap.c */
+ extern int cap_capable(const struct cred *cred, struct user_namespace *ns,
+ 		       int cap, unsigned int opts);
+@@ -1952,15 +2013,17 @@ static inline int security_key_getsecurity(struct key *key, char **_buffer)
+ 
+ #ifdef CONFIG_AUDIT
+ #ifdef CONFIG_SECURITY
+-int security_audit_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule);
++int security_audit_rule_init(u32 field, u32 op, char *rulestr,
++			     struct audit_lsm_rules *lsmrules);
+ int security_audit_rule_known(struct audit_krule *krule);
+-int security_audit_rule_match(u32 secid, u32 field, u32 op, void *lsmrule);
+-void security_audit_rule_free(void *lsmrule);
++int security_audit_rule_match(u32 secid, u32 field, u32 op,
++			      struct audit_lsm_rules *lsmrules);
++void security_audit_rule_free(struct audit_lsm_rules *lsmrules);
+ 
+ #else
+ 
+ static inline int security_audit_rule_init(u32 field, u32 op, char *rulestr,
+-					   void **lsmrule)
++					   struct audit_lsm_rules *lsmrules)
+ {
+ 	return 0;
+ }
+@@ -1971,12 +2034,12 @@ static inline int security_audit_rule_known(struct audit_krule *krule)
+ }
+ 
+ static inline int security_audit_rule_match(u32 secid, u32 field, u32 op,
+-					    void *lsmrule)
++					    struct audit_lsm_rules *lsmrules)
+ {
+ 	return 0;
+ }
+ 
+-static inline void security_audit_rule_free(void *lsmrule)
++static inline void security_audit_rule_free(struct audit_lsm_rules *lsmrules)
+ { }
+ 
+ #endif /* CONFIG_SECURITY */
+diff --git a/kernel/auditfilter.c b/kernel/auditfilter.c
+index 42d99896e7a6..de75bd6ad866 100644
+--- a/kernel/auditfilter.c
++++ b/kernel/auditfilter.c
+@@ -76,7 +76,7 @@ static void audit_free_lsm_field(struct audit_field *f)
+ 	case AUDIT_OBJ_LEV_LOW:
+ 	case AUDIT_OBJ_LEV_HIGH:
+ 		kfree(f->lsm_str);
+-		security_audit_rule_free(f->lsm_rule);
++		security_audit_rule_free(&f->lsm_rules);
+ 	}
+ }
+ 
+@@ -529,7 +529,7 @@ static struct audit_entry *audit_data_to_entry(struct audit_rule_data *data,
+ 			entry->rule.buflen += f_val;
+ 			f->lsm_str = str;
+ 			err = security_audit_rule_init(f->type, f->op, str,
+-						       (void **)&f->lsm_rule);
++						       &f->lsm_rules);
+ 			/* Keep currently invalid fields around in case they
+ 			 * become valid after a policy reload. */
+ 			if (err == -EINVAL) {
+@@ -782,7 +782,7 @@ static int audit_compare_rule(struct audit_krule *a, struct audit_krule *b)
+ 	return 0;
+ }
+ 
+-/* Duplicate LSM field information.  The lsm_rule is opaque, so must be
++/* Duplicate LSM field information.  The lsm_rules is opaque, so must be
+  * re-initialized. */
+ static inline int audit_dupe_lsm_field(struct audit_field *df,
+ 					   struct audit_field *sf)
+@@ -796,9 +796,9 @@ static inline int audit_dupe_lsm_field(struct audit_field *df,
+ 		return -ENOMEM;
+ 	df->lsm_str = lsm_str;
+ 
+-	/* our own (refreshed) copy of lsm_rule */
++	/* our own (refreshed) copy of lsm_rules */
+ 	ret = security_audit_rule_init(df->type, df->op, df->lsm_str,
+-				       (void **)&df->lsm_rule);
++				       &df->lsm_rules);
+ 	/* Keep currently invalid fields around in case they
+ 	 * become valid after a policy reload. */
+ 	if (ret == -EINVAL) {
+@@ -850,7 +850,7 @@ struct audit_entry *audit_dupe_rule(struct audit_krule *old)
+ 	new->tree = old->tree;
+ 	memcpy(new->fields, old->fields, sizeof(struct audit_field) * fcount);
+ 
+-	/* deep copy this information, updating the lsm_rule fields, because
++	/* deep copy this information, updating the lsm_rules fields, because
+ 	 * the originals will all be freed when the old rule is freed. */
+ 	for (i = 0; i < fcount; i++) {
+ 		switch (new->fields[i].type) {
+@@ -1367,10 +1367,11 @@ int audit_filter(int msgtype, unsigned int listtype)
+ 			case AUDIT_SUBJ_TYPE:
+ 			case AUDIT_SUBJ_SEN:
+ 			case AUDIT_SUBJ_CLR:
+-				if (f->lsm_rule) {
++				if (f->lsm_str) {
+ 					security_current_getsecid_subj(&sid);
+ 					result = security_audit_rule_match(sid,
+-						   f->type, f->op, f->lsm_rule);
++						   f->type, f->op,
++						   &f->lsm_rules);
+ 				}
+ 				break;
+ 			case AUDIT_EXE:
+@@ -1397,7 +1398,7 @@ int audit_filter(int msgtype, unsigned int listtype)
+ 	return ret;
+ }
+ 
+-static int update_lsm_rule(struct audit_krule *r)
++static int update_lsm_rules(struct audit_krule *r)
+ {
+ 	struct audit_entry *entry = container_of(r, struct audit_entry, rule);
+ 	struct audit_entry *nentry;
+@@ -1429,7 +1430,7 @@ static int update_lsm_rule(struct audit_krule *r)
+ 	return err;
+ }
+ 
+-/* This function will re-initialize the lsm_rule field of all applicable rules.
++/* This function will re-initialize the lsm_rules field of all applicable rules.
+  * It will traverse the filter lists serarching for rules that contain LSM
+  * specific filter fields.  When such a rule is found, it is copied, the
+  * LSM field is re-initialized, and the old rule is replaced with the
+@@ -1444,7 +1445,7 @@ int audit_update_lsm_rules(void)
+ 
+ 	for (i = 0; i < AUDIT_NR_FILTERS; i++) {
+ 		list_for_each_entry_safe(r, n, &audit_rules_list[i], list) {
+-			int res = update_lsm_rule(r);
++			int res = update_lsm_rules(r);
+ 			if (!err)
+ 				err = res;
+ 		}
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index addeed3df15d..d016abccd11b 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -665,7 +665,7 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 			   match for now to avoid losing information that
+ 			   may be wanted.   An error message will also be
+ 			   logged upon error */
+-			if (f->lsm_rule) {
++			if (f->lsm_str) {
+ 				if (need_sid) {
+ 					/* @tsk should always be equal to
+ 					 * @current with the exception of
+@@ -680,8 +680,7 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 					need_sid = 0;
+ 				}
+ 				result = security_audit_rule_match(sid, f->type,
+-								   f->op,
+-								   f->lsm_rule);
++							f->op, &f->lsm_rules);
+ 			}
+ 			break;
+ 		case AUDIT_OBJ_USER:
+@@ -691,21 +690,19 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 		case AUDIT_OBJ_LEV_HIGH:
+ 			/* The above note for AUDIT_SUBJ_USER...AUDIT_SUBJ_CLR
+ 			   also applies here */
+-			if (f->lsm_rule) {
++			if (f->lsm_str) {
+ 				/* Find files that match */
+ 				if (name) {
+ 					result = security_audit_rule_match(
+ 								name->osid,
+ 								f->type,
+ 								f->op,
+-								f->lsm_rule);
++								&f->lsm_rules);
+ 				} else if (ctx) {
+ 					list_for_each_entry(n, &ctx->names_list, list) {
+ 						if (security_audit_rule_match(
+-								n->osid,
+-								f->type,
+-								f->op,
+-								f->lsm_rule)) {
++							n->osid, f->type, f->op,
++							&f->lsm_rules)) {
+ 							++result;
+ 							break;
+ 						}
+@@ -716,7 +713,7 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 					break;
+ 				if (security_audit_rule_match(ctx->ipc.osid,
+ 							      f->type, f->op,
+-							      f->lsm_rule))
++							      &f->lsm_rules))
+ 					++result;
+ 			}
+ 			break;
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 816a5aad8a89..46303ec8dca5 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -1511,6 +1511,7 @@ static struct lsm_id apparmor_lsmid __ro_after_init = {
+ 	.lsm      = "apparmor",
+ 	.id       = LSM_ID_APPARMOR,
+ 	.features = LSM_ATTR_CURRENT | LSM_ATTR_PREV | LSM_ATTR_EXEC,
++	.slot     = LSMBLOB_NEEDED,
+ };
+ 
+ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
+diff --git a/security/bpf/hooks.c b/security/bpf/hooks.c
+index 185b8bd32bff..e0b5f09a1692 100644
+--- a/security/bpf/hooks.c
++++ b/security/bpf/hooks.c
+@@ -23,6 +23,7 @@ static struct security_hook_list bpf_lsm_hooks[] __ro_after_init = {
+ struct lsm_id bpf_lsmid __ro_after_init = {
+ 	.lsm      = "bpf",
+ 	.id       = LSM_ID_BPF,
++	.slot     = LSMBLOB_NEEDED,
+ };
+ 
+ static int __init bpf_lsm_init(void)
+diff --git a/security/commoncap.c b/security/commoncap.c
+index 097c6c7fcb6f..266f618247f6 100644
+--- a/security/commoncap.c
++++ b/security/commoncap.c
+@@ -1443,6 +1443,7 @@ int cap_mmap_file(struct file *file, unsigned long reqprot,
+ static struct lsm_id capability_lsmid __ro_after_init = {
+ 	.lsm      = "capability",
+ 	.id       = LSM_ID_CAPABILITY,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static struct security_hook_list capability_hooks[] __ro_after_init = {
+diff --git a/security/landlock/setup.c b/security/landlock/setup.c
+index a6183c178c95..bed6f3378342 100644
+--- a/security/landlock/setup.c
++++ b/security/landlock/setup.c
+@@ -28,6 +28,7 @@ struct lsm_blob_sizes landlock_blob_sizes __ro_after_init = {
+ struct lsm_id landlock_lsmid __ro_after_init = {
+ 	.lsm      = LANDLOCK_NAME,
+ 	.id       = LSM_ID_LANDLOCK,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static int __init landlock_init(void)
+diff --git a/security/loadpin/loadpin.c b/security/loadpin/loadpin.c
+index db2e7390d4a9..363ce2d2f026 100644
+--- a/security/loadpin/loadpin.c
++++ b/security/loadpin/loadpin.c
+@@ -212,6 +212,7 @@ static int loadpin_load_data(enum kernel_load_data_id id, bool contents)
+ static struct lsm_id loadpin_lsmid __ro_after_init = {
+ 	.lsm      = "loadpin",
+ 	.id       = LSM_ID_LOADPIN,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static struct security_hook_list loadpin_hooks[] __ro_after_init = {
+diff --git a/security/lockdown/lockdown.c b/security/lockdown/lockdown.c
+index 527611b3e275..7c615da6f6b5 100644
+--- a/security/lockdown/lockdown.c
++++ b/security/lockdown/lockdown.c
+@@ -79,6 +79,7 @@ static struct security_hook_list lockdown_hooks[] __ro_after_init = {
+ static struct lsm_id lockdown_lsmid __ro_after_init = {
+ 	.lsm      = "lockdown",
+ 	.id       = LSM_ID_LOCKDOWN,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static int __init lockdown_lsm_init(void)
+diff --git a/security/safesetid/lsm.c b/security/safesetid/lsm.c
+index 61853f9818f2..dfeb764628c6 100644
+--- a/security/safesetid/lsm.c
++++ b/security/safesetid/lsm.c
+@@ -265,6 +265,7 @@ static int safesetid_task_fix_setgroups(struct cred *new, const struct cred *old
+ static struct lsm_id safesetid_lsmid __ro_after_init = {
+ 	.lsm      = "safesetid",
+ 	.id       = LSM_ID_SAFESETID,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static struct security_hook_list safesetid_security_hooks[] = {
+diff --git a/security/security.c b/security/security.c
+index 6bd2197ccf71..7464926a32b8 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -388,6 +388,7 @@ static void __init ordered_lsm_init(void)
+ 	init_debug("sock blob size       = %d\n", blob_sizes.lbs_sock);
+ 	init_debug("superblock blob size = %d\n", blob_sizes.lbs_superblock);
+ 	init_debug("task blob size       = %d\n", blob_sizes.lbs_task);
++	init_debug("lsmblob size         = %zu\n", sizeof(struct lsmblob));
+ 
+ 	/*
+ 	 * Create any kmem_caches needed for blobs
+@@ -519,6 +520,11 @@ static int lsm_append(const char *new, char **result)
+ 	return 0;
+ }
+ 
++/*
++ * Current index to use while initializing the lsmblob secid list.
++ */
++static int lsm_slot __ro_after_init;
++
+ /**
+  * security_add_hooks - Add a modules hooks to the hook lists.
+  * @hooks: the hooks to add
+@@ -526,6 +532,8 @@ static int lsm_append(const char *new, char **result)
+  * @lsmid: the identification information for the security module
+  *
+  * Each LSM has to register its hooks with the infrastructure.
++ * If the LSM is using hooks that export secids allocate a slot
++ * for it in the lsmblob.
+  */
+ void __init security_add_hooks(struct security_hook_list *hooks, int count,
+ 			       struct lsm_id *lsmid)
+@@ -542,6 +550,16 @@ void __init security_add_hooks(struct security_hook_list *hooks, int count,
+ 	if (lsm_id > LSMID_ENTRIES)
+ 		panic("%s Too many LSMs registered.\n", __func__);
+ 
++	WARN_ON(!lsmid->slot || !lsmid->id);
++
++	if (lsmid->slot == LSMBLOB_NEEDED) {
++		if (lsm_slot >= LSMBLOB_ENTRIES)
++			panic("%s Too many LSMs registered.\n", __func__);
++		lsmid->slot = lsm_slot++;
++		init_debug("%s assigned lsmblob slot %d\n", lsmid->lsm,
++			   lsmid->slot);
++	}
++
+ 	for (i = 0; i < count; i++) {
+ 		hooks[i].lsmid = lsmid;
+ 		hlist_add_tail_rcu(&hooks[i].list, hooks[i].head);
+@@ -5067,16 +5085,34 @@ int security_key_getsecurity(struct key *key, char **buffer)
+  * @field: audit action
+  * @op: rule operator
+  * @rulestr: rule context
+- * @lsmrule: receive buffer for audit rule struct
++ * @lsmrule: receive audit lsm for audit rule struct
+  *
+  * Allocate and initialize an LSM audit rule structure.
+  *
+  * Return: Return 0 if @lsmrule has been successfully set, -EINVAL in case of
+  *         an invalid rule.
+  */
+-int security_audit_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule)
++int security_audit_rule_init(u32 field, u32 op, char *rulestr,
++			     struct audit_lsm_rules *lsmrules)
+ {
+-	return call_int_hook(audit_rule_init, 0, field, op, rulestr, lsmrule);
++	struct security_hook_list *hp;
++	bool one_is_good = false;
++	int rc = 0;
++	int trc;
++
++	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_init, list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		trc = hp->hook.audit_rule_init(field, op, rulestr,
++					&lsmrules->rule[hp->lsmid->slot]);
++		if (trc == 0)
++			one_is_good = true;
++		else
++			rc = trc;
++	}
++	if (one_is_good)
++		return 0;
++	return rc;
+ }
+ 
+ /**
+@@ -5100,9 +5136,17 @@ int security_audit_rule_known(struct audit_krule *krule)
+  * Deallocate the LSM audit rule structure previously allocated by
+  * audit_rule_init().
+  */
+-void security_audit_rule_free(void *lsmrule)
++void security_audit_rule_free(struct audit_lsm_rules *lsmrules)
+ {
+-	call_void_hook(audit_rule_free, lsmrule);
++	struct security_hook_list *hp;
++
++	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_free, list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		if (lsmrules->rule[hp->lsmid->slot] == NULL)
++			continue;
++		hp->hook.audit_rule_free(lsmrules->rule[hp->lsmid->slot]);
++	}
+ }
+ 
+ /**
+@@ -5118,9 +5162,23 @@ void security_audit_rule_free(void *lsmrule)
+  * Return: Returns 1 if secid matches the rule, 0 if it does not, -ERRNO on
+  *         failure.
+  */
+-int security_audit_rule_match(u32 secid, u32 field, u32 op, void *lsmrule)
++int security_audit_rule_match(u32 secid, u32 field, u32 op,
++			      struct audit_lsm_rules *lsmrules)
+ {
+-	return call_int_hook(audit_rule_match, 0, secid, field, op, lsmrule);
++	struct security_hook_list *hp;
++	int rc;
++
++	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_match, list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		if (lsmrules->rule[hp->lsmid->slot] == NULL)
++			continue;
++		rc = hp->hook.audit_rule_match(secid, field, op,
++					&lsmrules->rule[hp->lsmid->slot]);
++		if (rc)
++			return rc;
++	}
++	return 0;
+ }
+ #endif /* CONFIG_AUDIT */
+ 
+diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
+index 8231035f9e8f..c1941a0e051c 100644
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -6929,6 +6929,7 @@ static struct lsm_id selinux_lsmid __ro_after_init = {
+ 	.id       = LSM_ID_SELINUX,
+ 	.features = LSM_ATTR_CURRENT | LSM_ATTR_EXEC | LSM_ATTR_FSCREATE |
+ 		    LSM_ATTR_KEYCREATE | LSM_ATTR_PREV | LSM_ATTR_SOCKCREATE,
++	.slot     = LSMBLOB_NEEDED,
+ };
+ 
+ /*
+diff --git a/security/smack/smack_lsm.c b/security/smack/smack_lsm.c
+index 81f5b9a8d307..c0308ec05ffc 100644
+--- a/security/smack/smack_lsm.c
++++ b/security/smack/smack_lsm.c
+@@ -4870,6 +4870,7 @@ static struct lsm_id smack_lsmid __ro_after_init = {
+ 	.lsm      = "smack",
+ 	.id       = LSM_ID_SMACK,
+ 	.features = LSM_ATTR_CURRENT,
++	.slot     = LSMBLOB_NEEDED,
+ };
+ 
+ static struct security_hook_list smack_hooks[] __ro_after_init = {
+diff --git a/security/tomoyo/tomoyo.c b/security/tomoyo/tomoyo.c
+index ac12e3f3987c..0fb33d6c302c 100644
+--- a/security/tomoyo/tomoyo.c
++++ b/security/tomoyo/tomoyo.c
+@@ -546,6 +546,7 @@ static void tomoyo_task_free(struct task_struct *task)
+ static struct lsm_id tomoyo_lsmid __ro_after_init = {
+ 	.lsm      = "tomoyo",
+ 	.id       = LSM_ID_TOMOYO,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ /*
+diff --git a/security/yama/yama_lsm.c b/security/yama/yama_lsm.c
+index a35b12ded54e..d1a0bd956b27 100644
+--- a/security/yama/yama_lsm.c
++++ b/security/yama/yama_lsm.c
+@@ -425,6 +425,7 @@ static int yama_ptrace_traceme(struct task_struct *parent)
+ static struct lsm_id yama_lsmid __ro_after_init = {
+ 	.lsm      = "yama",
+ 	.id       = LSM_ID_YAMA,
++	.slot     = LSMBLOB_NOT_NEEDED,
+ };
+ 
+ static struct security_hook_list yama_hooks[] __ro_after_init = {
+-- 
+2.42.0
+

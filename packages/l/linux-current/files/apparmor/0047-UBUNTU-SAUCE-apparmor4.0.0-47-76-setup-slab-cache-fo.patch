@@ -1,0 +1,85 @@
+From 84570164a71284b33c4e9c777da7d9392f2aabec Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Mon, 12 Sep 2022 19:15:02 -0700
+Subject: [PATCH 47/76] UBUNTU: SAUCE: apparmor4.0.0 [47/76]: setup slab cache
+ for audit data
+
+Audit data will be used for caches and learning. When this happens the
+data needs to be off of the stack and a slab cache will help with
+improve the dynamic allocation, and reduce overall size used.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/include/audit.h | 16 ++++++++++++++++
+ security/apparmor/lsm.c           | 14 +++++++++++++-
+ 2 files changed, 29 insertions(+), 1 deletion(-)
+
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index f1e9dfbfedab..3bbd351d0a3e 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -161,6 +161,22 @@ struct apparmor_audit_data {
+ 	struct common_audit_data common;
+ };
+ 
++struct aa_audit_node {
++	struct apparmor_audit_data data;
++	struct list_head list;
++};
++extern struct kmem_cache *aa_audit_slab;
++
++static inline void aa_free_audit_node(struct aa_audit_node *node)
++{
++	kmem_cache_free(aa_audit_slab, node);
++}
++
++static inline struct aa_audit_node *aa_alloc_audit_node(gfp_t gfp)
++{
++	return kmem_cache_zalloc(aa_audit_slab, gfp);
++}
++
+ /* macros for dealing with  apparmor_audit_data structure */
+ #define aad(SA) (container_of(SA, struct apparmor_audit_data, common))
+ #define DEFINE_AUDIT_DATA(NAME, T, C, X)				\
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 7c5e3050400b..35f92dee1577 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -62,6 +62,8 @@ static int buffer_count;
+ static LIST_HEAD(aa_global_buffers);
+ static DEFINE_SPINLOCK(aa_buffers_lock);
+ 
++struct kmem_cache *aa_audit_slab;
++
+ static bool is_mqueue_dentry(struct dentry *dentry)
+ {
+ 	return dentry && is_mqueue_inode(d_backing_inode(dentry));
+@@ -2233,7 +2235,16 @@ __initcall(apparmor_nf_ip_init);
+ 
+ static int __init apparmor_init(void)
+ {
+-	int error;
++	int error = -ENOMEM;
++
++	/* setup allocation caches */
++	aa_audit_slab = kmem_cache_create("apparmor_auditcache",
++					  sizeof(struct aa_audit_node),
++					  0, SLAB_PANIC, NULL);
++	if (!aa_audit_slab) {
++		AA_ERROR("Unable to setup auditdata slab cache\n");
++		goto alloc_out;
++	}
+ 
+ 	error = aa_setup_dfa_engine();
+ 	if (error) {
+@@ -2285,6 +2296,7 @@ static int __init apparmor_init(void)
+ alloc_out:
+ 	aa_destroy_aafs();
+ 	aa_teardown_dfa_engine();
++	kmem_cache_destroy(aa_audit_slab);
+ 
+ 	apparmor_enabled = false;
+ 	return error;
+-- 
+2.42.0
+

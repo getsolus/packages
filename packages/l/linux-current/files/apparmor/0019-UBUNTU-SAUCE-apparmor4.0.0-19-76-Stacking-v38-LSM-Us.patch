@@ -1,0 +1,154 @@
+From 98ef377dd9700a67a3492c8f4dcfd594db7044da Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:47:21 -0700
+Subject: [PATCH 19/76] UBUNTU: SAUCE: apparmor4.0.0 [19/76]: Stacking v38:
+ LSM: Use lsmblob in security_kernel_act_as
+
+Change the security_kernel_act_as interface to use a lsmblob
+structure in place of the single u32 secid in support of
+module stacking. Change its only caller, set_security_override,
+to do the same. Change that one's only caller,
+set_security_override_from_ctx, to call it with the new
+parameter type.
+
+The security module hook is unchanged, still taking a secid.
+The infrastructure passes the correct entry from the lsmblob.
+lsmblob_init() is used to fill the lsmblob structure, however
+this will be removed later in the series when security_secctx_to_secid()
+is updated to provide a lsmblob instead of a secid.
+
+Reviewed-by: Kees Cook <keescook@chromium.org>
+Reviewed-by: John Johansen <john.johansen@canonical.com>
+Acked-by: Stephen Smalley <stephen.smalley.work@gmail.com>
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+To: David Howells <dhowells@redhat.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/linux/cred.h     |  3 ++-
+ include/linux/security.h |  5 +++--
+ kernel/cred.c            | 10 ++++++----
+ security/security.c      | 16 +++++++++++++---
+ 4 files changed, 24 insertions(+), 10 deletions(-)
+
+diff --git a/include/linux/cred.h b/include/linux/cred.h
+index 9ed9232af934..610f70a99f60 100644
+--- a/include/linux/cred.h
++++ b/include/linux/cred.h
+@@ -18,6 +18,7 @@
+ 
+ struct cred;
+ struct inode;
++struct lsmblob;
+ 
+ /*
+  * COW Supplementary groups list
+@@ -165,7 +166,7 @@ extern const struct cred *override_creds(const struct cred *);
+ extern void revert_creds(const struct cred *);
+ extern struct cred *prepare_kernel_cred(struct task_struct *);
+ extern int change_create_files_as(struct cred *, struct inode *);
+-extern int set_security_override(struct cred *, u32);
++extern int set_security_override(struct cred *, struct lsmblob *);
+ extern int set_security_override_from_ctx(struct cred *, const char *);
+ extern int set_create_files_as(struct cred *, struct inode *);
+ extern int cred_fscmp(const struct cred *, const struct cred *);
+diff --git a/include/linux/security.h b/include/linux/security.h
+index 5199308d9164..efa58ac7a994 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -489,7 +489,7 @@ void security_cred_free(struct cred *cred);
+ int security_prepare_creds(struct cred *new, const struct cred *old, gfp_t gfp);
+ void security_transfer_creds(struct cred *new, const struct cred *old);
+ void security_cred_getsecid(const struct cred *c, u32 *secid);
+-int security_kernel_act_as(struct cred *new, u32 secid);
++int security_kernel_act_as(struct cred *new, struct lsmblob *blob);
+ int security_kernel_create_files_as(struct cred *new, struct inode *inode);
+ int security_kernel_module_request(char *kmod_name);
+ int security_kernel_load_data(enum kernel_load_data_id id, bool contents);
+@@ -1151,7 +1151,8 @@ static inline void security_cred_getsecid(const struct cred *c, u32 *secid)
+ 	*secid = 0;
+ }
+ 
+-static inline int security_kernel_act_as(struct cred *cred, u32 secid)
++static inline int security_kernel_act_as(struct cred *cred,
++					 struct lsmblob *blob)
+ {
+ 	return 0;
+ }
+diff --git a/kernel/cred.c b/kernel/cred.c
+index 811ad654abd1..3a715095c1a2 100644
+--- a/kernel/cred.c
++++ b/kernel/cred.c
+@@ -766,14 +766,14 @@ EXPORT_SYMBOL(prepare_kernel_cred);
+ /**
+  * set_security_override - Set the security ID in a set of credentials
+  * @new: The credentials to alter
+- * @secid: The LSM security ID to set
++ * @blob: The LSM security information to set
+  *
+  * Set the LSM security ID in a set of credentials so that the subjective
+  * security is overridden when an alternative set of credentials is used.
+  */
+-int set_security_override(struct cred *new, u32 secid)
++int set_security_override(struct cred *new, struct lsmblob *blob)
+ {
+-	return security_kernel_act_as(new, secid);
++	return security_kernel_act_as(new, blob);
+ }
+ EXPORT_SYMBOL(set_security_override);
+ 
+@@ -789,6 +789,7 @@ EXPORT_SYMBOL(set_security_override);
+  */
+ int set_security_override_from_ctx(struct cred *new, const char *secctx)
+ {
++	struct lsmblob blob;
+ 	u32 secid;
+ 	int ret;
+ 
+@@ -796,7 +797,8 @@ int set_security_override_from_ctx(struct cred *new, const char *secctx)
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	return set_security_override(new, secid);
++	lsmblob_init(&blob, secid);
++	return set_security_override(new, &blob);
+ }
+ EXPORT_SYMBOL(set_security_override_from_ctx);
+ 
+diff --git a/security/security.c b/security/security.c
+index e42336290e4f..4d3c0bbad4a2 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -3055,16 +3055,26 @@ EXPORT_SYMBOL(security_cred_getsecid);
+ /**
+  * security_kernel_act_as() - Set the kernel credentials to act as secid
+  * @new: credentials
+- * @secid: secid
++ * @blob: lsm blob
+  *
+  * Set the credentials for a kernel service to act as (subjective context).
+  * The current task must be the one that nominated @secid.
+  *
+  * Return: Returns 0 if successful.
+  */
+-int security_kernel_act_as(struct cred *new, u32 secid)
++int security_kernel_act_as(struct cred *new, struct lsmblob *blob)
+ {
+-	return call_int_hook(kernel_act_as, 0, new, secid);
++	struct security_hook_list *hp;
++	int rc;
++
++	hlist_for_each_entry(hp, &security_hook_heads.kernel_act_as, list) {
++		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
++			continue;
++		rc = hp->hook.kernel_act_as(new, blob->secid[hp->lsmid->slot]);
++		if (rc != 0)
++			return rc;
++	}
++	return 0;
+ }
+ 
+ /**
+-- 
+2.42.0
+

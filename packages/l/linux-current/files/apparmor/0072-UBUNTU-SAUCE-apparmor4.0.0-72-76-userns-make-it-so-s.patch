@@ -1,0 +1,144 @@
+From 063ee6292536eddcc407e076c4b11f65d307f13c Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Thu, 22 Jun 2023 15:55:31 -0700
+Subject: [PATCH 72/76] UBUNTU: SAUCE: apparmor4.0.0 [72/76]: userns - make it
+ so special unconfined profiles can mediate user namespaces
+
+Currently unconfined profiles are entirely governed by the sysctl.
+However we want to allow for named unconfined profiles to treat user
+ns mediation like other profiles.
+
+Allow unconfined profiles to mediate user ns creation using the standard
+mediates() mechanisms.
+
+When these profiles choose not to unmediated user namespaces they behave
+like the system unconfined profile. That is the sysctl will determine
+whether unprivileged unconfined processes can create user namespaces.
+
+Other wise the profiles rules control the behavior.
+
+BugLink: http://bugs.launchpad.net/bugs/2032602
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c |  6 +++++
+ security/apparmor/lsm.c        | 14 ++++++-----
+ security/apparmor/task.c       | 44 ++++++++++++++++++++--------------
+ 3 files changed, 40 insertions(+), 24 deletions(-)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 7dd98a2cacae..a4a2110f89d8 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -2591,6 +2591,11 @@ static struct aa_sfs_entry aa_sfs_entry_versions[] = {
+ 	{ }
+ };
+ 
++static struct aa_sfs_entry aa_sfs_entry_unconfined[] = {
++	AA_SFS_FILE_INTPTR("userns",		unprivileged_userns_restricted),
++	{ }
++};
++
+ static struct aa_sfs_entry aa_sfs_entry_profile[] = {
+ 	AA_SFS_FILE_BOOLEAN("interruptible",		1),
+ 	{ }
+@@ -2603,6 +2608,7 @@ static struct aa_sfs_entry aa_sfs_entry_policy[] = {
+ 	AA_SFS_FILE_U64("outofband",		MAX_OOB_SUPPORTED),
+ 	AA_SFS_FILE_U64("permstable32_version",	2),
+ 	AA_SFS_FILE_STRING("permstable32", "allow deny subtree cond kill complain prompt audit quiet hide xindex tag label"),
++	AA_SFS_DIR("unconfined_restrictions",	aa_sfs_entry_unconfined),
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 60af4eefa378..9e565d0da721 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -1070,15 +1070,17 @@ static int apparmor_userns_create(const struct cred *cred)
+ 	struct aa_label *label;
+ 	struct aa_profile *profile;
+ 	int error = 0;
+-	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
+-			  OP_USERNS_CREATE);
+ 
+-	ad.subj_cred = current_cred();
+ 	label = begin_current_label_crit_section();
+-	if (unprivileged_userns_restricted || !unconfined(label)) {
++	/* remove unprivileged_userns_restricted check when unconfined is updated */
++	if (unprivileged_userns_restricted ||
++	    LABEL_MEDIATES(label, AA_CLASS_NS)) {
++		DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
++				  OP_USERNS_CREATE);
++		ad.subj_cred = current_cred();
++
+ 		error = fn_for_each(label, profile,
+-				    aa_profile_ns_perm(profile, &ad,
+-						       AA_USERNS_CREATE));
++			    aa_profile_ns_perm(profile, &ad, AA_USERNS_CREATE));
+ 		end_current_label_crit_section(label);
+ 	}
+ 
+diff --git a/security/apparmor/task.c b/security/apparmor/task.c
+index bbb373485999..6d858291765f 100644
+--- a/security/apparmor/task.c
++++ b/security/apparmor/task.c
+@@ -319,31 +319,39 @@ int aa_profile_ns_perm(struct aa_profile *profile,
+ 		       struct apparmor_audit_data *ad,
+ 		       u32 request)
+ {
++	struct aa_ruleset *rules = list_first_entry(&profile->rules,
++						    typeof(*rules), list);
+ 	struct aa_perms perms = { };
++	aa_state_t state;
+ 
+ 	ad->request = request;
+ 
+-	if (profile_unconfined(profile)) {
+-		if (!unprivileged_userns_restricted ||
+-		    ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
+-			return 0;
+ 
+-		ad->info = "User namespace creation restricted";
+-		/* don't just return: allow complain mode to override */
+-	} else {
+-		struct aa_ruleset *rules = list_first_entry(&profile->rules,
+-							    typeof(*rules),
+-							    list);
+-		aa_state_t state;
+-
+-		state = RULE_MEDIATES(rules, ad->class);
+-		if (!state && !unprivileged_userns_restricted_force)
+-			/* TODO: add flag to complain about unmediated */
++	/* TODO: rework unconfined profile/dfa to mediate user ns, then
++	 * we can drop the unconfined test
++	 */
++	state = RULE_MEDIATES(rules, ad->class);
++	if (!state) {
++		/* TODO: this gets replaced when the default unconfined
++		 * profile dfa gets updated to handle this
++		 */
++		if (profile_unconfined(profile) &&
++		    profile == profiles_ns(profile)->unconfined) {
++			if (!unprivileged_userns_restricted ||
++			    ns_capable_noaudit(current_user_ns(),
++					       CAP_SYS_ADMIN))
++				return 0;
++			ad->info = "User namespace creation restricted";
++			/* unconfined unprivileged user */
++			/* don't just return: allow complain mode to override */
++		} else if (!unprivileged_userns_restricted_force) {
+ 			return 0;
+-		perms = *aa_lookup_perms(rules->policy, state);
+-		if (unprivileged_userns_restricted_complain)
+-			perms.complain = ALL_PERMS_MASK;
++		}
++		/* continue to mediation */
+ 	}
++	perms = *aa_lookup_perms(rules->policy, state);
++	if (unprivileged_userns_restricted_complain)
++		perms.complain = ALL_PERMS_MASK;
+ 
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 	return aa_check_perms(profile, &perms, request, ad, audit_ns_cb);
+-- 
+2.42.0
+

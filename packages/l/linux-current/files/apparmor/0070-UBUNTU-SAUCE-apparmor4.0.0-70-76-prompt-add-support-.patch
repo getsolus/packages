@@ -1,0 +1,144 @@
+From 8cfc2668ad1ad840eab984ea357b4ebb8487e767 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Tue, 22 Aug 2023 09:27:57 -0700
+Subject: [PATCH 70/76] UBUNTU: SAUCE: apparmor4.0.0 [70/76]: prompt - add
+ support for advanced filtering of notifications
+
+Simple filtering based off of type (ALLOWED, DENIED, ...) is
+insufficient for several user cases.
+
+Allow for a dfa based filter that can be combined with type
+to further screen notifications to specific labels, classes
+of mediation and even the permission request.
+
+BugLink: http://bugs.launchpad.net/bugs/2032602
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c  | 30 ++++++++++++++++++++++++------
+ security/apparmor/include/lib.h |  8 ++++++++
+ security/apparmor/notify.c      | 28 +++++++++++++++++++++++++---
+ 3 files changed, 57 insertions(+), 9 deletions(-)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 5fd3d7dfd2fe..08eb86445aac 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -652,14 +652,15 @@ static long notify_set_filter(struct aa_listener *listener,
+ 		return -EFAULT;
+ 	if (size < sizeof(unotif))
+ 		return -EINVAL;
+-	/* todo upper limit on allocation size */
++	/* size is capped at U16_MAX by data type */
+ 	unotif = kzalloc(size, GFP_KERNEL);
+ 	if (!unotif)
+ 		return -ENOMEM;
+ 
+-	if (copy_from_user(unotif, buf, size))
+-		return -EFAULT;
+-
++	if (copy_from_user(unotif, buf, size)) {
++		ret = -EFAULT;
++		goto out;
++	}
+ 	ret = size;
+ 
+ 	/* todo validate to known modes */
+@@ -668,11 +669,28 @@ static long notify_set_filter(struct aa_listener *listener,
+ 	if (unotif->ns)
+ 		/* todo */
+ 		ns = NULL;
+-	if (unotif->filter)
+-		; /* todo */
++	if (unotif->filter) {
++		struct aa_dfa *dfa;
++		void *pos = (void *) unotif + unotif->filter;
+ 
++		if (unotif->filter >= size ||
++		    ALIGN((size_t) pos, 8) != (size_t)pos) {
++			ret = -EINVAL;
++			goto out;
++		}
++		dfa = aa_dfa_unpack(pos, size - ((void *) unotif - pos),
++				    DFA_FLAG_VERIFY_STATES |
++				    TO_ACCEPT1_FLAG(YYTD_DATA32));
++		if (IS_ERR(dfa)) {
++			ret = PTR_ERR(dfa);
++			goto out;
++		}
++		listener->filter = dfa;
++	}
+ 	if (!aa_register_listener_proxy(listener, ns))
+ 		ret = -ENOMEM;
++
++out:
+ 	kfree(unotif);
+ 
+ 	return ret;
+diff --git a/security/apparmor/include/lib.h b/security/apparmor/include/lib.h
+index cb48d61ca95b..521a6ddfd623 100644
+--- a/security/apparmor/include/lib.h
++++ b/security/apparmor/include/lib.h
+@@ -119,6 +119,14 @@ static inline aa_state_t aa_dfa_null_transition(struct aa_dfa *dfa,
+ 	return aa_dfa_next(dfa, start, 0);
+ }
+ 
++static inline aa_state_t aa_dfa_match_u16(struct aa_dfa *dfa, aa_state_t state,
++					  u16 data)
++{
++	__be16 buffer = cpu_to_be16(data);
++
++	return aa_dfa_match_len(dfa, state, (char *) &buffer, 2);
++}
++
+ static inline bool path_mediated_fs(struct dentry *dentry)
+ {
+ 	return !(dentry->d_sb->s_flags & SB_NOUSER);
+diff --git a/security/apparmor/notify.c b/security/apparmor/notify.c
+index aa4f1626bace..9a6a88f50c1e 100644
+--- a/security/apparmor/notify.c
++++ b/security/apparmor/notify.c
+@@ -357,16 +357,38 @@ struct aa_knotif *__del_and_hold_user_pending(struct aa_listener *listener,
+  */
+ 
+ /* TODO: allow registering on multiple namespaces */
+-/* TODO: make filter access read side lockless */
+ static bool notification_match(struct aa_listener *listener,
+ 			       struct aa_audit_node *ad)
+ {
+ 	if (!(listener->mask & (1 << ad->data.type)))
+ 		return false;
+ 
+-	if (!listener->filter)
+-		return true;
++	if (listener->filter) {
++		aa_state_t state;
++		unsigned int mask;
++
++		AA_DEBUG(DEBUG_UPCALL, "using filter");
++		if (!aa_ns_visible(listener->ns, labels_ns(ad->data.subj_label),
++				   false))
++			return false;
++		state = aa_dfa_next(listener->filter, DFA_START, ad->data.type);
++		state = aa_dfa_match(listener->filter, state, ad->data.subj_label->hname);
++		if (!state)
++			return false;
++		state = aa_dfa_null_transition(listener->filter, state);
++		state = aa_dfa_match_u16(listener->filter, state, ad->data.class);
++		mask = ACCEPT_TABLE(listener->filter)[state];
++		if (ad->data.request & mask)
++			return true;
+ 
++		/* allow for enhanced match conditions in the future
++		 * if (mask & AA_MATCH_CONT) {
++		 *	// TODO: match extensions
++		 * }
++		 */
++		return false;
++	}
++	AA_DEBUG(DEBUG_UPCALL, "matched type mask filter");
+ 	return true;
+ }
+ 
+-- 
+2.42.0
+

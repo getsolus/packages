@@ -1,0 +1,106 @@
+From 206cca0b738878cca5592c28067ef22cd9a597b3 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:59:31 -0700
+Subject: [PATCH 40/76] UBUNTU: SAUCE: apparmor4.0.0 [40/76]: Stacking v38:
+ Audit: Add record for multiple task security contexts
+
+Create a new audit record AUDIT_MAC_TASK_CONTEXTS.
+An example of the MAC_TASK_CONTEXTS (1420) record is:
+
+    type=MAC_TASK_CONTEXTS[1420]
+    msg=audit(1600880931.832:113)
+    subj_apparmor=unconfined
+    subj_smack=_
+
+When an audit event includes a AUDIT_MAC_TASK_CONTEXTS record
+the "subj=" field in other records in the event will be "subj=?".
+An AUDIT_MAC_TASK_CONTEXTS record is supplied when the system has
+multiple security modules that may make access decisions based
+on a subject security context.
+
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ include/uapi/linux/audit.h |  1 +
+ kernel/audit.c             | 42 +++++++++++++++++++++++++++++++-------
+ 2 files changed, 36 insertions(+), 7 deletions(-)
+
+diff --git a/include/uapi/linux/audit.h b/include/uapi/linux/audit.h
+index d676ed2b246e..dc045164b86b 100644
+--- a/include/uapi/linux/audit.h
++++ b/include/uapi/linux/audit.h
+@@ -143,6 +143,7 @@
+ #define AUDIT_MAC_UNLBL_STCDEL	1417	/* NetLabel: del a static label */
+ #define AUDIT_MAC_CALIPSO_ADD	1418	/* NetLabel: add CALIPSO DOI entry */
+ #define AUDIT_MAC_CALIPSO_DEL	1419	/* NetLabel: del CALIPSO DOI entry */
++#define AUDIT_MAC_TASK_CONTEXTS	1420	/* Multiple LSM task contexts */
+ 
+ #define AUDIT_FIRST_KERN_ANOM_MSG   1700
+ #define AUDIT_LAST_KERN_ANOM_MSG    1799
+diff --git a/kernel/audit.c b/kernel/audit.c
+index ad3e46624a2f..6173af868a62 100644
+--- a/kernel/audit.c
++++ b/kernel/audit.c
+@@ -2226,6 +2226,7 @@ static void audit_buffer_aux_end(struct audit_buffer *ab)
+ 
+ int audit_log_task_context(struct audit_buffer *ab)
+ {
++	int i;
+ 	int error;
+ 	struct lsmblob blob;
+ 	struct lsmcontext context;
+@@ -2234,16 +2235,43 @@ int audit_log_task_context(struct audit_buffer *ab)
+ 	if (!lsmblob_is_set(&blob))
+ 		return 0;
+ 
+-	error = security_secid_to_secctx(&blob, &context, LSMBLOB_FIRST);
+-
+-	if (error) {
+-		if (error != -EINVAL)
++	if (!lsm_multiple_contexts()) {
++		error = security_secid_to_secctx(&blob, &context,
++						 LSMBLOB_FIRST);
++		if (error) {
++			if (error != -EINVAL)
++				goto error_path;
++			return 0;
++		}
++		audit_log_format(ab, " subj=%s", context.context);
++		security_release_secctx(&context);
++	} else {
++		/* Multiple LSMs provide contexts. Include an aux record. */
++		audit_log_format(ab, " subj=?");
++		error = audit_buffer_aux_new(ab, AUDIT_MAC_TASK_CONTEXTS);
++		if (error)
+ 			goto error_path;
+-		return 0;
++		for (i = 0; i < LSMBLOB_ENTRIES; i++) {
++			if (blob.secid[i] == 0)
++				continue;
++			error = security_secid_to_secctx(&blob, &context, i);
++			if (error) {
++				audit_log_format(ab, "%ssubj_%s=?",
++						 i ? " " : "",
++						 lsm_slot_to_name(i));
++				if (error != -EINVAL)
++					audit_panic("error in audit_log_task_context");
++			} else {
++				audit_log_format(ab, "%ssubj_%s=%s",
++						 i ? " " : "",
++						 lsm_slot_to_name(i),
++						 context.context);
++				security_release_secctx(&context);
++			}
++		}
++		audit_buffer_aux_end(ab);
+ 	}
+ 
+-	audit_log_format(ab, " subj=%s", context.context);
+-	security_release_secctx(&context);
+ 	return 0;
+ 
+ error_path:
+-- 
+2.42.0
+
