@@ -1,0 +1,107 @@
+From a9fdc5dcf09d287e765cd82940e10499ce16d512 Mon Sep 17 00:00:00 2001
+From: Oliver Kiddle <opk@zsh.org>
+Date: Sat, 17 Dec 2022 00:09:37 +0100
+Subject: [PATCH] 51214: handle read -d and a delimiter that can't be decoded
+ into a character
+
+Terminate input at the raw byte value of the delimiter.
+Also document and test the use of an empty string as a way to specify
+NUL as the delimiter.
+---
+ Doc/Zsh/builtins.yo    |  3 ++-
+ Src/builtin.c          |  7 +++++--
+ Test/B04read.ztst      |  4 ++++
+ Test/D07multibyte.ztst | 14 ++++++++++++++
+ 4 files changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/Doc/Zsh/builtins.yo b/Doc/Zsh/builtins.yo
+index 280f1d72a..113b0747f 100644
+--- a/Doc/Zsh/builtins.yo
++++ b/Doc/Zsh/builtins.yo
+@@ -1585,7 +1585,8 @@ Input is read from the coprocess.
+ )
+ item(tt(-d) var(delim))(
+ Input is terminated by the first character of var(delim) instead of
+-by newline.
++by newline.  For compatibility with other shells, if var(delim) is an
++empty string, input is terminated at the first NUL.
+ )
+ item(tt(-t) [ var(num) ])(
+ Test if input is available before attempting to read.  If var(num)
+diff --git a/Src/builtin.c b/Src/builtin.c
+index 13f6c94fc..0a4d95d4f 100644
+--- a/Src/builtin.c
++++ b/Src/builtin.c
+@@ -6267,6 +6267,7 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
+     long izle_timeout = 0;
+ #ifdef MULTIBYTE_SUPPORT
+     wchar_t delim = L'\n', wc;
++    int rawbyte = 0;
+     mbstate_t mbs;
+     char *laststart;
+     size_t ret;
+@@ -6397,9 +6398,11 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
+ 	    wi = WEOF;
+ 	if (wi != WEOF)
+ 	    delim = (wchar_t)wi;
+-	else
++	else {
+ 	    delim = (wchar_t) (unsigned char) ((delimstr[0] == Meta) ?
+ 			      delimstr[1] ^ 32 : delimstr[0]);
++	    rawbyte = 1;
++	}
+ #else
+         delim = (unsigned char) ((delimstr[0] == Meta) ?
+ 			delimstr[1] ^ 32 : delimstr[0]);
+@@ -6827,7 +6830,7 @@ bin_read(char *name, char **args, Options ops, UNUSED(int func))
+ 		break;
+ 	    }
+ 	    *bptr = (char)c;
+-	    if (isset(MULTIBYTE)) {
++	    if (isset(MULTIBYTE) && !rawbyte) {
+ 		ret = mbrtowc(&wc, bptr, 1, &mbs);
+ 		if (!ret)	/* NULL */
+ 		    ret = 1;
+diff --git a/Test/B04read.ztst b/Test/B04read.ztst
+index 96adf51c7..14bdaeef5 100644
+--- a/Test/B04read.ztst
++++ b/Test/B04read.ztst
+@@ -82,6 +82,10 @@
+ >Testing the
+ >null hypothesis
+ 
++ read -ed '' <<<$'one\0two'
++0:empty delimiter terminates at nulls
++>one
++
+  print -n $'first line\x80second line\x80' |
+  while read -d $'\x80' line; do print $line; done
+ 0:read with a delimiter >= 0x80
+diff --git a/Test/D07multibyte.ztst b/Test/D07multibyte.ztst
+index 6909346cb..413c4fe73 100644
+--- a/Test/D07multibyte.ztst
++++ b/Test/D07multibyte.ztst
+@@ -212,6 +212,20 @@
+ >first
+ >second
+ 
++  read -ed £
++0:read with multibyte delimiter where bytes of delimiter also occur in input
++<one¤twoãthree£four
++>one¤twoãthree
++
++  read -ed $'\xa0' <<<$'first\xa0second'
++0:read delimited by a byte that isn't a valid multibyte character
++>first
++
++  read -ed $'\xc2'
++0:read delimited by a single byte terminates if the byte is part of a multibyte character
++<one£two
++>one
++
+   (IFS=«
+   read -d » -A array
+   print -l $array)
+-- 
+2.42.0
+

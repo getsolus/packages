@@ -1,0 +1,255 @@
+From 091337776b0de603f15a74e29d88ebbab3c3e77c Mon Sep 17 00:00:00 2001
+From: Bart Schaefer <schaefer@zsh.org>
+Date: Sun, 5 Mar 2023 14:03:42 -0800
+Subject: [PATCH] 51483: Enable assignment and expansion of parameters with
+ ksh-like namespace prefixes.
+
+---
+ Src/Zle/compcore.c   |  4 ++--
+ Src/Zle/zle_tricky.c |  6 +++---
+ Src/lex.c            |  2 +-
+ Src/params.c         |  7 ++++---
+ Src/subst.c          | 15 +++++++++------
+ Src/utils.c          | 18 ++++++++++++++++--
+ Src/zsh.h            |  3 +++
+ Src/ztype.h          |  3 ++-
+ 8 files changed, 40 insertions(+), 18 deletions(-)
+
+diff --git a/Src/Zle/compcore.c b/Src/Zle/compcore.c
+index 4ac5d089f..6a595744d 100644
+--- a/Src/Zle/compcore.c
++++ b/Src/Zle/compcore.c
+@@ -1230,14 +1230,14 @@ check_param(char *s, int set, int test)
+ 	else if (idigit(*e))
+ 	    while (idigit(*e))
+ 		e++;
+-	else if ((ie = itype_end(e, IIDENT, 0)) != e) {
++	else if ((ie = itype_end(e, INAMESPC, 0)) != e) {
+ 	    do {
+ 		e = ie;
+ 		if (comppatmatch && *comppatmatch &&
+ 		    (*e == Star || *e == Quest))
+ 		    ie = e + 1;
+ 		else
+-		    ie = itype_end(e, IIDENT, 0);
++		    ie = itype_end(e, INAMESPC, 0);
+ 	    } while (ie != e);
+ 	}
+ 
+diff --git a/Src/Zle/zle_tricky.c b/Src/Zle/zle_tricky.c
+index fdd168763..49223c2bd 100644
+--- a/Src/Zle/zle_tricky.c
++++ b/Src/Zle/zle_tricky.c
+@@ -576,7 +576,7 @@ parambeg(char *s)
+ 	    while (idigit(*e))
+ 		e++;
+ 	else
+-	    e = itype_end(e, IIDENT, 0);
++	    e = itype_end(e, INAMESPC, 0);
+ 
+ 	/* Now make sure that the cursor is inside the name. */
+ 	if (offs <= e - s && offs >= b - s && n <= 0) {
+@@ -765,7 +765,7 @@ docomplete(int lst)
+ 			    else if (idigit(*q))
+ 				do q++; while (idigit(*q));
+ 			    else
+-				q = itype_end(q, IIDENT, 0);
++				q = itype_end(q, INAMESPC, 0);
+ 			    sav = *q;
+ 			    *q = '\0';
+ 			    if (zlemetacs - wb == q - s &&
+@@ -1497,7 +1497,7 @@ get_comp_string(void)
+ 	if (varq)
+ 	    tt = clwords[clwpos];
+ 
+-	s = itype_end(tt, IIDENT, 0);
++	s = itype_end(tt, INAMESPC, 0);
+ 	sav = *s;
+ 	*s = '\0';
+ 	zsfree(varname);
+diff --git a/Src/lex.c b/Src/lex.c
+index ece02659e..de06bf0ad 100644
+--- a/Src/lex.c
++++ b/Src/lex.c
+@@ -1230,7 +1230,7 @@ gettokstr(int c, int sub)
+ 		    else {
+ 			int sav = *lexbuf.ptr;
+ 			*lexbuf.ptr = '\0';
+-			t = itype_end(t, IIDENT, 0);
++			t = itype_end(t, INAMESPC, 0);
+ 			if (t < lexbuf.ptr) {
+ 			    skipparens(Inbrack, Outbrack, &t);
+ 			} else {
+diff --git a/Src/params.c b/Src/params.c
+index 27ea82298..41ea68a85 100644
+--- a/Src/params.c
++++ b/Src/params.c
+@@ -1192,7 +1192,7 @@ isident(char *s)
+ 		break;
+     } else {
+ 	/* Find the first character in `s' not in the iident type table */
+-	ss = itype_end(s, IIDENT, 0);
++	ss = itype_end(s, INAMESPC, 0);
+     }
+ 
+     /* If the next character is not [, then it is *
+@@ -2047,6 +2047,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
+     char *s, *t, *ie;
+     char sav, c;
+     int ppar = 0;
++    int itype = (flags & SCANPM_NONAMESPC) ? IIDENT : INAMESPC;
+ 
+     s = t = *pptr;
+ 
+@@ -2056,7 +2057,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
+ 	else
+ 	    ppar = *s++ - '0';
+     }
+-    else if ((ie = itype_end(s, IIDENT, 0)) != s)
++    else if ((ie = itype_end(s, itype, 0)) != s)
+ 	s = ie;
+     else if (c == Quest)
+ 	*s++ = '?';
+@@ -2124,7 +2125,7 @@ fetchvalue(Value v, char **pptr, int bracks, int flags)
+ 		return v;
+ 	    }
+ 	} else if (!(flags & SCANPM_ASSIGNING) && v->isarr &&
+-		   itype_end(t, IIDENT, 1) != t && isset(KSHARRAYS))
++		   itype_end(t, INAMESPC, 1) != t && isset(KSHARRAYS))
+ 	    v->end = 1, v->isarr = 0;
+     }
+     if (!bracks && *s)
+diff --git a/Src/subst.c b/Src/subst.c
+index 0f98e6ea3..06a62ce15 100644
+--- a/Src/subst.c
++++ b/Src/subst.c
+@@ -1870,7 +1870,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+      * these later on, too.
+      */
+     c = *s;
+-    if (itype_end(s, IIDENT, 1) == s && *s != '#' && c != Pound &&
++    if (itype_end(s, INAMESPC, 1) == s && *s != '#' && c != Pound &&
+ 	!IS_DASH(c) &&
+ 	c != '!' && c != '$' && c != String && c != Qstring &&
+ 	c != '?' && c != Quest &&
+@@ -2332,7 +2332,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+ 	    }
+ 	} else if ((c == '#' || c == Pound) &&
+ 		   (inbrace || !isset(POSIXIDENTIFIERS)) &&
+-		   (itype_end(s+1, IIDENT, 0) != s + 1
++		   (itype_end(s+1, INAMESPC, 0) != s + 1
+ 		    || (cc = s[1]) == '*' || cc == Star || cc == '@'
+ 		    || cc == '?' || cc == Quest
+ 		    || cc == '$' || cc == String || cc == Qstring
+@@ -2369,8 +2369,9 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+ 	     * Try to handle this when parameter is named
+ 	     * by (P) (second part of test).
+ 	     */
+-	    if (itype_end(s+1, IIDENT, 0) != s+1 || (aspar && isstring(s[1]) &&
+-				 (s[2] == Inbrace || s[2] == Inpar)))
++	    if (itype_end(s+1, INAMESPC, 0) != s+1 ||
++		(aspar && isstring(s[1]) &&
++		 (s[2] == Inbrace || s[2] == Inpar)))
+ 		chkset = 1, s++;
+ 	    else if (!inbrace) {
+ 		/* Special case for `$+' on its own --- leave unmodified */
+@@ -2531,6 +2532,8 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+ 	    scanflags |= SCANPM_DQUOTED;
+ 	if (chkset)
+ 	    scanflags |= SCANPM_CHECKING;
++	if (!inbrace)
++	    scanflags |= SCANPM_NONAMESPC;
+ 	/*
+ 	 * Second argument: decide whether to use the subexpression or
+ 	 *   the string next on the line as the parameter name.
+@@ -3203,7 +3206,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+ 	    shortest = 0;
+ 	    ++s;
+ 	}
+-	if (*itype_end(s, IIDENT, 0)) {
++	if (*itype_end(s, INAMESPC, 0)) {
+ 	    untokenize(s);
+ 	    zerr("not an identifier: %s", s);
+ 	    return NULL;
+@@ -3263,7 +3266,7 @@ paramsubst(LinkList l, LinkNode n, char **str, int qt, int pf_flags,
+ 	int intersect = (*s == '*' || *s == Star);
+ 	char **compare, **ap, **apsrc;
+ 	++s;
+-	if (*itype_end(s, IIDENT, 0)) {
++	if (*itype_end(s, INAMESPC, 0)) {
+ 	    untokenize(s);
+ 	    zerr("not an identifier: %s", s);
+ 	    return NULL;
+diff --git a/Src/utils.c b/Src/utils.c
+index 62bd3e602..92c3a49e8 100644
+--- a/Src/utils.c
++++ b/Src/utils.c
+@@ -3122,7 +3122,7 @@ spckword(char **s, int hist, int cmd, int ask)
+ 
+     if (**s == String && !*t) {
+ 	guess = *s + 1;
+-	if (itype_end(guess, IIDENT, 1) == guess)
++	if (itype_end(guess, INAMESPC, 1) == guess)
+ 	    return;
+ 	ic = String;
+ 	d = 100;
+@@ -4309,13 +4309,27 @@ wcsitype(wchar_t c, int itype)
+  * If "once" is set, just test the first character, i.e. (outptr !=
+  * inptr) tests whether the first character is valid in an identifier.
+  *
+- * Currently this is only called with itype IIDENT, IUSER or ISEP.
++ * Currently called only with itype INAMESPC, IIDENT, IUSER or ISEP.
+  */
+ 
+ /**/
+ mod_export char *
+ itype_end(const char *ptr, int itype, int once)
+ {
++    if (itype == INAMESPC) {
++	itype = IIDENT;
++	if (once == 0 && !isset(POSIXIDENTIFIERS)) {
++	    /* Special case for names containing ".", ksh93 namespaces */
++	    char *t = itype_end(ptr + (*ptr == '.'), itype, 0);
++	    if (t > ptr+1) {
++		if (*t == '.')
++		    return itype_end(t+1, itype, 0);
++		else
++		    return t;
++	    }
++	}
++    }
++
+ #ifdef MULTIBYTE_SUPPORT
+     if (isset(MULTIBYTE) &&
+ 	(itype != IIDENT || !isset(POSIXIDENTIFIERS))) {
+diff --git a/Src/zsh.h b/Src/zsh.h
+index 40f9ea537..df20112ad 100644
+--- a/Src/zsh.h
++++ b/Src/zsh.h
+@@ -1967,6 +1967,9 @@ struct tieddata {
+ 				  * elements
+ 				  */
+ #define SCANPM_CHECKING   (1<<10) /* Check if set, no need to create */
++#define SCANPM_NOEXEC     (1<<11) /* No command substitutions, etc. */
++#define SCANPM_NONAMESPC  (1<<12) /* namespace syntax not allowed */
++
+ /* "$foo[@]"-style substitution
+  * Only sign bit is significant
+  */
+diff --git a/Src/ztype.h b/Src/ztype.h
+index 5c85b0cd7..4675f73a9 100644
+--- a/Src/ztype.h
++++ b/Src/ztype.h
+@@ -43,7 +43,8 @@
+ #define IWSEP    (1 << 13)
+ #define INULL    (1 << 14)
+ #define IPATTERN (1 << 15)
+-#define zistype(X,Y) (typtab[STOUC(X)] & Y)
++#define INAMESPC (1 << 16)
++#define zistype(X,Y) (typtab[(unsigned char) (X)] & Y)
+ #define idigit(X) zistype(X,IDIGIT)
+ #define ialnum(X) zistype(X,IALNUM)
+ #define iblank(X) zistype(X,IBLANK)	/* blank, not including \n */
+-- 
+2.42.0
+
