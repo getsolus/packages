@@ -27,3 +27,5 @@ pref("toolkit.storage.synchronous",         0);
 pref("ui.context_menus.after_mouseup", true);
 pref("widget.content.gtk-theme-override","Adwaita:light");
 
+// Use XDG Desktop Portals for filepicker by default
+pref("widget.use-xdg-desktop-portal.file-picker", 1);
