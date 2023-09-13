@@ -1,0 +1,246 @@
+From bb9da02e24d652c1f77ff488aaccbceaf2772b56 Mon Sep 17 00:00:00 2001
+From: Jouni Malinen <j@w1.fi>
+Date: Sat, 16 Apr 2022 18:48:29 +0300
+Subject: [PATCH] OpenSSL: Unload providers only at process exit
+
+The previous mechanism of unloaded the providers from tls_deinit() did
+not work correctly for some cases. In particular, it was possible for
+hostapd to end up unloading both providers and not being able to recover
+from this if TLS server was not enabled.
+
+Address this more cleanly by introducing a new crypto_unload() function
+that will be called when the process is exiting.
+
+Fixes: 097ca6bf0b6f ("OpenSSL: Unload providers on deinit")
+Signed-off-by: Jouni Malinen <j@w1.fi>
+---
+ src/crypto/crypto.h             | 8 ++++++++
+ src/crypto/crypto_gnutls.c      | 5 +++++
+ src/crypto/crypto_internal.c    | 5 +++++
+ src/crypto/crypto_libtomcrypt.c | 5 +++++
+ src/crypto/crypto_linux.c       | 5 +++++
+ src/crypto/crypto_nettle.c      | 5 +++++
+ src/crypto/crypto_none.c        | 5 +++++
+ src/crypto/crypto_openssl.c     | 8 +++++++-
+ src/crypto/crypto_wolfssl.c     | 5 +++++
+ src/crypto/tls_openssl.c        | 3 ---
+ wpa_supplicant/eapol_test.c     | 2 ++
+ wpa_supplicant/main.c           | 2 ++
+ wpa_supplicant/preauth_test.c   | 2 ++
+ 13 files changed, 56 insertions(+), 4 deletions(-)
+
+diff --git a/src/crypto/crypto.h b/src/crypto/crypto.h
+index e6150b0cf..410196597 100644
+--- a/src/crypto/crypto.h
++++ b/src/crypto/crypto.h
+@@ -1275,4 +1275,12 @@ struct wpabuf * crypto_csr_sign(struct crypto_csr *csr,
+ 				struct crypto_ec_key *key,
+ 				enum crypto_hash_alg algo);
+ 
++/**
++ * crypto_unload - Unload crypto resources
++ *
++ * This function is called just before the process exits to allow dynamic
++ * resource allocations to be freed.
++ */
++void crypto_unload(void);
++
+ #endif /* CRYPTO_H */
+diff --git a/src/crypto/crypto_gnutls.c b/src/crypto/crypto_gnutls.c
+index 4ef11462b..a7a163f5c 100644
+--- a/src/crypto/crypto_gnutls.c
++++ b/src/crypto/crypto_gnutls.c
+@@ -504,3 +504,8 @@ void crypto_cipher_deinit(struct crypto_cipher *ctx)
+ 	gcry_cipher_close(ctx->dec);
+ 	os_free(ctx);
+ }
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_internal.c b/src/crypto/crypto_internal.c
+index aad40af16..d15c363c9 100644
+--- a/src/crypto/crypto_internal.c
++++ b/src/crypto/crypto_internal.c
+@@ -326,3 +326,8 @@ int crypto_global_init(void)
+ void crypto_global_deinit(void)
+ {
+ }
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_libtomcrypt.c b/src/crypto/crypto_libtomcrypt.c
+index ed30efa02..fd79c1a40 100644
+--- a/src/crypto/crypto_libtomcrypt.c
++++ b/src/crypto/crypto_libtomcrypt.c
+@@ -766,3 +766,8 @@ fail:
+ }
+ 
+ #endif /* CONFIG_MODEXP */
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_linux.c b/src/crypto/crypto_linux.c
+index 17244561b..9278e2797 100644
+--- a/src/crypto/crypto_linux.c
++++ b/src/crypto/crypto_linux.c
+@@ -1007,3 +1007,8 @@ int crypto_global_init(void)
+ void crypto_global_deinit(void)
+ {
+ }
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_nettle.c b/src/crypto/crypto_nettle.c
+index f85d36532..d74502772 100644
+--- a/src/crypto/crypto_nettle.c
++++ b/src/crypto/crypto_nettle.c
+@@ -467,3 +467,8 @@ void crypto_cipher_deinit(struct crypto_cipher *ctx)
+ {
+ 	bin_clear_free(ctx, sizeof(*ctx));
+ }
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_none.c b/src/crypto/crypto_none.c
+index 547919418..a0dc0f52b 100644
+--- a/src/crypto/crypto_none.c
++++ b/src/crypto/crypto_none.c
+@@ -22,3 +22,8 @@ int des_encrypt(const u8 *clear, const u8 *key, u8 *cypher)
+ {
+ 	return 0;
+ }
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/crypto_openssl.c b/src/crypto/crypto_openssl.c
+index d5df3864f..9677833cd 100644
+--- a/src/crypto/crypto_openssl.c
++++ b/src/crypto/crypto_openssl.c
+@@ -139,7 +139,7 @@ void openssl_load_legacy_provider(void)
+ }
+ 
+ 
+-void openssl_unload_legacy_provider(void)
++static void openssl_unload_legacy_provider(void)
+ {
+ #if OPENSSL_VERSION_NUMBER >= 0x30000000L
+ 	if (openssl_legacy_provider) {
+@@ -3256,3 +3256,9 @@ struct wpabuf * crypto_csr_sign(struct crypto_csr *csr,
+ }
+ 
+ #endif /* CONFIG_ECC */
++
++
++void crypto_unload(void)
++{
++	openssl_unload_legacy_provider();
++}
+diff --git a/src/crypto/crypto_wolfssl.c b/src/crypto/crypto_wolfssl.c
+index 00ecf6135..4ae85e083 100644
+--- a/src/crypto/crypto_wolfssl.c
++++ b/src/crypto/crypto_wolfssl.c
+@@ -1823,3 +1823,8 @@ size_t crypto_ecdh_prime_len(struct crypto_ecdh *ecdh)
+ }
+ 
+ #endif /* CONFIG_ECC */
++
++
++void crypto_unload(void)
++{
++}
+diff --git a/src/crypto/tls_openssl.c b/src/crypto/tls_openssl.c
+index 5ca4f945f..7a929450b 100644
+--- a/src/crypto/tls_openssl.c
++++ b/src/crypto/tls_openssl.c
+@@ -1147,8 +1147,6 @@ void tls_deinit(void *ssl_ctx)
+ 
+ 	tls_openssl_ref_count--;
+ 	if (tls_openssl_ref_count == 0) {
+-		void openssl_unload_legacy_provider(void);
+-
+ #if OPENSSL_VERSION_NUMBER < 0x10100000L || \
+ 	(defined(LIBRESSL_VERSION_NUMBER) && \
+ 	 LIBRESSL_VERSION_NUMBER < 0x20700000L)
+@@ -1164,7 +1162,6 @@ void tls_deinit(void *ssl_ctx)
+ 		tls_global->ocsp_stapling_response = NULL;
+ 		os_free(tls_global);
+ 		tls_global = NULL;
+-		openssl_unload_legacy_provider();
+ 	}
+ 
+ 	os_free(data->check_cert_subject);
+diff --git a/wpa_supplicant/eapol_test.c b/wpa_supplicant/eapol_test.c
+index e256ac50e..2289de8e6 100644
+--- a/wpa_supplicant/eapol_test.c
++++ b/wpa_supplicant/eapol_test.c
+@@ -15,6 +15,7 @@
+ #include "common.h"
+ #include "utils/ext_password.h"
+ #include "common/version.h"
++#include "crypto/crypto.h"
+ #include "crypto/tls.h"
+ #include "config.h"
+ #include "eapol_supp/eapol_supp_sm.h"
+@@ -1549,6 +1550,7 @@ int main(int argc, char *argv[])
+ 	else
+ 		printf("SUCCESS\n");
+ 
++	crypto_unload();
+ 	os_program_deinit();
+ 
+ 	return ret;
+diff --git a/wpa_supplicant/main.c b/wpa_supplicant/main.c
+index 51a8a0298..9229eb51f 100644
+--- a/wpa_supplicant/main.c
++++ b/wpa_supplicant/main.c
+@@ -12,6 +12,7 @@
+ #endif /* __linux__ */
+ 
+ #include "common.h"
++#include "crypto/crypto.h"
+ #include "fst/fst.h"
+ #include "wpa_supplicant_i.h"
+ #include "driver_i.h"
+@@ -403,6 +404,7 @@ out:
+ #endif /* CONFIG_MATCH_IFACE */
+ 	os_free(params.pid_file);
+ 
++	crypto_unload();
+ 	os_program_deinit();
+ 
+ 	return exitcode;
+diff --git a/wpa_supplicant/preauth_test.c b/wpa_supplicant/preauth_test.c
+index 31b55325f..3ae99da04 100644
+--- a/wpa_supplicant/preauth_test.c
++++ b/wpa_supplicant/preauth_test.c
+@@ -13,6 +13,7 @@
+ #include <assert.h>
+ 
+ #include "common.h"
++#include "crypto/crypto.h"
+ #include "config.h"
+ #include "eapol_supp/eapol_supp_sm.h"
+ #include "eloop.h"
+@@ -365,6 +366,7 @@ int main(int argc, char *argv[])
+ 
+ 	eloop_destroy();
+ 
++	crypto_unload();
+ 	os_program_deinit();
+ 
+ 	return ret;
+-- 
+2.42.0
+
