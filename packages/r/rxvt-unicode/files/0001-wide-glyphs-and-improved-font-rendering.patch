@@ -1,0 +1,463 @@
+From 1d20c7ecbbda36e712cd63b0c3c706bf11f08711 Mon Sep 17 00:00:00 2001
+From: Matt Kastelic <edenfall_matt@hotmail.com>
+Date: Mon, 6 Dec 2021 10:52:13 -0500
+Subject: [PATCH] wide glyphs and improved font rendering
+
+---
+ config.h.in                |   3 ++
+ configure                  |  19 +++++++
+ configure.ac               |  11 ++++
+ src/command.C              |   6 ++-
+ src/rxvtfont.C             | 103 ++++++++++++++-----------------------
+ src/screen.C               |  67 ++++++++++++++++++++++--
+ src/table/jis0208_1990_0.h |   1 +
+ src/xdefaults.C            |   3 ++
+ 8 files changed, 144 insertions(+), 69 deletions(-)
+
+diff --git a/config.h.in b/config.h.in
+index 18e6d56..b50ab85 100644
+--- a/config.h.in
++++ b/config.h.in
+@@ -18,6 +18,9 @@
+ /* Define if you want your background to use the parent window background */
+ #undef ENABLE_TRANSPARENCY
+ 
++/* Define if you want to display wide glyphs */
++#undef ENABLE_WIDE_GLYPHS
++
+ /* Define if you want european extended codesets */
+ #undef ENCODING_EU
+ 
+diff --git a/configure b/configure
+index b9872b3..2c90dc0 100755
+--- a/configure
++++ b/configure
+@@ -738,6 +738,7 @@ enable_unicode3
+ enable_combining
+ enable_xft
+ enable_font_styles
++enable_wide_glyphs
+ enable_pixbuf
+ enable_startup_notification
+ enable_transparency
+@@ -1412,6 +1413,7 @@ Optional Features:
+   --enable-combining      enable composition of base and combining characters
+   --enable-xft            enable xft support on systems that have it
+   --enable-font-styles    enable bold and italic support
++  --enable-wide-glyphs    enable displaying of wide glyphs
+   --enable-pixbuf         enable integration with gdk-pixbuf for background images
+   --enable-startup-notification  enable freedesktop startup notification support
+   --enable-transparency   enable transparent backgrounds
+@@ -5023,6 +5025,7 @@ then :
+        support_8bitctrls=no
+        support_iso14755=no
+        support_styles=no
++       support_wide_glyphs=no
+        support_perl=no
+        codesets=
+     fi
+@@ -5048,6 +5051,7 @@ then :
+        #support_8bitctrls=yes
+        support_iso14755=yes
+        support_styles=yes
++       support_wide_glyphs=yes
+        support_perl=yes
+        codesets=all
+     fi
+@@ -5164,6 +5168,13 @@ then :
+   fi
+ fi
+ 
++# Check whether --enable-wide-glyphs was given.
++if test "${enable_wide_glyphs+set}" = set; then :
++  enableval=$enable_wide_glyphs; if test x$enableval = xyes -o x$enableval = xno; then
++    support_wide_glyphs=$enableval
++  fi
++fi
++
+ 
+ # Check whether --enable-pixbuf was given.
+ if test ${enable_pixbuf+y}
+@@ -7492,6 +7503,7 @@ fi
+ if test "x$ac_cv_func_XRenderFindStandardFormat" = xyes
+ then :
+ 
++
+ else $as_nop
+   rxvt_have_xrender=no
+ fi
+@@ -7670,6 +7682,13 @@ if test x$support_styles = xyes; then
+ printf "%s\n" "#define ENABLE_STYLES 1" >>confdefs.h
+ 
+ fi
++
++if test x$support_wide_glyphs = xyes; then
++ 
++$as_echo "#define ENABLE_WIDE_GLYPHS 1" >>confdefs.h
++ 
++fi
++
+ if test x$support_iso14755 = xyes; then
+ 
+ printf "%s\n" "#define ISO_14755 1" >>confdefs.h
+diff --git a/configure.ac b/configure.ac
+index 8a6c966..ad0b0c3 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -123,6 +123,7 @@ AC_ARG_ENABLE(everything,
+        support_8bitctrls=no
+        support_iso14755=no
+        support_styles=no
++	   support_wide_glyphs=no
+        support_perl=no
+        codesets=
+     fi
+@@ -148,6 +149,7 @@ AC_ARG_ENABLE(everything,
+        #support_8bitctrls=yes
+        support_iso14755=yes
+        support_styles=yes
++       support_wide_glyphs=yes
+        support_perl=yes
+        codesets=all
+     fi
+@@ -219,6 +221,12 @@ AC_ARG_ENABLE(font-styles,
+   [  --enable-font-styles    enable bold and italic support],
+   [if test x$enableval = xyes -o x$enableval = xno; then
+     support_styles=$enableval
++  fi]
++
++AC_ARG_ENABLE(wide-glyphs,
++  [  --enable-wide-glyphs    enable displaying of wide glyphs],
++  [if test x$enableval = xyes -o x$enableval = xno; then
++    support_wide_glyphs=$enableval
+   fi])
+ 
+ AC_ARG_ENABLE(pixbuf,
+@@ -643,6 +651,9 @@ fi
+ if test x$support_styles = xyes; then
+   AC_DEFINE(ENABLE_STYLES, 1, Define if you want bold and italic support)
+ fi
++if test x$support_wide_glyphs = xyes; then
++  AC_DEFINE(ENABLE_WIDE_GLYPHS, 1, Define if you want to display wide glyphs)
++fi
+ if test x$support_iso14755 = xyes; then
+   AC_DEFINE(ISO_14755, 1, Define if you want ISO 14755 extended support)
+ fi
+diff --git a/src/command.C b/src/command.C
+index faa61bb..85c47a3 100644
+--- a/src/command.C
++++ b/src/command.C
+@@ -236,8 +236,10 @@ rxvt_term::iso14755_51 (unicode_t ch, rend_t r, int x, int y, int y2)
+         ch = 0xfffd;
+ # endif
+       scr_overlay_set (11, y + 1, ch, r);
+-
+-      if (WCWIDTH (ch) >= 2)
++      
++# if !ENABLE_WIDE_GLYPHS
++      if (WCWIDTH (ch) >= 2);
++# endif
+         scr_overlay_set (12, y + 1, NOCHAR, r);
+     }
+ 
+diff --git a/src/rxvtfont.C b/src/rxvtfont.C
+index 2a36e96..8cd20d5 100644
+--- a/src/rxvtfont.C
++++ b/src/rxvtfont.C
+@@ -471,6 +471,7 @@ rxvt_font_default::draw (rxvt_drawable &d, int x, int y,
+       else
+         switch (t)
+           {
++            case ' ':
+             case '\t':
+             case ZERO_WIDTH_CHAR:
+             case NOCHAR:
+@@ -1038,8 +1039,10 @@ rxvt_font_x11::has_char (unicode_t unicode, const rxvt_fontprop *prop, bool &car
+ 
+   careful = xcs->lbearing < 0 || xcs->rbearing > prop->width * wcw;
+ 
++#if !ENABLE_WIDE_GLYPHS
+   if (careful && !OVERLAP_OK (w, wcw, prop))
+     return false;
++#endif
+ 
+   return true;
+ }
+@@ -1250,98 +1253,64 @@ rxvt_font_xft::load (const rxvt_fontprop &prop, bool force_prop)
+     return false;
+ 
+   int ftheight = 0;
+-  bool success = true;
+ 
+-  for (;;)
+-    {
+-      p = FcPatternDuplicate (match);
+-      f = XftFontOpenPattern (disp, p);
++   p = FcPatternDuplicate (match);
++   f = XftFontOpenPattern (disp, p);
++
+ 
+       if (!f)
+         {
+           FcPatternDestroy (p);
+-          success = false;
+-          break;
++          return false;
+         }
+ 
+       FT_Face face = XftLockFace (f);
+ 
+-      // fuck me plenty: XftLockFace can actually return 0. try not to crash.
+-      // we also assume blindly that if the first lock succeeeds, then subsequent
+-      // locks will also succeed.
+-      if (!face)
+-        {
+-          XftFontClose (disp, f);
+-          success = false;
+-          break;
+-        }
+-
+-      ascent  = (face->size->metrics.ascender + 63) >> 6;
+-      descent = (-face->size->metrics.descender + 63) >> 6;
+-      height  = max (ascent + descent, (face->size->metrics.height + 63) >> 6);
+-      width   = 0;
++         ascent  = f->ascent;
++         descent = f->descent;
++         height  = max (ascent + descent, f->height);
++         width   = 0;
+ 
+-      bool scalable = face->face_flags & FT_FACE_FLAG_SCALABLE;
++         bool scalable = face->face_flags & FT_FACE_FLAG_SCALABLE;
+ 
+-      XftUnlockFace (f);
++ 		 XftUnlockFace (f);
+ 
+-      int glheight = height;
+-
+-      for (uint16_t *t = extent_test_chars; t < extent_test_chars + ecb_array_length (extent_test_chars); t++)
+-        {
+-          FcChar16 ch = *t;
++         for (uint16_t *t = extent_test_chars; t < extent_test_chars + ecb_array_length (extent_test_chars); t++)
++           {
++             FcChar16 ch = *t;
+ 
+           if (cs != CS_UNICODE
+-              && ch > 0x100
+-              && FROM_UNICODE (cs, ch) == NOCHAR)
+-            continue;
++          && ch > 0x100
++          && FROM_UNICODE (cs, ch) == NOCHAR)
++          continue;
+ 
+           // ignore characters we wouldn't use anyways
+           bool careful;
+           if (!has_char (*t, &prop, careful))
+-            continue;
++          continue;
+ 
+           XGlyphInfo g;
+           XftTextExtents16 (disp, f, &ch, 1, &g);
+ 
+-          g.width -= g.x;
++		  g.width -= g.x;
+ 
+           int wcw = WCWIDTH (ch);
+-          if (wcw > 0) g.width = (g.width + wcw - 1) / wcw;
+-
+-          if (width    < g.width       ) width    = g.width;
+-          if (height   < g.height      ) height   = g.height;
+-          if (glheight < g.height - g.y) glheight = g.height - g.y;
+-        }
++          if (wcw > 1) g.xOff = g.xOff / wcw;
+ 
+-      if (!width)
+-        {
+-          rxvt_warn ("unable to calculate font width for '%s', using max_advance_width.\n", name);
+-          width = f->max_advance_width;
+-          break;
+-        }
++		  if (width    < g.xOff  ) width    = g.xOff;
++		  if (height   < g.height) height   = g.height;
++		     }
+ 
+-      if (prop.height == rxvt_fontprop::unset
+-          || (height <= prop.height && glheight <= prop.height)
+-          || height <= 2
+-          || !scalable)
+-        break;
+ 
+-      if (ftheight)
+-        {
+-          // take smaller steps near the end
+-          if (height > prop.height + 1) ftheight++;
+-          if (height > prop.height + 2) ftheight++;
+-          if (height > prop.height + 3) ftheight++;
++		bool success = true;
+ 
+-          ftheight -= height - prop.height;
+-        }
+-      else
+-        ftheight = prop.height - 1;
++		 if (!width)
++		   {
++		rxvt_warn ("unable to calculate font width for '%s', ignoring.\n", name);
+ 
+       XftFontClose (disp, f);
+-      FcPatternDel (match, FC_PIXEL_SIZE);
+-      FcPatternAddInteger (match, FC_PIXEL_SIZE, ftheight);
++      f = 0;
++      success = false;
+     }
+ 
+   FcPatternDestroy (match);
+@@ -1410,12 +1379,14 @@ rxvt_font_xft::has_char (unicode_t unicode, const rxvt_fontprop *prop, bool &car
+ 
+   careful = g.x > 0 || w > cwidth;
+ 
++#if !ENABLE_WIDE_GLYPHS
+   if (careful && !OVERLAP_OK (w, wcw, prop))
+     return false;
+ 
+   // this weeds out _totally_ broken fonts, or glyphs
+   if (!OVERLAP_OK (g.xOff, wcw, prop))
+     return false;
++#endif
+ 
+   return true;
+ }
+@@ -1496,7 +1467,13 @@ rxvt_font_xft::draw (rxvt_drawable &d, int x, int y,
+ 
+           ep->glyph = glyph;
+           ep->x = x_;
+-          ep->y = y_ + ascent;
++
++#if ENABLE_WIDE_GLYPHS
++          /* Left-align to bounding box, do not overlap to the left. */
++          max_it(ep->x, x_);
++#endif
++          
++          ep->y = y_ + term->fbase + (term->lineSpace >> 1);
+ 
+           // the xft font cell might differ from the terminal font cell,
+           // in which case we use the average between the two.
+diff --git a/src/screen.C b/src/screen.C
+index 51c7b41..d955d38 100644
+--- a/src/screen.C
++++ b/src/screen.C
+@@ -936,7 +936,61 @@ rxvt_term::scr_add_lines (const wchar_t *str, int len, int minlines) noexcept
+ # endif
+ #endif
+ 
+-          rend_t rend = SET_FONT (rstyle, FONTSET (rstyle)->find_font (c));
++          rend_t rend;
++#if ENABLE_WIDE_GLYPHS
++          // Re-use previous font for space characters.
++          // This allows for better display of wider chars with regard to
++          // backtracking (which uses RS_SAME).
++          if (c != ' ')
++            {
++#endif
++            rend = SET_FONT (rstyle, FONTSET (rstyle)->find_font (c));
++#if ENABLE_WIDE_GLYPHS
++
++            }
++          else
++            {
++              // Code taken from ENABLE_COMBINING - might get refactored.
++              line_t *linep;
++              text_t *tp;
++              rend_t *rp = NULL;
++
++              if (screen.cur.col > 0)
++                {
++                  linep = line;
++                  tp = line->t + screen.cur.col - 1;
++                  rp = line->r + screen.cur.col - 1;
++                }
++              else if (screen.cur.row > 0
++                       && ROW(screen.cur.row - 1).is_longer ())
++                {
++                  linep = &ROW(screen.cur.row - 1);
++                  tp = linep->t + ncol - 1;
++                  rp = linep->r + ncol - 1;
++                }
++
++              if (rp)
++                {
++                  // XXX: this font does not show up in iso-14755 mode for the space!?
++                  if (*tp == NOCHAR)
++                    {
++                      while (*tp == NOCHAR && tp > linep->t)
++                        tp--, rp--;
++
++                      // first try to find a precomposed character
++                      unicode_t n = rxvt_compose (*tp, c);
++                      if (n == NOCHAR)
++                        n = rxvt_composite.compose (*tp, c);
++
++                      *tp = n;
++                      *rp = SET_FONT (*rp, FONTSET (*rp)->find_font (*tp));
++                    }
++                  rend = SET_FONT (rstyle, GET_FONT(*rp));
++                }
++              else
++                rend = SET_FONT (rstyle, FONTSET (rstyle)->find_font (c));
++            }
++#endif
+ 
+           // if the character doesn't fit into the remaining columns...
+           if (ecb_unlikely (screen.cur.col > ncol - width && ncol >= width))
+@@ -2395,7 +2449,12 @@ rxvt_term::scr_refresh () noexcept
+                 text--, count++, xpixel -= fwidth;
+ 
+               // force redraw after "careful" characters to avoid pixel droppings
+-              for (int i = 0; srp[col + i] & RS_Careful && col + i < ncol - 1; i++)
++       		  for (int i = 0; srp[col + i] & RS_Careful && col + i < ncol - 1
++   #if ENABLE_WIDE_GLYPHS
++              // But not for spaces.
++                      && stp[col + i + 1] != ' '
++   #endif
++                      ; i++)
+                 drp[col + i + 1] = srp[col + i + 1] ^ RS_redraw;
+ 
+               // force redraw before "careful" characters to avoid pixel droppings
+@@ -2440,8 +2499,8 @@ rxvt_term::scr_refresh () noexcept
+                 XSetForeground (dpy, gc, pix_colors[fore]);
+ 
+               XDrawLine (dpy, vt, gc,
+-                         xpixel, ypixel + font->ascent + 1,
+-                         xpixel + Width2Pixel (count) - 1, ypixel + font->ascent + 1);
++                        xpixel, ypixel + Height2Pixel (1) - 1,
++                        xpixel + Width2Pixel (count) - 1, ypixel + Height2Pixel (1) - 1);
+             }
+         }                     /* for (col....) */
+     }                         /* for (row....) */
+diff --git a/src/table/jis0208_1990_0.h b/src/table/jis0208_1990_0.h
+index b23378f..8a6dc04 100644
+--- a/src/table/jis0208_1990_0.h
++++ b/src/table/jis0208_1990_0.h
+@@ -2241,6 +2241,7 @@ const uint16_t *jis0208_1990_0_f_i[] = {
+ 
+ static uint32_t cs_jis0208_1990_0_from_unicode (unicode_t unicode) {
+     if (unicode == 0x2312) return 0x225e;
++    if (unicode == 0xff5e) return 0x2141;
+     uint8_t  l = unicode;
+     uint16_t h = unicode >> 8;
+     if (0x00 <= h && h <= 0xff
+diff --git a/src/xdefaults.C b/src/xdefaults.C
+index 970b8ac..0c443ca 100644
+--- a/src/xdefaults.C
++++ b/src/xdefaults.C
+@@ -298,6 +298,9 @@ static const char optionsstring[] = "options: "
+ #if ENABLE_STYLES
+                                     "styles,"
+ #endif
++#if ENABLE_WIDE_GLYPHS
++                                    "wide-glyphs,"
++#endif                             
+ #if ENABLE_COMBINING
+                                     "combining,"
+ #endif
+-- 
+2.34.0
+
