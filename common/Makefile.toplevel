@@ -1,0 +1,65 @@
+TOPLVL = $(abspath ".")
+
+SHELL = /bin/bash
+
+.PHONY: help
+
+PKGS = $(shell cat ${TOPLVL}/common/packages)
+pull_PKGS = $(addsuffix .pull,$(PKGS))
+clone_PKGS = $(addsuffix .clone,$(PKGS))
+clean_PKGS = $(addsuffix .clean,$(PKGS))
+
+help:
+	@echo "clone               - Clone all repos"
+	@echo "cvecheck            - Check all packages for CVEs"
+	@echo "deprecate-packages  - List and/or remove all inactive repos from this folder"
+	@echo "pull                - Pull all repos"
+	@echo "switch-domains      - Update local repositories to use correct hostname"
+	@echo "upcheck             - Use ypkg-update-checker to get an update report"
+
+clone: $(clone_PKGS)
+
+clean: $(clean_PKGS)
+
+pull: $(pull_PKGS)
+
+upcheck:
+	ypkg-update-checker u
+	ypkg-update-checker r > updates.html
+
+%.pull:
+	@[ ! -d "$(subst .pull,,$@)" ] || ( \
+		echo "Pulling $(subst .pull,,$@)..."; \
+		git_repo=$(subst .pull,,$@); \
+		git -C "$(subst .pull,,$@)" remote set-url origin "https://github.com/solus-packages/$${git_repo}.git" || exit 0; \
+		git -C "$(subst .pull,,$@)" remote set-url --push origin "git@github.com:solus-packages/$${git_repo}.git" || exit 0; \
+		git -C "$(subst .pull,,$@)" pull || exit 0; \
+	)
+
+%.clone:
+	@[ -d "$(subst .clone,,$@)" ] || ( \
+		git_repo=$(subst .clone,,$@); \
+		git clone "https://github.com/solus-packages/$${git_repo}.git" || exit 0; \
+		cd $${git_repo}; \
+		git remote set-url origin "https://github.com/solus-packages/$${git_repo}.git"; \
+		git remote set-url --push origin "git@github.com:solus-packages/$${git_repo}.git"; \
+	)
+
+%.clean:
+	@[ -d "$(subst .clean,,$@)" ] || ( \
+		git_repo=$(subst .clean,,$@); \
+		make -C $${git_repo} clean; \
+	)
+
+cvecheck:
+	cve-check-tool -n $(TOPLVL)/common/packages -M $(TOPLVL)/common/mapping -o report.html; \
+
+opencvereport:
+	xdg-open report.html; \
+
+switch-domains:
+	go run common/Go/switch_repo_domains.go
+
+deprecate-packages:
+	go run common/Go/deprecate_packages.go
+

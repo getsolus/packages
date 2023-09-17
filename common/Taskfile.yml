@@ -1,0 +1,139 @@
+version : '3'
+
+set: [pipefail]
+
+vars:
+  SPECFILE:
+    sh: if [ -f "{{ .USER_WORKING_DIR }}/package.yml" ]; then echo "package.yml"; else echo "pspec.xml"; fi;
+
+tasks:
+  # Utility tasks, mainly for precondition checks
+  package-file:
+    internal: true
+    desc: |
+      Check that either `package.yml` or `pspec.xml` exists in the current directory
+    dir: '{{ .USER_WORKING_DIR }}'
+    requires:
+      vars: [SPECFILE]
+    preconditions:
+      - sh: test -f package.yml || test -f pspec.xml
+        msg: Either `package.yml` or `pspec.xml` must exists in the current directory
+
+  # Build packages
+  build:
+    desc: Build the current package against the unstable repo
+    aliases: [default]
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      PROFILE: '{{ default "unstable-x86_64" .PROFILE }}'
+    deps:
+      - package-file
+    cmds:
+      - sudo solbuild build {{ .SPECFILE }} -p {{ .PROFILE }} {{ .CLI_ARGS }}
+
+  build-stable:
+    desc: Build the current package against the stable repo (do NOT use for official submissions!)
+    aliases: [stable]
+    cmds:
+      - task: build
+        vars:
+          PROFILE: 'main-x86_64'
+      - |
+        echo "=========================================================================="
+        echo "WARNING: This package was built against -stable and is for local use only."
+        echo "                                                                          "
+        echo "         Do NOT publish packages or Pull Requests built against -stable!!!"
+        echo "=========================================================================="
+
+  build-local:
+    desc: "Build the current package against the unstable and the default local repo"
+    aliases: [local]
+    cmds:
+      - task: build
+        vars:
+          PROFILE: 'local-unstable-x86_64'
+
+  # Modify packages
+  bump:
+    desc: Bump current release
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      YBUMP: "/usr/share/ypkg/ybump.py"
+      PBUMP: "{{ .TASKFILE_DIR }}/common/Scripts/pbump.py"
+      BUMP_SCRIPT: '{{ eq .SPECFILE "package.yml" | ternary .YBUMP .PBUMP }}'
+    deps:
+      - package-file
+    cmds:
+      - python {{ .BUMP_SCRIPT }} {{ .SPECFILE }}
+
+  convert:
+    desc: Convert pspec to package.yml
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test -f pspec.xml
+        msg: "`pspec.xml` must in the current directory to perform conversion"
+    cmds:
+      - |
+        "{{ .TASKFILE_DIR }}/common/Scripts/yconvert.py" pspec.xml
+
+  # For packagers
+  publish:
+    desc: Tag and publish a release
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/main"
+        msg: Not on main branch
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    deps:
+      - package-file
+    cmds:
+      - git push
+      - task: push
+
+  republish:
+    desc: Rebuild existing tag
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/main"
+        msg: Not on main branch
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    cmds:
+      - task: push
+
+  push:
+    desc: Push package to the build server
+    internal: true
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      SOURCE:
+        sh: basename '{{ .USER_WORKING_DIR }}'
+      TAG:
+        sh: if [ -f {{ .SPECFILE }} ]; then {{ .TASKFILE_DIR }}/common/Scripts/gettag.py {{ .USER_WORKING_DIR }}/{{ .SPECFILE }}; fi
+      PATH:
+        sh: git rev-parse --show-prefix
+      REF:
+        sh: git rev-parse HEAD
+    cmds:
+      - ssh build-controller@build.getsol.us build "{{ .SOURCE }}" "{{ .TAG }}" "{{ .PATH }}" "{{ .REF }}"
+
+  # Other utilities
+  clean:
+    desc: Clean current tree
+    dir: '{{ .USER_WORKING_DIR }}'
+    cmds:
+      - rm *.eopkg -fv
+
+  pull:
+    desc: Pull/rebase latest changes
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - test -d .git
+    cmds:
+      - git pull --rebase
+
+  switch-domains:
+    desc: Update local repositories to use correct hostname
+    cmds:
+      - go run "{{ .TASKFILE_DIR }}/common/Go/switch_repo_domains.go"
