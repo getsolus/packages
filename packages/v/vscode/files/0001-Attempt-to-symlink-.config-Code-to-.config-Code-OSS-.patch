@@ -1,0 +1,125 @@
+From 5d7b062c202f5cef223d90a2c12f1b4929f205b9 Mon Sep 17 00:00:00 2001
+From: Troy Harvey <harveydevel@gmail.com>
+Date: Fri, 7 Oct 2022 09:38:01 +1100
+Subject: [PATCH] Attempt to symlink .config/Code to .config/Code - OSS if Code
+ does not exist.
+
+This ensures some extensions that specifically check for Code will function. Additionally don't bother doing the platform checks. We're on Linux.
+
+Signed-off-by: Troy Harvey <harveydevel@gmail.com>
+---
+ .../platform/environment/node/userDataPath.js | 68 +++++--------------
+ 1 file changed, 16 insertions(+), 52 deletions(-)
+
+diff --git a/src/vs/platform/environment/node/userDataPath.js b/src/vs/platform/environment/node/userDataPath.js
+index 92898523ed1..d105bad10cc 100644
+--- a/src/vs/platform/environment/node/userDataPath.js
++++ b/src/vs/platform/environment/node/userDataPath.js
+@@ -12,11 +12,12 @@
+ 	/**
+ 	 * @typedef {import('../../environment/common/argv').NativeParsedArgs} NativeParsedArgs
+ 	 *
++	 * @param {typeof import('fs')} fs
+ 	 * @param {typeof import('path')} path
+ 	 * @param {typeof import('os')} os
+ 	 * @param {string} cwd
+ 	 */
+-	function factory(path, os, cwd) {
++	function factory(fs, path, os, cwd) {
+ 
+ 		/**
+ 		 * @param {NativeParsedArgs} cliArgs
+@@ -48,57 +49,18 @@
+ 		 * @returns {string}
+ 		 */
+ 		function doGetUserDataPath(cliArgs, productName) {
+-
+-			// 0. Running out of sources has a fixed productName
+-			if (process.env['VSCODE_DEV']) {
+-				productName = 'code-oss-dev';
+-			}
+-
+-			// 1. Support portable mode
+-			const portablePath = process.env['VSCODE_PORTABLE'];
+-			if (portablePath) {
+-				return path.join(portablePath, 'user-data');
+-			}
+-
+-			// 2. Support global VSCODE_APPDATA environment variable
+-			let appDataPath = process.env['VSCODE_APPDATA'];
+-			if (appDataPath) {
+-				return path.join(appDataPath, productName);
+-			}
+-
+-			// With Electron>=13 --user-data-dir switch will be propagated to
+-			// all processes https://github.com/electron/electron/blob/1897b14af36a02e9aa7e4d814159303441548251/shell/browser/electron_browser_client.cc#L546-L553
+-			// Check VSCODE_PORTABLE and VSCODE_APPDATA before this case to get correct values.
+-			// 3. Support explicit --user-data-dir
+-			const cliPath = cliArgs['user-data-dir'];
+-			if (cliPath) {
+-				return cliPath;
+-			}
+-
+-			// 4. Otherwise check per platform
+-			switch (process.platform) {
+-				case 'win32':
+-					appDataPath = process.env['APPDATA'];
+-					if (!appDataPath) {
+-						const userProfile = process.env['USERPROFILE'];
+-						if (typeof userProfile !== 'string') {
+-							throw new Error('Windows: Unexpected undefined %USERPROFILE% environment variable');
+-						}
+-
+-						appDataPath = path.join(userProfile, 'AppData', 'Roaming');
++			let appDataPath = process.env['VSCODE_APPDATA'] || process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config');
++			let codePath = path.join(appDataPath, productName);
++			if (productName == "Code - OSS") { // OSS equivelant
++				let nonOSSPath = path.join(appDataPath, "Code");
++				fs.access(nonOSSPath, fs.constants.F_OK, (error) => { // Access the path
++					if (error) { // File doesn't exist
++						fs.symlinkSync(codePath, nonOSSPath); // Symlink Code - OSS to Code
+ 					}
+-					break;
+-				case 'darwin':
+-					appDataPath = path.join(os.homedir(), 'Library', 'Application Support');
+-					break;
+-				case 'linux':
+-					appDataPath = process.env['XDG_CONFIG_HOME'] || path.join(os.homedir(), '.config');
+-					break;
+-				default:
+-					throw new Error('Platform not supported');
++				});
+ 			}
+ 
+-			return path.join(appDataPath, productName);
++			return codePath;
+ 		}
+ 
+ 		return {
+@@ -107,18 +69,20 @@
+ 	}
+ 
+ 	if (typeof define === 'function') {
+-		define(['path', 'os', 'vs/base/common/process'], function (
++		define(['fs', 'path', 'os', 'vs/base/common/process'], function (
++			/** @type {typeof import('fs')} */ fs,
+ 			/** @type {typeof import('path')} */ path,
+ 			/** @type {typeof import('os')} */ os,
+ 			/** @type {typeof import("../../../base/common/process")} */ process
+ 		) {
+-			return factory(path, os, process.cwd()); // amd
++			return factory(fs, path, os, process.cwd()); // amd
+ 		});
+ 	} else if (typeof module === 'object' && typeof module.exports === 'object') {
++		const fs = require('fs');
+ 		const path = require('path');
+ 		const os = require('os');
+ 
+-		module.exports = factory(path, os, process.env['VSCODE_CWD'] || process.cwd()); // commonjs
++		module.exports = factory(fs, path, os, process.env['VSCODE_CWD'] || process.cwd()); // commonjs
+ 	} else {
+ 		throw new Error('Unknown context');
+ 	}
+-- 
+2.35.4
+
