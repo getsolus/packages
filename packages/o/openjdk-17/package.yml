@@ -1,0 +1,113 @@
+name       : openjdk-17
+version    : 17.0.5
+release    : 4
+source     :
+    - https://github.com/openjdk/jdk17u/archive/refs/tags/jdk-17.0.5-ga.tar.gz : a3a72a1897b6c01a68307a80a3b987114b7722f2541debd018e362a7c0917b85
+    # Only v1.8.1 is supported
+    - https://github.com/google/googletest/archive/refs/tags/release-1.8.1.tar.gz : 9bf1fe5182a604b4135edc1a425ae356c9ad15e9b23f9f12a02e80184c3a249c
+license    : GPL-2.0-only WITH Classpath-exception-2.0
+component  : programming.java
+homepage   : https://openjdk.java.net/
+summary    : Open implementation of Oracle's Java Development Kit, major version 17
+description: |
+    Open implementation of Oracle's Java Development Kit, major version 17. This package includes the JDK, the JRE is not separately provided.
+ccache     : no
+clang      : yes
+builddeps  :
+    - pkgconfig(alsa)
+    - pkgconfig(fontconfig)
+    - pkgconfig(lcms2)
+    - pkgconfig(libjpeg)
+    - pkgconfig(x11)
+    - pkgconfig(xext)
+    - pkgconfig(xrandr)
+    - pkgconfig(xrender)
+    - pkgconfig(xt)
+    - pkgconfig(xtst)
+    - pkgconfig(xxf86vm)
+    - cups-devel
+    - giflib-devel
+    - jtreg
+    - openjdk-17
+patterns   :
+    - devel : 
+        - /usr/lib64/openjdk-17/include/
+mancompress: yes
+setup      : |
+    # Setup gtest
+    tar xf $sources/release-1.8.1.tar.gz
+    mv googletest-release-1.8.1 gtest-local
+
+    %patch -p1 < $pkgfiles/0001-Double-default-reserved-code-cache-size.patch
+    %patch -p1 < $pkgfiles/0001-Enable-tiered-compilation.patch
+    %patch -p1 < $pkgfiles/0001-Use-current-directory-as-backup-for-user-prefs.patch
+    %patch -p1 < $pkgfiles/0001-Dont-echo-_JAVA_OPTIONS.patch
+
+    %patch -p1 < $pkgfiles/0001-The-jdk-uses-tagged-pointers-on-this-which-clang-kno.patch
+
+    chmod +x configure
+    %configure --prefix="$installdir/usr" \
+        --with-jvm-variants=client \
+        --with-jvm-features="compiler2" \
+        --with-boot-jdk="/usr/lib64/openjdk-17" \
+        --with-native-debug-symbols=internal \
+        --with-toolchain-type=clang \
+        --with-version-build="8" \
+        --with-version-pre="" \
+        --with-version-opt="solus" \
+        --with-stdc++lib=dynamic \
+        --with-freetype=system \
+        --with-giflib=system \
+        --with-gtest=./gtest-local \
+        --with-harfbuzz=system \
+        --with-jtreg=/usr/share/jtreg6 \
+        --with-lcms=system \
+        --with-libjpeg=system \
+        --with-libpng=system \
+        --with-zlib=system \
+        --enable-unlimited-crypto \
+        --disable-warnings-as-errors \
+        --disable-absolute-paths-in-output \
+        --with-extra-cflags="${CFLAGS}" \
+        --with-extra-cxxflags="${CXXFLAGS}" \
+        --with-extra-ldflags="${LDFLAGS}" \
+        --with-jobs=%YJOBS%
+build      : |
+    # Build OpenJDK
+    make images test-image
+install    : |
+    install -Ddm00755 $installdir/%libdir%/
+    install -dm00755 $installdir/usr/include/openjdk-17/
+    install -dm00755 $installdir/usr/share/applications/
+
+    make install
+
+    # Binaries
+    mv $installdir/usr/jvm/openjdk-* $installdir/%libdir%/openjdk-17/
+    rm -rf $installdir/usr/jvm/
+    rm -rf $installdir/usr/bin/
+
+    # Remove license files and demo files
+    rm -rf $installdir/%libdir%/openjdk-17/{legal,demo}/
+
+    # Headers
+    pushd build/linux-x86_64-*/
+    cp -ar jdk/include/* $installdir/usr/include/openjdk-17/
+    # Symlink header files (because some apps look for them in $JAVA_HOME)
+    ln -s /usr/include/openjdk-17/ $installdir/%libdir%/openjdk-17/include/
+    popd
+
+    # Man pages
+    mv $installdir/%libdir%/openjdk-17/man/ $installdir/usr/share/
+    find $installdir/usr/share/man/ -type f -exec rename -- ".1" "-17.1" {} \;
+
+    # Add java-17-jar.desktop into usable apps
+    install -Dm 00644 $pkgfiles/java-17-jar.desktop $installdir/usr/share/applications/
+# Tests take a long time so should be disabled before pushing
+# Note that some of these tests can OOM if you don't have enough system memory (32GB+ recommended)
+# If you still get OOMs even with that much memory try reducing the number of jobs in eopkg.conf,
+# or closing running applications so as to appease the openjdk (yes, it's that bad)
+# check      : |
+#     # You can add "RUN_PROBLEM_LISTS=true;" to the JTREG key below to run all tests in the ProblemList instead of excluding them.
+#     # This is useful to see if any tests have been fixed in a new version
+#     make test TEST="tier1 gtest:all" JTREG="EXTRA_PROBLEM_LISTS=$pkgfiles/ProblemList.txt"
