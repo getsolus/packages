@@ -1,0 +1,116 @@
+name       : samba
+version    : 4.17.10
+release    : 97
+source     :
+    - https://download.samba.org/pub/samba/stable/samba-4.17.10.tar.gz : 00dbb0aac9f4cfee800f708f4e9098964a43a7646e618230706d532c9bb6c350
+homepage   : https://samba.org
+license    : GPL-3.0-or-later
+summary    : Provides file and print services to SMB/CIFS clients and Windows networking to Linux clients
+component  : desktop.core
+description: |
+    Includes a Solus-specific configuration that enables user shares by default (can be disabled).
+
+    For more information, see the Solus Help Center [Samba file sharing guide](https://getsol.us/articles/software/samba/en/).
+mancompress: yes
+builddeps  :
+    - pkgconfig(avahi-client)
+    - pkgconfig(cmocka)
+    - pkgconfig(com_err)
+    - pkgconfig(fuse)
+    - pkgconfig(gnutls)
+    - pkgconfig(icu-i18n)
+    - pkgconfig(jansson)
+    - pkgconfig(krb5)
+    - pkgconfig(ldb)
+    - pkgconfig(libacl)
+    - pkgconfig(libarchive)
+    - pkgconfig(libattr)
+    - pkgconfig(libcap)
+    - pkgconfig(libsasl2)
+    - pkgconfig(libtirpc)
+    - pkgconfig(libunwind)
+    - pkgconfig(liburing)
+    - pkgconfig(libxslt)
+    - pkgconfig(nss)
+    - pkgconfig(openssl)
+    - pkgconfig(popt)
+    - pkgconfig(tevent)
+    - docbook-xml
+    - cups-devel
+    - gpgme-devel
+    - libaio-devel
+    - libtasn1-utils
+    - lmdb-devel
+    - openldap-devel
+    - perl-parse-yapp
+    - rpcsvc-proto-devel
+rundeps    :
+    - wsdd
+setup      : |
+    %patch -p1 -i $pkgfiles/0001-Add-support-for-runstatedir.patch
+    # Build as a stand-alone server with no AD DC functionality
+    #
+    %configure \
+      --bundled-libraries=!cmocka,!tdb,!talloc,!pytalloc-util,!tevent,!popt,!ldb,!pyldb-util \
+      --disable-cephfs \
+      --disable-glusterfs \
+      --disable-python \
+      --disable-rpath-install \
+      --enable-cups \
+      --enable-fhs \
+      --systemd-install-services \
+      --with-acl-support \
+      --with-automount \
+      --with-configdir=/usr/share/defaults/samba \
+      --with-iconv \
+      --with-ldap \
+      --with-lockdir=/run/lock \
+      --with-pammodulesdir=%libdir%/security \
+      --with-piddir=/run/samba \
+      --with-pie \
+      --with-relro \
+      --with-sendfile-support \
+      --with-sockets-dir=/run/samba \
+      --with-system-mitkrb5 \
+      --with-systemd \
+      --without-ad-dc \
+      --without-ads \
+      --without-regedit \
+      --without-winbind
+build      : |
+    %make
+install    : |
+    %make_install
+
+    # solus-controlled standard smb.conf file which attempts to include /etc/samba/smb.conf
+    install -D -m00644 $pkgfiles/smb.conf.solus $installdir/usr/share/defaults/samba/smb.conf
+    # no-op solus-specific smb.conf file which explains how the default configuration is set up
+    install -D -m00644 $pkgfiles/smb.conf.README $installdir/usr/share/defaults/samba/smb.conf.README
+    install -d -m00755 $installdir/etc/samba/
+    ln -sv /usr/share/defaults/samba/smb.conf.README $installdir/etc/samba/
+    # an example samba smb.conf file with everything commented out
+    install -D -m00644 $pkgfiles/smb.conf.example $installdir/usr/share/defaults/samba/smb.conf.example
+    # avahi samba service autodiscovery configuration
+    install -D -m00644 $pkgfiles/avahi.smb.service $installdir/usr/share/defaults/samba/avahi.smb.service
+    install -d -m00755 $installdir/etc/avahi/services
+    ln -sv /usr/share/defaults/samba/avahi.smb.service $installdir/etc/avahi/services/smb.service
+    # cups
+    install -d -m00755 $installdir/%libdir%/cups/backend
+    ln -sv /usr/bin/smbspool $installdir/%libdir%/cups/backend/smb
+    # pam
+    install -D -m00644 $pkgfiles/samba.pam $installdir/usr/share/defaults/etc/pam.d/samba
+    # systemd (excluding the samba Active Directory Domain Controller functionality)
+    install -d -m00755 $installdir/usr/lib/systemd/system
+    # remove samba.service, which is related to disabled AD DC functionality
+    rm $installdir/usr/lib/systemd/system/samba.service
+    # systemd-managed samba-specific directory setup (including a usershares directory)
+    install -D -m00644 $pkgfiles/samba.tmpfiles $installdir/%libdir%/tmpfiles.d/samba.conf
+    # systemd-managed solus-specific file to create the "sambaguest" and "sambashares" system user/groups
+    install -D -m00644 $pkgfiles/samba.sysusers $installdir/%libdir%/sysusers.d/samba.conf
+    # qol-assist snippet to add active users to "sambashares" group retroactively
+    install -D -m00644 $pkgfiles/sambashares_group_update.toml $installdir/usr/share/defaults/qol-assist.d/sambashares_group_update.toml
+    # networkmanager online/offline script
+    install -D -m00755 packaging/NetworkManager/30-winbind-systemd $installdir/etc/NetworkManager/dispatcher.d/30-winbind
+
+    rm -rfv $installdir/var/log
+    rm -rfv $installdir/run
