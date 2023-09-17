@@ -1,0 +1,98 @@
+name       : openrazer
+version    : 3.6.1
+release    : 285
+source     :
+    - https://github.com/openrazer/openrazer/archive/v3.6.1.tar.gz : d83afae6337afe3f9fd375d8af76ffb5b293b055f3d357e1128105f6492574f6
+license    : GPL-2.0-or-later
+component  :
+    - kernel.drivers
+    - current : kernel.drivers
+    - common : system.utils
+    - modaliases : kernel.drivers
+summary    :
+    - A collection of Linux drivers for the Razer devices
+    - common : Common component for openrazer kernel modules
+    - current : openrazer for the linux-current kernel
+    - modaliases : These files are used by the Software Center for hardware detection.
+description: |
+    A collection of Linux drivers for the Razer devices, providing kernel drivers, DBus services and Python bindings to interact with the DBus interface
+builddeps  :
+    - pkgconfig(dbus-1)
+    - pkgconfig(fftw3)
+    - pkgconfig(libelf)
+    - pkgconfig(SDL2_image)
+    - pkgconfig(udev)
+    - jq
+    - linux-lts
+    - linux-lts-headers
+    - linux-current
+    - linux-current-headers
+patterns   :
+    - common : /*
+    - main : /lib/modules/*.lts
+    - current : /lib/modules/*.current
+    - modaliases : /usr/share/linux-driver-management/modaliases
+permanent  :
+    - /lib/modules
+rundeps    :
+    - common :
+        - numpy
+        - python-evdev
+        - python-gobject
+        - python-notify2
+        - python-setproctitle
+        - python-daemonize
+        - python3-dbus
+        - python3-pyudev
+        - xaut
+        - xdotool
+    - openrazer-common
+    - current :
+        - openrazer-common
+replaces   :
+    - razer-drivers
+    - common : razer-drivers-common
+    - current : razer-drivers-current
+    - modaliases : razer-drivers-modaliases
+setup      : |
+    sed -i "s|depmod||g" Makefile
+    pushd ../
+    cp -a "openrazer-${version}" lts-build
+    cp -a "openrazer-${version}" current-build
+    popd
+build      : |
+    pushd lts-build
+    KVER=%kernel_version_lts%
+    %make KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid
+    popd
+    pushd current-build
+    KVER=%kernel_version_current%
+    %make KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid
+    popd
+
+    # Generate modaliases from the LTS tree
+    pushd lts-build
+    mkmodaliases "${package}" -o "${package}.modaliases" driver/*.ko
+    popd
+install    : |
+    pushd lts-build
+    KVER=%kernel_version_lts%
+    install -d -m 00644 $installdir/lib/modules/$KVER/kernel/drivers/hid
+    %make install_i_know_what_i_am_doing KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
+    popd
+    # Razer's build system really flops when things already exist.. Autotools wouldn't hurt.
+    rm -rf $installdir/usr
+    pushd current-build
+    KVER=%kernel_version_current%
+    install -d -m 00644 $installdir/lib/modules/$KVER/kernel/drivers/hid
+    %make install_i_know_what_i_am_doing KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
+    popd
+
+    # Use example file as default configuration
+    install -D -m 00644 $installdir/usr/share/openrazer/razer.conf.example $installdir/usr/share/openrazer/razer.conf
+
+    # Now install modaliases for LDM
+    install -D -m 00644 lts-build/${package}.modaliases $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
+
+    # Compress modules with zstd
+    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
