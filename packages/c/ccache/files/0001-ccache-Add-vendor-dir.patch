@@ -1,0 +1,88 @@
+From 928fede08657b772b689726a47efe9ffe310af87 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Thu, 10 Aug 2023 15:21:20 -0500
+Subject: [PATCH] ccache: Add vendor dir
+
+---
+ cmake/GenerateConfigurationFile.cmake |  6 ++++++
+ cmake/config.h.in                     |  2 ++
+ src/Config.cpp                        | 18 ++++++++++++++++++
+ 3 files changed, 26 insertions(+)
+
+diff --git a/cmake/GenerateConfigurationFile.cmake b/cmake/GenerateConfigurationFile.cmake
+index 4fac7b03..f7da1da8 100644
+--- a/cmake/GenerateConfigurationFile.cmake
++++ b/cmake/GenerateConfigurationFile.cmake
+@@ -96,5 +96,11 @@ endif()
+ file(TO_NATIVE_PATH "${CMAKE_INSTALL_FULL_SYSCONFDIR}" CONFIG_SYSCONFDIR_C_ESCAPED)
+ string(REPLACE "\\" "\\\\" CONFIG_SYSCONFDIR_C_ESCAPED "${CONFIG_SYSCONFDIR_C_ESCAPED}")
+ 
++# Escape backslashes in VENDORDIR for C.
++if(VENDORDIR)
++  file(TO_NATIVE_PATH "${VENDORDIR}" CONFIG_VENDORDIR_C_ESCAPED)
++  string(REPLACE "\\" "\\\\" CONFIG_VENDORDIR_C_ESCAPED "${CONFIG_VENDORDIR_C_ESCAPED}")
++endif()
++
+ configure_file(${CMAKE_SOURCE_DIR}/cmake/config.h.in
+                ${CMAKE_BINARY_DIR}/config.h @ONLY)
+diff --git a/cmake/config.h.in b/cmake/config.h.in
+index 2778909e..ffa03946 100644
+--- a/cmake/config.h.in
++++ b/cmake/config.h.in
+@@ -208,6 +208,8 @@ typedef int pid_t;
+ 
+ #define SYSCONFDIR "@CONFIG_SYSCONFDIR_C_ESCAPED@"
+ 
++#define VENDORDIR "@CONFIG_VENDORDIR_C_ESCAPED@"
++
+ #cmakedefine INODE_CACHE_SUPPORTED
+ 
+ // Buffer size for I/O operations. Should be a multiple of 4 KiB.
+diff --git a/src/Config.cpp b/src/Config.cpp
+index 982134e1..6a839719 100644
+--- a/src/Config.cpp
++++ b/src/Config.cpp
+@@ -55,6 +55,11 @@ DLLIMPORT extern char** environ;
+ // Make room for binary patching at install time.
+ const char k_sysconfdir[4096 + 1] = SYSCONFDIR;
+ 
++#ifdef VENDORDIR
++// Make room for binary patching at install time.
++const char k_vendordir[4096 + 1] = VENDORDIR;
++#endif
++
+ namespace {
+ 
+ enum class ConfigItem {
+@@ -526,6 +531,9 @@ Config::read(const std::vector<std::string>& cmdline_config_settings)
+     const char* const env_ccache_configpath2 = getenv("CCACHE_CONFIGPATH2");
+ 
+     std::string sysconfdir = Util::make_path(k_sysconfdir);
++#ifdef VENDORDIR
++    std::string vendordir = Util::make_path(k_vendordir);
++#endif
+ #ifdef _WIN32
+     if (const char* program_data = getenv("ALLUSERSPROFILE"))
+       sysconfdir = Util::make_path(program_data, "ccache");
+@@ -535,8 +543,18 @@ Config::read(const std::vector<std::string>& cmdline_config_settings)
+                              ? env_ccache_configpath2
+                              : Util::make_path(sysconfdir, "ccache.conf"));
+     MTR_BEGIN("config", "conf_read_system");
++
++#ifdef VENDORDIR
++    // If the config file at SYSCONFDIR doesn't exist then check VENDORDIR
++    if ( ! update_from_file(system_config_path())) {
++      set_system_config_path(Util::make_path(vendordir, "ccache.conf"));
++      update_from_file(system_config_path());
++    }
++#else
+     // A missing config file in SYSCONFDIR is OK so don't check return value.
+     update_from_file(system_config_path());
++#endif
++    
+     MTR_END("config", "conf_read_system");
+ 
+     const char* const env_ccache_dir = getenv("CCACHE_DIR");
+-- 
+2.41.0
+
