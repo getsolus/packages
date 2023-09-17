@@ -1,0 +1,132 @@
+From 2fe79440a82c7e4a4a39d81f5f65d5356d720460 Mon Sep 17 00:00:00 2001
+From: Sebastien Bacher <seb128@ubuntu.com>
+Date: Wed, 11 Mar 2020 15:10:23 +0100
+Subject: 80_file_monitor_delayed.patch
+
+No DEP3 Subject or Description header found
+
+Gbp-Pq: 80_file_monitor_delayed.patch.
+---
+ libmenu/menu-monitor.c | 90 ++++++++++++++++++++++++++++++++++++--------------
+ 1 file changed, 66 insertions(+), 24 deletions(-)
+
+diff --git a/libmenu/menu-monitor.c b/libmenu/menu-monitor.c
+index c9fabf5..8f34657 100644
+--- a/libmenu/menu-monitor.c
++++ b/libmenu/menu-monitor.c
+@@ -52,6 +52,14 @@ typedef struct
+   guint                 refcount;
+ } MenuMonitorNotify;
+ 
++typedef struct
++{
++  MenuMonitor      *menu_monitor;
++  GFile            *child;
++  GFileMonitorEvent eflags;
++  gpointer          weak_ptr;
++} MonitorCallbackInfo;
++
+ static MenuMonitorNotify *menu_monitor_notify_ref   (MenuMonitorNotify *notify);
+ static void               menu_monitor_notify_unref (MenuMonitorNotify *notify);
+ 
+@@ -160,39 +168,73 @@ get_registry_key (const char *path,
+ }
+ 
+ static gboolean
+-monitor_callback (GFileMonitor      *monitor,
+-                  GFile             *child,
+-                  GFile             *other_file,
+-                  GFileMonitorEvent eflags,
+-                  gpointer          user_data)
++monitor_callback_delayed (gpointer user_data)
+ {
++  MonitorCallbackInfo  *info;
+   MenuMonitorEventInfo *event_info;
+   MenuMonitorEvent      event;
+-  MenuMonitor          *menu_monitor = (MenuMonitor *) user_data;
++  MenuMonitor          *menu_monitor;
+ 
+-  event = MENU_MONITOR_EVENT_INVALID;
+-  switch (eflags)
++  info = (MonitorCallbackInfo *) user_data;
++  menu_monitor = info->menu_monitor;
++
++  if (info->weak_ptr)
+     {
+-    case G_FILE_MONITOR_EVENT_CHANGED:
+-      event = MENU_MONITOR_EVENT_CHANGED;
+-      break;
+-    case G_FILE_MONITOR_EVENT_CREATED:
+-      event = MENU_MONITOR_EVENT_CREATED;
+-      break;
+-    case G_FILE_MONITOR_EVENT_DELETED:
+-      event = MENU_MONITOR_EVENT_DELETED;
+-      break;
+-    default:
+-      return TRUE;
++      switch (info->eflags)
++        {
++        case G_FILE_MONITOR_EVENT_CHANGED:
++          event = MENU_MONITOR_EVENT_CHANGED;
++          break;
++        case G_FILE_MONITOR_EVENT_CREATED:
++          event = MENU_MONITOR_EVENT_CREATED;
++          break;
++        case G_FILE_MONITOR_EVENT_DELETED:
++          event = MENU_MONITOR_EVENT_DELETED;
++          break;
++        default:
++          event = MENU_MONITOR_EVENT_INVALID;
++        }
++
++      if (event != MENU_MONITOR_EVENT_INVALID)
++        {
++          event_info = g_new0 (MenuMonitorEventInfo, 1);
++
++          event_info->path    = g_file_get_path (info->child);
++          event_info->event   = event;
++          event_info->monitor = menu_monitor;
++
++          menu_monitor_queue_event (event_info);
++        }
++
++      g_object_remove_weak_pointer (G_OBJECT (menu_monitor->monitor), &(info->weak_ptr));
++
+     }
+ 
+-  event_info = g_new0 (MenuMonitorEventInfo, 1);
++  g_object_unref (info->child);
++  g_free (info);
++  return FALSE;
++}
++
++static gboolean
++monitor_callback (GFileMonitor      *monitor,
++                  GFile             *child,
++                  GFile             *other_file,
++                  GFileMonitorEvent eflags,
++                  gpointer          user_data)
++{
++  MenuMonitor         *menu_monitor;
++  MonitorCallbackInfo *info;
++
++  menu_monitor = (MenuMonitor *) user_data;
+ 
+-  event_info->path    = g_file_get_path (child);
+-  event_info->event   = event;
+-  event_info->monitor = menu_monitor;
++  info = g_new0 (MonitorCallbackInfo, 1);
++  info->menu_monitor = menu_monitor;
++  info->weak_ptr = G_OBJECT (menu_monitor->monitor);
++  g_object_add_weak_pointer (G_OBJECT (menu_monitor->monitor), &(info->weak_ptr));
++  info->child = g_object_ref (child);
++  info->eflags = eflags;
+ 
+-  menu_monitor_queue_event (event_info);
++  g_timeout_add_seconds_full (G_PRIORITY_DEFAULT, 2, monitor_callback_delayed, info, NULL);
+ 
+   return TRUE;
+ }
+-- 
+cgit v1.1
+
