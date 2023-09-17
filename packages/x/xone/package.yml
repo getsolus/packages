@@ -1,0 +1,98 @@
+name       : xone
+version    : 0.3
+release    : 35
+source     :
+    - https://github.com/medusalix/xone/archive/refs/tags/v0.3.tar.gz : 993f6b2b07c3236ce283d5de4da47dbfc16a86e056af504a4958d87f718ece20
+    - git|https://github.com/medusalix/xpad-noone.git : d02737f7eab1e17a7748fbe550dd982e3808525d
+homepage   : https://github.com/medusalix/xone
+license    : GPL-2.0-or-later
+component  :
+    - kernel.drivers
+    - current : kernel.drivers
+    - common : system.utils
+    - modaliases : kernel.drivers
+summary    :
+    - Linux kernel driver for Xbox One and Xbox Series X|S accessories
+    - current : xone for the linux-current kernel
+    - common : Common component for xone kernel modules
+    - modaliases : These files are used by the Software Center for hardware detection
+description: |
+    xone is a Linux kernel driver for Xbox One and Xbox Series X|S accessories. It serves as a modern replacement for xpad, aiming to be compatible with Microsoft's Game Input Protocol.
+builddeps  :
+    - pkgconfig(alsa)
+    - linux-lts
+    - linux-lts-headers
+    - linux-current
+    - linux-current-headers
+patterns   :
+    - common : /*
+    - main : /lib/modules/*.lts
+    - current : /lib/modules/*.current
+    - modaliases : /usr/share/linux-driver-management/modaliases
+permanent  :
+    - /lib/modules
+rundeps    :
+    - common :
+        - upower
+        - cabextract
+    - xone-common
+    - current :
+        - xone-common
+setup      : |
+    %patch -p1 -i $pkgfiles/linux-6.3.patch
+
+    # Prep build dirs for each kernel version
+    pushd ../
+    for KVER in %kernel_version_lts% %kernel_version_current%
+    do
+        mkdir ${KVER}-build
+        cp -a "xone-${version}" ${KVER}-build/xone
+        cp -r $sources/xpad-noone.git ${KVER}-build/xpad-noone
+    done
+    popd
+build      : |
+    for KVER in %kernel_version_lts% %kernel_version_current%
+    do
+    pushd ${KVER}-build
+
+    # Build xone kernel modules
+    pushd xone
+    %make -C /lib/modules/$KVER/build M=$PWD
+    popd
+
+    # Build xpad-noone kernel modules
+    pushd xpad-noone
+    %make -C /lib/modules/$KVER/build M=$PWD
+    popd
+
+    # Build modaliases for LDM
+    mkmodaliases "${package}" -o "${package}.modaliases" {xone,xpad-noone}/*.ko
+
+    popd
+    done
+install    : |
+    for KVER in %kernel_version_lts% %kernel_version_current%
+    do
+    pushd ${KVER}-build
+
+    # Install xone
+    pushd xone
+    install -D -d -m 00644 $installdir/lib/modules/$KVER/drivers/input/joystick
+    install -D -m 00644 *.ko $installdir/lib/modules/$KVER/drivers/input/joystick/.
+    install -D -m 00644 install/modprobe.conf $installdir/usr/lib/modprobe.d/xone-blacklist.conf 
+    install -D -m 00755 install/firmware.sh $installdir/usr/bin/xone-get-firmware.sh
+    popd
+
+    # Install xpad-noone
+    pushd xpad-noone
+    install -D -m 00644 *.ko $installdir/lib/modules/$KVER/drivers/input/joystick/.
+    popd
+
+    # Install modaliases for hardware detection
+    install -D -m 00644 ${package}.modaliases $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
+
+    popd
+    done
+
+    # Compress modules with zstd
+    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
