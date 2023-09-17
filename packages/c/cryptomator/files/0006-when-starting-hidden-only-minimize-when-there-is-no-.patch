@@ -1,0 +1,76 @@
+From 6a9043518a1b37c319a11b7b1fed8cd83f591e6b Mon Sep 17 00:00:00 2001
+From: Sebastian Stenzel <sebastian.stenzel@gmail.com>
+Date: Fri, 1 Apr 2022 14:01:58 +0200
+Subject: [PATCH 06/10] when "starting hidden", only minimize when there is no
+ tray icon
+
+---
+ .../java/org/cryptomator/ui/fxapp/FxApplication.java | 10 +++++++++-
+ .../cryptomator/ui/fxapp/FxApplicationWindows.java   | 12 ++++++------
+ 2 files changed, 15 insertions(+), 7 deletions(-)
+
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+index 05746632..57f46a3c 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplication.java
+@@ -50,15 +50,23 @@ public class FxApplication {
+ 		applicationTerminator.initialize();
+ 
+ 		// init system tray
++		final boolean hasTrayIcon;
+ 		if (SystemTray.isSupported() && settings.showTrayIcon().get()) {
+ 			trayMenu.get().initializeTrayIcon();
+ 			Platform.setImplicitExit(false); // don't quit when closing all windows
++			hasTrayIcon = true;
++		} else {
++			hasTrayIcon = false;
+ 		}
+ 
+ 		// show main window
+ 		appWindows.showMainWindow().thenAccept(stage -> {
+ 			boolean hide = settings.startHidden().get();
+-			stage.setIconified(hide);
++			if (hasTrayIcon) {
++				stage.hide();
++			} else {
++				stage.setIconified(hide);
++			}
+ 		});
+ 
+ 		launchEventHandler.startHandlingLaunchEvents();
+diff --git a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationWindows.java b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationWindows.java
+index df74986f..2fcf2718 100644
+--- a/src/main/java/org/cryptomator/ui/fxapp/FxApplicationWindows.java
++++ b/src/main/java/org/cryptomator/ui/fxapp/FxApplicationWindows.java
+@@ -18,8 +18,7 @@ import org.slf4j.LoggerFactory;
+ 
+ import javax.inject.Inject;
+ import javafx.application.Platform;
+-import javafx.beans.binding.Bindings;
+-import javafx.beans.value.ObservableValue;
++import javafx.collections.ListChangeListener;
+ import javafx.collections.transformation.FilteredList;
+ import javafx.scene.Scene;
+ import javafx.stage.Stage;
+@@ -83,13 +82,14 @@ public class FxApplicationWindows {
+ 
+ 		// observe visible windows
+ 		if (trayIntegration.isPresent()) {
+-			Bindings.isNotEmpty(visibleWindows).addListener(this::visibleWindowsChanged);
++			visibleWindows.addListener(this::visibleWindowsChanged);
+ 		}
+ 	}
+ 
+-	private void visibleWindowsChanged(@SuppressWarnings("unused") ObservableValue<? extends Boolean> observableValue, @SuppressWarnings("unused") boolean oldValue, boolean newValue) {
+-		LOG.debug("has visible stages: {}", newValue);
+-		if (newValue) {
++	private void visibleWindowsChanged(ListChangeListener.Change<? extends Window> change) {
++		int visibleWindows = change.getList().size();
++		LOG.debug("visible windows: {}", visibleWindows);
++		if (visibleWindows > 0) {
+ 			trayIntegration.ifPresent(TrayIntegrationProvider::restoredFromTray);
+ 		} else {
+ 			trayIntegration.ifPresent(TrayIntegrationProvider::minimizedToTray);
+-- 
+2.35.1
+
