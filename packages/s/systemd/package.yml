@@ -1,0 +1,220 @@
+name       : systemd
+version    : '253.10'
+release    : 126
+source     :
+    - https://github.com/systemd/systemd-stable/archive/refs/tags/v253.10.tar.gz : 7c869513b2ad015568e8e35304942f84378b0c59972cb44de5ac905b8eea08d4
+license    :
+    - LGPL-2.1-or-later
+    - GPL-2.0-or-later
+component  :
+    - system.base
+    - devel : system.devel
+summary    : System and Service Manager
+description: |
+    systemd is a system and service manager for Linux, compatible with SysV and LSB init scripts. systemd provides aggressive parallelization capabilities, uses socket and D-Bus activation for starting services, offers on-demand starting of daemons, keeps track of processes using Linux control groups, supports snapshotting and restoring of the system state, maintains mount and automount points and implements an elaborate transactional dependency-based service control logic. It can work as a drop-in replacement for sysvinit.
+autodep    : false
+emul32     : yes
+libsplit   : no
+optimize   :
+    - size
+    - lto
+builddeps  :
+    - pkgconfig(libcryptsetup)
+    - pkgconfig(libfido2)
+    - pkgconfig(libkmod)
+    - pkgconfig(libpcre2-8)
+    - pkgconfig(libssl)
+    - pkgconfig(tss2-esys)
+    - pkgconfig32(blkid)
+    - pkgconfig32(bzip2)
+    - pkgconfig32(dbus-1)
+    - pkgconfig32(glib-2.0)
+    - pkgconfig32(gnutls)
+    - pkgconfig32(libcap)
+    - pkgconfig32(libcurl)
+    - pkgconfig32(liblzma)
+    - pkgconfig32(libxcrypt)
+    - pkgconfig32(libzstd)
+    - pkgconfig32(mount)
+    - pkgconfig32(zlib)
+    - libgcrypt-devel
+    - attr-devel
+    - acl-devel
+    - attr-32bit-devel
+    - acl-32bit-devel
+    - docbook-xml
+    - gperf
+    - gnu-efi-devel
+    - libgcrypt-32bit-devel
+    - libgpg-error-32bit-devel
+    - pam-32bit-devel
+    - python-jinja
+    - rsync
+    - sbsigntools
+rundeps    :
+    - kernel-glue
+    - libgcrypt
+    - devel :
+        - libcap2-devel
+        - libgcrypt-devel
+    - 32bit :
+        - libcap2-32bit
+        - libgcrypt-32bit
+    - 32bit-devel :
+        - libcap2-32bit-devel
+        - libgcrypt-32bit-devel
+patterns   :
+    - devel :
+        - /usr/share/pkgconfig
+setup      : |
+    %apply_patches
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        depends_emul32=false
+    else
+        depends_emul32=true
+    fi
+    %meson_configure --prefix=/usr \
+                     --bindir=/usr/bin \
+                     --sbindir=/usr/sbin \
+                     -Dacl=true \
+                     -Dapparmor=false \
+                     -Dbpf-framework=false \
+                     -Dbump-proc-sys-fs-nr-open=false \
+                     -Dblkid=true \
+                     -Ddefault-hierarchy="unified" \
+                     -Ddefault-kill-user-processes=false \
+                     -Ddefault-timeout-sec=30 \
+                     -Ddefault-user-timeout-sec=30 \
+                     -Ddns-over-tls='gnutls' \
+                     -Dgnu-efi=$depends_emul32 \
+                     -Dgnutls=true \
+                     -Dhomed=false \
+                     -Dhostnamed=$depends_emul32 \
+                     -Dkmod=$depends_emul32 \
+                     -Dlibcryptsetup=$depends_emul32 \
+                     -Dlibcurl=true \
+                     -Dlibfido2=$depends_emul32 \
+                     -Dlink-udev-shared=false \
+                     -Dlocaled=$depends_emul32 \
+                     -Dman=$depends_emul32 \
+                     -Dmachined=$depends_emul32 \
+                     -Dmode=release \
+                     -Dnetworkd=false \
+                     -Dntp-servers='0.solus.pool.ntp.org 1.solus.pool.ntp.org 2.solus.pool.ntp.org 3.solus.pool.ntp.org' \
+                     -Doomd=true \
+                     -Dopenssl=$depends_emul32 \
+                     -Dpamlibdir=%libdir%/security \
+                     -Dp11kit=false \
+                     -Dpam=true \
+                     -Dpcre2=$depends_emul32 \
+                     -Dpolkit=true \
+                     -Dresolve=true \
+                     -Drootlibdir=%libdir% \
+                     -Drootprefix=/usr \
+                     -Dselinux=false \
+                     -Dsplit-usr=true \
+                     -Dsysvinit-path=/etc/init.d \
+                     -Dtimesyncd=$depends_emul32 \
+                     -Dtpm=$depends_emul32 \
+                     -Dtpm2=$depends_emul32 \
+                     -Dusers-gid=100 \
+                     -Duserdb=false
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+
+    # Configure solus-specific-timeout values for units
+    install -Dm00644 -t $installdir/usr/lib/systemd/system.conf.d/ $pkgfiles/configs/timeouts.conf
+    install -Dm00644 -t $installdir/usr/lib/systemd/journald.conf.d/ $pkgfiles/configs/journald.conf
+    install -Dm00644 -t $installdir/usr/lib/systemd/system/service.d/ $pkgfiles/configs/10-timeout-abort.conf
+
+    # User config defaults
+    install -Dm00644 -t $installdir/usr/lib/systemd/user.conf.d/ $pkgfiles/configs/timeouts.conf
+
+    # Solus is responsible for its own glibc + PAM configuration, *not* systemd..
+    rm -vrf $installdir/usr/share/factory/*
+
+    # Provide compatibility for Chrome, etc
+    ln -sv libudev.so.1 $installdir/%libdir%/libudev.so.0
+
+    # Only need to do the rest of the stuff on 64-bit build
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        exit 0
+    fi
+
+    # Install compat dirs
+    install -D -d -m 00755 $installdir/{sbin,bin,lib/udev}
+
+    # Compat for old tools
+    ln -sv ../usr/bin/udevadm $installdir/sbin/udevadm
+    ln -sv ../usr/lib/systemd/systemd-udevd $installdir/lib/udev/udevd
+
+    # Make sure systemd + init can be found
+    ln -sv ../usr/lib/systemd/systemd $installdir/bin/systemd
+    ln -sv ../usr/lib/systemd/systemd $installdir/sbin/init
+
+    # Ensure sbin links exist too
+    for control in reboot shutdown poweroff halt ; do
+        ln -sv ../usr/bin/systemctl $installdir/sbin/$control
+    done
+
+    # These are unsupported by Solus, we use clr-boot-manager
+    rm -rvf $installdir/etc/kernel
+    rm -v $installdir/usr/bin/kernel-install
+    rm -v $installdir/usr/share/bash-completion/completions/kernel-install
+
+    # We want systemd-update-helper, but not the RPM macros
+    rm -rv $installdir/usr/lib/rpm
+
+    # Required basic support
+    install -m 00644 $pkgfiles/solus-base-groups.sysusers $installdir/usr/lib/sysusers.d/solus-base-groups.conf
+
+    # Make assuming scripts happy
+    ln -sv ../usr/bin/systemctl $installdir/bin/.
+
+    # add fixed pam config
+    rm -rf $installdir/{etc,usr/lib}/pam.d
+    install -Dm00644 $pkgfiles/systemd-user.pam $installdir/usr/share/defaults/etc/pam.d/systemd-user
+
+    # Sign systemd-boot with our MOK key if it exists
+    if [[ -e $pkgfiles/secureboot-keys/MOK.key ]]; then
+        sbsign --key $pkgfiles/secureboot-keys/MOK.key \
+                --cert $pkgfiles/secureboot-keys/MOK.crt \
+                --output $installdir/usr/lib/systemd/boot/efi/systemd-bootx64.efi \
+                $installdir/usr/lib/systemd/boot/efi/systemd-bootx64.efi
+
+        install -Dm00644 $pkgfiles/secureboot-keys/MOK.cer $installdir/usr/lib/systemd/boot/solus-mok.cer
+    fi
+
+    rm -fr $installdir/usr/share/doc/
+
+    # Stateless. Don't blindly convert any of these to recursive (-r) or force (-f)
+    # It's important that all additions and removals are investigated
+    rm -v $installdir/etc/systemd/coredump.conf \
+          $installdir/etc/systemd/journal-upload.conf \
+          $installdir/etc/systemd/journald.conf \
+          $installdir/etc/systemd/logind.conf \
+          $installdir/etc/systemd/oomd.conf \
+          $installdir/etc/systemd/pstore.conf \
+          $installdir/etc/systemd/resolved.conf \
+          $installdir/etc/systemd/sleep.conf \
+          $installdir/etc/systemd/system.conf \
+          $installdir/etc/systemd/timesyncd.conf \
+          $installdir/etc/systemd/user.conf \
+          $installdir/etc/init.d/README
+    rmdir -v $installdir/etc/systemd/system \
+             $installdir/etc/systemd/user/ \
+             $installdir/etc/systemd \
+             $installdir/etc/binfmt.d \
+             $installdir/etc/init.d \
+             $installdir/etc/modules-load.d \
+             $installdir/etc/sysctl.d \
+             $installdir/etc/tmpfiles.d \
+             $installdir/etc/udev/hwdb.d \
+             $installdir/etc/udev/rules.d \
+             $installdir/var/lib/systemd \
+             $installdir/var/lib \
+             $installdir/var/log/journal \
+             $installdir/var/log \
+             $installdir/var
