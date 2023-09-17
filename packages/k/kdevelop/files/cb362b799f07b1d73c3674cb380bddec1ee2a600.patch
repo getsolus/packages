@@ -1,0 +1,144 @@
+From cb362b799f07b1d73c3674cb380bddec1ee2a600 Mon Sep 17 00:00:00 2001
+From: Kai Stierand <kai@stierand.com>
+Date: Sun, 15 May 2022 09:29:56 +0200
+Subject: [PATCH] plugins/clang: fix code generator for operators that contain
+ '<'
+
+---
+ plugins/clang/tests/test_clangutils.cpp | 43 +++++++++++++++++++++++++
+ plugins/clang/tests/test_clangutils.h   |  2 ++
+ plugins/clang/util/clangutils.cpp       | 11 ++++++-
+ plugins/clang/util/clangutils.h         | 10 +++++-
+ 4 files changed, 64 insertions(+), 2 deletions(-)
+
+diff --git a/plugins/clang/tests/test_clangutils.cpp b/plugins/clang/tests/test_clangutils.cpp
+index 5e2079a2c1..88b423a229 100644
+--- a/plugins/clang/tests/test_clangutils.cpp
++++ b/plugins/clang/tests/test_clangutils.cpp
+@@ -261,3 +261,46 @@ void TestClangUtils::testRangeForIncludePathSpec()
+     QCOMPARE(ClangUtils::rangeForIncludePathSpec("#include \"foo\\\".h\""), KTextEditor::Range(0, 10, 0, 17));
+     QCOMPARE(ClangUtils::rangeForIncludePathSpec("#include \"foo<>.h\""), KTextEditor::Range(0, 10, 0, 17));
+ }
++
++void TestClangUtils::testGetCursorSignature()
++{
++    QFETCH(QByteArray, code);
++    QFETCH(QString, expectedSignature);
++
++    QString fileName;
++    auto unit = parse(code, &fileName);
++    CXCursor functionCursor = clang_getNullCursor();
++    const auto startCursor = clang_getTranslationUnitCursor(unit.get());
++    ClangUtils::visitChildren(startCursor, [&](CXCursor cursor, CXCursor){
++        switch (clang_getCursorKind(cursor))
++        {
++            case CXCursor_FunctionDecl:
++            case CXCursor_CXXMethod:
++            case CXCursor_FunctionTemplate:
++                functionCursor = cursor;
++                return CXChildVisit_Break;
++            default:
++                return CXChildVisit_Recurse;
++        }
++    });
++    QVERIFY2(! clang_Cursor_isNull(functionCursor), "function not found");
++    auto scope = ClangUtils::getScope(functionCursor, startCursor);
++    auto signature = ClangUtils::getCursorSignature(functionCursor, scope, {});
++    QCOMPARE(signature, expectedSignature);
++}
++
++void TestClangUtils::testGetCursorSignature_data()
++{
++    QTest::addColumn<QByteArray>("code");
++    QTest::addColumn<QString>("expectedSignature");
++
++    QTest::newRow("global-less")
++        << QByteArray("class klass {}; bool operator < (const klass&, const klass&);")
++        << "bool operator<(const klass&, const klass&)";
++    QTest::newRow("member-less")
++        << QByteArray("class klass { bool operator < (const klass&); };")
++        << "bool klass::operator<(const klass&)";
++    QTest::newRow("template-member-less")
++        << QByteArray("class klass { template<typename T> bool operator < (const T&); };")
++        << "bool klass::operator<(const T&)";
++}
+diff --git a/plugins/clang/tests/test_clangutils.h b/plugins/clang/tests/test_clangutils.h
+index 69a1814b3c..af98bb1e4d 100644
+--- a/plugins/clang/tests/test_clangutils.h
++++ b/plugins/clang/tests/test_clangutils.h
+@@ -24,6 +24,8 @@ private Q_SLOTS:
+     void testGetRawContents();
+     void testGetRawContents_data();
+     void testRangeForIncludePathSpec();
++    void testGetCursorSignature();
++    void testGetCursorSignature_data();
+ };
+ 
+ #endif // TESTCLANGUTILS_H
+diff --git a/plugins/clang/util/clangutils.cpp b/plugins/clang/util/clangutils.cpp
+index 2930713100..c430e78d2e 100644
+--- a/plugins/clang/util/clangutils.cpp
++++ b/plugins/clang/util/clangutils.cpp
+@@ -232,7 +232,7 @@ QString ClangUtils::getCursorSignature(CXCursor cursor, const QString& scope, co
+     }
+ 
+     QString functionName = ClangString(clang_getCursorSpelling(cursor)).toString();
+-    if (functionName.contains(QLatin1Char('<'))) {
++    if (functionName.contains(QLatin1Char('<')) && ! functionName.startsWith(QStringLiteral("operator<"))) {
+         stream << functionName.leftRef(functionName.indexOf(QLatin1Char('<')));
+     } else {
+         stream << functionName;
+@@ -361,6 +361,15 @@ bool ClangUtils::isExplicitlyDefaultedOrDeleted(CXCursor cursor)
+     return false;
+ }
+ 
++void ClangUtils::visitChildren(CXCursor parent, std::function<CXChildVisitResult(CXCursor, CXCursor)> visitor)
++{
++    static constexpr CXCursorVisitor cVisitor = [](CXCursor cursor, CXCursor parent, CXClientData client_data)
++    {
++        return (*static_cast<std::function<CXChildVisitResult(CXCursor, CXCursor)>*>(client_data))(cursor, parent);
++    };
++    clang_visitChildren(parent, cVisitor, &visitor);
++}
++
+ KDevelop::ClassFunctionFlags ClangUtils::specialAttributes(CXCursor cursor)
+ {
+     // check for our injected attributes to detect Qt signals and slots
+diff --git a/plugins/clang/util/clangutils.h b/plugins/clang/util/clangutils.h
+index 83a6c28da4..331ddeabf7 100644
+--- a/plugins/clang/util/clangutils.h
++++ b/plugins/clang/util/clangutils.h
+@@ -16,6 +16,8 @@
+ 
+ #include <language/duchain/classfunctiondeclaration.h>
+ 
++#include <functional>
++
+ namespace ClangUtils
+ {
+     /**
+@@ -84,7 +86,7 @@ namespace ClangUtils
+      * @param scope The scope of the cursor (e.g. "SomeNS::SomeClass")
+      * @return A QString of the function's signature
+      */
+-    QString getCursorSignature(CXCursor cursor, const QString& scope, const QVector<QString>& defaultArgs = QVector<QString>());
++    KDEVCLANGPRIVATE_EXPORT QString getCursorSignature(CXCursor cursor, const QString& scope, const QVector<QString>& defaultArgs = QVector<QString>());
+ 
+     /**
+      * Given a cursor representing the template argument list, return a
+@@ -125,6 +127,12 @@ namespace ClangUtils
+      */
+     bool isExplicitlyDefaultedOrDeleted(CXCursor cursor);
+ 
++
++    /**
++     * @brief run clang_visitChildren using given visitor function
++     */
++    KDEVCLANGPRIVATE_EXPORT void visitChildren(CXCursor parent, std::function<CXChildVisitResult(CXCursor cursor, CXCursor parent)> visitor);
++
+     /**
+     * Extract the range of the path-spec inside the include-directive in line @p line
+     *
+-- 
+GitLab
+
