@@ -1,0 +1,161 @@
+From 5f0be5741b5b37221fc8911c11f394ec498cd53d Mon Sep 17 00:00:00 2001
+From: fadeev <anton.fadeev@red-soft.ru>
+Date: Thu, 18 Feb 2021 15:13:45 +0300
+Subject: [PATCH] Fix brisk-menu crash in some random cases and when
+ update/add/remove .desktop files
+
+---
+ src/backend/apps/apps-backend.c             | 4 ++++
+ src/backend/favourites/favourites-backend.c | 7 +++++++
+ src/backend/favourites/favourites-desktop.c | 4 ++++
+ src/frontend/menu-settings.c                | 4 +++-
+ src/frontend/menu-window.c                  | 3 +++
+ 5 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/src/backend/apps/apps-backend.c b/src/backend/apps/apps-backend.c
+index a85e307..26578d6 100644
+--- a/src/backend/apps/apps-backend.c
++++ b/src/backend/apps/apps-backend.c
+@@ -80,6 +80,8 @@ DEF_AUTOFREE(MateMenuTree, g_object_unref)
+ DEF_AUTOFREE(GDesktopAppInfo, g_object_unref)
+ DEF_AUTOFREE(GError, g_error_free)
+ 
++BriskAppsBackend * BriskAppsBackendInstance = NULL;
++
+ /**
+  * Due to a glib weirdness we must fully invalidate the monitor's cache
+  * to force reload events to work again.
+@@ -213,6 +215,7 @@ static void brisk_apps_backend_init(BriskAppsBackend *self)
+                                  "changed",
+                                  G_CALLBACK(brisk_apps_backend_changed),
+                                  self);
++        BriskAppsBackendInstance = self;
+ }
+ 
+ /**
+@@ -258,6 +261,7 @@ static gint brisk_apps_backend_sort_section(gconstpointer a, gconstpointer b)
+  */
+ static gboolean brisk_apps_backend_init_menus(BriskAppsBackend *self)
+ {
++        self = BriskAppsBackendInstance;
+         brisk_apps_backend_reset_pending(self);
+ 
+         /* Now load them again */
+diff --git a/src/backend/favourites/favourites-backend.c b/src/backend/favourites/favourites-backend.c
+index 52cecde..eb36e94 100644
+--- a/src/backend/favourites/favourites-backend.c
++++ b/src/backend/favourites/favourites-backend.c
+@@ -37,6 +37,8 @@ static void brisk_favourites_backend_pin_item(GSimpleAction *action, GVariant *p
+ static void brisk_favourites_backend_unpin_item(GSimpleAction *action, GVariant *parameter,
+                                                 BriskFavouritesBackend *self);
+ 
++BriskFavouritesBackend * BriskFavouritesBackendInstance = NULL;
++
+ /**
+  * Tell the frontends what we are
+  */
+@@ -130,6 +132,7 @@ static void brisk_favourites_backend_class_init(BriskFavouritesBackendClass *kla
+ static void brisk_favourites_backend_changed(GSettings *settings, const gchar *key,
+                                              BriskFavouritesBackend *self)
+ {
++        self = BriskFavouritesBackendInstance;
+         autofree(gstrv) *favs = g_settings_get_strv(settings, key);
+         g_hash_table_remove_all(self->favourites);
+ 
+@@ -168,6 +171,8 @@ static void brisk_favourites_backend_init(BriskFavouritesBackend *self)
+ 
+         brisk_favourites_backend_init_desktop(self);
+ 
++        BriskFavouritesBackendInstance = self;
++
+         /* Allow O(1) lookup for the "is pinned" logic */
+         self->favourites = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+ 
+@@ -206,6 +211,7 @@ static void brisk_favourites_backend_pin_item(__brisk_unused__ GSimpleAction *ac
+                                               __brisk_unused__ GVariant *parameter,
+                                               BriskFavouritesBackend *self)
+ {
++        self = BriskFavouritesBackendInstance;
+         autofree(gstrv) *old = NULL;
+         autofree(GArray) *array = NULL;
+ 
+@@ -239,6 +245,7 @@ static void brisk_favourites_backend_unpin_item(__brisk_unused__ GSimpleAction *
+                                                 __brisk_unused__ GVariant *parameter,
+                                                 BriskFavouritesBackend *self)
+ {
++        self = BriskFavouritesBackendInstance;
+         autofree(gstrv) *old = NULL;
+         autofree(GArray) *array = NULL;
+ 
+diff --git a/src/backend/favourites/favourites-desktop.c b/src/backend/favourites/favourites-desktop.c
+index b982d28..a123eea 100644
+--- a/src/backend/favourites/favourites-desktop.c
++++ b/src/backend/favourites/favourites-desktop.c
+@@ -32,6 +32,8 @@ typedef enum {
+         PIN_STATUS_UNPINNED = 2,
+ } DesktopPinStatus;
+ 
++extern BriskFavouritesBackend * BriskFavouritesBackendInstance;
++
+ /**
+  * get_desktop_item_source:
+  *
+@@ -89,6 +91,7 @@ static void brisk_favourites_backend_action_desktop_pin(__brisk_unused__ GSimple
+                                                         __brisk_unused__ GVariant *parameter,
+                                                         BriskFavouritesBackend *self)
+ {
++        self = BriskFavouritesBackendInstance;
+         autofree(GFile) *source = NULL;
+         autofree(GFile) *dest = NULL;
+         autofree(GError) *error = NULL;
+@@ -135,6 +138,7 @@ static void brisk_favourites_backend_action_desktop_unpin(__brisk_unused__ GSimp
+                                                           __brisk_unused__ GVariant *parameter,
+                                                           BriskFavouritesBackend *self)
+ {
++        self = BriskFavouritesBackendInstance;
+         autofree(GFile) *source = NULL;
+         autofree(GFile) *dest = NULL;
+         autofree(GError) *error = NULL;
+diff --git a/src/frontend/menu-settings.c b/src/frontend/menu-settings.c
+index 626ecef..172fcf1 100644
+--- a/src/frontend/menu-settings.c
++++ b/src/frontend/menu-settings.c
+@@ -19,6 +19,8 @@ BRISK_END_PEDANTIC
+ 
+ static void brisk_menu_window_settings_changed(GSettings *settings, const gchar *key, gpointer v);
+ 
++extern BriskMenuWindow * BriskMenuWindowInstance;
++
+ void brisk_menu_window_init_settings(BriskMenuWindow *self)
+ {
+         GtkSettings *gtk_settings = NULL;
+@@ -50,7 +52,7 @@ void brisk_menu_window_pump_settings(BriskMenuWindow *self)
+ 
+ static void brisk_menu_window_settings_changed(GSettings *settings, const gchar *key, gpointer v)
+ {
+-        BriskMenuWindow *self = v;
++        BriskMenuWindow *self = BriskMenuWindowInstance;
+         autofree(gchar) *value = NULL;
+ 
+         if (g_str_equal(key, "search-position")) {
+diff --git a/src/frontend/menu-window.c b/src/frontend/menu-window.c
+index 9dc505f..466f247 100644
+--- a/src/frontend/menu-window.c
++++ b/src/frontend/menu-window.c
+@@ -29,6 +29,8 @@ static GParamSpec *obj_properties[N_PROPS] = {
+         NULL,
+ };
+ 
++BriskMenuWindow * BriskMenuWindowInstance = NULL;
++
+ /**
+  * brisk_menu_window_dispose:
+  *
+@@ -98,6 +100,7 @@ static void brisk_menu_window_init(BriskMenuWindow *self)
+         self->launcher = brisk_menu_launcher_new();
+ 
+         brisk_menu_window_init_settings(self);
++        BriskMenuWindowInstance = self;
+ }
+ 
+ static void brisk_menu_window_set_property(GObject *object, guint id, const GValue *value,
