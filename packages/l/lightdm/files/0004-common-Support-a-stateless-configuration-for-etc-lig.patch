@@ -1,0 +1,60 @@
+From 00e7e468ec7487cfb91a0dd7a565af6d2a00995f Mon Sep 17 00:00:00 2001
+From: Pierre-Yves <pyu@riseup.net>
+Date: Tue, 17 Apr 2018 15:26:54 +0200
+Subject: [PATCH] common: Support a stateless configuration for
+ /etc/lightdm/users.conf
+
+With this change we can support both the admin-defined users.conf, as well
+as a vendor-provided users.conf in /usr/share/lightdm/. This will permit
+vendor configurations to provide the default sane settings, in instances
+where it is not desirable to provide AccountsService in a lighter
+deployment.
+
+In the instance that the admin defined file exists, it will be used instead
+of the vendor-config.
+
+Signed-off-by: Pierre-Yves <pyu@riseup.net>
+---
+ common/user-list.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/common/user-list.c b/common/user-list.c
+index ca48b4b..bfefb36 100644
+--- a/common/user-list.c
++++ b/common/user-list.c
+@@ -164,6 +164,7 @@ G_DEFINE_TYPE (CommonSession, common_session, G_TYPE_OBJECT)
+ 
+ #define PASSWD_FILE      "/etc/passwd"
+ #define USER_CONFIG_FILE "/etc/lightdm/users.conf"
++#define VENDOR_USER_CONFIG_FILE "/usr/share/lightdm/users.conf"
+ 
+ static CommonUserList *singleton = NULL;
+ 
+@@ -320,13 +321,21 @@ load_passwd_file (CommonUserList *user_list, gboolean emit_add_signal)
+ {
+     CommonUserListPrivate *priv = GET_LIST_PRIVATE (user_list);
+ 
+-    g_debug ("Loading user config from %s", USER_CONFIG_FILE);
++    const gchar *user_config_file = NULL;
++
++    /* Load /etc/ first, otherwise fallback to /usr/share for stateless operation */
++    if (g_file_test(USER_CONFIG_FILE, G_FILE_TEST_EXISTS))
++        user_config_file = USER_CONFIG_FILE;
++    else
++        user_config_file = VENDOR_USER_CONFIG_FILE;
++
++    g_debug ("Loading user config from %s", user_config_file);
+ 
+     g_autoptr(GKeyFile) config = g_key_file_new ();
+     g_autoptr(GError) error = NULL;
+-    g_key_file_load_from_file (config, USER_CONFIG_FILE, G_KEY_FILE_NONE, &error);
++    g_key_file_load_from_file (config, user_config_file, G_KEY_FILE_NONE, &error);
+     if (error && !g_error_matches (error, G_FILE_ERROR, G_FILE_ERROR_NOENT))
+-        g_warning ("Failed to load configuration from %s: %s", USER_CONFIG_FILE, error->message);
++        g_warning ("Failed to load configuration from %s: %s", user_config_file, error->message);
+ 
+     gint minimum_uid = 500;
+     if (g_key_file_has_key (config, "UserList", "minimum-uid", NULL))
+-- 
+2.16.3
+
