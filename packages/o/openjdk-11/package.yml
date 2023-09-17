@@ -1,0 +1,143 @@
+name       : openjdk-11
+version    : 11.0.17
+release    : 15
+source     :
+    - https://github.com/openjdk/jdk11u/archive/refs/tags/jdk-11.0.17-ga.tar.gz : 1d36043f2cecfe2b079ca288c66ad7f009c50c828f4eab989e1adaeee443367b
+    - https://github.com/openjdk/jfx11u/archive/refs/tags/11.0.17+1.tar.gz : 8535624f33b1ed8bcc4563c154435464447e1d05496b927a091300affa90230b
+license    : GPL-2.0-only WITH Classpath-exception-2.0
+component  : programming.java
+homepage   : https://openjdk.java.net/
+summary    : Open implementation of Oracle's Java Development Kit, major version 11
+description: |
+    Open implementation of Oracle's Java Development Kit, major version 11. This package includes the JDK, the JRE is not separately provided.
+ccache     : no
+clang      : yes
+networking : yes
+builddeps  :
+    - pkgconfig(alsa)
+    - pkgconfig(fontconfig)
+    - pkgconfig(gtk+-2.0)
+    - pkgconfig(gtk+-3.0)
+    - pkgconfig(lcms2)
+    - pkgconfig(libavcodec)
+    - pkgconfig(libjpeg)
+    - pkgconfig(x11)
+    - pkgconfig(xext)
+    - pkgconfig(xrandr)
+    - pkgconfig(xrender)
+    - pkgconfig(xt)
+    - pkgconfig(xtst)
+    - pkgconfig(xxf86vm)
+    - apache-ant
+    - cups-devel
+    - giflib-devel
+    - gradle
+    - jtreg
+    - openjdk-11-devel
+    - p7zip
+patterns   :
+    - devel : 
+        - /usr/lib64/openjdk-11/include/
+mancompress: yes
+setup      : |
+    # Build OpenJFX
+    mkdir openjfx-11
+    tar xf $sources/11.*.tar.gz -C $workdir/openjfx-11/ --strip-components=1
+    pushd openjfx-11/
+
+    export JAVA_HOME=/usr/lib64/openjdk-11
+    export GRADLE_USER_HOME=$workdir/.gradle_home
+    export TERM=xterm
+
+    gradle zips \
+        --no-daemon \
+        --stacktrace \
+        -PCONF=DebugNative \
+        -PCOMPILE_MEDIA=true \
+        -PRELEASE_SUFFIX=""
+
+    popd
+    # done with OpenJFX
+
+    %patch -p1 < $pkgfiles/0001-Double-default-reserved-code-cache-size.patch
+    %patch -p1 < $pkgfiles/0001-Enable-tiered-compilation.patch
+    %patch -p1 < $pkgfiles/0001-Use-current-directory-as-backup-for-user-prefs.patch
+    %patch -p1 < $pkgfiles/0001-Dont-echo-_JAVA_OPTIONS.patch
+
+    # Clang 13+ fixes
+    %patch -p1 < $pkgfiles/0001-Backport-change-in-markOop-functionality-from-JDK-14.patch
+    %patch -p1 < $pkgfiles/0001-The-jdk-uses-tagged-pointers-on-this-which-clang-kno.patch
+
+    chmod +x configure
+    %configure --prefix="$installdir/usr" \
+        --with-jvm-variants=client \
+        --with-jvm-features="compiler2,shenandoahgc,zgc" \
+        --with-boot-jdk="/usr/lib64/openjdk-11" \
+        --with-native-debug-symbols=internal \
+        --with-toolchain-type=clang \
+        --with-version-build="8" \
+        --with-version-pre="" \
+        --with-version-opt="solus" \
+        --with-stdc++lib=dynamic \
+        --with-freetype=system \
+        --with-giflib=system \
+        --with-harfbuzz=system \
+        --with-jtreg=/usr/share/jtreg6 \
+        --with-lcms=system \
+        --with-libjpeg=system \
+        --with-libpng=system \
+        --with-zlib=system \
+        --enable-unlimited-crypto \
+        --disable-warnings-as-errors \
+        --disable-absolute-paths-in-output \
+        --with-extra-cflags="$CFLAGS" \
+        --with-extra-cxxflags="$CXXFLAGS" \
+        --with-extra-ldflags="$LDFLAGS" \
+        --with-import-modules=$workdir/openjfx-11/build/modular-sdk \
+        --with-cacerts-file=%libdir%/openjdk-11/lib/security/cacerts \
+        --with-jobs=%YJOBS%
+build      : |
+    # Build OpenJDK
+    make images test-image
+install    : |
+    install -Ddm00755 $installdir/%libdir%/
+    install -dm00755 $installdir/usr/include/openjdk-11/
+    install -dm00755 $installdir/usr/share/applications/
+
+    make install
+
+    # Binaries
+    mv $installdir/usr/jvm/openjdk-* $installdir/%libdir%/openjdk-11/
+    rm -rf $installdir/usr/jvm/
+    rm -rf $installdir/usr/bin/
+
+    # Remove license files and demo files
+    rm -rf $installdir/%libdir%/openjdk-11/{legal,demo}/
+
+    # Headers
+    pushd build/linux-x86_64-*/
+    cp -ar jdk/include/* $installdir/usr/include/openjdk-11/
+    # Symlink header files (because some apps look for them in $JAVA_HOME)
+    ln -s /usr/include/openjdk-11/ $installdir/%libdir%/openjdk-11/include/
+    popd
+
+    # Man pages
+    mv $installdir/%libdir%/openjdk-11/man/ $installdir/usr/share/
+    find $installdir/usr/share/man/ -type f -exec rename -- ".1" "-11.1" {} \;
+    # Remove pre-existing symlink first
+    rm $installdir/usr/share/man/ja
+    mv -f $installdir/usr/share/man/ja_JP.UTF-8/ $installdir/usr/share/man/ja/
+
+    # Add java-11-jar.desktop into usable apps
+    install -Dm 00644 $pkgfiles/java-11-jar.desktop $installdir/usr/share/applications/
+
+# Tests take a long time so should be disabled before pushing
+# Note that some of these tests can OOM if you don't have enough system memory (32GB+ recommended)
+# If you still get OOMs even with that much memory try reducing the number of jobs in eopkg.conf,
+# or closing running applications so as to appease the openjdk (yes, it's that bad)
+
+# Some jobs that make use of ptrace will fail locally unless you run `echo 0 > /proc/sys/kernel/yama/ptrace_scope` as root
+# check      : |
+#     # You can add "RUN_PROBLEM_LISTS=true;" to the JTREG key below to run all tests in the ProblemList instead of excluding them.
+#     # This is useful to see if any tests have been fixed in a new version JTREG="EXTRA_PROBLEM_LISTS=$pkgfiles/ProblemList.txt"
+#     make run-test TEST="tier1 gtest:all" JTREG="EXTRA_PROBLEM_LISTS=$pkgfiles/ProblemList.txt"
