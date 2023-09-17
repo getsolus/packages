@@ -1,0 +1,93 @@
+name       : yubico-authenticator
+version    : 6.2.0
+release    : 3
+source     :
+    - https://github.com/Yubico/yubioath-flutter/archive/refs/tags/6.2.0.tar.gz : 3138c82286410006dc5a953bfa2f25c2236e2bb9d0c671b64f560152f1470f4e
+    - https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.7.11-stable.tar.xz#flutter.tar.xz : fefb63a0f0781e7f11b4fd3db8c75462d0d2ee5cd0bec91dacdb331189693817
+license    : BSD-2-Clause
+component  : security
+summary    : Yubico Authenticator for Desktop
+description: |
+    Store your unique credential on a hardware-backed security key and take it wherever you go from mobile to desktop. No more storing sensitive secrets on your mobile phone, leaving your account vulnerable to takeovers. With the Yubico Authenticator you can raise the bar for security.
+
+    The Yubico Authenticator will work with any USB or NFC-enabled YubiKeys
+
+    The Yubico Authenticator securely generates a code used to verify your identity as you are logging into various services. No connectivity needed!
+patterns   :
+    - /*
+networking : yes
+clang      : yes # For Flutter
+builddeps  :
+    - pkgconfig(ayatana-appindicator-0.1)
+    - pkgconfig(dri)
+    - pkgconfig(gtk+-3.0)
+    - pkgconfig(libnotify)
+    - pkgconfig(libpcsclite)
+    - pkgconfig(pango)
+    - pkgconfig(python3)
+    - git # For Flutter
+    - python-poetry
+    - swig
+rundeps    :
+    - yubikey-manager
+    - pcsc-lite
+    - python-pillow
+    - python-zxing-cpp
+    - python-mss
+    # pip told me that these deps are required, I don't know why...
+    - numpy
+    - python-keyring
+environment: |
+    # Let Poetry use our system environment, so that if it starts installing
+    # packages (which would fail due to insufficient privileges), we know
+    # something fishy is going on.
+    export POETRY_VIRTUALENVS_CREATE=false
+    # Flutter
+    export PATH="$PATH:$sources/flutter/bin"
+setup      : |
+    tar -xf $sources/flutter.tar.xz -C $sources/
+    # Flutter detects the version of itself through git
+    git config --global --add safe.directory /home/build/YPKG/sources/flutter
+build      : |
+    # First, build the Python authentication helper
+    export OUTPUT="$PWD/build/linux"
+    mkdir -p $OUTPUT/helper
+
+    pushd helper
+    poetry build
+    cp authenticator-helper.py $OUTPUT/helper/authenticator-helper.py
+    cp $pkgfiles/authenticator-helper $OUTPUT/helper/authenticator-helper
+    chmod +x $OUTPUT/helper/{authenticator-helper,authenticator-helper.py}
+    popd
+
+    # Then, build the Flutter GUI
+    flutter pub get
+    flutter build linux --release
+install    : |
+    export YUBIOATH_DIR=/usr/share/yubioath-desktop
+
+    # Flutter GUI
+    install -dm00755 $installdir/usr/share
+    mv build/linux/x64/release/bundle $installdir/$YUBIOATH_DIR/
+
+    # Desktop and icon
+    sed -i 's|\(Exec="\)@EXEC_PATH|\1/usr/share/yubioath-desktop|' $installdir/$YUBIOATH_DIR/linux_support/com.yubico.authenticator.desktop
+    sed -i 's|\(Icon=\)@EXEC_PATH/linux_support/|\1|' $installdir/$YUBIOATH_DIR/linux_support/com.yubico.authenticator.desktop
+    install -dm00755 $installdir/usr/share/applications/ $installdir/usr/share/pixmaps/
+    ln -s $YUBIOATH_DIR/linux_support/com.yubico.authenticator.desktop $installdir/usr/share/applications/com.yubico.authenticator.desktop
+    ln -s $YUBIOATH_DIR/linux_support/com.yubico.yubioath.png $installdir/usr/share/pixmaps/com.yubico.yubioath.png
+
+    # Binary
+    install -dm00755 $installdir/usr/bin
+    ln -sv $YUBIOATH_DIR/authenticator $installdir/usr/bin/authenticator
+
+    # Authentication helper
+    pip3 install helper/dist/*.whl --no-deps --root="%installroot%" --prefix=$YUBIOATH_DIR/helper
+    mv $installdir/$YUBIOATH_DIR/helper/lib/python%python3_version%/site-packages/** $installdir/$YUBIOATH_DIR/helper/
+    rm -rf $installdir/$YUBIOATH_DIR/helper/lib
+
+    # Lastly, remove some unnecessary files
+    rm $installdir/$YUBIOATH_DIR/{desktop_integration.sh,README.adoc}
+replaces   :
+    - yubioath-desktop
+    - dbginfo : yubioath-desktop-dbginfo
