@@ -1,0 +1,31 @@
+pref("app.update.auto",                     false);
+pref("app.update.autoInstallEnabled",       false);
+pref("app.update.enabled",                  false);
+pref("browser.backspace_action",            0);
+pref("browser.link.open_external",          3);
+pref("browser.newtabpage.activity-stream.disableSnippets", true);
+pref("browser.newtabpage.activity-stream.feeds.snippets", false);
+pref("browser.newtabpage.pinned",           '[{"url":"https://getsol.us/blog/","title":"Blogs | Solus"}]');
+pref("browser.shell.checkDefaultBrowser",   false);
+pref("browser.startup.homepage",            "data:text/plain,browser.startup.homepage=https://getsol.us/blog/");
+pref("extensions.autoDisableScopes",        0);
+pref("extensions.htmlaboutaddons.recommendations.enabled", false);
+pref("extensions.shownSelectionUI",         true);
+pref("extensions.webextensions.base-content-security-policy", "script-src 'self' https://* moz-extension: blob: filesystem: 'unsafe-eval' 'unsafe-inline'; object-src 'self' https://* moz-extension: blob: filesystem:;");
+pref("general.smoothScroll",                true);
+pref("geo.provider.network.url", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
+pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
+pref("layers.use-image-offscreen-surfaces", false);
+pref("media.mediasource.enabled",           true);
+pref("media.mediasource.webm.enabled",      true);
+pref("network.manage-offline-status",       true);
+pref("offline.autoDetect",                  true);
+pref("spellchecker.dictionary_path", "/usr/share/hunspell");
+pref("startup.homepage_override_url",       "");
+pref("toolkit.networkmanager.disable",      false);
+pref("toolkit.storage.synchronous",         0);
+pref("ui.context_menus.after_mouseup", true);
+pref("widget.content.gtk-theme-override","Adwaita:light");
+
+// Use XDG Desktop Portals for filepicker by default
+pref("widget.use-xdg-desktop-portal.file-picker", 1);
