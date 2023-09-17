@@ -1,0 +1,575 @@
+From 4961f3c90bdae3d4b89b44e22338fecc9124b51e Mon Sep 17 00:00:00 2001
+From: Victor Kareh <vkareh@vkareh.net>
+Date: Wed, 7 Feb 2018 12:53:04 -0500
+Subject: [PATCH 1/5] Scale OSD size correctly on HiDPI displays
+
+---
+ src/msd-osd-window.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/msd-osd-window.c b/src/msd-osd-window.c
+index 0b006ad..c1d46e3 100644
+--- a/src/msd-osd-window.c
++++ b/src/msd-osd-window.c
+@@ -443,7 +443,7 @@ msd_osd_window_init (MsdOsdWindow *window)
+         window->priv->is_composited = gdk_screen_is_composited (screen);
+ 
+         if (window->priv->is_composited) {
+-                gdouble scalew, scaleh, scale;
++                gdouble scalew, scaleh, scale, scale_factor;
+                 gint size;
+ 
+                 gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+@@ -453,8 +453,9 @@ msd_osd_window_init (MsdOsdWindow *window)
+                 gtk_style_context_add_class (style, "window-frame");
+ 
+                 /* assume 130x130 on a 640x480 display and scale from there */
+-                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / 640.0;
+-                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / 480.0;
++                scale_factor = (gdouble) gtk_widget_get_scale_factor (GTK_WIDGET (window));
++                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / (640.0 * scale_factor);
++                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / (480.0 * scale_factor);
+                 scale = MIN (scalew, scaleh);
+                 size = 130 * MAX (1, scale);
+ 
+
+From c7f1ead72d3ea7a4f9aa4b1ca469b35c91f624f7 Mon Sep 17 00:00:00 2001
+From: Victor Kareh <vkareh@vkareh.net>
+Date: Wed, 7 Feb 2018 21:54:39 -0500
+Subject: [PATCH 2/5] Scale only composited OSD windows
+
+---
+ src/msd-osd-window.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/msd-osd-window.c b/src/msd-osd-window.c
+index c1d46e3..86cca10 100644
+--- a/src/msd-osd-window.c
++++ b/src/msd-osd-window.c
+@@ -323,6 +323,13 @@ msd_osd_window_get_preferred_width (GtkWidget *widget,
+ 
+         GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_width (widget, minimum, natural);
+ 
++        if (msd_osd_window_is_composited (MSD_OSD_WINDOW (widget))) {
++                gint scale_factor;
++                scale_factor = gtk_widget_get_scale_factor (widget);
++                *minimum /= scale_factor;
++                *natural /= scale_factor;
++        }
++
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+         context = gtk_widget_get_style_context (widget);
+@@ -342,6 +349,13 @@ msd_osd_window_get_preferred_height (GtkWidget *widget,
+ 
+         GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_height (widget, minimum, natural);
+ 
++        if (msd_osd_window_is_composited (MSD_OSD_WINDOW (widget))) {
++                gint scale_factor;
++                scale_factor = gtk_widget_get_scale_factor (widget);
++                *minimum /= scale_factor;
++                *natural /= scale_factor;
++        }
++
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+         context = gtk_widget_get_style_context (widget);
+
+From 0d64a0e176fc839067ac9c8b96cd926bfea8cfcc Mon Sep 17 00:00:00 2001
+From: Victor Kareh <vkareh@vkareh.net>
+Date: Thu, 8 Feb 2018 23:58:23 -0500
+Subject: [PATCH 3/5] Determine OSD window size prior to each draw
+
+---
+ src/gsd-media-keys-window.c | 16 +++++++--
+ src/msd-osd-window.c        | 79 +++++++++++++++++++++++++--------------------
+ src/msd-osd-window.h        | 11 ++++---
+ 3 files changed, 64 insertions(+), 42 deletions(-)
+
+diff --git a/src/gsd-media-keys-window.c b/src/gsd-media-keys-window.c
+index e59ba44..79435d4 100644
+--- a/src/gsd-media-keys-window.c
++++ b/src/gsd-media-keys-window.c
+@@ -437,6 +437,7 @@ draw_action_volume (MsdMediaKeysWindow *window,
+ {
+         int window_width;
+         int window_height;
++        int window_size;
+         double icon_box_width;
+         double icon_box_height;
+         double icon_box_x0;
+@@ -447,7 +448,12 @@ draw_action_volume (MsdMediaKeysWindow *window,
+         double volume_box_height;
+         gboolean res;
+ 
+-        gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
++        msd_osd_window_get_preferred_size (GTK_WIDGET (window), &window_size);
++
++        if (window_size > 0)
++                window_width = window_height = window_size;
++        else
++                gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
+ 
+         icon_box_width = round (window_width * 0.65);
+         icon_box_height = round (window_height * 0.65);
+@@ -561,6 +567,7 @@ draw_action_custom (MsdMediaKeysWindow *window,
+ {
+         int window_width;
+         int window_height;
++        int window_size;
+         double icon_box_width;
+         double icon_box_height;
+         double icon_box_x0;
+@@ -571,7 +578,12 @@ draw_action_custom (MsdMediaKeysWindow *window,
+         double bright_box_height;
+         gboolean res;
+ 
+-        gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
++        msd_osd_window_get_preferred_size (GTK_WIDGET (window), &window_size);
++
++        if (window_size > 0)
++                window_width = window_height = window_size;
++        else
++                gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
+ 
+         icon_box_width = round (window_width * 0.65);
+         icon_box_height = round (window_height * 0.65);
+diff --git a/src/msd-osd-window.c b/src/msd-osd-window.c
+index 86cca10..2924a8d 100644
+--- a/src/msd-osd-window.c
++++ b/src/msd-osd-window.c
+@@ -140,6 +140,30 @@ add_hide_timeout (MsdOsdWindow *window)
+                                                        window);
+ }
+ 
++void
++msd_osd_window_get_preferred_size (GtkWidget *widget,
++                                   gint      *size)
++{
++        MsdOsdWindow *window;
++        window = MSD_OSD_WINDOW (widget);
++
++        *size = 0;
++
++        if (window->priv->is_composited) {
++                GdkScreen *screen;
++                gdouble scalew, scaleh, scale, scale_factor;
++
++                screen = gtk_widget_get_screen (widget);
++                scale_factor = (gdouble) gtk_widget_get_scale_factor (widget);
++
++                /* assume 130x130 on a 640x480 display and scale from there */
++                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / (640.0 * scale_factor);
++                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / (480.0 * scale_factor);
++                scale = MIN (scalew, scaleh);
++                *size = 130 * MAX (1, scale);
++        }
++}
++
+ /* This is our draw-event handler when the window is in a compositing manager.
+  * We draw everything by hand, using Cairo, so that we can have a nice
+  * transparent/rounded look.
+@@ -150,20 +174,19 @@ draw_when_composited (GtkWidget *widget, cairo_t *orig_cr)
+         MsdOsdWindow    *window;
+         cairo_t         *cr;
+         cairo_surface_t *surface;
+-        int              width;
+-        int              height;
++        gint             size;
+         GtkStyleContext *context;
+ 
+         window = MSD_OSD_WINDOW (widget);
+ 
+         context = gtk_widget_get_style_context (widget);
+         cairo_set_operator (orig_cr, CAIRO_OPERATOR_SOURCE);
+-        gtk_window_get_size (GTK_WINDOW (widget), &width, &height);
++        msd_osd_window_get_preferred_size (widget, &size);
+ 
+         surface = cairo_surface_create_similar (cairo_get_target (orig_cr),
+                                                 CAIRO_CONTENT_COLOR_ALPHA,
+-                                                width,
+-                                                height);
++                                                size,
++                                                size);
+ 
+         if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS) {
+                 goto done;
+@@ -174,15 +197,15 @@ draw_when_composited (GtkWidget *widget, cairo_t *orig_cr)
+                 goto done;
+         }
+ 
+-        gtk_render_background (context, cr, 0, 0, width, height);
+-        gtk_render_frame (context, cr, 0, 0, width, height);
++        gtk_render_background (context, cr, 0, 0, size, size);
++        gtk_render_frame (context, cr, 0, 0, size, size);
+ 
+         g_signal_emit (window, signals[DRAW_WHEN_COMPOSITED], 0, cr);
+ 
+         cairo_destroy (cr);
+ 
+         /* Make sure we have a transparent background */
+-        cairo_rectangle (orig_cr, 0, 0, width, height);
++        cairo_rectangle (orig_cr, 0, 0, size, size);
+         cairo_set_source_rgba (orig_cr, 0.0, 0.0, 0.0, 0.0);
+         cairo_fill (orig_cr);
+ 
+@@ -320,15 +343,14 @@ msd_osd_window_get_preferred_width (GtkWidget *widget,
+ {
+         GtkStyleContext *context;
+         GtkBorder padding;
++        gint size;
+ 
+-        GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_width (widget, minimum, natural);
++        msd_osd_window_get_preferred_size (widget, &size);
+ 
+-        if (msd_osd_window_is_composited (MSD_OSD_WINDOW (widget))) {
+-                gint scale_factor;
+-                scale_factor = gtk_widget_get_scale_factor (widget);
+-                *minimum /= scale_factor;
+-                *natural /= scale_factor;
+-        }
++        if (size > 0)
++                *minimum = *natural = size;
++        else
++                GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_width (widget, minimum, natural);
+ 
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+@@ -346,15 +368,14 @@ msd_osd_window_get_preferred_height (GtkWidget *widget,
+ {
+         GtkStyleContext *context;
+         GtkBorder padding;
++        gint size;
+ 
+-        GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_height (widget, minimum, natural);
++        msd_osd_window_get_preferred_size (widget, &size);
+ 
+-        if (msd_osd_window_is_composited (MSD_OSD_WINDOW (widget))) {
+-                gint scale_factor;
+-                scale_factor = gtk_widget_get_scale_factor (widget);
+-                *minimum /= scale_factor;
+-                *natural /= scale_factor;
+-        }
++        if (size > 0)
++                *minimum = *natural = size;
++        else
++                GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_height (widget, minimum, natural);
+ 
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+@@ -457,27 +478,15 @@ msd_osd_window_init (MsdOsdWindow *window)
+         window->priv->is_composited = gdk_screen_is_composited (screen);
+ 
+         if (window->priv->is_composited) {
+-                gdouble scalew, scaleh, scale, scale_factor;
+-                gint size;
+-
+                 gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+                 gtk_widget_set_app_paintable (GTK_WIDGET (window), TRUE);
+ 
+                 GtkStyleContext *style = gtk_widget_get_style_context (GTK_WIDGET (window));
+                 gtk_style_context_add_class (style, "window-frame");
+ 
+-                /* assume 130x130 on a 640x480 display and scale from there */
+-                scale_factor = (gdouble) gtk_widget_get_scale_factor (GTK_WIDGET (window));
+-                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / (640.0 * scale_factor);
+-                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / (480.0 * scale_factor);
+-                scale = MIN (scalew, scaleh);
+-                size = 130 * MAX (1, scale);
+-
+-                gtk_window_set_default_size (GTK_WINDOW (window), size, size);
+-
+                 window->priv->fade_out_alpha = 1.0;
+         } else {
+-		gtk_container_set_border_width (GTK_CONTAINER (window), 12);
++                gtk_container_set_border_width (GTK_CONTAINER (window), 12);
+         }
+ }
+ 
+diff --git a/src/msd-osd-window.h b/src/msd-osd-window.h
+index ac3325a..5927e0e 100644
+--- a/src/msd-osd-window.h
++++ b/src/msd-osd-window.h
+@@ -73,12 +73,13 @@ struct MsdOsdWindowClass {
+         void (* draw_when_composited) (MsdOsdWindow *window, cairo_t *cr);
+ };
+ 
+-GType                 msd_osd_window_get_type          (void);
++GType                 msd_osd_window_get_type           (void);
+ 
+-GtkWidget *           msd_osd_window_new               (void);
+-gboolean              msd_osd_window_is_composited     (MsdOsdWindow      *window);
+-gboolean              msd_osd_window_is_valid          (MsdOsdWindow      *window);
+-void                  msd_osd_window_update_and_hide   (MsdOsdWindow      *window);
++GtkWidget *           msd_osd_window_new                (void);
++gboolean              msd_osd_window_is_composited      (MsdOsdWindow *window);
++gboolean              msd_osd_window_is_valid           (MsdOsdWindow *window);
++void                  msd_osd_window_update_and_hide    (MsdOsdWindow *window);
++void                  msd_osd_window_get_preferred_size (GtkWidget    *widget, gint *size);
+ 
+ #ifdef __cplusplus
+ }
+
+From a1101a8efe348092ff4f2e4e5ba793bbf75549ba Mon Sep 17 00:00:00 2001
+From: Victor Kareh <vkareh@vkareh.net>
+Date: Fri, 9 Feb 2018 16:09:02 -0500
+Subject: [PATCH 4/5] Invalidate OSD window when scale factor changes
+
+---
+ src/gsd-media-keys-window.c | 16 ++--------
+ src/msd-osd-window.c        | 72 ++++++++++++++++-----------------------------
+ src/msd-osd-window.h        | 11 ++++---
+ 3 files changed, 33 insertions(+), 66 deletions(-)
+
+diff --git a/src/gsd-media-keys-window.c b/src/gsd-media-keys-window.c
+index 79435d4..e59ba44 100644
+--- a/src/gsd-media-keys-window.c
++++ b/src/gsd-media-keys-window.c
+@@ -437,7 +437,6 @@ draw_action_volume (MsdMediaKeysWindow *window,
+ {
+         int window_width;
+         int window_height;
+-        int window_size;
+         double icon_box_width;
+         double icon_box_height;
+         double icon_box_x0;
+@@ -448,12 +447,7 @@ draw_action_volume (MsdMediaKeysWindow *window,
+         double volume_box_height;
+         gboolean res;
+ 
+-        msd_osd_window_get_preferred_size (GTK_WIDGET (window), &window_size);
+-
+-        if (window_size > 0)
+-                window_width = window_height = window_size;
+-        else
+-                gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
++        gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
+ 
+         icon_box_width = round (window_width * 0.65);
+         icon_box_height = round (window_height * 0.65);
+@@ -567,7 +561,6 @@ draw_action_custom (MsdMediaKeysWindow *window,
+ {
+         int window_width;
+         int window_height;
+-        int window_size;
+         double icon_box_width;
+         double icon_box_height;
+         double icon_box_x0;
+@@ -578,12 +571,7 @@ draw_action_custom (MsdMediaKeysWindow *window,
+         double bright_box_height;
+         gboolean res;
+ 
+-        msd_osd_window_get_preferred_size (GTK_WIDGET (window), &window_size);
+-
+-        if (window_size > 0)
+-                window_width = window_height = window_size;
+-        else
+-                gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
++        gtk_window_get_size (GTK_WINDOW (window), &window_width, &window_height);
+ 
+         icon_box_width = round (window_width * 0.65);
+         icon_box_height = round (window_height * 0.65);
+diff --git a/src/msd-osd-window.c b/src/msd-osd-window.c
+index 2924a8d..1b35339 100644
+--- a/src/msd-osd-window.c
++++ b/src/msd-osd-window.c
+@@ -53,6 +53,7 @@ struct MsdOsdWindowPrivate
+         guint                    hide_timeout_id;
+         guint                    fade_timeout_id;
+         double                   fade_out_alpha;
++        gint                     scale_factor;
+ };
+ 
+ enum {
+@@ -140,30 +141,6 @@ add_hide_timeout (MsdOsdWindow *window)
+                                                        window);
+ }
+ 
+-void
+-msd_osd_window_get_preferred_size (GtkWidget *widget,
+-                                   gint      *size)
+-{
+-        MsdOsdWindow *window;
+-        window = MSD_OSD_WINDOW (widget);
+-
+-        *size = 0;
+-
+-        if (window->priv->is_composited) {
+-                GdkScreen *screen;
+-                gdouble scalew, scaleh, scale, scale_factor;
+-
+-                screen = gtk_widget_get_screen (widget);
+-                scale_factor = (gdouble) gtk_widget_get_scale_factor (widget);
+-
+-                /* assume 130x130 on a 640x480 display and scale from there */
+-                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / (640.0 * scale_factor);
+-                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / (480.0 * scale_factor);
+-                scale = MIN (scalew, scaleh);
+-                *size = 130 * MAX (1, scale);
+-        }
+-}
+-
+ /* This is our draw-event handler when the window is in a compositing manager.
+  * We draw everything by hand, using Cairo, so that we can have a nice
+  * transparent/rounded look.
+@@ -174,19 +151,20 @@ draw_when_composited (GtkWidget *widget, cairo_t *orig_cr)
+         MsdOsdWindow    *window;
+         cairo_t         *cr;
+         cairo_surface_t *surface;
+-        gint             size;
++        int              width;
++        int              height;
+         GtkStyleContext *context;
+ 
+         window = MSD_OSD_WINDOW (widget);
+ 
+         context = gtk_widget_get_style_context (widget);
+         cairo_set_operator (orig_cr, CAIRO_OPERATOR_SOURCE);
+-        msd_osd_window_get_preferred_size (widget, &size);
++        gtk_window_get_size (GTK_WINDOW (widget), &width, &height);
+ 
+         surface = cairo_surface_create_similar (cairo_get_target (orig_cr),
+                                                 CAIRO_CONTENT_COLOR_ALPHA,
+-                                                size,
+-                                                size);
++                                                width,
++                                                height);
+ 
+         if (cairo_surface_status (surface) != CAIRO_STATUS_SUCCESS) {
+                 goto done;
+@@ -197,15 +175,15 @@ draw_when_composited (GtkWidget *widget, cairo_t *orig_cr)
+                 goto done;
+         }
+ 
+-        gtk_render_background (context, cr, 0, 0, size, size);
+-        gtk_render_frame (context, cr, 0, 0, size, size);
++        gtk_render_background (context, cr, 0, 0, width, height);
++        gtk_render_frame (context, cr, 0, 0, width, height);
+ 
+         g_signal_emit (window, signals[DRAW_WHEN_COMPOSITED], 0, cr);
+ 
+         cairo_destroy (cr);
+ 
+         /* Make sure we have a transparent background */
+-        cairo_rectangle (orig_cr, 0, 0, size, size);
++        cairo_rectangle (orig_cr, 0, 0, width, height);
+         cairo_set_source_rgba (orig_cr, 0.0, 0.0, 0.0, 0.0);
+         cairo_fill (orig_cr);
+ 
+@@ -343,14 +321,8 @@ msd_osd_window_get_preferred_width (GtkWidget *widget,
+ {
+         GtkStyleContext *context;
+         GtkBorder padding;
+-        gint size;
+-
+-        msd_osd_window_get_preferred_size (widget, &size);
+ 
+-        if (size > 0)
+-                *minimum = *natural = size;
+-        else
+-                GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_width (widget, minimum, natural);
++        GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_width (widget, minimum, natural);
+ 
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+@@ -368,14 +340,8 @@ msd_osd_window_get_preferred_height (GtkWidget *widget,
+ {
+         GtkStyleContext *context;
+         GtkBorder padding;
+-        gint size;
+-
+-        msd_osd_window_get_preferred_size (widget, &size);
+ 
+-        if (size > 0)
+-                *minimum = *natural = size;
+-        else
+-                GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_height (widget, minimum, natural);
++        GTK_WIDGET_CLASS (msd_osd_window_parent_class)->get_preferred_height (widget, minimum, natural);
+ 
+         /* See the comment in msd_osd_window_style_updated() for why we add the padding here */
+ 
+@@ -463,7 +429,9 @@ gboolean
+ msd_osd_window_is_valid (MsdOsdWindow *window)
+ {
+         GdkScreen *screen = gtk_widget_get_screen (GTK_WIDGET (window));
+-        return gdk_screen_is_composited (screen) == window->priv->is_composited;
++        gint scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (window));
++        return gdk_screen_is_composited (screen) == window->priv->is_composited
++            && scale_factor == window->priv->scale_factor;
+ }
+ 
+ static void
+@@ -476,14 +444,26 @@ msd_osd_window_init (MsdOsdWindow *window)
+         screen = gtk_widget_get_screen (GTK_WIDGET (window));
+ 
+         window->priv->is_composited = gdk_screen_is_composited (screen);
++        window->priv->scale_factor = gtk_widget_get_scale_factor (GTK_WIDGET (window));
+ 
+         if (window->priv->is_composited) {
++                gdouble scalew, scaleh, scale;
++                gint size;
++
+                 gtk_window_set_decorated (GTK_WINDOW (window), FALSE);
+                 gtk_widget_set_app_paintable (GTK_WIDGET (window), TRUE);
+ 
+                 GtkStyleContext *style = gtk_widget_get_style_context (GTK_WIDGET (window));
+                 gtk_style_context_add_class (style, "window-frame");
+ 
++                /* assume 130x130 on a 640x480 display and scale from there */
++                scalew = WidthOfScreen (gdk_x11_screen_get_xscreen (screen)) / (640.0 * window->priv->scale_factor);
++                scaleh = HeightOfScreen (gdk_x11_screen_get_xscreen (screen)) / (480.0 * window->priv->scale_factor);
++                scale = MIN (scalew, scaleh);
++                size = 130 * MAX (1, scale);
++
++                gtk_window_set_default_size (GTK_WINDOW (window), size, size);
++
+                 window->priv->fade_out_alpha = 1.0;
+         } else {
+                 gtk_container_set_border_width (GTK_CONTAINER (window), 12);
+diff --git a/src/msd-osd-window.h b/src/msd-osd-window.h
+index 5927e0e..ac3325a 100644
+--- a/src/msd-osd-window.h
++++ b/src/msd-osd-window.h
+@@ -73,13 +73,12 @@ struct MsdOsdWindowClass {
+         void (* draw_when_composited) (MsdOsdWindow *window, cairo_t *cr);
+ };
+ 
+-GType                 msd_osd_window_get_type           (void);
++GType                 msd_osd_window_get_type          (void);
+ 
+-GtkWidget *           msd_osd_window_new                (void);
+-gboolean              msd_osd_window_is_composited      (MsdOsdWindow *window);
+-gboolean              msd_osd_window_is_valid           (MsdOsdWindow *window);
+-void                  msd_osd_window_update_and_hide    (MsdOsdWindow *window);
+-void                  msd_osd_window_get_preferred_size (GtkWidget    *widget, gint *size);
++GtkWidget *           msd_osd_window_new               (void);
++gboolean              msd_osd_window_is_composited     (MsdOsdWindow      *window);
++gboolean              msd_osd_window_is_valid          (MsdOsdWindow      *window);
++void                  msd_osd_window_update_and_hide   (MsdOsdWindow      *window);
+ 
+ #ifdef __cplusplus
+ }
+
+From 926e41fb693d82615ef1a90fb1e6d9bec56ba100 Mon Sep 17 00:00:00 2001
+From: Victor Kareh <vkareh@vkareh.net>
+Date: Fri, 9 Feb 2018 16:10:46 -0500
+Subject: [PATCH 5/5] Update function description
+
+---
+ src/msd-osd-window.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/msd-osd-window.c b/src/msd-osd-window.c
+index 1b35339..7797a3b 100644
+--- a/src/msd-osd-window.c
++++ b/src/msd-osd-window.c
+@@ -423,7 +423,8 @@ msd_osd_window_is_composited (MsdOsdWindow *window)
+  * @window: a #MsdOsdWindow
+  *
+  * Return value: TRUE if the @window's idea of being composited matches whether
+- * its current screen is actually composited.
++ * its current screen is actually composited and whether the scale factor has
++ * not changed since last draw.
+  */
+ gboolean
+ msd_osd_window_is_valid (MsdOsdWindow *window)
