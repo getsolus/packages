@@ -1,0 +1,76 @@
+From 55be9917121e720d4fbc74fdb1e8b5219402aef1 Mon Sep 17 00:00:00 2001
+From: Alexander Vorobyev <avorobyev@protonmail.com>
+Date: Mon, 12 Dec 2022 15:44:33 +0300
+Subject: [PATCH] Support a stateless configuration on *nix systems
+
+Using a stateless configuration, the often-untouched files in /etc/, which
+should be considered for local system administrator overrides, are no longer
+shipped on *nix systems.
+
+Instead, we ship them in a global read-only location on the filesystem, i.e.
+/usr/share/mpv/. This not only allows vendors to provide pre-defined configs
+for mpv, it allows the user to override the given defaults using the old
+/etc/mpv tree, whilst freeing them from upgrade conflicts.
+
+With this change, a "factory reset" of the mpv configuration is as simple as
+doing an "rm -rf /etc/mpv", and ensures there are no "three-way merges" on
+configuration files during system updates, which can often lead to undesirable
+side-effects.
+---
+ meson.build       |  3 ++-
+ osdep/path-unix.c | 11 ++++++++++-
+ 2 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index f9fe4e7263..4d4dce7996 100644
+--- a/meson.build
++++ b/meson.build
+@@ -1678,6 +1678,7 @@ feature_str = run_command(python, '-c', feature_sort, feature_keys, check: true)
+ conf_data.set_quoted('FULLCONFIG', feature_str)
+ conf_data.set_quoted('MPV_CONFDIR', join_paths(get_option('prefix'), get_option('sysconfdir'), 'mpv'))
+ conf_data.set_quoted('PLATFORM', host_machine.system())
++conf_data.set_quoted('MPV_SYSTEMCONFDIR', join_paths(get_option('prefix'), get_option('datadir'), 'mpv'))
+ configure_file(output : 'config.h', configuration : conf_data)
+ message('List of enabled features: ' + feature_str)
+ 
+@@ -1744,7 +1745,7 @@ if get_option('cplayer')
+ 
+     install_data('etc/mpv.desktop', install_dir: join_paths(datadir, 'applications'))
+     install_data('etc/mpv.metainfo.xml', install_dir: join_paths(datadir, 'metainfo'))
+-    install_data('etc/encoding-profiles.conf', install_dir: join_paths(confdir, 'mpv'))
++    install_data('etc/encoding-profiles.conf', install_dir: join_paths(datadir, 'mpv'))
+ 
+     foreach size: ['16x16', '32x32', '64x64', '128x128']
+         icon_dir = join_paths(datadir, 'icons', 'hicolor', size, 'apps')
+diff --git a/osdep/path-unix.c b/osdep/path-unix.c
+index 5dc5cb2836..160ae7ce21 100644
+--- a/osdep/path-unix.c
++++ b/osdep/path-unix.c
+@@ -17,6 +17,7 @@
+ 
+ #include <string.h>
+ #include <pthread.h>
++#include <unistd.h>
+ 
+ #include "options/path.h"
+ #include "path.h"
+@@ -81,7 +82,15 @@ const char *mp_get_platform_path_unix(void *talloc_ctx, const char *type)
+     if (strcmp(type, "state") == 0)
+         return mpv_state;
+     if (strcmp(type, "global") == 0)
+-        return MPV_CONFDIR;
++    {
++        // Global can be the /etc/ directory if it exists, or alternatively
++        // use a stateless /usr/share/mpv for the vendor configuration file
++        if (access(MPV_CONFDIR, F_OK) == 0) {
++            return MPV_CONFDIR;
++        } else {
++            return MPV_SYSTEMCONFDIR;
++        }
++    }
+     if (strcmp(type, "desktop") == 0)
+         return getenv("HOME");
+     return NULL;
+-- 
+2.41.0
+
