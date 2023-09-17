@@ -1,0 +1,81 @@
+From a48ba5342aa751725e50376af1eb5830f218e961 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <joshua@streambits.io>
+Date: Fri, 18 Jun 2021 12:58:52 +0300
+Subject: [PATCH 1/1] Backport patch from Fedora for "non-existent" user check
+
+---
+ modules/pam_unix/passverify.c |  6 ++++++
+ modules/pam_unix/support.c    | 32 +++++++++++++++++++++++++-------
+ 2 files changed, 31 insertions(+), 7 deletions(-)
+
+diff --git a/modules/pam_unix/passverify.c b/modules/pam_unix/passverify.c
+index 9c1771e..871c3ca 100644
+--- a/modules/pam_unix/passverify.c
++++ b/modules/pam_unix/passverify.c
+@@ -1025,6 +1025,12 @@ helper_verify_password(const char *name, const char *p, int nullok)
+ 	if (pwd == NULL || salt == NULL) {
+ 		helper_log_err(LOG_NOTICE, "check pass; user unknown");
+ 		retval = PAM_USER_UNKNOWN;
++	} else if (p[0] == '\0' && nullok) {
++		if (salt[0] == '\0') {
++			retval = PAM_SUCCESS;
++		} else {
++			retval = PAM_AUTH_ERR;
++		}
+ 	} else {
+ 		retval = verify_pwd_hash(p, salt, nullok);
+ 	}
+diff --git a/modules/pam_unix/support.c b/modules/pam_unix/support.c
+index f2e28d3..78c2913 100644
+--- a/modules/pam_unix/support.c
++++ b/modules/pam_unix/support.c
+@@ -660,6 +660,8 @@ _unix_blankpasswd (pam_handle_t *pamh, unsigned int ctrl, const char *name)
+ 	struct passwd *pwd = NULL;
+ 	char *salt = NULL;
+ 	int retval;
++	int execloop = 1;
++	int nonexistent = 1;
+ 
+ 	D(("called"));
+ 
+@@ -674,14 +676,30 @@ _unix_blankpasswd (pam_handle_t *pamh, unsigned int ctrl, const char *name)
+ 
+ 	/* UNIX passwords area */
+ 
+-	retval = get_pwd_hash(pamh, name, &pwd, &salt);
++	/*
++	 * Execute this loop twice: one checking the password hash of an existing
++	 * user and another one for a non-existing user. This way the runtimes
++	 * are equal, making it more difficult to differentiate existing from
++	 * non-existing users.
++	 */
+ 
+-	if (retval == PAM_UNIX_RUN_HELPER) {
+-		/* salt will not be set here so we can return immediately */
+-		if (_unix_run_helper_binary(pamh, NULL, ctrl, name) == PAM_SUCCESS)
+-			return 1;
+-		else
+-			return 0;
++	while (execloop) {
++		if (retval == PAM_UNIX_RUN_HELPER) {
++			execloop = 0;
++			if(nonexistent) {
++				get_pwd_hash(pamh, "pam_unix_non_existent:", &pwd, &salt);
++			}
++			/* salt will not be set here so we can return immediately */
++			if (_unix_run_helper_binary(pamh, NULL, ctrl, name) == PAM_SUCCESS)
++				return 1;
++			else
++				return 0;
++		} else if (retval == PAM_USER_UNKNOWN) {
++			name = "root";
++			nonexistent = 0;
++		} else {
++			execloop = 0;
++		}
+ 	}
+ 
+ 	/* Does this user have a password? */
+-- 
+2.30.2
+
