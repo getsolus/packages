@@ -1,0 +1,68 @@
+name       : avahi
+version    : '0.8'
+release    : 20
+source     :
+    - https://github.com/lathiat/avahi/archive/refs/tags/v0.8.tar.gz : c15e750ef7c6df595fb5f2ce10cac0fee2353649600e6919ad08ae8871e4945f
+license    : LGPL-2.1-or-later
+component  : desktop.core
+summary    : mDNS/DNS-SD service discovery
+description: |
+    Avahi is a system which facilitates service discovery on a local network via the mDNS/DNS-SD protocol suite. This enables you to plug your laptop or computer into a network and instantly be able to view other people who you can chat with, find printers to print to or find files being shared.
+libsplit   : no
+emul32     : yes
+builddeps  :
+    - pkgconfig32(dbus-1)
+    - pkgconfig32(expat)
+    - pkgconfig32(glib-2.0)
+    - pkgconfig32(libdaemon)
+    - pkgconfig32(libgcrypt)
+    - pkgconfig32(liblzma)
+    - pkgconfig32(libzstd)
+    - gdbm-32bit-devel
+    - xmltoman
+setup      : |
+    %apply_patches
+    %reconfigure --disable-static \
+                 --disable-mono \
+                 --disable-monodoc \
+                 --disable-python \
+                 --disable-qt3 \
+                 --disable-qt4 \
+                 --disable-qt5 \
+                 --disable-gtk \
+                 --disable-gtk3 \
+                 --disable-libevent \
+                 --enable-compat-libdns_sd \
+                 --enable-core-docs \
+                 --with-avahi-priv-access-group=avahi \
+                 --with-systemdsystemunitdir=%libdir%/systemd/system \
+                 --with-distro=none
+build      : |
+    %make
+install    : |
+    %make_install
+    rm -frv $installdir/run
+
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        ln -s /usr/include/avahi-compat-libdns_sd/dns_sd.h $installdir/usr/include/dns_sd.h
+
+        install -D -m 00644 $pkgfiles/avahi.sysusers $installdir%libdir%/sysusers.d/avahi.conf
+        install -D -m 00644 $pkgfiles/avahi.tmpfiles $installdir%libdir%/tmpfiles.d/avahi.conf
+
+        # Pre-enable socket
+        install -D -d -m 00755 $installdir/%libdir%/systemd/system/sockets.target.wants
+        ln -sv ../avahi-daemon.socket $installdir/%libdir%/systemd/system/sockets.target.wants/.
+
+        # Pre-enable dbus activation
+        ln -sv avahi-daemon.service $installdir/%libdir%/systemd/system/dbus-org.freedesktop.Avahi.service
+    else
+        rm -rf $installdir/%libdir%/systemd
+    fi
+    # Move files to stateless path
+    install -dm00644 $installdir/usr/share/defaults
+    mv $installdir/etc/avahi $installdir/usr/share/defaults/avahi
+    # Fix dbus-1 location without changing sysconfdir, which would break our /etc lookups
+    install -dm00644 $installdir/usr/share/dbus-1/system.d/
+    mv $installdir/etc/dbus-1/system.d/avahi-dbus.conf $installdir/usr/share/dbus-1/system.d/
+    # Can now nuke since all content is moved
+    rm -rf $installdir/etc
