@@ -1,0 +1,112 @@
+From b94e4d529760f0a35e65bd0baac5f8df8ed39498 Mon Sep 17 00:00:00 2001
+From: Fabio Forni <livingsilver94.solus@redaril.me>
+Date: Sun, 29 Mar 2020 14:48:00 +0200
+Subject: [PATCH] Load welcome website if no other sites are available
+
+---
+ src/core/ngx_conf_file.c | 82 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 82 insertions(+)
+
+diff --git a/src/core/ngx_conf_file.c b/src/core/ngx_conf_file.c
+index 6d1629e..8bde86c 100644
+--- a/src/core/ngx_conf_file.c
++++ b/src/core/ngx_conf_file.c
+@@ -153,6 +153,31 @@ ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename)
+     return NGX_OK;
+ }
+ 
++int is_directory_empty(const char* path) {
++    DIR* dir;
++    if (!(dir = opendir(path))) {
++        /* Consider a non-existent directory as empty. */
++        if (errno == ENOENT) {
++            return 1;
++        }
++        return -1;
++    }
++    static const int N_EMPTY_ENT = 2;
++    int prev_errno = errno;
++    int count = 0;
++    while (readdir(dir)) {
++        if (count++ > N_EMPTY_ENT) break;
++    }
++    closedir(dir);
++    if (prev_errno != errno) {
++        return -1;
++    }
++    return count == N_EMPTY_ENT;
++}
++
++int success(int ret) {
++    return ret >= 0;
++}
+ 
+ char *
+ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
+@@ -174,6 +199,63 @@ ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
+ #endif
+ 
+     if (filename) {
++        static const char* SITES_AVAILABLE_PATH = "/etc/nginx/sites-available";
++        static const char* DEF_CONF_PATH = "/usr/share/defaults/nginx/nginx.conf";
++        static const char* TMP_CONF_PATH = "/tmp/nginx.conf";
++        if (ngx_strcmp(filename->data, DEF_CONF_PATH) == 0 && is_directory_empty(SITES_AVAILABLE_PATH) > 0) {
++            FILE* orig_stream = fopen(DEF_CONF_PATH, "r");
++            FILE* temp_stream = fopen(TMP_CONF_PATH, "w");
++            int ok;
++            char* line_buf;
++            size_t char_read = 0;
++            for (;;) {
++                ok = getline(&line_buf, &char_read, orig_stream);
++                if (!success(ok)) {
++                    break;
++                }
++                ok = fputs(line_buf, temp_stream);
++                if (!success(ok)) {
++                    break;
++                }
++                if (strncmp(line_buf, "http {", 6) == 0) {
++                    break;
++                }
++            }
++            free(line_buf);
++            if (!success(ok)) {
++                goto closetemp;
++            }
++            ok = fputs("include /usr/share/nginx/welcome.conf;\n", temp_stream);
++            if (!success(ok)){
++                goto closetemp;
++            }
++            fflush(temp_stream);
++
++            /* Read original conf file length and offset. */
++            int orig_fd = fileno(orig_stream);
++            int orig_off = ftell(orig_stream);
++            int orig_size = lseek(orig_fd, 0, SEEK_END);
++            lseek(orig_fd, orig_off, SEEK_SET);
++            int remaining = orig_size - orig_off;
++
++            /* Copy the rest of the original file untouched. */
++            int temp_fd = fileno(temp_stream);
++            int copied;
++            do {
++                copied = copy_file_range(orig_fd, NULL, temp_fd, NULL, remaining, 0);
++                if (!success(copied)) {
++                    ok = -1;
++                    goto closetemp;
++                }
++                remaining -= copied;
++            } while (remaining > 0 && copied > 0);
++closetemp:
++            fclose(temp_stream);
++            fclose(orig_stream);
++            if (success(ok)) {
++                filename->data = (unsigned char*) TMP_CONF_PATH;
++            }
++        }
+ 
+         /* open configuration file */
+ 
+-- 
+2.26.0
+
