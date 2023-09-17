@@ -1,0 +1,178 @@
+From c419e701c8f64d65e088760c934d33e7a1b2d3e8 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Mon, 17 Oct 2016 04:20:24 +0100
+Subject: [PATCH] Support a stateless configuration for Solus
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ configure.ac.footer    |  3 ++-
+ src/headers/twiddler.h |  1 +
+ src/prog/gpm-root.y    | 12 ++++++++++--
+ src/synaptics.c        |  9 +++++++++
+ src/twiddler.c         | 23 +++++++++++++++--------
+ 5 files changed, 37 insertions(+), 11 deletions(-)
+
+diff --git a/configure.ac.footer b/configure.ac.footer
+index 89a4cd9..90739d1 100644
+--- a/configure.ac.footer
++++ b/configure.ac.footer
+@@ -149,9 +149,10 @@ AC_SUBST(lispdir)
+ AC_SUBST(release)
+ AC_SUBST(release_date)
+ 
+-CPPFLAGS="$CPPFLAGS "'-I$(srcdir) $(DEFS) -include headers/config.h -Wall -DSYSCONFDIR="\"$(sysconfdir)\"" -DSBINDIR="\"$(sbindir)\"" -D_GNU_SOURCE'
++CPPFLAGS="$CPPFLAGS "'-I$(srcdir) $(DEFS) -include headers/config.h -Wall -DVENDORDIR="\"$(datadir)/defaults/gpm\"" -DSYSCONFDIR="\"$(sysconfdir)\"" -DSBINDIR="\"$(sbindir)\"" -D_GNU_SOURCE'
+ LDFLAGS="$LDFLAGS "'-L$(srcdir)'
+ 
+ dnl AC_DEFINE_UNQUOTED(SYSCONFDIR,"$sysconfdir")
++dnl AC_DEFINE_UNQUOTED(VENDORDIR,"$datadir/defaults/gpm")
+ dnl AC_DEFINE_UNQUOTED(SBINDIR,"$sbindir")
+ AC_OUTPUT(Makefile.include Makefile doc/Makefile src/Makefile contrib/Makefile doc/doc.gpm)
+diff --git a/src/headers/twiddler.h b/src/headers/twiddler.h
+index 5f8bc00..c03242f 100644
+--- a/src/headers/twiddler.h
++++ b/src/headers/twiddler.h
+@@ -49,4 +49,5 @@
+ #define TW_SYSTEM_FILE SYSCONFDIR "/gpm-twiddler.conf"
+ #define TW_CUSTOM_FILE SYSCONFDIR "/gpm-twiddler.user"
+ 
++#define TW_VENDOR_FILE VENDORDIR "/gpm-twiddler.conf"
+ 
+diff --git a/src/prog/gpm-root.y b/src/prog/gpm-root.y
+index 069d801..a7a3d13 100644
+--- a/src/prog/gpm-root.y
++++ b/src/prog/gpm-root.y
+@@ -78,6 +78,7 @@
+ 
+ #define USER_CFG   ".gpm-root"
+ #define SYSTEM_CFG SYSCONFDIR "/gpm-root.conf"
++#define VENDOR_CFG VENDORDIR "/gpm-root.conf"
+ 
+ #define DEFAULT_FORE 7
+ #define DEFAULT_BACK 0
+@@ -786,6 +787,13 @@ int getdraw(int uid, int buttons, time_t mtime1, time_t mtime2)
+    Draw *new, *np, *op, *pp;
+    int retval=0;
+    time_t mtime;
++   char *system_root_cfg = NULL;
++
++   if (access(SYSTEM_CFG, F_OK) == 0) {
++      system_root_cfg = SYSTEM_CFG;
++   } else {
++      system_root_cfg = VENDOR_CFG;
++   }
+ 
+    gpm_report(GPM_PR_DEBUG,"getdraw: %i %i %li %li",uid,buttons,mtime1,mtime2);
+    pass=getpwuid(uid);
+@@ -793,7 +801,7 @@ int getdraw(int uid, int buttons, time_t mtime1, time_t mtime2)
+    /* deny personal cfg to root for security reasons */
+    if (pass==NULL || !uid || !opt_user) {
+       mtime=mtime2; uid=-1;
+-      strcpy(cfgname,SYSTEM_CFG);
++      strcpy(cfgname,system_root_cfg);
+    } else {
+       mtime=mtime1;
+       strcpy(cfgname,pass->pw_dir);
+@@ -804,7 +812,7 @@ int getdraw(int uid, int buttons, time_t mtime1, time_t mtime2)
+       gpm_report(GPM_PR_DEBUG,"stat (%s) failed",cfgname);
+       /* try the system wide */
+       mtime=mtime2; uid = -1;
+-      strcpy(cfgname,SYSTEM_CFG);
++      strcpy(cfgname,system_root_cfg);
+       if (stat(cfgname,&buf)==-1) {
+          gpm_report(GPM_PR_ERR,"stat (%s) failed",cfgname);
+          return 0;
+diff --git a/src/synaptics.c b/src/synaptics.c
+index 2418c75..cc0c074 100644
+--- a/src/synaptics.c
++++ b/src/synaptics.c
+@@ -2083,6 +2083,15 @@ void tp_read_config_file (char* config_filename)
+     return;
+   }
+ 
++  /* Default config doesn't exist, try system vendor config */
++  if (access(full_filename, F_OK) != 0) {
++      status = snprintf(full_filename,100,VENDORDIR "/%s",config_filename);
++      if (status < 0) {
++        gpm_report (GPM_PR_WARN,"Too long path for configure file: %s", config_filename); 
++        return;
++      }
++  }
++
+ 
+   if ( !(config = fopen (full_filename, "r")) ) {
+     gpm_report (GPM_PR_WARN,"Failed to open configfile: %s", full_filename);    
+diff --git a/src/twiddler.c b/src/twiddler.c
+index 1d2bd50..fd72aca 100644
+--- a/src/twiddler.c
++++ b/src/twiddler.c
+@@ -456,7 +456,14 @@ char *twiddler_rest_to_value(char *s)
+ int twiddler_key_init(void)
+ {
+    FILE *f;
+-   char *files[]={TW_SYSTEM_FILE, TW_CUSTOM_FILE, NULL};
++   char *system_config_file = NULL;
++
++   if (access(TW_SYSTEM_FILE, F_OK) == 0) {
++       system_config_file = TW_SYSTEM_FILE;
++   } else {
++       system_config_file = TW_VENDOR_FILE;
++   }
++   char *files[]={system_config_file, TW_CUSTOM_FILE, NULL};
+    int fileindex=0;
+    char s[128], buf[64]; /* buf is for the string */
+    char mod[64], chord[64], *value;
+@@ -467,8 +474,8 @@ int twiddler_key_init(void)
+    if (initcount) return 0; /* do it only once */
+    initcount++;
+ 
+-   if (!(f = fopen(TW_SYSTEM_FILE,"r"))) {
+-      gpm_report(GPM_PR_ERR,GPM_MESS_DOUBLE_S,TW_SYSTEM_FILE,strerror(errno));
++   if (!(f = fopen(system_config_file,"r"))) {
++      gpm_report(GPM_PR_ERR,GPM_MESS_DOUBLE_S,system_config_file,strerror(errno));
+       return -1;
+    }
+ 
+@@ -487,7 +494,7 @@ int twiddler_key_init(void)
+             mod[0]='\0'; /* no modifiers */
+          else if (sscanf(s, "%s %s = %s", mod, chord, buf)==3) /*Mod M00L =k */;
+          else if (sscanf(s, "%s", buf)!= 0) {
+-            gpm_report(GPM_PR_ERR,GPM_MESS_SYNTAX_1,option.progname,TW_SYSTEM_FILE
++            gpm_report(GPM_PR_ERR,GPM_MESS_SYNTAX_1,option.progname,system_config_file
+                                                    ,lineno);
+ 	         errcount++;
+ 	         continue;
+@@ -495,26 +502,26 @@ int twiddler_key_init(void)
+ 
+          /* Ok, here we are: now check the parts */
+          if (!(table = twiddler_mod_to_table(mod))) {
+-            gpm_report(GPM_PR_ERR,GPM_MESS_UNKNOWN_MOD_1,option.progname,TW_SYSTEM_FILE
++            gpm_report(GPM_PR_ERR,GPM_MESS_UNKNOWN_MOD_1,option.progname,system_config_file
+                                                         ,lineno, mod);
+ 	         errcount++;
+ 	         continue;
+ 	      }
+          if ((index = twiddler_chord_to_int(chord)) <= 0) {
+             gpm_report(GPM_PR_ERR,GPM_MESS_INCORRECT_COORDS,option.progname,
+-                                      TW_SYSTEM_FILE,lineno, chord);
++                                      system_config_file,lineno, chord);
+ 	         errcount++;
+ 	         continue;
+ 	      }
+          if ((value = twiddler_rest_to_value(s))==s) {
+-	         gpm_report(GPM_PR_ERR,GPM_MESS_INCORRECT_LINE,option.progname,TW_SYSTEM_FILE
++	         gpm_report(GPM_PR_ERR,GPM_MESS_INCORRECT_LINE,option.progname,system_config_file
+                                                          ,lineno,s);
+ 	         errcount++;
+ 	         continue;
+ 	      }
+ 
+          if (table[index]) {
+-	         gpm_report(GPM_PR_ERR,GPM_MESS_REDEF_COORDS,option.progname,TW_SYSTEM_FILE,
++	         gpm_report(GPM_PR_ERR,GPM_MESS_REDEF_COORDS,option.progname,system_config_file,
+                                           lineno, mod, *mod ? " " : "", chord);
+ 	      }
+          /* all done */
+-- 
+2.10.1
+
