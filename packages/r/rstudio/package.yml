@@ -1,0 +1,91 @@
+name       : rstudio
+version    : 2022.07.1.554
+release    : 29
+source     :
+    - https://github.com/rstudio/rstudio/archive/refs/tags/v2022.07.1+554.tar.gz : 1c3fd3fc64e3553ec1ec35758d177a3d4713ae5203493291d7b3b622478f4185
+license    : AGPL-3.0
+component  : programming.ide
+summary    : Integrated development environment (IDE) for R
+description: |
+    RStudio is an integrated development environment (IDE) for the R programming language.
+networking : yes
+builddeps  :
+    - pkgconfig(gl)
+    - pkgconfig(libR)
+    - pkgconfig(Qt5Positioning)
+    - pkgconfig(Qt5Quick)
+    - pkgconfig(Qt5Sensors)
+    - pkgconfig(Qt5Svg)
+    - pkgconfig(Qt5WebChannel)
+    - pkgconfig(Qt5WebEngine)
+    - pkgconfig(Qt5XmlPatterns)
+    - pkgconfig(libpq)
+    - pkgconfig(sqlite3)
+    - pkgconfig(yaml-cpp)
+    - apache-ant
+    - libboost-devel
+    - libhunspell
+    - pandoc
+    - shared-mime-info
+    - soci-devel
+    - xdg-utils
+    - yarn
+rundeps    :
+    - libhunspell
+    - mathjax2
+    - pandoc
+    - r
+setup      : |
+    # Patches from Fedora
+    %patch -p1 < $pkgfiles/0000-unbundle-dependencies-common.patch
+    %patch -p1 < $pkgfiles/0002-fix-rstudio-exec-path.patch
+    %patch -p1 < $pkgfiles/0003-fix-resources-path.patch
+    %patch -p1 < $pkgfiles/0004-use-system-node.patch
+    %patch -p1 < $pkgfiles/0005-disable-quarto.patch
+
+    # Defeat build 'checks'
+    pushd dependencies/common
+    install -d dictionaries libclang/{3.5,builtin-headers} rmarkdown mathjax-27 rsconnect node/16.14.0/bin
+    ln -s $workdir/dependencies/common/dictionaries $workdir/dependencies/dictionaries
+    ln -s $workdir/dependencies/common/mathjax-27 $workdir/dependencies/mathjax-27
+    ln -s $workdir/dependencies/common/pandoc $workdir/dependencies/pandoc
+
+    # Need to grep version and symlink from PATH, ugly af.
+    _pandocver=$(grep -oP "(?<=PANDOC_VERSION=\").*(?=\"$)" install-pandoc)
+    install -d pandoc/${_pandocver}
+    ln -sfT /usr/bin/pandoc pandoc/${_pandocver}/pandoc
+    ln -sfT /usr/bin/pandoc-citeproc pandoc/${_pandocver}/pandoc-citeproc
+    popd
+
+    # Enable panmirror support
+    pushd $workdir/src/gwt/panmirror/src/editor
+    yarn config set ignore-engines true
+    yarn install
+    popd
+
+    %cmake_ninja -DRSTUDIO_TARGET=Desktop \
+           -DQT_QMAKE_EXECUTABLE=/usr/bin/qmake \
+           -DCMAKE_INSTALL_PREFIX=/usr/share/rstudio \
+           -DRSTUDIO_USE_SYSTEM_BOOST=ON \
+           -DRSTUDIO_USE_SYSTEM_SOCI=ON \
+           -DRSTUDIO_USE_SYSTEM_YAML_CPP=ON \
+           -DRSTUDIO_BOOST_SIGNALS_VERSION=2
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+    install -d -m 00755 $installdir/usr/bin
+    ln -s /usr/share/rstudio/bin/rstudio $installdir/usr/bin/rstudio
+
+    #Use system dictionaries
+    rm -rf $installdir/usr/share/rstudio/resources/dictionaries
+    ln -s /usr/share/hunspell $installdir/usr/share/rstudio/resources/dictionaries
+    # Fix mimetype handlers by replacing desktop file
+    install -Dm00644 $pkgfiles/rstudio.desktop $installdir/usr/share/applications/rstudio.desktop
+
+    # System pandoc symlink
+    mkdir -p $installdir/usr/share/rstudio/bin/pandoc
+    ln -sf /usr/bin/pandoc $installdir/usr/share/rstudio/bin/pandoc/pandoc
+
+    # System mathjax symlink
+    ln -sT /usr/share/mathjax2/ $installdir/usr/share/rstudio/resources/mathjax-27
