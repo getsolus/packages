@@ -1,0 +1,120 @@
+name       : snapd
+version    : 2.60.3
+homepage   : https://snapcraft.io/
+release    : 76
+source     :
+    - https://github.com/snapcore/snapd/releases/download/2.60.3/snapd_2.60.3.vendor.tar.xz : c65d6a23288195864ac11997475234b8c15a5e14849f3ab309ccba4832675bc4
+license    : GPL-3.0-only
+component  : desktop
+summary    : The snapd and snap tools enable systems to work with .snap files
+description: |
+    Universal applications support - .snap files allow you to run Snap packages on any Linux distribution, with full sandboxing and additional security.
+networking : yes
+builddeps  :
+    - pkgconfig(glib-2.0)
+    - pkgconfig(libapparmor)
+    - pkgconfig(libseccomp)
+    - pkgconfig(libudev)
+    - pkgconfig(libcap)
+    - golang
+    - python-docutils
+    - xfsprogs-devel
+rundeps    :
+    - apparmor
+    - libselinux
+    - squashfs-tools
+environment: |
+    export CGO_ENABLED="1"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export import_path=github.com/snapcore/snapd
+    export go_binaries=(snap snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure snapd-apparmor)
+    export static_binaries=(snap-update-ns snap-exec snapctl)
+    export bincommands=(snap)
+    export dcommands=(snapctl snapd snap-exec snap-update-ns snap-seccomp snap-failure snapd-apparmor)
+setup      : |
+    mkdir -p src/github.com/snapcore
+    ln -s `pwd` src/github.com/snapcore/snapd
+
+    pushd src/${import_path}
+    ./mkversion.sh "$version"
+
+    %patch -p1 < $pkgfiles/0001-Force-usage-of-sudo-over-runuser-on-Solus.patch
+    %patch -p1 < $pkgfiles/0002-Support-avx2-library-paths.patch
+    %patch -p1 < $pkgfiles/0001-Add-lib64-to-expected-paths-for-snapd-confine.patch
+
+    pushd cmd
+    %reconfigure \
+        --enable-nvidia-biarch \
+        --enable-merged-usr \
+        --with-snap-mount-dir=/snap
+    popd
+build      : |
+    %make -C src/${import_path}/cmd
+
+    for snapvar in ${go_binaries[@]}; do
+        go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath -mod=vendor ${import_path}/cmd/$snapvar
+    done
+    for staticpath in ${static_binaries[@]} ; do
+        go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath -mod=vendor ${import_path}/cmd/$staticpath
+    done
+install    : |
+    %make_install -C src/${import_path}/cmd
+
+    # Golang binaries
+    for snap_bin in ${bincommands[@]} ; do
+        install -m00755 bin/$snap_bin $installdir/usr/bin/.
+    done
+    for snap_lib in ${dcommands[@]} ; do
+        install -m00755 bin/$snap_lib $installdir/%libdir%/$package/.
+    done
+    # snapctl is run from inside the snap
+    ln -s /%libdir%/$package/snapctl $installdir/usr/bin/snapctl
+
+    # Move into the base dir so we can install stuff
+    pushd src/${import_path}
+    %make_install -C data/ \
+            DBUSSERVICESDIR=/usr/share/dbus-1/services \
+            LIBEXECDIR="%libdir%" \
+            SYSTEMDSYSTEMUNITDIR="%libdir%/systemd/system" \
+            SNAP_MOUNT_DIR=/snap
+
+    # empty usr/src directory (i.e. linux-lts-headers linux-current-headers) to
+    # satisfy bindmounts in confinement
+    install -Ddm00755 $installdir/usr/src
+
+    install -dm00755 $installdir/%libdir%/systemd/system/sockets.target.wants
+    ln -sv ../snapd.socket $installdir/%libdir%/systemd/system/sockets.target.wants/snapd.socket
+
+    install -Dm00644 data/info $installdir/%libdir%/$package/info
+    install -Dm00644 data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
+    install -Dm00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
+
+    # Completions
+    install -Dm00644 data/completion/bash/snap $installdir/usr/share/bash-completion/completions/snap
+    install -Dm00644 data/completion/bash/complete.sh $installdir/%libdir%/snapd/complete.sh
+    install -Dm00644 data/completion/bash/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
+    install -Dm00644 data/completion/zsh/_snap $installdir/usr/share/zsh/site-functions/_snap
+
+    # Sort out fish completions (unsure why this is automatic and bash/zsh are not)
+    install -dm00755 $installdir/usr/share/fish/vendor_completions.d/
+    mv $installdir/usr/share/fish/vendor_conf.d/snapd.fish $installdir/usr/share/fish/vendor_completions.d/snapd.fish
+    rmdir $installdir/usr/share/fish/vendor_conf.d/
+
+    # Stateless
+    install -dDm00755 $installdir/usr/share/xdg/autostart/
+    mv $installdir/etc/xdg/autostart/snap-userd-autostart.desktop $installdir/usr/share/xdg/autostart/
+    rmdir $installdir/etc/xdg/autostart
+    rmdir $installdir/etc/xdg
+    install -dDm00755 $installdir/usr/share/defaults/etc/profile.d
+    mv $installdir/etc/profile.d/snapd.sh $installdir/usr/share/defaults/etc/profile.d/70-snapd.sh
+    rmdir $installdir/etc/profile.d
+
+    # remove unneeded stuff
+    rm -rvf $installdir/var
+    # Even though it's empty it still needs to mount /usr/src ...
+    rm -rvf $installdir/usr/bin/ubuntu-core-launcher
+    rm -rvf $installdir/%libdir%/snapd/{system-shutdown,snapd.core-fixup.sh}
+    rm -rvf $installdir/%libdir%/systemd/system/{snapd.system-shutdown.service,snapd.autoimport.service,snapd.snap-repair.*,snapd.core-fixup.*}
