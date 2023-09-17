@@ -1,0 +1,102 @@
+name       : arm-none-eabi-gcc
+version    : 13.1.0
+release    : 4
+source     :
+    - https://ftp.gnu.org/gnu/gcc/gcc-13.1.0/gcc-13.1.0.tar.xz : 61d684f0aa5e76ac6585ad8898a2427aade8979ed5e7f85492286c4dfc13ee86
+homepage   : http://gcc.gnu.org/
+license    : GPL-3.0-or-later
+summary    : The GNU Embedded GCC for Arm
+component  : programming
+description: |
+    The GNU Embedded Toolchain for Arm is a ready-to-use, open source suite of tools for C, C++ and Assembly programming targeting Arm Cortex-M and Cortex-R family of processors. It includes the GNU Compiler (GCC) and is available free of charge directly from Arm for embedded software development on Windows, Linux and Mac OS X operating systems.
+strip      : no
+builddeps  :
+    - pkgconfig(isl)
+    - pkgconfig(libelf)
+    - arm-none-eabi-binutils
+    - arm-none-eabi-newlib
+rundeps    :
+    - arm-none-eabi-binutils
+environment: |
+    export TARGET=arm-none-eabi
+    export PREFIX=/usr/share/$TARGET
+    export PKGVERSION=Solus
+    export BUGURL=https://dev.getsol.us/
+    source /usr/share/defaults/etc/profile.d/50-arm-toolchain-path.sh
+setup      : |
+    mkdir build-{gcc,gcc-nano}
+
+    _configure () {
+        pushd $1
+        ../configure \
+            --build=%HOST% \
+            --prefix=$PREFIX \
+            --target=$TARGET \
+            --with-sysroot=$PREFIX/$TARGET \
+            --libexecdir=$PREFIX/lib \
+            --enable-languages=c,c++ \
+            --enable-plugins \
+            --disable-decimal-float \
+            --disable-libffi \
+            --disable-libgomp \
+            --disable-libmudflap \
+            --disable-libquadmath \
+            --disable-libssp \
+            --disable-libstdcxx-pch \
+            --disable-nls \
+            --disable-shared \
+            --disable-threads \
+            --disable-tls \
+            --with-gnu-as \
+            --with-gnu-ld \
+            --with-system-zlib \
+            --with-newlib \
+            --with-gmp \
+            --with-mpfr \
+            --with-mpc \
+            --with-isl \
+            --with-libelf \
+            --enable-gnu-indirect-function \
+            --with-host-libstdcxx='-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm' \
+            --with-multilib-list=rmprofile \
+            --with-pkgversion=$PKGVERSION \
+            --with-bugurl=$BUGURL
+        popd
+    }
+    _configure build-gcc
+    _configure build-gcc-nano
+build      : |
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    %make -C build-gcc INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0'
+
+    # Build libstdc++ without exceptions support (the 'nano' variant)
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+    export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections -fno-exceptions'
+    %make -C build-gcc-nano INHIBIT_LIBC_CFLAGS='-DUSE_TM_CLONE_REGISTRY=0'
+install    : |
+    %make_install -C build-gcc
+
+    %make install -C build-gcc-nano DESTDIR="$workdir/install.nano"
+    # We only need libstdc nano files
+    multilibs=( $($installdir$PREFIX/bin/$TARGET-gcc -print-multi-lib 2>/dev/null) )
+    for multilib in "${multilibs[@]}"; do
+        dir="${multilib%%;*}"
+        from_dir=$workdir/install.nano$PREFIX/$TARGET/lib/$dir
+        to_dir=$installdir$PREFIX/$TARGET/lib/$dir
+        cp -f $from_dir/libstdc++.a $to_dir/libstdc++_nano.a
+        cp -f $from_dir/libsupc++.a $to_dir/libsupc++_nano.a
+    done
+
+    # Strip target binaries
+    find $installdir$PREFIX/lib/gcc/$TARGET/%version% $installdir$PREFIX/$TARGET/lib -type f -and \( -name \*.a -or -name \*.o \) \
+        -exec $TARGET-objcopy -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes \
+        -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+    # Strip host binaries
+    find $installdir$PREFIX/bin/ $installdir$PREFIX/lib/gcc/$TARGET/%version% -type f -and \( -executable \) -exec strip '{}' \;
+
+    # Remove unnecassary files
+    rm -r $installdir$PREFIX/share
+    rm -r $installdir$PREFIX/include
+    rm -r $installdir$PREFIX/lib64
