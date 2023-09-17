@@ -1,0 +1,309 @@
+From 9e5605fd6f22dd05b320be0def90a3f9853ae249 Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Wed, 21 Sep 2022 15:54:10 -0700
+Subject: [PATCH 35/76] UBUNTU: SAUCE: apparmor4.0.0 [35/76]: Stacking v38:
+ LSM: security_secid_to_secctx module selection
+
+Add a parameter to security_secid_to_secctx() to identify
+which of the security modules that may be active should
+provide the security context. If the parameter is greater
+than or equal to zero, the security module associated with
+that LSM "slot" is used. If the value is LSMBLOB_DISPLAY
+the "interface lsm" is used. If the value is LSMBLOB_FIRST
+the first security module providing a hook is used.
+
+The integrity IMA subsystem has chosen to always use the
+LSMBLOB_FIRST behavior, regardless of the lsm_display values.
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ drivers/android/binder.c                |  2 +-
+ include/linux/security.h                |  7 +++++--
+ include/net/scm.h                       |  2 +-
+ kernel/audit.c                          |  4 ++--
+ kernel/auditsc.c                        |  7 ++++---
+ net/ipv4/ip_sockglue.c                  |  2 +-
+ net/netfilter/nf_conntrack_netlink.c    |  4 ++--
+ net/netfilter/nf_conntrack_standalone.c |  2 +-
+ net/netfilter/nfnetlink_queue.c         |  2 +-
+ net/netlabel/netlabel_unlabeled.c       | 11 +++++++----
+ net/netlabel/netlabel_user.c            |  2 +-
+ security/security.c                     | 20 ++++++++++++++++++--
+ 12 files changed, 44 insertions(+), 21 deletions(-)
+
+diff --git a/drivers/android/binder.c b/drivers/android/binder.c
+index 403e935dc4ec..257347f2eeab 100644
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -3199,7 +3199,7 @@ static void binder_transaction(struct binder_proc *proc,
+ 		size_t added_size;
+ 
+ 		security_cred_getsecid(proc->cred, &blob);
+-		ret = security_secid_to_secctx(&blob, &lsmctx);
++		ret = security_secid_to_secctx(&blob, &lsmctx, LSMBLOB_DISPLAY);
+ 		if (ret) {
+ 			binder_txn_error("%d:%d failed to get security context\n",
+ 				thread->pid, proc->pid);
+diff --git a/include/linux/security.h b/include/linux/security.h
+index b55c3634ebde..4ec7ca70b334 100644
+--- a/include/linux/security.h
++++ b/include/linux/security.h
+@@ -206,6 +206,8 @@ struct lsmblob {
+ #define LSMBLOB_INVALID		-1	/* Not a valid LSM slot number */
+ #define LSMBLOB_NEEDED		-2	/* Slot requested on initialization */
+ #define LSMBLOB_NOT_NEEDED	-3	/* Slot not requested */
++#define LSMBLOB_DISPLAY		-4	/* Use the "interface_lsm" slot */
++#define LSMBLOB_FIRST		-5	/* Use the first slot */
+ 
+ /**
+  * lsmblob_init - initialize a lsmblob structure
+@@ -653,7 +655,8 @@ int security_getprocattr(struct task_struct *p, int lsmid, const char *name,
+ int security_setprocattr(int lsmid, const char *name, void *value, size_t size);
+ int security_netlink_send(struct sock *sk, struct sk_buff *skb);
+ int security_ismaclabel(const char *name);
+-int security_secid_to_secctx(struct lsmblob *blob, struct lsmcontext *cp);
++int security_secid_to_secctx(struct lsmblob *blob, struct lsmcontext *cp,
++			     int ilsm);
+ int security_secctx_to_secid(const char *secdata, u32 seclen,
+ 			     struct lsmblob *blob);
+ void security_release_secctx(struct lsmcontext *cp);
+@@ -1537,7 +1540,7 @@ static inline int security_ismaclabel(const char *name)
+ }
+ 
+ static inline int security_secid_to_secctx(struct lsmblob *blob,
+-					   struct lsmcontext *cp)
++					   struct lsmcontext *cp, int ilsm)
+ {
+ 	return -EOPNOTSUPP;
+ }
+diff --git a/include/net/scm.h b/include/net/scm.h
+index d87c4c670b2e..af9d9b45840e 100644
+--- a/include/net/scm.h
++++ b/include/net/scm.h
+@@ -101,7 +101,7 @@ static inline void scm_passec(struct socket *sock, struct msghdr *msg, struct sc
+ 		 * and the infrastructure will know which it is.
+ 		 */
+ 		lsmblob_init(&lb, scm->secid);
+-		err = security_secid_to_secctx(&lb, &context);
++		err = security_secid_to_secctx(&lb, &context, LSMBLOB_DISPLAY);
+ 
+ 		if (!err) {
+ 			put_cmsg(msg, SOL_SOCKET, SCM_SECURITY, context.len,
+diff --git a/kernel/audit.c b/kernel/audit.c
+index 777a891c4a74..75b6159ea74b 100644
+--- a/kernel/audit.c
++++ b/kernel/audit.c
+@@ -1462,7 +1462,7 @@ static int audit_receive_msg(struct sk_buff *skb, struct nlmsghdr *nlh)
+ 
+ 		if (lsmblob_is_set(&audit_sig_lsm)) {
+ 			err = security_secid_to_secctx(&audit_sig_lsm,
+-						       &context);
++						       &context, LSMBLOB_FIRST);
+ 			if (err)
+ 				return err;
+ 		}
+@@ -2174,7 +2174,7 @@ int audit_log_task_context(struct audit_buffer *ab)
+ 	if (!lsmblob_is_set(&blob))
+ 		return 0;
+ 
+-	error = security_secid_to_secctx(&blob, &context);
++	error = security_secid_to_secctx(&blob, &context, LSMBLOB_FIRST);
+ 
+ 	if (error) {
+ 		if (error != -EINVAL)
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index 27af98cd9dab..3619af9acba0 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -1111,7 +1111,7 @@ static int audit_log_pid_context(struct audit_context *context, pid_t pid,
+ 			 from_kuid(&init_user_ns, auid),
+ 			 from_kuid(&init_user_ns, uid), sessionid);
+ 	if (lsmblob_is_set(blob)) {
+-		if (security_secid_to_secctx(blob, &lsmctx)) {
++		if (security_secid_to_secctx(blob, &lsmctx, LSMBLOB_FIRST)) {
+ 			audit_log_format(ab, " obj=(none)");
+ 			rc = 1;
+ 		} else {
+@@ -1400,7 +1400,8 @@ static void show_special(struct audit_context *context, int *call_panic)
+ 			struct lsmblob blob;
+ 
+ 			lsmblob_init(&blob, osid);
+-			if (security_secid_to_secctx(&blob, &lsmcxt)) {
++			if (security_secid_to_secctx(&blob, &lsmcxt,
++						     LSMBLOB_FIRST)) {
+ 				audit_log_format(ab, " osid=%u", osid);
+ 				*call_panic = 1;
+ 			} else {
+@@ -1568,7 +1569,7 @@ static void audit_log_name(struct audit_context *context, struct audit_names *n,
+ 		struct lsmcontext lsmctx;
+ 
+ 		lsmblob_init(&blob, n->osid);
+-		if (security_secid_to_secctx(&blob, &lsmctx)) {
++		if (security_secid_to_secctx(&blob, &lsmctx, LSMBLOB_FIRST)) {
+ 			audit_log_format(ab, " osid=%u", n->osid);
+ 			if (call_panic)
+ 				*call_panic = 2;
+diff --git a/net/ipv4/ip_sockglue.c b/net/ipv4/ip_sockglue.c
+index 8c0f5a40863c..05c8fc6303e5 100644
+--- a/net/ipv4/ip_sockglue.c
++++ b/net/ipv4/ip_sockglue.c
+@@ -140,7 +140,7 @@ static void ip_cmsg_recv_security(struct msghdr *msg, struct sk_buff *skb)
+ 		return;
+ 
+ 	lsmblob_init(&lb, secid);
+-	err = security_secid_to_secctx(&lb, &context);
++	err = security_secid_to_secctx(&lb, &context, LSMBLOB_DISPLAY);
+ 	if (err)
+ 		return;
+ 
+diff --git a/net/netfilter/nf_conntrack_netlink.c b/net/netfilter/nf_conntrack_netlink.c
+index 93981fc94157..ebee85cf9269 100644
+--- a/net/netfilter/nf_conntrack_netlink.c
++++ b/net/netfilter/nf_conntrack_netlink.c
+@@ -364,7 +364,7 @@ static int ctnetlink_dump_secctx(struct sk_buff *skb, const struct nf_conn *ct)
+ 	 * security_secid_to_secctx() will know which security module
+ 	 * to use to create the secctx.  */
+ 	lsmblob_init(&blob, ct->secmark);
+-	ret = security_secid_to_secctx(&blob, &context);
++	ret = security_secid_to_secctx(&blob, &context, LSMBLOB_DISPLAY);
+ 	if (ret)
+ 		return 0;
+ 
+@@ -674,7 +674,7 @@ static inline int ctnetlink_secctx_size(const struct nf_conn *ct)
+ 	int len;
+ 	struct lsmblob blob;
+ 
+-	len = security_secid_to_secctx(&blob, NULL);
++	len = security_secid_to_secctx(&blob, NULL, LSMBLOB_DISPLAY);
+ 	if (len <= 0)
+ 		return 0;
+ 
+diff --git a/net/netfilter/nf_conntrack_standalone.c b/net/netfilter/nf_conntrack_standalone.c
+index 4dc5b0b48b1b..5e4dc94db078 100644
+--- a/net/netfilter/nf_conntrack_standalone.c
++++ b/net/netfilter/nf_conntrack_standalone.c
+@@ -180,7 +180,7 @@ static void ct_show_secctx(struct seq_file *s, const struct nf_conn *ct)
+ 	struct lsmcontext context;
+ 
+ 	lsmblob_init(&blob, ct->secmark);
+-	ret = security_secid_to_secctx(&blob, &context);
++	ret = security_secid_to_secctx(&blob, &context, LSMBLOB_DISPLAY);
+ 	if (ret)
+ 		return;
+ 
+diff --git a/net/netfilter/nfnetlink_queue.c b/net/netfilter/nfnetlink_queue.c
+index ea1e39618b82..b14f6979a5f8 100644
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -331,7 +331,7 @@ static void nfqnl_get_sk_secctx(struct sk_buff *skb, struct lsmcontext *context)
+ 		 * blob. security_secid_to_secctx() will know which security
+ 		 * module to use to create the secctx.  */
+ 		lsmblob_init(&blob, skb->secmark);
+-		security_secid_to_secctx(&blob, context);
++		security_secid_to_secctx(&blob, context, LSMBLOB_DISPLAY);
+ 	}
+ 
+ 	read_unlock_bh(&skb->sk->sk_callback_lock);
+diff --git a/net/netlabel/netlabel_unlabeled.c b/net/netlabel/netlabel_unlabeled.c
+index ae1cb32944ca..8b14fac4c886 100644
+--- a/net/netlabel/netlabel_unlabeled.c
++++ b/net/netlabel/netlabel_unlabeled.c
+@@ -437,7 +437,8 @@ int netlbl_unlhsh_add(struct net *net,
+ unlhsh_add_return:
+ 	rcu_read_unlock();
+ 	if (audit_buf != NULL) {
+-		if (security_secid_to_secctx(lsmblob, &context) == 0) {
++		if (security_secid_to_secctx(lsmblob, &context,
++					     LSMBLOB_FIRST) == 0) {
+ 			audit_log_format(audit_buf, " sec_obj=%s",
+ 					 context.context);
+ 			security_release_secctx(&context);
+@@ -491,7 +492,8 @@ static int netlbl_unlhsh_remove_addr4(struct net *net,
+ 					  addr->s_addr, mask->s_addr);
+ 		dev_put(dev);
+ 		if (entry != NULL &&
+-		    security_secid_to_secctx(&entry->lsmblob, &context) == 0) {
++		    security_secid_to_secctx(&entry->lsmblob, &context,
++					     LSMBLOB_FIRST) == 0) {
+ 			audit_log_format(audit_buf, " sec_obj=%s",
+ 					 context.context);
+ 			security_release_secctx(&context);
+@@ -550,7 +552,8 @@ static int netlbl_unlhsh_remove_addr6(struct net *net,
+ 					  addr, mask);
+ 		dev_put(dev);
+ 		if (entry != NULL &&
+-		    security_secid_to_secctx(&entry->lsmblob, &context) == 0) {
++		    security_secid_to_secctx(&entry->lsmblob, &context,
++					     LSMBLOB_FIRST) == 0) {
+ 			audit_log_format(audit_buf, " sec_obj=%s",
+ 					 context.context);
+ 			security_release_secctx(&context);
+@@ -1120,7 +1123,7 @@ static int netlbl_unlabel_staticlist_gen(u32 cmd,
+ 		lsmb = (struct lsmblob *)&addr6->lsmblob;
+ 	}
+ 
+-	ret_val = security_secid_to_secctx(lsmb, &context);
++	ret_val = security_secid_to_secctx(lsmb, &context, LSMBLOB_FIRST);
+ 	if (ret_val != 0)
+ 		goto list_cb_failure;
+ 	ret_val = nla_put(cb_arg->skb,
+diff --git a/net/netlabel/netlabel_user.c b/net/netlabel/netlabel_user.c
+index 951ba0639d20..1941877fd16f 100644
+--- a/net/netlabel/netlabel_user.c
++++ b/net/netlabel/netlabel_user.c
+@@ -100,7 +100,7 @@ struct audit_buffer *netlbl_audit_start_common(int type,
+ 
+ 	lsmblob_init(&blob, audit_info->secid);
+ 	if (audit_info->secid != 0 &&
+-	    security_secid_to_secctx(&blob, &context) == 0) {
++	    security_secid_to_secctx(&blob, &context, LSMBLOB_FIRST) == 0) {
+ 		audit_log_format(audit_buf, " subj=%s", context.context);
+ 		security_release_secctx(&context);
+ 	}
+diff --git a/security/security.c b/security/security.c
+index a7e85f83da30..e2587e8402f3 100644
+--- a/security/security.c
++++ b/security/security.c
+@@ -4069,20 +4069,36 @@ EXPORT_SYMBOL(security_ismaclabel);
+  * security_secid_to_secctx - convert secid to secctx
+  * @blob: set of secids
+  * @cp: lsm context into which result is put
++ * @ilsm: which security module to report
+  *
+  * Translate secid information into a secctx string.
+  * Return a negative value on error.
+  * If cp is NULL return the length of the string.
+  * Otherwise, return 0.
+  */
+-int security_secid_to_secctx(struct lsmblob *blob, struct lsmcontext *cp)
++int security_secid_to_secctx(struct lsmblob *blob, struct lsmcontext *cp,
++			     int ilsm)
+ {
+ 	struct security_hook_list *hp;
+-	int ilsm = lsm_task_ilsm(current);
+ 
+ 	if (cp)
+ 		memset(cp, 0, sizeof(*cp));
+ 
++	/*
++	 * ilsm either is the slot number use for formatting
++	 * or an instruction on which relative slot to use.
++	 */
++	if (ilsm == LSMBLOB_DISPLAY)
++		ilsm = lsm_task_ilsm(current);
++	else if (ilsm == LSMBLOB_FIRST)
++		ilsm = LSMBLOB_INVALID;
++	else if (ilsm < 0) {
++		WARN_ONCE(true, "LSM: %s unknown interface LSM\n", __func__);
++		ilsm = LSMBLOB_INVALID;
++	} else if (ilsm >= lsm_slot) {
++		WARN_ONCE(true, "LSM: %s invalid interface LSM\n", __func__);
++		ilsm = LSMBLOB_INVALID;
++	}
+ 	hlist_for_each_entry(hp, &security_hook_heads.secid_to_secctx, list) {
+ 		if (WARN_ON(hp->lsmid->slot < 0 || hp->lsmid->slot >= lsm_slot))
+ 			continue;
+-- 
+2.42.0
+

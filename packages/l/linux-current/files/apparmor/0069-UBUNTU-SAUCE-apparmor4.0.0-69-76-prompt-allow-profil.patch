@@ -1,0 +1,100 @@
+From 7626794fcd844f30902d358e0daeaaac6101314a Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Tue, 22 Aug 2023 00:19:29 -0700
+Subject: [PATCH 69/76] UBUNTU: SAUCE: apparmor4.0.0 [69/76]: prompt - allow
+ profiles to set prompts as interruptible
+
+Generally prompts can't be interruptible because there are too many
+applications that don't handle ERESTARTSYS correctly. This can lead
+to random failures that result in a very poor experience.
+
+However allowing upcalls to interruptible is very useful sometimes,
+especially with some debugging so provide away for policy to allow
+it.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c            | 5 +++++
+ security/apparmor/include/label.h         | 2 +-
+ security/apparmor/include/policy_unpack.h | 1 +
+ security/apparmor/notify.c                | 9 ++++++++-
+ security/apparmor/policy_unpack.c         | 2 ++
+ 5 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 205dc3f75481..5fd3d7dfd2fe 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -2570,6 +2570,11 @@ static struct aa_sfs_entry aa_sfs_entry_versions[] = {
+ 	{ }
+ };
+ 
++static struct aa_sfs_entry aa_sfs_entry_profile[] = {
++	AA_SFS_FILE_BOOLEAN("interruptible",		1),
++	{ }
++};
++
+ static struct aa_sfs_entry aa_sfs_entry_policy[] = {
+ 	AA_SFS_DIR("versions",			aa_sfs_entry_versions),
+ 	AA_SFS_FILE_BOOLEAN("set_load",		1),
+diff --git a/security/apparmor/include/label.h b/security/apparmor/include/label.h
+index 3e7064d06727..d71ca085125d 100644
+--- a/security/apparmor/include/label.h
++++ b/security/apparmor/include/label.h
+@@ -90,7 +90,7 @@ enum label_flags {
+ 	FLAG_PROFILE = 0x200,		/* label is a profile */
+ 	FLAG_EXPLICIT = 0x400,		/* explicit static label */
+ 	FLAG_STALE = 0x800,		/* replaced/removed */
+-	FLAG_RENAMED = 0x1000,		/* label has renaming in it */
++	FLAG_INTERRUPTIBLE = 0x1000,
+ 	FLAG_REVOKED = 0x2000,		/* label has revocation in it */
+ 	FLAG_DEBUG1 = 0x4000,
+ 	FLAG_DEBUG2 = 0x8000,
+diff --git a/security/apparmor/include/policy_unpack.h b/security/apparmor/include/policy_unpack.h
+index a6f4611ee50c..1cb72267ea0f 100644
+--- a/security/apparmor/include/policy_unpack.h
++++ b/security/apparmor/include/policy_unpack.h
+@@ -31,6 +31,7 @@ struct aa_load_ent *aa_load_ent_alloc(void);
+ #define PACKED_FLAG_HAT		1
+ #define PACKED_FLAG_DEBUG1	2
+ #define PACKED_FLAG_DEBUG2	4
++#define PACKED_FLAG_INTERRUPTIBLE 8
+ 
+ #define PACKED_MODE_ENFORCE	0
+ #define PACKED_MODE_COMPLAIN	1
+diff --git a/security/apparmor/notify.c b/security/apparmor/notify.c
+index 7ea92d2163b7..aa4f1626bace 100644
+--- a/security/apparmor/notify.c
++++ b/security/apparmor/notify.c
+@@ -405,7 +405,14 @@ static int handle_synchronous_notif(struct aa_listener *listener,
+ 	long werr;
+ 	int err;
+ 
+-	werr = wait_for_completion_interruptible_timeout(&knotif->ready, msecs_to_jiffies(60000));
++	if (knotif->ad->subj_label->flags & FLAG_INTERRUPTIBLE)
++		werr = wait_for_completion_interruptible_timeout(&knotif->ready,
++						 msecs_to_jiffies(60000));
++	else
++		/* do not use close to long jiffies so cast is safe */
++		werr = (long) wait_for_completion_timeout(&knotif->ready,
++						   msecs_to_jiffies(60000));
++	/* time out OR interrupt */
+ 	if (werr <= 0) {
+ 		/* ensure knotif is not on list because of early exit */
+ 		spin_lock(&listener->lock);
+diff --git a/security/apparmor/policy_unpack.c b/security/apparmor/policy_unpack.c
+index 44346f086e34..b20c193049a9 100644
+--- a/security/apparmor/policy_unpack.c
++++ b/security/apparmor/policy_unpack.c
+@@ -908,6 +908,8 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
+ 		profile->label.flags |= FLAG_DEBUG1;
+ 	if (tmp & PACKED_FLAG_DEBUG2)
+ 		profile->label.flags |= FLAG_DEBUG2;
++	if (tmp & PACKED_FLAG_INTERRUPTIBLE)
++		profile->label.flags |= FLAG_INTERRUPTIBLE;
+ 	if (!aa_unpack_u32(e, &tmp, NULL))
+ 		goto fail;
+ 	if (tmp == PACKED_MODE_COMPLAIN || (e->version & FORCE_COMPLAIN_FLAG)) {
+-- 
+2.42.0
+

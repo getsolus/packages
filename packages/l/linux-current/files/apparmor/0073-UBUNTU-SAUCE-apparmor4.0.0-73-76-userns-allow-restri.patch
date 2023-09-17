@@ -1,0 +1,119 @@
+From 705537608d9619bf50cffe6d24bd5d004a04f454 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Wed, 9 Aug 2023 00:26:36 -0700
+Subject: [PATCH 73/76] UBUNTU: SAUCE: apparmor4.0.0 [73/76]: userns - allow
+ restricting unprivileged change_profile
+
+unprivileged unconfined can use change_profile to alter the confinement
+set by the mac admin.
+
+Allow restricting unprivileged unconfined by still allowing change_profile
+but stacking the change against unconfined. This allows unconfined to
+still apply system policy but allows the task to enter the new confinement.
+
+If unprivileged unconfined is required a sysctl is provided to switch
+to the previous behavior.
+
+BugLink: http://bugs.launchpad.net/bugs/2032602
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c     |  2 ++
+ security/apparmor/domain.c         | 24 ++++++++++++++++++++++++
+ security/apparmor/include/policy.h |  1 +
+ security/apparmor/lsm.c            |  7 +++++++
+ security/apparmor/policy.c         |  1 +
+ 5 files changed, 35 insertions(+)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index a4a2110f89d8..f1e9da932d64 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -2593,6 +2593,8 @@ static struct aa_sfs_entry aa_sfs_entry_versions[] = {
+ 
+ static struct aa_sfs_entry aa_sfs_entry_unconfined[] = {
+ 	AA_SFS_FILE_INTPTR("userns",		unprivileged_userns_restricted),
++	AA_SFS_FILE_INTPTR("change_profile",
++			    aa_unprivileged_unconfined_restricted),
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/domain.c b/security/apparmor/domain.c
+index fa6f1ffd0f27..45f0551c3309 100644
+--- a/security/apparmor/domain.c
++++ b/security/apparmor/domain.c
+@@ -1370,6 +1370,30 @@ int aa_change_profile(const char *fqname, int flags)
+ 			op = OP_CHANGE_PROFILE;
+ 	}
+ 
++	/* This should move to a per profile test. Requires pushing build
++	 * into callback
++	 */
++	if (!stack && unconfined(label) &&
++	    label == &labels_ns(label)->unconfined->label &&
++	    aa_unprivileged_unconfined_restricted &&
++	    /* TODO: refactor so this check is a fn */
++	    cap_capable(current_cred(), &init_user_ns, CAP_MAC_OVERRIDE,
++			CAP_OPT_NOAUDIT)) {
++		/* regardless of the request in this case apparmor
++		 * stacks against unconfined so admin set policy can't be
++		 * by-passed
++		 */
++		stack = true;
++		perms.audit = request;
++		(void) fn_for_each_in_ns(label, profile,
++				aa_audit_file(subj_cred, profile, &perms, op,
++					      request, auditname, NULL, target,
++					      GLOBAL_ROOT_UID,
++			      "change_profile unprivileged unconfined converted to stacking",
++					      0, false));
++		perms.audit = 0;
++	}
++
+ 	if (*fqname == '&') {
+ 		stack = true;
+ 		/* don't have label_parse() do stacking */
+diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
+index 8506fa29bac4..1e23fad7dbcb 100644
+--- a/security/apparmor/include/policy.h
++++ b/security/apparmor/include/policy.h
+@@ -37,6 +37,7 @@ extern int unprivileged_userns_apparmor_policy;
+ extern int unprivileged_userns_restricted;
+ extern int unprivileged_userns_restricted_force;
+ extern int unprivileged_userns_restricted_complain;
++extern int aa_unprivileged_unconfined_restricted;
+ 
+ extern const char *const aa_profile_mode_names[];
+ #define APPARMOR_MODE_NAMES_MAX_INDEX 4
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 9e565d0da721..f23829486af6 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -2281,6 +2281,13 @@ static struct ctl_table apparmor_sysctl_table[] = {
+ 		.proc_handler   = apparmor_dointvec,
+ 	},
+ #endif /* CONFIG_USER_NS */
++	{
++		.procname       = "apparmor_restrict_unprivileged_unconfined",
++		.data           = &aa_unprivileged_unconfined_restricted,
++		.maxlen         = sizeof(int),
++		.mode           = 0600,
++		.proc_handler   = apparmor_dointvec,
++	},
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index e6575b2beec0..cc4a3a3662b8 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -91,6 +91,7 @@ int unprivileged_userns_apparmor_policy = 1;
+ int unprivileged_userns_restricted = IS_ENABLED(CONFIG_SECURITY_APPARMOR_RESTRICT_USERNS);
+ int unprivileged_userns_restricted_force;
+ int unprivileged_userns_restricted_complain;
++int aa_unprivileged_unconfined_restricted = 1;
+ 
+ const char *const aa_profile_mode_names[] = {
+ 	"enforce",
+-- 
+2.42.0
+

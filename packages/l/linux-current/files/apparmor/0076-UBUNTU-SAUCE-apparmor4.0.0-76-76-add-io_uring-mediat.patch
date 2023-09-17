@@ -1,0 +1,322 @@
+From afcc72afba9cf2f89817afde849dedafaca5ab35 Mon Sep 17 00:00:00 2001
+From: Georgia Garcia <georgia.garcia@canonical.com>
+Date: Mon, 20 Mar 2023 14:43:41 -0300
+Subject: [PATCH 76/76] UBUNTU: SAUCE: apparmor4.0.0 [76/76]: add io_uring
+ mediation
+
+For now, the io_uring mediation is limited to sqpoll and
+override_creds.
+
+Signed-off-by: Georgia Garcia <georgia.garcia@canonical.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/apparmorfs.c       |   9 ++
+ security/apparmor/audit.c            |   2 +-
+ security/apparmor/include/apparmor.h |   2 +-
+ security/apparmor/include/audit.h    |   6 ++
+ security/apparmor/include/perms.h    |   3 +
+ security/apparmor/include/policy.h   |   1 +
+ security/apparmor/lsm.c              | 147 +++++++++++++++++++++++++++
+ security/apparmor/policy.c           |   1 +
+ 8 files changed, 169 insertions(+), 2 deletions(-)
+
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 341f46be6b7f..ab7aa97fe7e3 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -2595,6 +2595,8 @@ static struct aa_sfs_entry aa_sfs_entry_unconfined[] = {
+ 	AA_SFS_FILE_INTPTR("userns",		unprivileged_userns_restricted),
+ 	AA_SFS_FILE_INTPTR("change_profile",
+ 			    aa_unprivileged_unconfined_restricted),
++	AA_SFS_FILE_INTPTR("io_uring",
++			    aa_unprivileged_uring_restricted),
+ 	{ }
+ };
+ 
+@@ -2643,6 +2645,12 @@ static struct aa_sfs_entry aa_sfs_entry_query[] = {
+ 	AA_SFS_DIR("label",			aa_sfs_entry_query_label),
+ 	{ }
+ };
++
++static struct aa_sfs_entry aa_sfs_entry_io_uring[] = {
++	AA_SFS_FILE_STRING("mask", "sqpoll override_creds"),
++	{ }
++};
++
+ static struct aa_sfs_entry aa_sfs_entry_features[] = {
+ 	AA_SFS_DIR("policy",			aa_sfs_entry_policy),
+ 	AA_SFS_DIR("domain",			aa_sfs_entry_domain),
+@@ -2659,6 +2667,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
+ 	AA_SFS_DIR("signal",			aa_sfs_entry_signal),
+ 	AA_SFS_DIR("dbus",			aa_sfs_entry_dbus),
+ 	AA_SFS_DIR("query",			aa_sfs_entry_query),
++	AA_SFS_DIR("io_uring",			aa_sfs_entry_io_uring),
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
+index 21cd86d58e31..c62695625272 100644
+--- a/security/apparmor/audit.c
++++ b/security/apparmor/audit.c
+@@ -59,7 +59,7 @@ static const char *const aa_class_names[] = {
+ 	"module",
+ 	"lsm",
+ 	"namespace",
+-	"unknown",
++	"io_uring",
+ 	"unknown",
+ 	"unknown",
+ 	"unknown",
+diff --git a/security/apparmor/include/apparmor.h b/security/apparmor/include/apparmor.h
+index 8a37494ec564..59d2010bb1a2 100644
+--- a/security/apparmor/include/apparmor.h
++++ b/security/apparmor/include/apparmor.h
+@@ -30,10 +30,10 @@
+ #define AA_CLASS_NET		14
+ #define AA_CLASS_LABEL		16
+ #define AA_CLASS_POSIX_MQUEUE	17
+-#define AA_CLASS_IO_URING	18
+ #define AA_CLASS_MODULE		19
+ #define AA_CLASS_DISPLAY_LSM	20
+ #define AA_CLASS_NS		21
++#define AA_CLASS_IO_URING	22
+ 
+ #define AA_CLASS_X		31
+ #define AA_CLASS_DBUS		32
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index 7dcfcf4de478..b6ac2f44d78d 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -107,6 +107,9 @@ enum audit_type {
+ 
+ #define OP_USERNS_CREATE "userns_create"
+ 
++#define OP_URING_OVERRIDE "uring_override"
++#define OP_URING_SQPOLL "uring_sqpoll"
++
+ #define AUDIT_TAILGLOB_NAME 1
+ struct apparmor_audit_data {
+ 	u32 flags;		/* control flags not part of actual data */
+@@ -163,6 +166,9 @@ struct apparmor_audit_data {
+ 			const char *data;
+ 			unsigned long flags;
+ 		} mnt;
++		struct {
++			struct aa_label *target;
++		} uring;
+ 	};
+ 
+ 	struct common_audit_data common;
+diff --git a/security/apparmor/include/perms.h b/security/apparmor/include/perms.h
+index f719e99f0327..77c8779a8d85 100644
+--- a/security/apparmor/include/perms.h
++++ b/security/apparmor/include/perms.h
+@@ -48,6 +48,9 @@
+ 
+ #define AA_LINK_SUBSET		AA_MAY_LOCK	/* overlaid */
+ 
++#define AA_MAY_CREATE_SQPOLL   AA_MAY_CREATE
++#define AA_MAY_OVERRIDE_CRED   AA_MAY_APPEND
++#define AA_URING_PERM_MASK     (AA_MAY_OVERRIDE_CRED | AA_MAY_CREATE_SQPOLL)
+ 
+ #define PERMS_CHRS_MASK (MAY_READ | MAY_WRITE | AA_MAY_CREATE |		\
+ 			 AA_MAY_DELETE | AA_MAY_LINK | AA_MAY_LOCK |	\
+diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
+index 1e23fad7dbcb..36c9f8006ab4 100644
+--- a/security/apparmor/include/policy.h
++++ b/security/apparmor/include/policy.h
+@@ -38,6 +38,7 @@ extern int unprivileged_userns_restricted;
+ extern int unprivileged_userns_restricted_force;
+ extern int unprivileged_userns_restricted_complain;
+ extern int aa_unprivileged_unconfined_restricted;
++extern int aa_unprivileged_uring_restricted;
+ 
+ extern const char *const aa_profile_mode_names[];
+ #define APPARMOR_MODE_NAMES_MAX_INDEX 4
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index f23829486af6..8314629fff12 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -769,6 +769,141 @@ static int apparmor_file_mprotect(struct vm_area_struct *vma,
+ 			   false);
+ }
+ 
++#ifdef CONFIG_IO_URING
++static const char *audit_uring_mask(u32 mask)
++{
++	if (mask & AA_MAY_CREATE_SQPOLL)
++		return "sqpoll";
++	if (mask & AA_MAY_OVERRIDE_CRED)
++		return "override_creds";
++	return "";
++}
++
++static void audit_uring_cb(struct audit_buffer *ab, void *va)
++{
++	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
++
++	if (ad->request & AA_URING_PERM_MASK) {
++		audit_log_format(ab, " requested=\"%s\"",
++				 audit_uring_mask(ad->request));
++		if (ad->denied & AA_URING_PERM_MASK) {
++			audit_log_format(ab, " denied=\"%s\"",
++					 audit_uring_mask(ad->denied));
++		}
++	}
++	if (ad->uring.target) {
++		audit_log_format(ab, " tcontext=");
++		aa_label_xaudit(ab, labels_ns(ad->subj_label),
++				ad->uring.target,
++				FLAGS_NONE, GFP_ATOMIC);
++	}
++}
++
++static int profile_uring(struct aa_profile *profile, u32 request,
++			 struct aa_label *new, int cap,
++			 struct apparmor_audit_data *ad)
++{
++	unsigned int state;
++	struct aa_ruleset *rules;
++
++	AA_BUG(!profile);
++
++	rules = list_first_entry(&profile->rules, typeof(*rules), list);
++
++	/* TODO: rework unconfined profile/dfa to mediate user ns, then
++	 * we can drop the unconfined test
++	 */
++	state = RULE_MEDIATES(rules, AA_CLASS_IO_URING);
++	if (!state) {
++		/* TODO: this gets replaced when the default unconfined
++		 * profile dfa gets updated to handle this
++		 */
++		if (profile_unconfined(profile) &&
++		    profile == profiles_ns(profile)->unconfined) {
++			if (!aa_unprivileged_uring_restricted ||
++			    ns_capable_noaudit(current_user_ns(), cap))
++				/* unconfined early bail out */
++				return 0;
++			/* unconfined unprivileged user */
++			/* don't just return: allow complain mode to override */
++		} else {
++			/* Fallback to capability check if profile doesn't
++			 * support io_uring rules. Note: special unconfined
++			 * profiles as well.
++			 */
++			return aa_capable(current_cred(), &profile->label,
++					  cap, CAP_OPT_NONE);
++		}
++		/* continue to mediation - !state means non-accepting
++		 * but can be overidden by complain
++		 */
++	}
++	/* block so perms is not initialized unless mediating */
++	do {
++		struct aa_perms perms = { };
++
++		if (new) {
++			aa_label_match(profile, rules, new, state,
++				       false, request, &perms);
++		} else {
++			perms = *aa_lookup_perms(rules->policy, state);
++		}
++		aa_apply_modes_to_perms(profile, &perms);
++		return aa_check_perms(profile, &perms, request, ad,
++				      audit_uring_cb);
++	} while (0);
++}
++
++/**
++ * apparmor_uring_override_creds - check the requested cred override
++ * @new: the target creds
++ *
++ * Check to see if the current task is allowed to override it's credentials
++ * to service an io_uring operation.
++ */
++int apparmor_uring_override_creds(const struct cred *new)
++{
++	struct aa_profile *profile;
++	struct aa_label *label;
++	int error;
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_IO_URING,
++			  OP_URING_OVERRIDE);
++
++	ad.uring.target = cred_label(new);
++	label = __begin_current_label_crit_section();
++	error = fn_for_each(label, profile,
++			profile_uring(profile, AA_MAY_OVERRIDE_CRED,
++				      cred_label(new), CAP_SYS_ADMIN, &ad));
++	__end_current_label_crit_section(label);
++
++	return error;
++}
++
++/**
++ * apparmor_uring_sqpoll - check if a io_uring polling thread can be created
++ *
++ * Check to see if the current task is allowed to create a new io_uring
++ * kernel polling thread.
++ */
++int apparmor_uring_sqpoll(void)
++{
++	struct aa_profile *profile;
++	struct aa_label *label;
++	int error;
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_IO_URING,
++			  OP_URING_SQPOLL);
++
++	label = __begin_current_label_crit_section();
++	error = fn_for_each(label, profile,
++			profile_uring(profile, AA_MAY_CREATE_SQPOLL,
++				      NULL, CAP_SYS_ADMIN, &ad));
++	__end_current_label_crit_section(label);
++
++	return error;
++}
++#endif /* CONFIG_IO_URING */
++
+ static int apparmor_sb_mount(const char *dev_name, const struct path *path,
+ 			     const char *type, unsigned long flags, void *data)
+ {
+@@ -1681,6 +1816,11 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
+ 	LSM_HOOK_INIT(secid_to_secctx, apparmor_secid_to_secctx),
+ 	LSM_HOOK_INIT(secctx_to_secid, apparmor_secctx_to_secid),
+ 	LSM_HOOK_INIT(release_secctx, apparmor_release_secctx),
++
++#ifdef CONFIG_IO_URING
++	LSM_HOOK_INIT(uring_override_creds, apparmor_uring_override_creds),
++	LSM_HOOK_INIT(uring_sqpoll, apparmor_uring_sqpoll),
++#endif
+ };
+ 
+ /*
+@@ -2288,6 +2428,13 @@ static struct ctl_table apparmor_sysctl_table[] = {
+ 		.mode           = 0600,
+ 		.proc_handler   = apparmor_dointvec,
+ 	},
++	{
++		.procname       = "apparmor_restrict_unprivileged_io_uring",
++		.data           = &aa_unprivileged_uring_restricted,
++		.maxlen         = sizeof(int),
++		.mode           = 0600,
++		.proc_handler   = apparmor_dointvec,
++	},
+ 	{ }
+ };
+ 
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index 40978e503b48..98425616806b 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -92,6 +92,7 @@ int unprivileged_userns_restricted = IS_ENABLED(CONFIG_SECURITY_APPARMOR_RESTRIC
+ int unprivileged_userns_restricted_force;
+ int unprivileged_userns_restricted_complain;
+ int aa_unprivileged_unconfined_restricted = 1;
++int aa_unprivileged_uring_restricted;
+ 
+ const char *const aa_profile_mode_names[] = {
+ 	"enforce",
+-- 
+2.42.0
+

@@ -1,0 +1,1202 @@
+From e4c4067231f607aac43b20fae7aa5a8e33ed33be Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Fri, 28 Apr 2023 05:32:52 -0700
+Subject: [PATCH 58/76] UBUNTU: SAUCE: apparmor4.0.0 [58/76]: prompt - ref
+ count pdb
+
+With the move to permission tables the dfa is no longer a stand
+alone entity when used, needing a minimum of a permission table.
+However it still could be shared among different pdbs each using
+a different permission table.
+
+Instead of duping the permission table when sharing a pdb, add a
+refcount to the pdb so it can be easily shared.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/af_unix.c        |  22 +++---
+ security/apparmor/apparmorfs.c     |  18 ++---
+ security/apparmor/domain.c         |  60 ++++++++--------
+ security/apparmor/file.c           |  12 ++--
+ security/apparmor/include/lib.h    |   3 +
+ security/apparmor/include/match.h  |   6 --
+ security/apparmor/include/policy.h |  49 +++++++++----
+ security/apparmor/ipc.c            |  10 +--
+ security/apparmor/label.c          |  18 ++---
+ security/apparmor/lib.c            |   4 +-
+ security/apparmor/lsm.c            |  65 ++++++++++++++++-
+ security/apparmor/match.c          |  44 ------------
+ security/apparmor/mount.c          |  20 +++---
+ security/apparmor/net.c            |   4 +-
+ security/apparmor/policy.c         |  59 +++++++++++-----
+ security/apparmor/policy_unpack.c  | 108 +++++++++++++----------------
+ security/apparmor/task.c           |   2 +-
+ 17 files changed, 277 insertions(+), 227 deletions(-)
+
+diff --git a/security/apparmor/af_unix.c b/security/apparmor/af_unix.c
+index e419fa1b8225..b3780f7f5eff 100644
+--- a/security/apparmor/af_unix.c
++++ b/security/apparmor/af_unix.c
+@@ -200,7 +200,7 @@ static int do_perms(struct aa_profile *profile, struct aa_ruleset *rule,
+ 
+ 	AA_BUG(!profile);
+ 
+-	perms = *aa_lookup_perms(&rule->policy, state);
++	perms = *aa_lookup_perms(rule->policy, state);
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 	return aa_check_perms(profile, &perms, request, ad,
+ 			      audit_net_cb);
+@@ -216,7 +216,7 @@ static int match_label(struct aa_profile *profile, struct aa_ruleset *rule,
+ 	ad->peer = &peer->label;
+ 
+ 	if (state) {
+-		state = aa_dfa_match(rule->policy.dfa, state,
++		state = aa_dfa_match(rule->policy->dfa, state,
+ 				     peer->base.hname);
+ 		if (!state)
+ 			ad->info = "failed peer label match";
+@@ -243,7 +243,7 @@ static int profile_create_perm(struct aa_profile *profile, int family,
+ 
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+-		state = match_to_prot(rules->policy.dfa, state, type, protocol,
++		state = match_to_prot(rules->policy->dfa, state, type, protocol,
+ 				      &ad.info);
+ 		return do_perms(profile, rules, state, AA_MAY_CREATE, &ad);
+ 	}
+@@ -280,7 +280,7 @@ static inline int profile_sk_perm(struct aa_profile *profile,
+ 
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+-		state = match_to_sk(rules->policy.dfa, state, unix_sk(sk),
++		state = match_to_sk(rules->policy->dfa, state, unix_sk(sk),
+ 				    &ad->info);
+ 		return do_perms(profile, rules, state, request, ad);
+ 	}
+@@ -350,7 +350,7 @@ static int profile_bind_perm(struct aa_profile *profile, struct sock *sk,
+ 		ad.net.addr = unix_addr(addr);
+ 		ad.net.addrlen = addrlen;
+ 
+-		state = match_to_local(rules->policy.dfa, state,
++		state = match_to_local(rules->policy->dfa, state,
+ 				       sk->sk_type, sk->sk_protocol,
+ 				       unix_addr(addr), addrlen,
+ 				       &ad.info);
+@@ -405,10 +405,10 @@ static int profile_listen_perm(struct aa_profile *profile, struct sock *sk,
+ 	if (state) {
+ 		__be16 b = cpu_to_be16(backlog);
+ 
+-		state = match_to_cmd(rules->policy.dfa, state, unix_sk(sk),
++		state = match_to_cmd(rules->policy->dfa, state, unix_sk(sk),
+ 				     CMD_LISTEN, &ad.info);
+ 		if (state) {
+-			state = aa_dfa_match_len(rules->policy.dfa, state,
++			state = aa_dfa_match_len(rules->policy->dfa, state,
+ 						 (char *) &b, 2);
+ 			if (!state)
+ 				ad.info = "failed listen backlog match";
+@@ -452,7 +452,7 @@ static inline int profile_accept_perm(struct aa_profile *profile,
+ 
+ 	state = RULE_MEDIATES_AF(rules, AF_UNIX);
+ 	if (state) {
+-		state = match_to_sk(rules->policy.dfa, state, unix_sk(sk),
++		state = match_to_sk(rules->policy->dfa, state, unix_sk(sk),
+ 				    &ad.info);
+ 		return do_perms(profile, rules, state, AA_MAY_ACCEPT, &ad);
+ 	}
+@@ -506,10 +506,10 @@ static int profile_opt_perm(struct aa_profile *profile, const char *op, u32 requ
+ 	if (state) {
+ 		__be16 b = cpu_to_be16(optname);
+ 
+-		state = match_to_cmd(rules->policy.dfa, state, unix_sk(sk),
++		state = match_to_cmd(rules->policy->dfa, state, unix_sk(sk),
+ 				     CMD_OPT, &ad.info);
+ 		if (state) {
+-			state = aa_dfa_match_len(rules->policy.dfa, state,
++			state = aa_dfa_match_len(rules->policy->dfa, state,
+ 						 (char *) &b, 2);
+ 			if (!state)
+ 				ad.info = "failed sockopt match";
+@@ -564,7 +564,7 @@ static int profile_peer_perm(struct aa_profile *profile, const char *op, u32 req
+ 			addr = unix_sk(peer_sk)->addr->name;
+ 			len = unix_sk(peer_sk)->addr->len;
+ 		}
+-		state = match_to_peer(rules->policy.dfa, state, unix_sk(sk),
++		state = match_to_peer(rules->policy->dfa, state, unix_sk(sk),
+ 				      addr, len, &ad->info);
+ 		if (!peer_label)
+ 			peer_label = peer_ctx->label;
+diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
+index 660bc558d76b..cad1947dd893 100644
+--- a/security/apparmor/apparmorfs.c
++++ b/security/apparmor/apparmorfs.c
+@@ -794,23 +794,23 @@ static void profile_query_cb(struct aa_profile *profile, struct aa_perms *perms,
+ 
+ 	if (profile_unconfined(profile))
+ 		return;
+-	if (rules->file.dfa && *match_str == AA_CLASS_FILE) {
+-		state = aa_dfa_match_len(rules->file.dfa,
+-					 rules->file.start[AA_CLASS_FILE],
++	if (rules->file->dfa && *match_str == AA_CLASS_FILE) {
++		state = aa_dfa_match_len(rules->file->dfa,
++					 rules->file->start[AA_CLASS_FILE],
+ 					 match_str + 1, match_len - 1);
+ 		if (state) {
+ 			struct path_cond cond = { };
+ 
+-			tmp = *(aa_lookup_fperms(&(rules->file), state, &cond));
++			tmp = *(aa_lookup_fperms(rules->file, state, &cond));
+ 		}
+-	} else if (rules->policy.dfa) {
++	} else if (rules->policy->dfa) {
+ 		if (!RULE_MEDIATES(rules, *match_str))
+ 			return;	/* no change to current perms */
+-		state = aa_dfa_match_len(rules->policy.dfa,
+-					 rules->policy.start[0],
++		state = aa_dfa_match_len(rules->policy->dfa,
++					 rules->policy->start[0],
+ 					 match_str, match_len);
+ 		if (state)
+-			tmp = *aa_lookup_perms(&rules->policy, state);
++			tmp = *aa_lookup_perms(rules->policy, state);
+ 	}
+ 	aa_apply_modes_to_perms(profile, &tmp);
+ 	aa_perms_accum_raw(perms, &tmp);
+@@ -1271,7 +1271,7 @@ static int seq_profile_attach_show(struct seq_file *seq, void *v)
+ 	struct aa_profile *profile = labels_profile(label);
+ 	if (profile->attach.xmatch_str)
+ 		seq_printf(seq, "%s\n", profile->attach.xmatch_str);
+-	else if (profile->attach.xmatch.dfa)
++	else if (profile->attach.xmatch->dfa)
+ 		seq_puts(seq, "<unknown>\n");
+ 	else
+ 		seq_printf(seq, "%s\n", profile->base.name);
+diff --git a/security/apparmor/domain.c b/security/apparmor/domain.c
+index 2700999791f8..c2f9cb20e07f 100644
+--- a/security/apparmor/domain.c
++++ b/security/apparmor/domain.c
+@@ -77,7 +77,7 @@ static int may_change_ptraced_domain(const struct cred *to_cred,
+ /**** TODO: dedup to aa_label_match - needs perm and dfa, merging
+  * specifically this is an exact copy of aa_label_match except
+  * aa_compute_perms is replaced with aa_compute_fperms
+- * and policy.dfa with file.dfa
++ * and policy->dfa with file->dfa
+  ****/
+ /* match a profile and its associated ns component if needed
+  * Assumes visibility test has already been done.
+@@ -93,16 +93,16 @@ static inline aa_state_t match_component(struct aa_profile *profile,
+ 	const char *ns_name;
+ 
+ 	if (stack)
+-		state = aa_dfa_match(rules->file.dfa, state, "&");
++		state = aa_dfa_match(rules->file->dfa, state, "&");
+ 	if (profile->ns == tp->ns)
+-		return aa_dfa_match(rules->file.dfa, state, tp->base.hname);
++		return aa_dfa_match(rules->file->dfa, state, tp->base.hname);
+ 
+ 	/* try matching with namespace name and then profile */
+ 	ns_name = aa_ns_name(profile->ns, tp->ns, true);
+-	state = aa_dfa_match_len(rules->file.dfa, state, ":", 1);
+-	state = aa_dfa_match(rules->file.dfa, state, ns_name);
+-	state = aa_dfa_match_len(rules->file.dfa, state, ":", 1);
+-	return aa_dfa_match(rules->file.dfa, state, tp->base.hname);
++	state = aa_dfa_match_len(rules->file->dfa, state, ":", 1);
++	state = aa_dfa_match(rules->file->dfa, state, ns_name);
++	state = aa_dfa_match_len(rules->file->dfa, state, ":", 1);
++	return aa_dfa_match(rules->file->dfa, state, tp->base.hname);
+ }
+ 
+ /**
+@@ -150,12 +150,12 @@ static int label_compound_match(struct aa_profile *profile,
+ 	label_for_each_cont(i, label, tp) {
+ 		if (!aa_ns_visible(profile->ns, tp->ns, subns))
+ 			continue;
+-		state = aa_dfa_match(rules->file.dfa, state, "//&");
++		state = aa_dfa_match(rules->file->dfa, state, "//&");
+ 		state = match_component(profile, tp, false, state);
+ 		if (!state)
+ 			goto fail;
+ 	}
+-	*perms = *(aa_lookup_fperms(&(rules->file), state, &cond));
++	*perms = *(aa_lookup_fperms(rules->file, state, &cond));
+ 	aa_apply_modes_to_perms(profile, perms);
+ 	if ((perms->allow & request) != request)
+ 		return -EACCES;
+@@ -210,7 +210,7 @@ static int label_components_match(struct aa_profile *profile,
+ 	return 0;
+ 
+ next:
+-	tmp = *(aa_lookup_fperms(&(rules->file), state, &cond));
++	tmp = *(aa_lookup_fperms(rules->file, state, &cond));
+ 	aa_apply_modes_to_perms(profile, &tmp);
+ 	aa_perms_accum(perms, &tmp);
+ 	label_for_each_cont(i, label, tp) {
+@@ -219,7 +219,7 @@ static int label_components_match(struct aa_profile *profile,
+ 		state = match_component(profile, tp, stack, start);
+ 		if (!state)
+ 			goto fail;
+-		tmp = *(aa_lookup_fperms(&(rules->file), state, &cond));
++		tmp = *(aa_lookup_fperms(rules->file, state, &cond));
+ 		aa_apply_modes_to_perms(profile, &tmp);
+ 		aa_perms_accum(perms, &tmp);
+ 	}
+@@ -316,7 +316,7 @@ static int aa_xattrs_match(const struct linux_binprm *bprm,
+ 	might_sleep();
+ 
+ 	/* transition from exec match to xattr set */
+-	state = aa_dfa_outofband_transition(attach->xmatch.dfa, state);
++	state = aa_dfa_outofband_transition(attach->xmatch->dfa, state);
+ 	d = bprm->file->f_path.dentry;
+ 
+ 	for (i = 0; i < attach->xattr_count; i++) {
+@@ -330,20 +330,20 @@ static int aa_xattrs_match(const struct linux_binprm *bprm,
+ 			 * that not present xattr can be distinguished from a 0
+ 			 * length value or rule that matches any value
+ 			 */
+-			state = aa_dfa_null_transition(attach->xmatch.dfa,
++			state = aa_dfa_null_transition(attach->xmatch->dfa,
+ 						       state);
+ 			/* Check xattr value */
+-			state = aa_dfa_match_len(attach->xmatch.dfa, state,
++			state = aa_dfa_match_len(attach->xmatch->dfa, state,
+ 						 value, size);
+-			index = ACCEPT_TABLE(attach->xmatch.dfa)[state];
+-			perm = attach->xmatch.perms[index].allow;
++			index = ACCEPT_TABLE(attach->xmatch->dfa)[state];
++			perm = attach->xmatch->perms[index].allow;
+ 			if (!(perm & MAY_EXEC)) {
+ 				ret = -EINVAL;
+ 				goto out;
+ 			}
+ 		}
+ 		/* transition to next element */
+-		state = aa_dfa_outofband_transition(attach->xmatch.dfa, state);
++		state = aa_dfa_outofband_transition(attach->xmatch->dfa, state);
+ 		if (size < 0) {
+ 			/*
+ 			 * No xattr match, so verify if transition to
+@@ -412,16 +412,16 @@ static struct aa_label *find_attach(const struct linux_binprm *bprm,
+ 		 * as another profile, signal a conflict and refuse to
+ 		 * match.
+ 		 */
+-		if (attach->xmatch.dfa) {
++		if (attach->xmatch->dfa) {
+ 			unsigned int count;
+ 			aa_state_t state;
+ 			u32 index, perm;
+ 
+-			state = aa_dfa_leftmatch(attach->xmatch.dfa,
+-					attach->xmatch.start[AA_CLASS_XMATCH],
++			state = aa_dfa_leftmatch(attach->xmatch->dfa,
++					attach->xmatch->start[AA_CLASS_XMATCH],
+ 					name, &count);
+-			index = ACCEPT_TABLE(attach->xmatch.dfa)[state];
+-			perm = attach->xmatch.perms[index].allow;
++			index = ACCEPT_TABLE(attach->xmatch->dfa)[state];
++			perm = attach->xmatch->perms[index].allow;
+ 			/* any accepting state means a valid match. */
+ 			if (perm & MAY_EXEC) {
+ 				int ret = 0;
+@@ -524,7 +524,7 @@ struct aa_label *x_table_lookup(struct aa_profile *profile, u32 xindex,
+ 	/* TODO: move lookup parsing to unpack time so this is a straight
+ 	 *       index into the resultant label
+ 	 */
+-	for (*name = rules->file.trans.table[index]; !label && *name;
++	for (*name = rules->file->trans.table[index]; !label && *name;
+ 	     *name = next_name(xtype, *name)) {
+ 		if (xindex & AA_X_CHILD) {
+ 			struct aa_profile *new_profile;
+@@ -577,7 +577,7 @@ static struct aa_label *x_to_label(struct aa_profile *profile,
+ 		break;
+ 	case AA_X_TABLE:
+ 		/* TODO: fix when perm mapping done at unload */
+-		stack = rules->file.trans.table[xindex & AA_X_INDEX_MASK];
++		stack = rules->file->trans.table[xindex & AA_X_INDEX_MASK];
+ 		if (*stack != '&') {
+ 			/* released by caller */
+ 			new = x_table_lookup(profile, xindex, lookupname);
+@@ -636,7 +636,7 @@ static struct aa_label *profile_transition(const struct cred *subj_cred,
+ 						    typeof(*rules), list);
+ 	struct aa_label *new = NULL;
+ 	const char *info = NULL, *name = NULL, *target = NULL;
+-	aa_state_t state = rules->file.start[AA_CLASS_FILE];
++	aa_state_t state = rules->file->start[AA_CLASS_FILE];
+ 	struct aa_perms perms = {};
+ 	bool nonewprivs = false;
+ 	int error = 0;
+@@ -670,7 +670,7 @@ static struct aa_label *profile_transition(const struct cred *subj_cred,
+ 	}
+ 
+ 	/* find exec permissions for name */
+-	state = aa_str_perms(&(rules->file), state, name, cond, &perms);
++	state = aa_str_perms(rules->file, state, name, cond, &perms);
+ 	if (perms.allow & MAY_EXEC) {
+ 		/* exec permission determine how to transition */
+ 		new = x_to_label(profile, bprm, name, perms.xindex, &target,
+@@ -735,7 +735,7 @@ static int profile_onexec(const struct cred *subj_cred,
+ {
+ 	struct aa_ruleset *rules = list_first_entry(&profile->rules,
+ 						    typeof(*rules), list);
+-	aa_state_t state = rules->file.start[AA_CLASS_FILE];
++	aa_state_t state = rules->file->start[AA_CLASS_FILE];
+ 	struct aa_perms perms = {};
+ 	const char *xname = NULL, *info = "change_profile onexec";
+ 	int error = -EACCES;
+@@ -768,7 +768,7 @@ static int profile_onexec(const struct cred *subj_cred,
+ 	}
+ 
+ 	/* find exec permissions for name */
+-	state = aa_str_perms(&(rules->file), state, xname, cond, &perms);
++	state = aa_str_perms(rules->file, state, xname, cond, &perms);
+ 	if (!(perms.allow & AA_MAY_ONEXEC)) {
+ 		info = "no change_onexec valid for executable";
+ 		goto audit;
+@@ -777,7 +777,7 @@ static int profile_onexec(const struct cred *subj_cred,
+ 	 * onexec permission is linked to exec with a standard pairing
+ 	 * exec\0change_profile
+ 	 */
+-	state = aa_dfa_null_transition(rules->file.dfa, state);
++	state = aa_dfa_null_transition(rules->file->dfa, state);
+ 	error = change_profile_perms(profile, onexec, stack, AA_MAY_ONEXEC,
+ 				     state, &perms);
+ 	if (error) {
+@@ -1300,7 +1300,7 @@ static int change_profile_perms_wrapper(const char *op, const char *name,
+ 
+ 	if (!error)
+ 		error = change_profile_perms(profile, target, stack, request,
+-					     rules->file.start[AA_CLASS_FILE],
++					     rules->file->start[AA_CLASS_FILE],
+ 					     perms);
+ 	if (error)
+ 		error = aa_audit_file(subj_cred, profile, perms, op, request,
+diff --git a/security/apparmor/file.c b/security/apparmor/file.c
+index 513ad9cbe504..88ac40702db3 100644
+--- a/security/apparmor/file.c
++++ b/security/apparmor/file.c
+@@ -357,7 +357,7 @@ int __aa_path_perm(const char *op, const struct cred *subj_cred,
+ 	if (profile_unconfined(profile) ||
+ 	    ((flags & PATH_SOCK_COND) && !RULE_MEDIATES_AF(rules, AF_UNIX)))
+ 		return 0;
+-	aa_str_perms(&(rules->file), rules->file.start[AA_CLASS_FILE],
++	aa_str_perms(rules->file, rules->file->start[AA_CLASS_FILE],
+ 		     name, cond, perms);
+ 	if (request & ~perms->allow)
+ 		e = -EACCES;
+@@ -475,16 +475,16 @@ static int profile_path_link(const struct cred *subj_cred,
+ 
+ 	error = -EACCES;
+ 	/* aa_str_perms - handles the case of the dfa being NULL */
+-	state = aa_str_perms(&(rules->file),
+-			     rules->file.start[AA_CLASS_FILE], lname,
++	state = aa_str_perms(rules->file,
++			     rules->file->start[AA_CLASS_FILE], lname,
+ 			     cond, &lperms);
+ 
+ 	if (!(lperms.allow & AA_MAY_LINK))
+ 		goto audit;
+ 
+ 	/* test to see if target can be paired with link */
+-	state = aa_dfa_null_transition(rules->file.dfa, state);
+-	aa_str_perms(&(rules->file), state, tname, cond, &perms);
++	state = aa_dfa_null_transition(rules->file->dfa, state);
++	aa_str_perms(rules->file, state, tname, cond, &perms);
+ 
+ 	/* force audit/quiet masks for link are stored in the second entry
+ 	 * in the link pair.
+@@ -506,7 +506,7 @@ static int profile_path_link(const struct cred *subj_cred,
+ 	/* Do link perm subset test requiring allowed permission on link are
+ 	 * a subset of the allowed permissions on target.
+ 	 */
+-	aa_str_perms(&(rules->file), rules->file.start[AA_CLASS_FILE],
++	aa_str_perms(rules->file, rules->file->start[AA_CLASS_FILE],
+ 		     tname, cond, &perms);
+ 
+ 	/* AA_MAY_LINK is not considered in the subset test */
+diff --git a/security/apparmor/include/lib.h b/security/apparmor/include/lib.h
+index db274cac2210..0a186eb79e1b 100644
+--- a/security/apparmor/include/lib.h
++++ b/security/apparmor/include/lib.h
+@@ -16,6 +16,9 @@
+ 
+ #include "match.h"
+ 
++extern struct aa_dfa *stacksplitdfa;
++
++
+ #define list_add_entry(ent, list, member) list_add(&(ent)->member, (list))
+ #define list_add_tail_entry(ent, list, member) list_add_tail(&(ent)->member, (list))
+ 
+diff --git a/security/apparmor/include/match.h b/security/apparmor/include/match.h
+index 58fbf67139b9..4bb0405c9190 100644
+--- a/security/apparmor/include/match.h
++++ b/security/apparmor/include/match.h
+@@ -102,9 +102,6 @@ struct aa_dfa {
+ 	struct table_header *tables[YYTD_ID_TSIZE];
+ };
+ 
+-extern struct aa_dfa *nulldfa;
+-extern struct aa_dfa *stacksplitdfa;
+-
+ #define byte_to_byte(X) (X)
+ 
+ #define UNPACK_ARRAY(TABLE, BLOB, LEN, TTYPE, BTYPE, NTOHX)	\
+@@ -122,9 +119,6 @@ static inline size_t table_size(size_t len, size_t el_size)
+ 	return ALIGN(sizeof(struct table_header) + len * el_size, 8);
+ }
+ 
+-int aa_setup_dfa_engine(void);
+-void aa_teardown_dfa_engine(void);
+-
+ #define aa_state_t unsigned int
+ 
+ struct aa_dfa *aa_dfa_unpack(void *blob, size_t size, int flags);
+diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
+index 84d95ca32c89..5715c9ab88db 100644
+--- a/security/apparmor/include/policy.h
++++ b/security/apparmor/include/policy.h
+@@ -77,12 +77,14 @@ enum profile_mode {
+ 
+ 
+ /* struct aa_policydb - match engine for a policy
++ * count: refcount for the pdb
+  * dfa: dfa pattern match
+  * perms: table of permissions
+  * strs: table of strings, index by x
+  * start: set of start states for the different classes of data
+  */
+ struct aa_policydb {
++	struct kref count;
+ 	struct aa_dfa *dfa;
+ 	struct {
+ 		struct aa_perms *perms;
+@@ -92,13 +94,36 @@ struct aa_policydb {
+ 	aa_state_t start[AA_CLASS_LAST + 1];
+ };
+ 
+-static inline void aa_destroy_policydb(struct aa_policydb *policy)
++extern struct aa_policydb *nullpdb;
++
++struct aa_policydb *aa_alloc_pdb(gfp_t gfp);
++void aa_pdb_free_kref(struct kref *kref);
++
++/**
++ * aa_get_pdb - increment refcount on @pdb
++ * @pdb: policydb  (MAYBE NULL)
++ *
++ * Returns: pointer to @pdb if @pdb is NULL will return NULL
++ * Requires: @pdb must be held with valid refcount when called
++ */
++static inline struct aa_policydb *aa_get_pdb(struct aa_policydb *pdb)
+ {
+-	aa_put_dfa(policy->dfa);
+-	if (policy->perms)
+-		kvfree(policy->perms);
+-	aa_free_str_table(&policy->trans);
++	if (pdb)
++		kref_get(&(pdb->count));
+ 
++	return pdb;
++}
++
++/**
++ * aa_put_pdb - put a pdb refcount
++ * @pdb: pdb to put refcount   (MAYBE NULL)
++ *
++ * Requires: if @pdb != NULL that a valid refcount be held
++ */
++static inline void aa_put_pdb(struct aa_policydb *pdb)
++{
++	if (pdb)
++		kref_put(&pdb->count, aa_pdb_free_kref);
+ }
+ 
+ static inline struct aa_perms *aa_lookup_perms(struct aa_policydb *policy,
+@@ -142,8 +167,8 @@ struct aa_ruleset {
+ 	int size;
+ 
+ 	/* TODO: merge policy and file */
+-	struct aa_policydb policy;
+-	struct aa_policydb file;
++	struct aa_policydb *policy;
++	struct aa_policydb *file;
+ 	struct aa_caps caps;
+ 
+ 	struct aa_rlimit rlimits;
+@@ -162,7 +187,7 @@ struct aa_ruleset {
+  */
+ struct aa_attachment {
+ 	const char *xmatch_str;
+-	struct aa_policydb xmatch;
++	struct aa_policydb *xmatch;
+ 	unsigned int xmatch_len;
+ 	int xattr_count;
+ 	char **xattrs;
+@@ -283,10 +308,10 @@ static inline aa_state_t RULE_MEDIATES(struct aa_ruleset *rules,
+ 				       unsigned char class)
+ {
+ 	if (class <= AA_CLASS_LAST)
+-		return rules->policy.start[class];
++		return rules->policy->start[class];
+ 	else
+-		return aa_dfa_match_len(rules->policy.dfa,
+-					rules->policy.start[0], &class, 1);
++		return aa_dfa_match_len(rules->policy->dfa,
++					rules->policy->start[0], &class, 1);
+ }
+ 
+ static inline aa_state_t RULE_MEDIATES_AF(struct aa_ruleset *rules, u16 AF)
+@@ -299,7 +324,7 @@ static inline aa_state_t RULE_MEDIATES_AF(struct aa_ruleset *rules, u16 AF)
+ 		if (!state)
+ 			return DFA_NOMATCH;
+ 	}
+-	return aa_dfa_match_len(rules->policy.dfa, state, (char *) &be_af, 2);
++	return aa_dfa_match_len(rules->policy->dfa, state, (char *) &be_af, 2);
+ }
+ 
+ static inline aa_state_t ANY_RULE_MEDIATES(struct list_head *head,
+diff --git a/security/apparmor/ipc.c b/security/apparmor/ipc.c
+index 8d1a0a0fcc71..5743a866a663 100644
+--- a/security/apparmor/ipc.c
++++ b/security/apparmor/ipc.c
+@@ -95,8 +95,8 @@ static int profile_signal_perm(const struct cred *cred,
+ 	ad->subj_cred = cred;
+ 	ad->peer = peer;
+ 	/* TODO: secondary cache check <profile, profile, perm> */
+-	state = aa_dfa_next(rules->policy.dfa,
+-			    rules->policy.start[AA_CLASS_SIGNAL],
++	state = aa_dfa_next(rules->policy->dfa,
++			    rules->policy->start[AA_CLASS_SIGNAL],
+ 			    ad->signal);
+ 	aa_label_match(profile, rules, peer, state, false, request, &perms);
+ 	aa_apply_modes_to_perms(profile, &perms);
+@@ -166,10 +166,10 @@ int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
+ 
+ 	ad->name = name;
+ 
+-	state = aa_dfa_match(rules->policy.dfa,
+-			     rules->policy.start[AA_CLASS_POSIX_MQUEUE],
++	state = aa_dfa_match(rules->policy->dfa,
++			     rules->policy->start[AA_CLASS_POSIX_MQUEUE],
+ 			     name);
+-	perms = *aa_lookup_perms(&rules->policy, state);
++	perms = *aa_lookup_perms(rules->policy, state);
+ 	aa_apply_modes_to_perms(profile, &perms);
+ 	if (!denied_perms(&perms, request)) {
+ 		/* early bailout sufficient perms no need to do further
+diff --git a/security/apparmor/label.c b/security/apparmor/label.c
+index 590381f813bd..a94cf733242e 100644
+--- a/security/apparmor/label.c
++++ b/security/apparmor/label.c
+@@ -1269,14 +1269,14 @@ static inline aa_state_t match_component(struct aa_profile *profile,
+ 	const char *ns_name;
+ 
+ 	if (profile->ns == tp->ns)
+-		return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
++		return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
+ 
+ 	/* try matching with namespace name and then profile */
+ 	ns_name = aa_ns_name(profile->ns, tp->ns, true);
+-	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
+-	state = aa_dfa_match(rules->policy.dfa, state, ns_name);
+-	state = aa_dfa_match_len(rules->policy.dfa, state, ":", 1);
+-	return aa_dfa_match(rules->policy.dfa, state, tp->base.hname);
++	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
++	state = aa_dfa_match(rules->policy->dfa, state, ns_name);
++	state = aa_dfa_match_len(rules->policy->dfa, state, ":", 1);
++	return aa_dfa_match(rules->policy->dfa, state, tp->base.hname);
+ }
+ 
+ /**
+@@ -1321,12 +1321,12 @@ static int label_compound_match(struct aa_profile *profile,
+ 	label_for_each_cont(i, label, tp) {
+ 		if (!aa_ns_visible(profile->ns, tp->ns, subns))
+ 			continue;
+-		state = aa_dfa_match(rules->policy.dfa, state, "//&");
++		state = aa_dfa_match(rules->policy->dfa, state, "//&");
+ 		state = match_component(profile, rules, tp, state);
+ 		if (!state)
+ 			goto fail;
+ 	}
+-	*perms = *aa_lookup_perms(&rules->policy, state);
++	*perms = *aa_lookup_perms(rules->policy, state);
+ 	aa_apply_modes_to_perms(profile, perms);
+ 	if ((perms->allow & request) != request)
+ 		return -EACCES;
+@@ -1379,7 +1379,7 @@ static int label_components_match(struct aa_profile *profile,
+ 	return 0;
+ 
+ next:
+-	tmp = *aa_lookup_perms(&rules->policy, state);
++	tmp = *aa_lookup_perms(rules->policy, state);
+ 	aa_apply_modes_to_perms(profile, &tmp);
+ 	aa_perms_accum(perms, &tmp);
+ 	label_for_each_cont(i, label, tp) {
+@@ -1388,7 +1388,7 @@ static int label_components_match(struct aa_profile *profile,
+ 		state = match_component(profile, rules, tp, start);
+ 		if (!state)
+ 			goto fail;
+-		tmp = *aa_lookup_perms(&rules->policy, state);
++		tmp = *aa_lookup_perms(rules->policy, state);
+ 		aa_apply_modes_to_perms(profile, &tmp);
+ 		aa_perms_accum(perms, &tmp);
+ 	}
+diff --git a/security/apparmor/lib.c b/security/apparmor/lib.c
+index 0c446aaef9ac..77542f1c8f8b 100644
+--- a/security/apparmor/lib.c
++++ b/security/apparmor/lib.c
+@@ -442,8 +442,8 @@ void aa_profile_match_label(struct aa_profile *profile,
+ 	/* TODO: doesn't yet handle extended types */
+ 	aa_state_t state;
+ 
+-	state = aa_dfa_next(rules->policy.dfa,
+-			    rules->policy.start[AA_CLASS_LABEL],
++	state = aa_dfa_next(rules->policy->dfa,
++			    rules->policy->start[AA_CLASS_LABEL],
+ 			    type);
+ 	aa_label_match(profile, rules, label, state, false, request, perms);
+ }
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index f7f1820c71c9..60af4eefa378 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -870,7 +870,7 @@ static int profile_interface_lsm(struct aa_profile *profile,
+ 
+ 	state = RULE_MEDIATES(rules, AA_CLASS_DISPLAY_LSM);
+ 	if (state) {
+-		perms = *aa_lookup_perms(&rules->policy, state);
++		perms = *aa_lookup_perms(rules->policy, state);
+ 		aa_apply_modes_to_perms(profile, &perms);
+ 
+ 		return aa_check_perms(profile, &perms, AA_MAY_WRITE, ad, NULL);
+@@ -2367,6 +2367,69 @@ static int __init apparmor_nf_ip_init(void)
+ __initcall(apparmor_nf_ip_init);
+ #endif
+ 
++static char nulldfa_src[] = {
++	#include "nulldfa.in"
++};
++struct aa_dfa *nulldfa;
++
++static char stacksplitdfa_src[] = {
++	#include "stacksplitdfa.in"
++};
++struct aa_dfa *stacksplitdfa;
++struct aa_policydb *nullpdb;
++
++static int __init aa_setup_dfa_engine(void)
++{
++	int error = -ENOMEM;
++
++	nullpdb = aa_alloc_pdb(GFP_KERNEL);
++	if (!nullpdb)
++		return -ENOMEM;
++
++	nulldfa = aa_dfa_unpack(nulldfa_src, sizeof(nulldfa_src),
++			    TO_ACCEPT1_FLAG(YYTD_DATA32) |
++			    TO_ACCEPT2_FLAG(YYTD_DATA32));
++	if (IS_ERR(nulldfa)) {
++		error = PTR_ERR(nulldfa);
++		goto fail;
++	}
++	nullpdb->dfa = aa_get_dfa(nulldfa);
++	nullpdb->perms = kcalloc(2, sizeof(struct aa_perms), GFP_KERNEL);
++	if (!nullpdb->perms)
++		goto fail;
++	nullpdb->size = 2;
++
++	stacksplitdfa = aa_dfa_unpack(stacksplitdfa_src,
++				      sizeof(stacksplitdfa_src),
++				      TO_ACCEPT1_FLAG(YYTD_DATA32) |
++				      TO_ACCEPT2_FLAG(YYTD_DATA32));
++	if (IS_ERR(stacksplitdfa)) {
++		error = PTR_ERR(stacksplitdfa);
++		goto fail;
++	}
++
++	return 0;
++
++fail:
++	aa_put_pdb(nullpdb);
++	aa_put_dfa(nulldfa);
++	nullpdb = NULL;
++	nulldfa = NULL;
++	stacksplitdfa = NULL;
++
++	return error;
++}
++
++static void __init aa_teardown_dfa_engine(void)
++{
++	aa_put_dfa(stacksplitdfa);
++	aa_put_dfa(nulldfa);
++	aa_put_pdb(nullpdb);
++	nullpdb = NULL;
++	stacksplitdfa = NULL;
++	nulldfa = NULL;
++}
++
+ static int __init apparmor_init(void)
+ {
+ 	int error = -ENOMEM;
+diff --git a/security/apparmor/match.c b/security/apparmor/match.c
+index b97ef5e1db73..6acc35483d51 100644
+--- a/security/apparmor/match.c
++++ b/security/apparmor/match.c
+@@ -21,50 +21,6 @@
+ 
+ #define base_idx(X) ((X) & 0xffffff)
+ 
+-static char nulldfa_src[] = {
+-	#include "nulldfa.in"
+-};
+-struct aa_dfa *nulldfa;
+-
+-static char stacksplitdfa_src[] = {
+-	#include "stacksplitdfa.in"
+-};
+-struct aa_dfa *stacksplitdfa;
+-
+-int __init aa_setup_dfa_engine(void)
+-{
+-	int error;
+-
+-	nulldfa = aa_dfa_unpack(nulldfa_src, sizeof(nulldfa_src),
+-				TO_ACCEPT1_FLAG(YYTD_DATA32) |
+-				TO_ACCEPT2_FLAG(YYTD_DATA32));
+-	if (IS_ERR(nulldfa)) {
+-		error = PTR_ERR(nulldfa);
+-		nulldfa = NULL;
+-		return error;
+-	}
+-
+-	stacksplitdfa = aa_dfa_unpack(stacksplitdfa_src,
+-				      sizeof(stacksplitdfa_src),
+-				      TO_ACCEPT1_FLAG(YYTD_DATA32) |
+-				      TO_ACCEPT2_FLAG(YYTD_DATA32));
+-	if (IS_ERR(stacksplitdfa)) {
+-		aa_put_dfa(nulldfa);
+-		nulldfa = NULL;
+-		error = PTR_ERR(stacksplitdfa);
+-		stacksplitdfa = NULL;
+-		return error;
+-	}
+-
+-	return 0;
+-}
+-
+-void __init aa_teardown_dfa_engine(void)
+-{
+-	aa_put_dfa(stacksplitdfa);
+-	aa_put_dfa(nulldfa);
+-}
+-
+ /**
+  * unpack_table - unpack a dfa table (one of accept, default, base, next check)
+  * @blob: data to unpack (NOT NULL)
+diff --git a/security/apparmor/mount.c b/security/apparmor/mount.c
+index 2bb77aacc49a..3455dd4b1f99 100644
+--- a/security/apparmor/mount.c
++++ b/security/apparmor/mount.c
+@@ -332,8 +332,8 @@ static int match_mnt_path_str(const struct cred *subj_cred,
+ 	}
+ 
+ 	error = -EACCES;
+-	pos = do_match_mnt(&rules->policy,
+-			   rules->policy.start[AA_CLASS_MOUNT],
++	pos = do_match_mnt(rules->policy,
++			   rules->policy->start[AA_CLASS_MOUNT],
+ 			   mntpnt, devname, type, flags, data, binary, &perms);
+ 	if (pos) {
+ 		info = mnt_info_table[pos];
+@@ -606,10 +606,10 @@ static int profile_umount(const struct cred *subj_cred,
+ 	if (error)
+ 		goto audit;
+ 
+-	state = aa_dfa_match(rules->policy.dfa,
+-			     rules->policy.start[AA_CLASS_MOUNT],
++	state = aa_dfa_match(rules->policy->dfa,
++			     rules->policy->start[AA_CLASS_MOUNT],
+ 			     name);
+-	perms = *aa_lookup_perms(&rules->policy, state);
++	perms = *aa_lookup_perms(rules->policy, state);
+ 	if (AA_MAY_UMOUNT & ~perms.allow)
+ 		error = -EACCES;
+ 
+@@ -680,12 +680,12 @@ static struct aa_label *build_pivotroot(const struct cred *subj_cred,
+ 		goto audit;
+ 
+ 	error = -EACCES;
+-	state = aa_dfa_match(rules->policy.dfa,
+-			     rules->policy.start[AA_CLASS_MOUNT],
++	state = aa_dfa_match(rules->policy->dfa,
++			     rules->policy->start[AA_CLASS_MOUNT],
+ 			     new_name);
+-	state = aa_dfa_null_transition(rules->policy.dfa, state);
+-	state = aa_dfa_match(rules->policy.dfa, state, old_name);
+-	perms = *aa_lookup_perms(&rules->policy, state);
++	state = aa_dfa_null_transition(rules->policy->dfa, state);
++	state = aa_dfa_match(rules->policy->dfa, state, old_name);
++	perms = *aa_lookup_perms(rules->policy, state);
+ 
+ 	if (AA_MAY_PIVOTROOT & perms.allow)
+ 		error = 0;
+diff --git a/security/apparmor/net.c b/security/apparmor/net.c
+index 6552dcfd4af5..fe206a603bb6 100644
+--- a/security/apparmor/net.c
++++ b/security/apparmor/net.c
+@@ -179,9 +179,9 @@ int aa_profile_af_perm(struct aa_profile *profile, struct apparmor_audit_data *a
+ 	if (state) {
+ 		buffer[0] = cpu_to_be16(family);
+ 		buffer[1] = cpu_to_be16((u16) type);
+-		state = aa_dfa_match_len(rules->policy.dfa, state,
++		state = aa_dfa_match_len(rules->policy->dfa, state,
+ 					 (char *) &buffer, 4);
+-		perms = *aa_lookup_perms(&rules->policy, state);
++		perms = *aa_lookup_perms(rules->policy, state);
+ 	} else if (profile->net_compat) {
+ 		/* 2.x socket mediation compat */
+ 		perms.allow = (profile->net_compat->allow[family] & (1 << type)) ?
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index e591199b82cf..e6575b2beec0 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -101,6 +101,41 @@ const char *const aa_profile_mode_names[] = {
+ };
+ 
+ 
++static void aa_free_pdb(struct aa_policydb *policy)
++{
++	if (policy) {
++		aa_put_dfa(policy->dfa);
++		if (policy->perms)
++			kvfree(policy->perms);
++		aa_free_str_table(&policy->trans);
++	}
++}
++
++/**
++ * aa_pdb_free_kref - free aa_policydb by kref (called by aa_put_pdb)
++ * @kr: kref callback for freeing of a dfa  (NOT NULL)
++ */
++void aa_pdb_free_kref(struct kref *kref)
++{
++	struct aa_policydb *pdb = container_of(kref, struct aa_policydb, count);
++
++	aa_free_pdb(pdb);
++}
++
++
++struct aa_policydb *aa_alloc_pdb(gfp_t gfp)
++{
++	struct aa_policydb *pdb = kzalloc(sizeof(struct aa_policydb), gfp);
++
++	if (!pdb)
++		return NULL;
++
++	kref_init(&pdb->count);
++
++	return pdb;
++}
++
++
+ /**
+  * __add_profile - add a profiles to list and label tree
+  * @list: list to add it to  (NOT NULL)
+@@ -203,15 +238,15 @@ static void free_attachment(struct aa_attachment *attach)
+ 	for (i = 0; i < attach->xattr_count; i++)
+ 		kfree_sensitive(attach->xattrs[i]);
+ 	kfree_sensitive(attach->xattrs);
+-	aa_destroy_policydb(&attach->xmatch);
++	aa_put_pdb(attach->xmatch);
+ }
+ 
+ static void free_ruleset(struct aa_ruleset *rules)
+ {
+ 	int i;
+ 
+-	aa_destroy_policydb(&rules->file);
+-	aa_destroy_policydb(&rules->policy);
++	aa_put_pdb(rules->file);
++	aa_put_pdb(rules->policy);
+ 	aa_free_cap_rules(&rules->caps);
+ 	aa_free_rlimit_rules(&rules->rlimits);
+ 
+@@ -595,17 +630,8 @@ struct aa_profile *aa_alloc_null(struct aa_profile *parent, const char *name,
+ 	/* TODO: ideally we should inherit abi from parent */
+ 	profile->label.flags |= FLAG_NULL;
+ 	rules = list_first_entry(&profile->rules, typeof(*rules), list);
+-	rules->file.dfa = aa_get_dfa(nulldfa);
+-	rules->file.perms = kcalloc(2, sizeof(struct aa_perms), GFP_KERNEL);
+-	if (!rules->file.perms)
+-		goto fail;
+-	rules->file.size = 2;
+-	rules->policy.dfa = aa_get_dfa(nulldfa);
+-	rules->policy.perms = kcalloc(2, sizeof(struct aa_perms), GFP_KERNEL);
+-	if (!rules->policy.perms)
+-		goto fail;
+-	rules->policy.size = 2;
+-
++	rules->file = aa_get_pdb(nullpdb);
++	rules->policy = aa_get_pdb(nullpdb);
+ 	if (parent) {
+ 		profile->path_flags = parent->path_flags;
+ 
+@@ -615,11 +641,6 @@ struct aa_profile *aa_alloc_null(struct aa_profile *parent, const char *name,
+ 	}
+ 
+ 	return profile;
+-
+-fail:
+-	aa_free_profile(profile);
+-
+-	return NULL;
+ }
+ 
+ /**
+diff --git a/security/apparmor/policy_unpack.c b/security/apparmor/policy_unpack.c
+index 9fdb9cc15e3e..44346f086e34 100644
+--- a/security/apparmor/policy_unpack.c
++++ b/security/apparmor/policy_unpack.c
+@@ -716,24 +716,29 @@ static ssize_t unpack_perms_table(struct aa_ext *e, struct aa_perms **perms)
+ 	return -EPROTO;
+ }
+ 
+-static int unpack_pdb(struct aa_ext *e, struct aa_policydb *policy,
++static int unpack_pdb(struct aa_ext *e, struct aa_policydb **policy,
+ 		      bool required_dfa, bool required_trans,
+ 		      const char **info)
+ {
++	struct aa_policydb *pdb;
+ 	void *pos = e->pos;
+ 	int i, flags, error = -EPROTO;
+ 	ssize_t size;
+ 
+-	size = unpack_perms_table(e, &policy->perms);
++	pdb = aa_alloc_pdb(GFP_KERNEL);
++	if (!pdb)
++		return -ENOMEM;
++
++	size = unpack_perms_table(e, &pdb->perms);
+ 	if (size < 0) {
+ 		error = size;
+-		policy->perms = NULL;
++		pdb->perms = NULL;
+ 		*info = "failed to unpack - perms";
+ 		goto fail;
+ 	}
+-	policy->size = size;
++	pdb->size = size;
+ 
+-	if (policy->perms) {
++	if (pdb->perms) {
+ 		/* perms table present accept is index */
+ 		flags = TO_ACCEPT1_FLAG(YYTD_DATA32);
+ 	} else {
+@@ -742,13 +747,13 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb *policy,
+ 			TO_ACCEPT2_FLAG(YYTD_DATA32);
+ 	}
+ 
+-	policy->dfa = unpack_dfa(e, flags);
+-	if (IS_ERR(policy->dfa)) {
+-		error = PTR_ERR(policy->dfa);
+-		policy->dfa = NULL;
++	pdb->dfa = unpack_dfa(e, flags);
++	if (IS_ERR(pdb->dfa)) {
++		error = PTR_ERR(pdb->dfa);
++		pdb->dfa = NULL;
+ 		*info = "failed to unpack - dfa";
+ 		goto fail;
+-	} else if (!policy->dfa) {
++	} else if (!pdb->dfa) {
+ 		if (required_dfa) {
+ 			*info = "missing required dfa";
+ 			goto fail;
+@@ -762,18 +767,18 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb *policy,
+ 	 * sadly start was given different names for file and policydb
+ 	 * but since it is optional we can try both
+ 	 */
+-	if (!aa_unpack_u32(e, &policy->start[0], "start"))
++	if (!aa_unpack_u32(e, &pdb->start[0], "start"))
+ 		/* default start state */
+-		policy->start[0] = DFA_START;
+-	if (!aa_unpack_u32(e, &policy->start[AA_CLASS_FILE], "dfa_start")) {
++		pdb->start[0] = DFA_START;
++	if (!aa_unpack_u32(e, &pdb->start[AA_CLASS_FILE], "dfa_start")) {
+ 		/* default start state for xmatch and file dfa */
+-		policy->start[AA_CLASS_FILE] = DFA_START;
++		pdb->start[AA_CLASS_FILE] = DFA_START;
+ 	}	/* setup class index */
+ 	for (i = AA_CLASS_FILE + 1; i <= AA_CLASS_LAST; i++) {
+-		policy->start[i] = aa_dfa_next(policy->dfa, policy->start[0],
++		pdb->start[i] = aa_dfa_next(pdb->dfa, pdb->start[0],
+ 					       i);
+ 	}
+-	if (!unpack_trans_table(e, &policy->trans) && required_trans) {
++	if (!unpack_trans_table(e, &pdb->trans) && required_trans) {
+ 		*info = "failed to unpack profile transition table";
+ 		goto fail;
+ 	}
+@@ -781,9 +786,11 @@ static int unpack_pdb(struct aa_ext *e, struct aa_policydb *policy,
+ 	/* TODO: move compat mapping here, requires dfa merging first */
+ 	/* TODO: move verify here, it has to be done after compat mappings */
+ out:
++	*policy = pdb;
+ 	return 0;
+ 
+ fail:
++	aa_put_pdb(pdb);
+ 	e->pos = pos;
+ 	return error;
+ }
+@@ -868,15 +875,15 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
+ 	}
+ 
+ 	/* neither xmatch_len not xmatch_perms are optional if xmatch is set */
+-	if (profile->attach.xmatch.dfa) {
++	if (profile->attach.xmatch->dfa) {
+ 		if (!aa_unpack_u32(e, &tmp, NULL)) {
+ 			info = "missing xmatch len";
+ 			goto fail;
+ 		}
+ 		profile->attach.xmatch_len = tmp;
+-		profile->attach.xmatch.start[AA_CLASS_XMATCH] = DFA_START;
+-		if (!profile->attach.xmatch.perms) {
+-			error = aa_compat_map_xmatch(&profile->attach.xmatch);
++		profile->attach.xmatch->start[AA_CLASS_XMATCH] = DFA_START;
++		if (!profile->attach.xmatch->perms) {
++			error = aa_compat_map_xmatch(profile->attach.xmatch);
+ 			if (error) {
+ 				info = "failed to convert xmatch permission table";
+ 				goto fail;
+@@ -1031,16 +1038,16 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
+ 		if (error)
+ 			goto fail;
+ 		/* Fixup: drop when we get rid of start array */
+-		if (aa_dfa_next(rules->policy.dfa, rules->policy.start[0],
++		if (aa_dfa_next(rules->policy->dfa, rules->policy->start[0],
+ 				AA_CLASS_FILE))
+-			rules->policy.start[AA_CLASS_FILE] =
+-			  aa_dfa_next(rules->policy.dfa,
+-				      rules->policy.start[0],
++			rules->policy->start[AA_CLASS_FILE] =
++			  aa_dfa_next(rules->policy->dfa,
++				      rules->policy->start[0],
+ 				      AA_CLASS_FILE);
+ 		if (!aa_unpack_nameX(e, AA_STRUCTEND, NULL))
+ 			goto fail;
+-		if (!rules->policy.perms) {
+-			error = aa_compat_map_policy(&rules->policy,
++		if (!rules->policy->perms) {
++			error = aa_compat_map_policy(rules->policy,
+ 						     e->version);
+ 			if (error) {
+ 				info = "failed to remap policydb permission table";
+@@ -1048,44 +1055,25 @@ static struct aa_profile *unpack_profile(struct aa_ext *e, char **ns_name)
+ 			}
+ 		}
+ 	} else {
+-		rules->policy.dfa = aa_get_dfa(nulldfa);
+-		rules->policy.perms = kcalloc(2, sizeof(struct aa_perms),
+-					      GFP_KERNEL);
+-		if (!rules->policy.perms)
+-			goto fail;
+-		rules->policy.size = 2;
++		rules->policy = aa_get_pdb(nullpdb);
+ 	}
+ 	/* get file rules */
+ 	error = unpack_pdb(e, &rules->file, false, true, &info);
+ 	if (error) {
+ 		goto fail;
+-	} else if (rules->file.dfa) {
+-		if (!rules->file.perms) {
+-			error = aa_compat_map_file(&rules->file);
++	} else if (rules->file->dfa) {
++		if (!rules->file->perms) {
++			error = aa_compat_map_file(rules->file);
+ 			if (error) {
+ 				info = "failed to remap file permission table";
+ 				goto fail;
+ 			}
+ 		}
+-	} else if (rules->policy.dfa &&
+-		   rules->policy.start[AA_CLASS_FILE]) {
+-		rules->file.dfa = aa_get_dfa(rules->policy.dfa);
+-		rules->file.start[AA_CLASS_FILE] = rules->policy.start[AA_CLASS_FILE];
+-		rules->file.perms = kcalloc(rules->policy.size,
+-					    sizeof(struct aa_perms),
+-					    GFP_KERNEL);
+-		if (!rules->file.perms)
+-			goto fail;
+-		memcpy(rules->file.perms, rules->policy.perms,
+-		       rules->policy.size * sizeof(struct aa_perms));
+-		rules->file.size = rules->policy.size;
++	} else if (rules->policy->dfa &&
++		   rules->policy->start[AA_CLASS_FILE]) {
++		rules->file = aa_get_pdb(rules->policy);
+ 	} else {
+-		rules->file.dfa = aa_get_dfa(nulldfa);
+-		rules->file.perms = kcalloc(2, sizeof(struct aa_perms),
+-					    GFP_KERNEL);
+-		if (!rules->file.perms)
+-			goto fail;
+-		rules->file.size = 2;
++		rules->file = aa_get_pdb(nullpdb);
+ 	}
+ 	error = -EPROTO;
+ 	if (aa_unpack_nameX(e, AA_STRUCT, "data")) {
+@@ -1292,32 +1280,32 @@ static int verify_profile(struct aa_profile *profile)
+ 	if (!rules)
+ 		return 0;
+ 
+-	if (rules->file.dfa && !verify_dfa_accept_index(rules->file.dfa,
+-							rules->file.size)) {
++	if (rules->file->dfa && !verify_dfa_accept_index(rules->file->dfa,
++							rules->file->size)) {
+ 		audit_iface(profile, NULL, NULL,
+ 			    "Unpack: file Invalid named transition", NULL,
+ 			    -EPROTO);
+ 		return -EPROTO;
+ 	}
+-	if (rules->policy.dfa &&
+-	    !verify_dfa_accept_index(rules->policy.dfa, rules->policy.size)) {
++	if (rules->policy->dfa &&
++	    !verify_dfa_accept_index(rules->policy->dfa, rules->policy->size)) {
+ 		audit_iface(profile, NULL, NULL,
+ 			    "Unpack: policy Invalid named transition", NULL,
+ 			    -EPROTO);
+ 		return -EPROTO;
+ 	}
+ 
+-	if (!verify_perms(&rules->file)) {
++	if (!verify_perms(rules->file)) {
+ 		audit_iface(profile, NULL, NULL,
+ 			    "Unpack: Invalid perm index", NULL, -EPROTO);
+ 		return -EPROTO;
+ 	}
+-	if (!verify_perms(&rules->policy)) {
++	if (!verify_perms(rules->policy)) {
+ 		audit_iface(profile, NULL, NULL,
+ 			    "Unpack: Invalid perm index", NULL, -EPROTO);
+ 		return -EPROTO;
+ 	}
+-	if (!verify_perms(&profile->attach.xmatch)) {
++	if (!verify_perms(profile->attach.xmatch)) {
+ 		audit_iface(profile, NULL, NULL,
+ 			    "Unpack: Invalid perm index", NULL, -EPROTO);
+ 		return -EPROTO;
+diff --git a/security/apparmor/task.c b/security/apparmor/task.c
+index 47e6ec6ec1ef..bbb373485999 100644
+--- a/security/apparmor/task.c
++++ b/security/apparmor/task.c
+@@ -340,7 +340,7 @@ int aa_profile_ns_perm(struct aa_profile *profile,
+ 		if (!state && !unprivileged_userns_restricted_force)
+ 			/* TODO: add flag to complain about unmediated */
+ 			return 0;
+-		perms = *aa_lookup_perms(&rules->policy, state);
++		perms = *aa_lookup_perms(rules->policy, state);
+ 		if (unprivileged_userns_restricted_complain)
+ 			perms.complain = ALL_PERMS_MASK;
+ 	}
+-- 
+2.42.0
+

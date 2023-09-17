@@ -1,0 +1,247 @@
+From 27b71c4411699d4c6d166687b195b8ded7731a56 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Sun, 30 Apr 2023 01:27:57 -0700
+Subject: [PATCH 60/76] UBUNTU: SAUCE: apparmor4.0.0 [60/76]: prompt - add
+ refcount to audit_node in prep or reuse and delete
+
+The audit_node needs to be shared for asynchronous notifications to
+multiple listeners. So add a refcount to enable sharing.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+---
+ security/apparmor/audit.c          | 27 ++++++++++++++++++----
+ security/apparmor/file.c           | 37 +++++++++++++++---------------
+ security/apparmor/include/audit.h  | 19 ++++++++++++++-
+ security/apparmor/include/notify.h |  1 -
+ 4 files changed, 59 insertions(+), 25 deletions(-)
+
+diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
+index 03894fe3f3ee..f34e8b70a7e4 100644
+--- a/security/apparmor/audit.c
++++ b/security/apparmor/audit.c
+@@ -206,6 +206,8 @@ struct aa_audit_rule {
+ 	struct aa_label *label;
+ };
+ 
++/****************************** audit rules *******************************/
++
+ void aa_audit_rule_free(void *vrule)
+ {
+ 	struct aa_audit_rule *rule = vrule;
+@@ -340,7 +342,7 @@ long aa_audit_data_cmp(struct apparmor_audit_data *lhs,
+ 	return 0;
+ }
+ 
+-void aa_audit_node_free(struct aa_audit_node *node)
++static void audit_node_free(struct aa_audit_node *node)
+ {
+ 	if (!node)
+ 		return;
+@@ -363,6 +365,13 @@ void aa_audit_node_free(struct aa_audit_node *node)
+ 	kmem_cache_free(aa_audit_slab, node);
+ }
+ 
++void aa_audit_node_free_kref(struct kref *kref)
++{
++	struct aa_audit_node *node = container_of(kref, struct aa_audit_node,
++						  count);
++	audit_node_free(node);
++}
++
+ struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
+ 					gfp_t gfp)
+ {
+@@ -371,6 +380,7 @@ struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
+ 	copy = kmem_cache_zalloc(aa_audit_slab, gfp);
+ 	if (!copy)
+ 		return NULL;
++	kref_init(&copy->count);
+ 
+ 	copy->knotif.ad = &copy->data;
+ 	INIT_LIST_HEAD(&copy->list);
+@@ -447,7 +457,7 @@ struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
+ 
+ 	return copy;
+ fail:
+-	aa_audit_node_free(copy);
++	audit_node_free(copy);
+ 	return NULL;
+ }
+ 
+@@ -463,6 +473,7 @@ __out_skip:								\
+ 	__node;								\
+ })
+ 
++// increments refcount on node
+ struct aa_audit_node *aa_audit_cache_find(struct aa_audit_cache *cache,
+ 					  struct apparmor_audit_data *ad)
+ {
+@@ -470,6 +481,7 @@ struct aa_audit_node *aa_audit_cache_find(struct aa_audit_cache *cache,
+ 
+ 	rcu_read_lock();
+ 	node = __audit_cache_find(cache, ad);
++	aa_get_audit_node(node);
+ 	rcu_read_unlock();
+ 
+ 	return node;
+@@ -480,9 +492,12 @@ struct aa_audit_node *aa_audit_cache_find(struct aa_audit_cache *cache,
+  * @cache: the cache to insert into
+  * @node: the audit node to insert into the cache
+  *
+- * Returns: matching node in cache OR @node if @node was inserted.
++ * Returns: refcounted matching node in cache OR @node if @node was inserted.
++ *
++ * Increments refcount on node if successfully inserted. Assumes caller
++ *            already has valid ref count.
++ * Increments refcount on existing node if returned
+  */
+-
+ struct aa_audit_node *aa_audit_cache_insert(struct aa_audit_cache *cache,
+ 					    struct aa_audit_node *node)
+ 
+@@ -497,6 +512,8 @@ struct aa_audit_node *aa_audit_cache_insert(struct aa_audit_cache *cache,
+ 		tmp = node;
+ 		cache->size++;
+ 	}
++
++	aa_get_audit_node(tmp);
+ 	/* else raced another insert */
+ 	spin_unlock(&cache->lock);
+ 
+@@ -521,7 +538,7 @@ void aa_audit_cache_destroy(struct aa_audit_cache *cache)
+ 
+ 	list_for_each_entry_safe(node, tmp, &cache->head, list) {
+ 		list_del_init(&node->list);
+-		aa_audit_node_free(node);
++		aa_put_audit_node(node);
+ 	}
+ 	cache->size = 0;
+ }
+diff --git a/security/apparmor/file.c b/security/apparmor/file.c
+index 88ac40702db3..0a9ca5beebc7 100644
+--- a/security/apparmor/file.c
++++ b/security/apparmor/file.c
+@@ -106,6 +106,7 @@ static int check_cache(struct aa_profile *profile,
+ 			AA_DEBUG(DEBUG_UPCALL,
+ 				 "cache hit denied, request: 0x%x by cached deny 0x%x\n",
+ 				 ad->request, hit->data.denied);
++			aa_put_audit_node(hit);
+ 			return ad->error;
+ 		} else if (ad->request & ~hit->data.request) {
+ 			/* asking for more perms than is cached */
+@@ -116,9 +117,12 @@ static int check_cache(struct aa_profile *profile,
+ 		} else {
+ 			AA_DEBUG(DEBUG_UPCALL, "cache hit");
+ 			ad->error = 0;
++			aa_put_audit_node(hit);
+ 			/* do audit */
+ 			return 0;
+ 		}
++		aa_put_audit_node(hit);
++		hit = NULL;
+ 	} else {
+ 		AA_DEBUG(DEBUG_UPCALL, "cache miss");
+ 	}
+@@ -151,34 +155,31 @@ static int check_cache(struct aa_profile *profile,
+ 	ad->error = node->data.error;
+ 
+ 	if (cache_response) {
+-		if (hit) {
+-hit:
++		/* TODO: shouldn't add until after auditing it, or at
++		 * least having a refcount. Fix once removing entry is
++		 * allowed
++		 */
++		AA_DEBUG(DEBUG_UPCALL, "inserting cache entry requ 0x%x  denied 0x%x",
++			 node->data.request, node->data.denied);
++		hit = aa_audit_cache_insert(&profile->learning_cache,
++					    node);
++		AA_DEBUG(DEBUG_UPCALL, "cache insert %s: name %s node %s\n",
++			 hit != node ? "lost race" : "",
++			 hit->data.name, node->data.name);
++		if (hit != node) {
+ 			AA_DEBUG(DEBUG_UPCALL, "updating existing cache entry");
+ 			aa_audit_cache_update_ent(&profile->learning_cache,
+ 						  hit, &node->data);
++			aa_put_audit_node(hit);
+ 		} else {
+-			/* TODO: shouldn't add until after auditing it, or at
+-			 * least having a refcount. Fix once removing entry is
+-			 * allowed
+-			 */
+-			AA_DEBUG(DEBUG_UPCALL, "inserting cache entry requ 0x%x  denied 0x%x",
+-				 node->data.request, node->data.denied);
+-			hit = aa_audit_cache_insert(&profile->learning_cache,
+-						    node);
+-			AA_DEBUG(DEBUG_UPCALL, "cache insert %s: name %s node %s\n",
+-				 hit != node ? "lost race" : "",
+-				 hit->data.name, node->data.name);
+-			if (hit != node)
+-				goto hit;
++
+ 			AA_DEBUG(DEBUG_UPCALL, "inserted into cache");
+-			/* do not free node, it is now owned by the cache */
+-			node = NULL;
+ 		}
+ 		/* now to audit */
+ 	} /* cache_response */
+ 
+ return_to_audit:
+-	aa_audit_node_free(node);
++	aa_put_audit_node(node);
+ 	return 0;
+ }
+ 
+diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
+index d387d17a047d..ccfa1a22beb2 100644
+--- a/security/apparmor/include/audit.h
++++ b/security/apparmor/include/audit.h
+@@ -167,6 +167,7 @@ struct apparmor_audit_data {
+ };
+ 
+ struct aa_audit_node {
++	struct kref count;
+ 	struct apparmor_audit_data data;
+ 	struct list_head list;
+ 	struct aa_knotif knotif;
+@@ -243,10 +244,26 @@ int aa_audit_rule_known(struct audit_krule *rule);
+ int aa_audit_rule_match(u32 sid, u32 field, u32 op, void *vrule);
+ 
+ 
+-void aa_audit_node_free(struct aa_audit_node *node);
++void aa_audit_node_free_kref(struct kref *kref);
+ struct aa_audit_node *aa_dup_audit_data(struct apparmor_audit_data *orig,
+ 					gfp_t gfp);
+ long aa_audit_data_cmp(struct apparmor_audit_data *lhs,
+ 		       struct apparmor_audit_data *rhs);
+ 
++
++static inline struct aa_audit_node *aa_get_audit_node(struct aa_audit_node *node)
++{
++	if (node)
++		kref_get(&(node->count));
++
++	return node;
++}
++
++static inline void aa_put_audit_node(struct aa_audit_node *node)
++{
++	if (node)
++		kref_put(&node->count, aa_audit_node_free_kref);
++}
++
++
+ #endif /* __AA_AUDIT_H */
+diff --git a/security/apparmor/include/notify.h b/security/apparmor/include/notify.h
+index 40cd67589b99..938bb07be42f 100644
+--- a/security/apparmor/include/notify.h
++++ b/security/apparmor/include/notify.h
+@@ -91,5 +91,4 @@ static inline void aa_put_listener(struct aa_listener *listener)
+ 		kref_put(&listener->count, aa_listener_kref);
+ }
+ 
+-
+ #endif /* __AA_NOTIFY_H */
+-- 
+2.42.0
+
