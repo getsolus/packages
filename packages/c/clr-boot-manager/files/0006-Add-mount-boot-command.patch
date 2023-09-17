@@ -1,0 +1,205 @@
+From affae84cdd9dd7c0b515b5dfb4ef1064c7956309 Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Sat, 22 Aug 2020 15:56:14 +0200
+Subject: [PATCH 06/13] Add `mount-boot` command.
+
+The `mount-boot` command mounts the boot partitions.
+This is useful for when the user, any system component,
+requires the boot directory to be mounted.
+
+As unmounting afterwards is a simple `umount`,
+no `unmount-boot` command is added.
+---
+ src/cli/main.c      | 17 +++++++++
+ src/cli/ops/mount.c | 87 +++++++++++++++++++++++++++++++++++++++++++++
+ src/cli/ops/mount.h | 29 +++++++++++++++
+ src/meson.build     |  1 +
+ 4 files changed, 134 insertions(+)
+ create mode 100644 src/cli/ops/mount.c
+ create mode 100644 src/cli/ops/mount.h
+
+diff --git a/src/cli/main.c b/src/cli/main.c
+index 79cf021..7d9db60 100644
+--- a/src/cli/main.c
++++ b/src/cli/main.c
+@@ -22,6 +22,7 @@
+ #include "ops/timeout.h"
+ #include "ops/update.h"
+ #include "ops/kernels.h"
++#include "ops/mount.h"
+ 
+ static SubCommand cmd_update;
+ static SubCommand cmd_help;
+@@ -32,6 +33,7 @@ static SubCommand cmd_report_booted;
+ static SubCommand cmd_list_kernels;
+ static SubCommand cmd_set_kernel;
+ static SubCommand cmd_remove_kernel;
++static SubCommand cmd_mount_boot;
+ static char *binary_name = NULL;
+ static NcHashmap *g_commands = NULL;
+ static bool explicit_help = false;
+@@ -225,6 +227,21 @@ kernel for the next time the system boots.",
+                 return EXIT_FAILURE;
+         }
+ 
++        /* Mount the boot directory */
++        cmd_mount_boot = (SubCommand){
++            .name = "mount-boot",
++            .blurb = "Mount the boot directory",
++            .help = "This command ensures the boot directory is mounted.",
++            .callback = cbm_command_mount_boot,
++            .usage = " [--path=/path/to/filesystem/root]",
++            .requires_root = true
++        };
++
++        if (!nc_hashmap_put(commands, cmd_mount_boot.name, &cmd_mount_boot)) {
++                DECLARE_OOM();
++                return EXIT_FAILURE;
++        }
++
+         /* Version */
+         cmd_version = (SubCommand){
+                 .name = "version",
+diff --git a/src/cli/ops/mount.c b/src/cli/ops/mount.c
+new file mode 100644
+index 0000000..4f5417a
+--- /dev/null
++++ b/src/cli/ops/mount.c
+@@ -0,0 +1,87 @@
++/*
++ * This file is part of clr-boot-manager.
++ *
++ * Copyright © 2016-2018 Intel Corporation
++ * Copyright © 2020 Silke Hofstra
++ *
++ * clr-boot-manager is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public License as
++ * published by the Free Software Foundation; either version 2.1
++ * of the License, or (at your option) any later version.
++ */
++
++#define _GNU_SOURCE
++
++#include <stdio.h>
++#include <string.h>
++
++#include "bootman.h"
++#include "cli.h"
++#include "log.h"
++
++bool cbm_command_mount_boot(int argc, char **argv)
++{
++        autofree(char) *root = NULL;
++        autofree(BootManager) *manager = NULL;
++        bool forced_image = false;
++        bool update_efi_vars = false;
++        autofree(char) *boot_dir = NULL;
++        int did_mount = -1;
++
++        if (!cli_default_args_init(&argc, &argv, &root, &forced_image, &update_efi_vars)) {
++                return false;
++        }
++
++        manager = boot_manager_new();
++        if (!manager) {
++                DECLARE_OOM();
++                return false;
++        }
++
++        boot_manager_set_update_efi_vars(manager, update_efi_vars);
++
++        if (root) {
++                autofree(char) *realp = NULL;
++
++                realp = realpath(root, NULL);
++                if (!realp) {
++                        LOG_FATAL("Path specified does not exist: %s", root);
++                        return false;
++                }
++                /* Anything not / is image mode */
++                if (!streq(realp, "/")) {
++                        boot_manager_set_image_mode(manager, true);
++                } else {
++                        boot_manager_set_image_mode(manager, forced_image);
++                }
++
++                /* CBM will check this again, we just needed to check for
++                 * image mode.. */
++                if (!boot_manager_set_prefix(manager, root)) {
++                        return false;
++                }
++        } else {
++                boot_manager_set_image_mode(manager, forced_image);
++                /* Default to "/", bail if it doesn't work. */
++                if (!boot_manager_set_prefix(manager, "/")) {
++                        return false;
++                }
++        }
++
++        /* Let CBM detect and mount the boot directory */
++        did_mount = boot_manager_detect_and_mount_boot(manager, &boot_dir);
++        return did_mount >= 0;
++}
++
++/*
++ * Editor modelines  -  https://www.wireshark.org/tools/modelines.html
++ *
++ * Local variables:
++ * c-basic-offset: 8
++ * tab-width: 8
++ * indent-tabs-mode: nil
++ * End:
++ *
++ * vi: set shiftwidth=8 tabstop=8 expandtab:
++ * :indentSize=8:tabSize=8:noTabs=true:
++ */
+diff --git a/src/cli/ops/mount.h b/src/cli/ops/mount.h
+new file mode 100644
+index 0000000..df5d899
+--- /dev/null
++++ b/src/cli/ops/mount.h
+@@ -0,0 +1,29 @@
++/*
++ * This file is part of clr-boot-manager.
++ *
++ * Copyright © 2020 Silke Hofstra
++ *
++ * clr-boot-manager is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public License as
++ * published by the Free Software Foundation; either version 2.1
++ * of the License, or (at your option) any later version.
++ */
++
++#pragma once
++
++#include "cli.h"
++
++bool cbm_command_mount_boot(int argc, char **argv);
++
++/*
++ * Editor modelines  -  https://www.wireshark.org/tools/modelines.html
++ *
++ * Local variables:
++ * c-basic-offset: 8
++ * tab-width: 8
++ * indent-tabs-mode: nil
++ * End:
++ *
++ * vi: set shiftwidth=8 tabstop=8 expandtab:
++ * :indentSize=8:tabSize=8:noTabs=true:
++ */
+diff --git a/src/meson.build b/src/meson.build
+index 5bba913..c4b6c7c 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -98,6 +98,7 @@ clr_boot_manager_sources = [
+     'cli/cli.c',
+     'cli/main.c',
+     'cli/ops/kernels.c',
++    'cli/ops/mount.c',
+     'cli/ops/report_booted.c',
+     'cli/ops/timeout.c',
+     'cli/ops/update.c',
+-- 
+2.40.1
+

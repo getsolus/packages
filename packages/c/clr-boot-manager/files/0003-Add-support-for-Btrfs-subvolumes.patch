@@ -1,0 +1,134 @@
+From b8ab1905501c4868e420867c4b0ed39df2f50950 Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Sat, 4 Jul 2020 15:15:52 +0200
+Subject: [PATCH 03/13] Add support for Btrfs subvolumes
+
+---
+ meson.build                       |  6 ++++++
+ src/bootloaders/grub2.c           |  5 +++++
+ src/bootloaders/syslinux-common.c |  4 ++++
+ src/bootloaders/systemd-class.c   |  4 ++++
+ src/lib/probe.c                   | 11 +++++++++++
+ src/lib/probe.h                   |  1 +
+ src/meson.build                   |  1 +
+ 7 files changed, 32 insertions(+)
+
+diff --git a/meson.build b/meson.build
+index 7c43d5a..5117f3e 100644
+--- a/meson.build
++++ b/meson.build
+@@ -44,6 +44,12 @@ ccompiler = meson.get_compiler('c')
+ dep_blkid = dependency('blkid')
+ dep_check = dependency('check', version: '>= 0.9')
+ 
++# other deps
++dep_btrfs = ccompiler.find_library('btrfsutil')
++if not ccompiler.has_header('btrfsutil.h')
++    error('Cannot find btrfsutil.h. Is btrfs-progs-dev(el) installed?')
++endif
++
+ # Grab necessary paths
+ path_prefix = get_option('prefix')
+ path_bindir = join_paths(path_prefix, get_option('bindir'))
+diff --git a/src/bootloaders/grub2.c b/src/bootloaders/grub2.c
+index f70dfd0..288403c 100644
+--- a/src/bootloaders/grub2.c
++++ b/src/bootloaders/grub2.c
+@@ -241,6 +241,11 @@ bool grub2_write_kernel(const Grub2Config *config, const Kernel *kernel)
+                                          "rd.luks.uuid=%s ",
+                                          config->root_dev->luks_uuid);
+         }
++        if (config->root_dev->btrfs_sub) {
++                cbm_writer_append_printf(config->writer,
++                                         "rootflags=subvol=%s ",
++                                         config->root_dev->btrfs_sub);
++        }
+ 
+         /* Finish it off with the command line options */
+         cbm_writer_append_printf(config->writer, "%s\"\n", kernel->meta.cmdline);
+diff --git a/src/bootloaders/syslinux-common.c b/src/bootloaders/syslinux-common.c
+index 0391d7b..d036d1b 100644
+--- a/src/bootloaders/syslinux-common.c
++++ b/src/bootloaders/syslinux-common.c
+@@ -189,6 +189,10 @@ bool syslinux_common_set_default_kernel(const BootManager *manager, const Kernel
+                 if (root_dev->luks_uuid) {
+                         cbm_writer_append_printf(writer, "rd.luks.uuid=%s ", root_dev->luks_uuid);
+                 }
++                /* Add Btrfs information if relevant */
++                if (root_dev->btrfs_sub) {
++                        cbm_writer_append_printf(writer, "rootflags=subvol=%s ", root_dev->btrfs_sub);
++                }
+ 
+                 /* Write out the cmdline */
+                 cbm_writer_append_printf(writer, "%s\n", k->meta.cmdline);
+diff --git a/src/bootloaders/systemd-class.c b/src/bootloaders/systemd-class.c
+index 8ba2c8d..9abbf8e 100644
+--- a/src/bootloaders/systemd-class.c
++++ b/src/bootloaders/systemd-class.c
+@@ -284,6 +284,10 @@ bool sd_class_install_kernel(const BootManager *manager, const Kernel *kernel)
+         if (root_dev->luks_uuid) {
+                 cbm_writer_append_printf(writer, "rd.luks.uuid=%s ", root_dev->luks_uuid);
+         }
++        /* Add Btrfs information if relevant */
++        if (root_dev->btrfs_sub) {
++                cbm_writer_append_printf(writer, "rootflags=subvol=%s ", root_dev->btrfs_sub);
++        }
+ 
+         /* Finish it off with the command line options */
+         cbm_writer_append_printf(writer, "%s\n", kernel->meta.cmdline);
+diff --git a/src/lib/probe.c b/src/lib/probe.c
+index a20b4cc..377c574 100644
+--- a/src/lib/probe.c
++++ b/src/lib/probe.c
+@@ -21,6 +21,7 @@
+ #include <sys/stat.h>
+ #include <sys/sysmacros.h>
+ #include <unistd.h>
++#include <btrfsutil.h>
+ 
+ #include "blkid_stub.h"
+ #include "files.h"
+@@ -263,6 +264,16 @@ CbmDeviceProbe *cbm_probe_path(const char *path)
+                 LOG_ERROR("Unable to find UUID for %s: %s", devnode, strerror(errno));
+         }
+ 
++        /* Check if its a Btrfs device */
++        if (btrfs_util_is_subvolume(path) == BTRFS_UTIL_OK) {
++                LOG_DEBUG("Root device is a Btrfs subvolume");
++                enum btrfs_util_error err = btrfs_util_subvolume_path(path, 0, &probe.btrfs_sub);
++                if (err != BTRFS_UTIL_OK) {
++                        LOG_ERROR("Failed to get subvolume of Btrfs filesystem %s: %s",
++                                  path, btrfs_util_strerror(err));
++                }
++        }
++
+         /* Check if its a software raid device */
+         basenom = basename(devnode);
+         if (strncmp(basenom, "md", 2) == 0) {
+diff --git a/src/lib/probe.h b/src/lib/probe.h
+index 1aab949..ca8a923 100644
+--- a/src/lib/probe.h
++++ b/src/lib/probe.h
+@@ -26,6 +26,7 @@ typedef struct CbmDeviceProbe {
+         char *uuid;      /**< UUID for all partition types */
+         char *part_uuid; /**< PartUUID for GPT partitions */
+         char *luks_uuid; /**< Parent LUKS UUID for the partition */
++        char *btrfs_sub; /**< Btrfs subvolume of the rootfs */
+         dev_t dev;       /**< The device itself */
+         bool gpt;        /**<Whether this device belongs to a GPT disk */
+ } CbmDeviceProbe;
+diff --git a/src/meson.build b/src/meson.build
+index 5bba913..d175dc1 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -68,6 +68,7 @@ libcbm_includes = [
+ libcbm_dependencies = [
+     link_libnica,
+     dep_blkid,
++    dep_btrfs,
+ ]
+ 
+ # Special constraints for efi functionality
+-- 
+2.40.1
+
