@@ -1,0 +1,105 @@
+name       : pipewire
+version    : 0.3.79
+release    : 80
+source     :
+    - https://gitlab.freedesktop.org/pipewire/pipewire/-/archive/0.3.79/pipewire-0.3.79.tar.gz : d5808abaf6e56b1f268a468dafc2fe9ca9efcc7cfea19f6d47ad5769271afce9
+homepage   : https://pipewire.org/
+license    :
+    - MIT
+    - LGPL-2.1-or-later # libspa-alsa.so
+    - GPL-2.0-or-later # libjackserver.so
+component  :
+    - multimedia.library
+    - jack : multimedia.audio
+    - spa-ffmpeg : multimedia.audio
+summary    :
+    - Multimedia processing graphs
+    - jack : JACK client/server for PipeWire
+    - spa-ffmpeg : FFmpeg SPA plugin for PipeWire
+description:
+    - PipeWire is a server and user space API to deal with multimedia pipelines.
+    - jack : JACK client/server libraries and configuration for PipeWire
+    - spa-ffmpeg : FFmpeg SPA plugin for PipeWire
+replaces   :
+    - pipewire-alsa
+emul32     : yes
+builddeps  :
+    - pkgconfig32(alsa)
+    - pkgconfig32(dbus-1)
+    - pkgconfig32(gstreamer-1.0)
+    - pkgconfig32(gstreamer-plugins-base-1.0)
+    - pkgconfig32(liblzma)
+    - pkgconfig32(libpulse)
+    - pkgconfig32(libudev)
+    - pkgconfig32(ncursesw)
+    - pkgconfig32(sdl2)
+    - pkgconfig32(sndfile)
+    - pkgconfig32(webrtc-audio-processing)
+    - pkgconfig32(x11)
+    - pkgconfig(avahi-client)
+    - pkgconfig(bluez)
+    - pkgconfig(fdk-aac)
+    - pkgconfig(jack)
+    - pkgconfig(lc3)
+    - pkgconfig(ldacBT-abr)
+    - pkgconfig(libavcodec)
+    - pkgconfig(libfreeaptx)
+    - pkgconfig(libusb-1.0)
+    - pkgconfig(readline)
+    - pkgconfig(sbc)
+rundeps    :
+    - rtkit
+    - wireplumber
+patterns   :
+    - lib :
+        - /usr/lib64/libpipewire-0.3.so.*
+    - jack :
+        - /usr/bin/pw-jack
+        - /usr/lib64/pipewire-0.3/jack
+        - /usr/lib64/spa-0.2/jack
+        - /usr/share/ld.so.conf.d/pipewire-jack.conf
+        - /usr/share/pipewire/jack.conf
+    - spa-ffmpeg :
+        - /usr/lib64/spa-0.2/ffmpeg
+setup      : |
+    sed -i 's:alsa.conf.d:conf.d:' ./pipewire-alsa/conf/meson.build
+    COMMON_OPTIONS="-Decho-cancel-webrtc=enabled \
+                    -Dlibjack-path=%libdir%/pipewire-0.3/jack \
+                    -Drlimits-install=false \
+                    -Dsession-managers=[] \
+                    -Dsystemd=enabled \
+                    -Dudevrulesdir=%libdir%/udev/rules.d"
+
+    if [[ -n "${EMUL32BUILD}" ]]; then
+        CONFIGURE_OPTIONS="$COMMON_OPTIONS -Dffmpeg=disabled \
+                                           -Davahi=disabled \
+                                           -Dbluez5=disabled \
+                                           -Dbluez5-codec-aptx=disabled \
+                                           -Dbluez5-codec-ldac=disabled \
+                                           -Dbluez5-codec-aac=disabled \
+                                           -Djack=disabled \
+                                           -Draop=disabled"
+    else
+        CONFIGURE_OPTIONS="$COMMON_OPTIONS -Dffmpeg=enabled"
+    fi
+
+    %meson_configure $CONFIGURE_OPTIONS
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+    install -Dm00644 $pkgfiles/pipewire-jack.ld.conf $installdir/usr/share/ld.so.conf.d/pipewire-jack.conf
+
+    # Enable user service by default
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        install -dm0644 $installdir/usr/lib/systemd/user/sockets.target.wants
+        ln -s /usr/lib/systemd/user/pipewire.socket \
+             $installdir/usr/lib/systemd/user/sockets.target.wants/
+        ln -s /usr/lib/systemd/user/pipewire-pulse.socket \
+             $installdir/usr/lib/systemd/user/sockets.target.wants/
+    fi
+
+    # Remove unnecessary udev rules file from the 32-bit package
+    if [[ -n "${EMUL32BUILD}" ]]; then
+        rm -rf $installdir/%libdir%/udev/
+    fi
