@@ -1,0 +1,218 @@
+name       : glibc
+version    : '2.36'
+release    : 84
+source     :
+    # release/2.36/master
+    - git|git://sourceware.org/git/glibc.git : a9728f798ec7f05454c95637ee6581afaa9b487d
+license    : GPL-3.0-or-later
+summary    :
+    - This package contains the GNU C libraries and header files
+    - benchmarks : Various benchmarks to test the performance of GNU C libraries
+description: |
+    This package contains the GNU C libraries and header files.  The GNU C library was written originally by Roland McGrath, and is currently maintained by Ulrich Drepper.  Some parts of the library were contributed or worked on by other people. You'll need this package to compile programs.
+libsplit   : no
+devel      : yes
+autodep    : no
+emul32     : yes
+avx2       : yes
+component  : system.base
+patterns   :
+    - 32bit : /lib/ld-linux.so.2
+    - benchmarks : /usr/bin/bench-*
+setup      : |
+    # Solus mutilib integration
+
+    # Ensure that ldd can use all interpreters, allowing 64-bit host to run ldd
+    # against 32-bit files.
+    %patch -p1 < $pkgfiles/0001-ldd-Force-correct-RTLDLIST-for-Solus.patch
+
+    # Enable /usr/lib32 in ldconfig without requiring config files
+    %patch -p1 < $pkgfiles/0002-sysdeps-Add-support-for-usr-lib32-as-a-system-librar.patch
+
+    # Use a stateless ld.so.conf
+    %patch -p1 < $pkgfiles/0003-elf-ldconfig-Use-a-stateless-ld.so.conf.patch
+
+    # Stateless /etc/shells
+    %patch -p1 < $pkgfiles/0001-misc-Support-fallback-stateless-shells-path-in-absen.patch
+
+    # Broken 64-bit unity games
+    # https://bugzilla.redhat.com/show_bug.cgi?id=1440287
+    %patch -p1 < $pkgfiles/fix-x64-abi.patch
+
+    # locale data only exists in /usr/lib64 so hardcode it
+    %patch -p1 < $pkgfiles/0001-Hardcode-usr-lib64-path-for-locale.patch
+
+    # Allow supported AMD processers to use /usr/lib64/haswell if they have the necessary instructions.
+    %patch -p1 < $pkgfiles/perf/0001-Open-up-the-haswell-subdirectory-to-be-usable-by-sup.patch
+
+    # Clear Linux backports for performance improvements/regression fixes.
+    %patch -p1 < $pkgfiles/perf/0001-Set-vector-width-and-alignment-to-fix-GCC-AVX-issue.patch
+    %patch -p1 < $pkgfiles/perf/disable-vectorization-even-more.patch
+    %patch -p1 < $pkgfiles/perf/0001-Force-ffsll-to-be-64-bytes-aligned.patch
+
+    # clone3 support required a patch to the chromium sandbox, that patch will take a long time
+    # to proprogate to all the electron apps so just disable it for now. Electron apps without the
+    # patched sandbox will just segfault. Revisit for 2.36.
+    %patch -p1 < $pkgfiles/0001-Disable-clone3-wrapper.patch
+
+    # Build glibc with both DT_HASH and DT_GNU_HASH for EasyAntiCheat on linux
+    %patch -p1 < $pkgfiles/reenable_DT_HASH.patch
+
+    mkdir glibc-build
+    pushd glibc-build
+
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        mkdir b32
+        pushd b32
+        export CC="gcc -m32"
+        export CXX="g++ -m32"
+        export BUILDHOST="i686-pc-linux-gnu"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -mprefer-vector-width=128"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=i686 -mstackrealign"
+        fi
+    else
+        mkdir b64
+        pushd b64
+        export CC="gcc"
+        export CXX="g++"
+        export BUILDHOST="x86_64-solus-linux"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -mprefer-vector-width=128"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64"
+        fi
+    fi
+    export LDFLAGS="-Wl,-z,max-page-size=0x1000"
+    echo "slibdir=%libdir%" >> configparms
+    echo "rtlddir=%libdir%" >> configparms
+    # these params need to be coming from ypkg (build=)
+
+    export LANGUAGE="C"
+    export LC_ALL="C"
+    export LANG="C"
+
+    ../../configure \
+           --build=${BUILDHOST} \
+           --disable-profile \
+           --disable-debug \
+           --enable-bind-now \
+           --enable-cet \
+           --enable-stack-protector=strong \
+           --enable-tunables \
+           --without-cvs \
+           --without-gd \
+           --without-selinux \
+           --prefix=/usr \
+           --mandir=/usr/share/man \
+           --infodir=/usr/share/info \
+           --libexecdir=%libdir%/misc \
+           --libdir=%libdir% \
+           --with-pkgversion='Solus'
+    popd
+    popd
+build      : |
+    pushd glibc-build
+    export LANGUAGE="C"
+    export LC_ALL="C"
+    export LANG="C"
+
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        pushd b32
+        export CC="gcc -m32"
+        export CXX="g++ -m32"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 mtune=haswell -march=haswell -Wl,-z,max-page-size=0x1000"
+        else
+            export CFLAGS="-O3 -g2 mtune=generic -march=i686 -Wl,-z,max-page-size=0x1000"
+        fi
+    else
+        pushd b64
+        export CC="gcc"
+        export CXX="g++"
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            export CFLAGS="-O3 -g2 -mtune=haswell -march=haswell -Wl,-z,max-page-size=0x1000"
+        else
+            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64 -Wl,-z,max-page-size=0x1000"
+        fi
+    fi
+    export LDFLAGS="-Wl,-z,max-page-size=0x1000"
+    %make
+
+    # Ifdef to prevent running avx2 instructions on non-avx2 machines
+    if [[ -z "${AVX2BUILD}" ]]; then
+        %make bench-build
+    fi
+
+    popd
+    popd
+install    : |
+    pushd glibc-build
+
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        pushd b32
+        %make_install install_root=$installdir
+
+        if [[ -z "${AVX2BUILD}" ]]; then
+            install -dm00755 $installdir/lib
+            # Interestingly enough, /lib == /lib64 on Solus.
+            ln -sv /usr/lib32/ld-linux.so.2 $installdir/lib/ld-linux.so.2
+        fi
+    else
+        pushd b64
+        %make_install install_root=$installdir
+
+        if [[ -z "${AVX2BUILD}" ]]; then
+            %make_install install_root=$installdir localedata/install-locales
+
+            if [[ -f $installdir/etc/ld.so.cache ]]; then
+                rm -v $installdir/etc/ld.so.cache
+            fi
+
+            if [[ -f $installdir/etc/localetime ]]; then
+                rm -v $installdir/etc/localtime
+            fi
+
+            install -dm00755 $installdir/var/run/nscd
+            install -dm00755 $installdir/var/db/nscd
+
+            if [[ -d $installdir/usr/share/zoneinfo ]]; then
+                rm -rvf $installdir/usr/share/zoneinfo
+            fi
+
+            if [[ -f $installdir/usr/sbin/zdump ]]; then
+                rm -v $installdir/usr/sbin/zdump
+            fi
+
+            install -dm00755 $installdir/lib64
+            ln -sv /usr/lib64/ld-linux-x86-64.so.2 $installdir/lib64/ld-linux-x86-64.so.2
+
+            # Install stateless ld.so.conf
+            install -Dm00644 $pkgfiles/ld.so.conf $installdir/usr/share/defaults/etc/ld.so.conf
+
+            # iconv cache file
+            # LD_LIBRARY_PATH hacks to get this working, fixed in 2.36.
+            LD_LIBRARY_PATH=$installdir/%libdir% $installdir/%libdir%/ld-linux-x86-64.so.2 $installdir/usr/sbin/iconvconfig --prefix=$installdir
+
+        fi
+    fi
+
+    # Benchmarks
+    if [[ -z "${AVX2BUILD}" ]]; then
+        for f in benchtests/*; do [ -x $f -a ! -d $f ] && cp -a $f $installdir/usr/bin/; done
+    fi
+
+    # Clear out uneeded haswell files
+    if [[ ! -z "${AVX2BUILD}" ]]; then
+        for nuke in `ls $installdir/%libdir% | grep -v -E "libm.so.6|libm-$version.so|libc.so.6|libc-$version.so|libmvec|libcrypt"`; do
+            rm -rf $installdir/%libdir%/${nuke}
+        done
+        # Steam compatiblity
+        rm $installdir/usr/lib32/haswell/libc.so.6 || :
+    fi
+
+    # libxcrypt transition: for now remove conflicts with the libxcrypt package and build everything
+    # against libcrypt.so.2. Keep .so.1 around for compatiblity
+    # When ready we can disable glibc's crypt entirely with --disable-crypt.
+    rm -f $installdir/usr/include/crypt.h $installdir/usr/lib64/libcrypt.{a,so} $installdir/usr/lib32/libcrypt.{a,so}
