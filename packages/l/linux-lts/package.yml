@@ -1,0 +1,153 @@
+name       : linux-lts
+version    : 5.15.131
+release    : 216
+source     :
+    - https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.131.tar.xz : 997c3391f439fb6fe32f1938fe089a046b840a5cde9a2215b6745144f8b24c69
+license    : GPL-2.0-only
+component  :
+    - kernel.image
+    - headers : kernel.devel
+summary    :
+    - Linux kernel image and modules (LTS)
+    - headers : Linux kernel headers (LTS)
+description:
+    - The Linux kernel and modules, the core of the operating system
+    - headers : Headers required for building out of tree kernel modules
+builddeps  :
+    - pkgconfig(devmapper)
+    - pkgconfig(libelf)
+    - bc
+    - btrfs-progs
+    - cpio
+    - dracut
+    - intel-microcode
+    - kbd
+    - libfido2
+    - linux-firmware
+    - lz4
+    - nvme-cli
+    - perl
+    - sbsigntools
+    - tpm2-tools
+patterns   :
+    - headers : /usr/src
+permanent  :
+    - /lib/modules
+    - /usr/lib/kernel
+    - /usr/src
+replaces   :
+    - kernel
+    - kernel-modules
+    - headers : kernel-headers
+environment: |
+    # Maximize ccache efficiency as well as make the build fully reproducible, except for the initrd which needs a timestamp to be signed
+    export KBUILD_BUILD_USER=root
+    export KBUILD_BUILD_TIMESTAMP="0"
+    export SOURCE_DATE_EPOCH=0
+
+    export CCACHE_BASEDIR=$workdir
+    export CCACHE_HASHDIR=yes
+setup      : |
+    %apply_patches
+
+    # Set the version
+    extraVersion="-${release}.lts"
+    sed -e "s/EXTRAVERSION =.*/EXTRAVERSION = $extraVersion/" -i Makefile
+
+    # Ensure config is valid
+    install $pkgfiles/config .config
+    %make ARCH=x86_64 oldconfig
+
+    # Zero stats so that we see how effective the caching is
+    if [[ " ${PATH[*]} " =~ "ccache" ]]; then
+        ccache --zero-stats
+    fi
+build      : |
+    %make ARCH=x86_64 CONFIG_DEBUG_SECTION_MISMATCH=y
+    %make -C tools/objtool
+
+    if [[ " ${PATH[*]} " =~ "ccache" ]]; then
+        ccache --show-stats
+    fi
+install    : |
+    # Install kernel blob
+    kernID="com.solus-project.lts"
+    kversion="${version}-${release}.lts"
+    install -D -m 0755 arch/x86/boot/bzImage $installdir/usr/lib/kernel/$kernID.${version}-${release}
+
+    # Install additional files
+    install -m 00644 .config $installdir/usr/lib/kernel/config-$kversion
+    install -m 00644 System.map $installdir/usr/lib/kernel/System.map-$kversion
+    install -m 00644 $pkgfiles/cmdline $installdir/usr/lib/kernel/cmdline-$kversion
+
+    # Install kernel modules, disable depmod + firmware install
+    install -D -d -m 00755 $installdir/lib/modules/$kversion
+    %make ARCH=x86_64 INSTALL_MOD_PATH=$installdir/ modules_install KERNELRELEASE=$kversion mod-fw= DEPMOD=/bin/true
+
+    # Remove broken links
+    rm -v $installdir/lib/modules/${kversion}/{source,build}
+
+    # Mark this as the default LTS kernel
+    ln -sv $kernID.${version}-${release} $installdir/usr/lib/kernel/default-lts
+
+    # Fix mods
+    depmod -b $installdir/ $kversion -a
+
+    # Store vendor initrd within the kernel package, prevent mangling from fakeroot
+    # 2021-01-20: Force early KMS for everything except Nouveau (this will not work with Nvidia propretary)
+    LD_PRELOAD='' dracut --strip --tmpdir /tmp -N -f  \
+        --kmoddir $installdir/lib/modules/${kversion} \
+        --kver $kversion --add "bash systemd lvm dm rescue fido2 tpm2-tss virtiofs" \
+        --strip --hardlink --zstd \
+        --nomdadmconf --early-microcode \
+        --add-drivers "amdgpu hyperv_drm i915 qxl radeon virtio-gpu" \
+        --include $pkgfiles/systemd/timeouts.conf /usr/lib64/systemd/system.conf.d/timeouts.conf \
+        $installdir/usr/lib/kernel/initrd-$kernID.${version}-${release}
+
+    # Sign with our MOK if we have the secureboot-keys submodule checked out.
+    if [[ -e $pkgfiles/secureboot-keys/MOK.key ]]; then
+        sbsign --key $pkgfiles/secureboot-keys/MOK.key \
+                --cert $pkgfiles/secureboot-keys/MOK.crt \
+                --output $installdir/usr/lib/kernel/$kernID.${version}-${release} \
+                $installdir/usr/lib/kernel/$kernID.${version}-${release}
+    fi
+
+    # Install the headers
+    tgtDir="/usr/src/linux-headers-$kversion"
+    dstDir="$installdir/$tgtDir"
+    install -D -d -m 00755 $dstDir
+    find . -path './include/*' -prune -o -path './scripts/*' -prune -o -path './Documentation/*' -prune -o -type f \( -name 'Makefile*' -o -name 'Kconfig*' -o -name 'Kbuild*' -o -name '*.sh' -o -name '*.pl' -o -name '*.lds' \) -print | cpio -pVd --preserve-modification-time $dstDir/
+
+    # Necessary for out of tree modules
+    for h in "drivers/media/dvb-frontends" "drivers/media/tuners" "drivers/media/platform"; do
+        install -D -d -m 00755 $dstDir/$h
+        cp -a $h/*.h $dstDir/$h
+    done
+
+    # For a full headers pkg
+    for p in "include" "scripts" "Documentation"; do
+        cp -a $p $dstDir
+    done
+
+    # Nuke any unneeded bits.
+    rm -f $dstDir/scripts/*.o
+    rm -f $dstDir/scripts/*/*.o
+    rm -rf $dstDir/Documentation/DocBook
+
+    # Fix an issue that would otherwise require us to have fakeroot during the build (which makes the build MUCH slower expecially if you're using ccache)
+    chmod +x $dstDir/scripts/basic/fixdep
+
+    # Copy remaining include dirs
+    (find arch -name include -type d -print | xargs -n1 -i: find : -type f) | cpio -pd --preserve-modification-time "$dstDir"
+
+    # Shove last bits needed for out of tree kernel builds
+    install -m 00644 Module.symvers $dstDir/.
+    install -m 00644 System.map $dstDir/.
+    install -m 00644 .config $dstDir/.config
+
+    # Add objtool binary for CONFIG_STACK_VALIDATION (T5607)
+    install -m 00755 tools/objtool/objtool $dstDir/tools/objtool/objtool
+
+    # Fix up build/source links
+    ln -sv build $installdir/lib/modules/$kversion/source
+    ln -sv $tgtDir $installdir/lib/modules/$kversion/build
