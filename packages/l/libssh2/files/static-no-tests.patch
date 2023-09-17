@@ -1,0 +1,103 @@
+From b95e757d0fbefe19ee0312bddeff2013b9eba6ae Mon Sep 17 00:00:00 2001
+From: Xi Ruoyao <xry111@xry111.site>
+Date: Wed, 31 May 2023 15:25:45 +0800
+Subject: [PATCH] tests: Do not run tests accessing internal functions if
+ --disable-static
+
+Fixes #1056.
+---
+ configure.ac         |  2 ++
+ tests/CMakeLists.txt |  2 +-
+ tests/Makefile.am    |  5 +++++
+ tests/Makefile.inc   | 14 ++++++++------
+ 4 files changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/configure.ac b/configure.ac
+index a4d386b9c..b3b22db41 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -256,6 +256,8 @@ AC_ARG_ENABLE([sshd-tests],
+   [run_sshd_tests=no], [run_sshd_tests=yes])
+ AM_CONDITIONAL([RUN_SSHD_TESTS], [test "x$run_sshd_tests" != "xno"])
+ 
++AM_CONDITIONAL([RUN_TESTS_WITH_LIB_STATIC], [test "x$enable_static" != "xno"])
++
+ # Build example applications?
+ AC_MSG_CHECKING([whether to build example applications])
+ AC_ARG_ENABLE([examples-build],
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 76eb78efc..542e3b7ba 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -70,7 +70,7 @@ add_library(runner STATIC ${librunner_la_SOURCES})
+ target_compile_definitions(runner PRIVATE "${CRYPTO_BACKEND_DEFINE}")
+ target_include_directories(runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../src" ../src ../include "${CRYPTO_BACKEND_INCLUDE_DIR}")
+ 
+-foreach(test ${DOCKER_TESTS} ${STANDALONE_TESTS} ${SSHD_TESTS})
++foreach(test ${DOCKER_TESTS} ${DOCKER_TESTS_WITH_LIB_STATIC} ${STANDALONE_TESTS} ${STANDALONE_TESTS_WITH_LIB_STATIC} ${SSHD_TESTS})
+   if(NOT ";${TESTS_WITH_LIB_STATIC};" MATCHES ";${test};")
+     set(LIB_FOR_TESTS ${LIB_SELECTED})
+   elseif(TARGET ${LIB_STATIC})
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 27c3a2e38..4b4c69da3 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -12,6 +12,11 @@ TESTS_ENVIRONMENT =
+ # Tests to run
+ TESTS = mansyntax.sh
+ 
++if RUN_TESTS_WITH_LIB_STATIC
++DOCKER_TESTS += $(DOCKER_TESTS_WITH_LIB_STATIC)
++STANDALONE_TESTS += $(STANDALONE_TESTS_WITH_LIB_STATIC)
++endif
++
+ if RUN_DOCKER_TESTS
+ TESTS += $(DOCKER_TESTS)
+ endif
+diff --git a/tests/Makefile.inc b/tests/Makefile.inc
+index d0e29db1f..32df5e0c7 100644
+--- a/tests/Makefile.inc
++++ b/tests/Makefile.inc
+@@ -7,7 +7,6 @@ DOCKER_TESTS = \
+   test_aa_warmup \
+   test_agent_forward_ok \
+   test_auth_keyboard_fail \
+-  test_auth_keyboard_info_request \
+   test_auth_keyboard_ok \
+   test_auth_password_fail_password \
+   test_auth_password_fail_username \
+@@ -23,12 +22,10 @@ DOCKER_TESTS = \
+   test_auth_pubkey_ok_rsa_encrypted \
+   test_auth_pubkey_ok_rsa_openssh \
+   test_auth_pubkey_ok_rsa_signed \
+-  test_hostkey \
+   test_hostkey_hash \
+   test_read
+ 
+-STANDALONE_TESTS = \
+-  test_simple
++STANDALONE_TESTS =
+ 
+ SSHD_TESTS = \
+   test_ssh2 \
+@@ -36,13 +33,18 @@ SSHD_TESTS = \
+ 
+ # Programs of the above that use internal libssh2 functions so they need
+ # to be statically linked against libssh2
++DOCKER_TESTS_WITH_LIB_STATIC = \
++  test_auth_keyboard_info_request \
++  test_hostkey
++
++STANDALONE_TESTS_WITH_LIB_STATIC = \
++  test_simple
++
+ TESTS_WITH_LIB_STATIC = \
+   test_auth_keyboard_info_request \
+   test_hostkey \
+   test_simple
+ 
+-# Copy of the above for Makefile.am.
+-# Is there a way to reuse the list above?
+ test_auth_keyboard_info_request_LDFLAGS = -static
+ test_hostkey_LDFLAGS = -static
+ test_simple_LDFLAGS = -static

@@ -1,0 +1,160 @@
+From 3990ff311eaf5c6ca7f616e45c968e86022d431b Mon Sep 17 00:00:00 2001
+From: Viktor Szakats <commit@vsz.me>
+Date: Wed, 31 May 2023 09:41:24 +0000
+Subject: [PATCH] fix CMake and Makefile.mk builds & tidy-ups
+
+- rename RUN_TESTS_WITH_LIB_STATIC to HAVE_LIB_STATIC
+
+- shorten suffix _WITH_LIB_STATIC to _STATIC
+
+- drop existing TESTS_WITH_LIB_STATIC variable now with a duplicate of
+  exceptions and use the new lists in CMakeLists.txt and Makefile.mk.
+  Also fixing the latter to not lose static tests.
+
+- fix CMake builds to keep running static tests.
+
+- restore and update comment in Makefile.inc
+
+- update variable lists in comments
+---
+ Makefile.mk          |  9 +++++----
+ configure.ac         |  4 ++--
+ tests/CMakeLists.txt |  8 +++++---
+ tests/Makefile.am    | 12 ++++++------
+ tests/Makefile.inc   | 11 ++++-------
+ 5 files changed, 22 insertions(+), 22 deletions(-)
+
+diff --git a/Makefile.mk b/Makefile.mk
+index b5c13d568..dabe88398 100644
+--- a/Makefile.mk
++++ b/Makefile.mk
+@@ -211,15 +211,16 @@ prebuild: $(OBJ_DIR) $(OBJ_DIR)/version.inc
+ 
+ example: $(TARGETS_EXAMPLES)
+ 
+-# Get DOCKER_TESTS, STANDALONE_TESTS, SSHD_TESTS, TESTS_WITH_LIB_STATIC,
++# Get DOCKER_TESTS, DOCKER_TESTS_STATIC, STANDALONE_TESTS, STANDALONE_TESTS_STATIC, SSHD_TESTS,
+ # librunner_la_SOURCES defines
+ include tests/Makefile.inc
++ifndef DYN
++DOCKER_TESTS += $(DOCKER_TESTS_STATIC)
++STANDALONE_TESTS += $(STANDALONE_TESTS_STATIC)
++endif
+ TARGETS_RUNNER := $(TARGET)-runner.a
+ TARGETS_RUNNER_OBJS := $(addprefix $(OBJ_DIR)/,$(patsubst %.c,%.o,$(filter %.c,$(librunner_la_SOURCES))))
+ TARGETS_TESTS := $(patsubst %.c,%$(BIN_EXT),$(addprefix tests/,$(addsuffix .c,$(DOCKER_TESTS) $(STANDALONE_TESTS) $(SSHD_TESTS))))
+-ifdef DYN
+-TARGETS_TESTS := $(filter-out $(patsubst %.c,%$(BIN_EXT),$(addprefix tests/,$(addsuffix .c,$(TESTS_WITH_LIB_STATIC)))),$(TARGETS_TESTS))
+-endif
+ 
+ test: $(TARGETS_RUNNER) $(TARGETS_TESTS)
+ 
+diff --git a/configure.ac b/configure.ac
+index b3b22db41..c0ad339d8 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -256,8 +256,6 @@ AC_ARG_ENABLE([sshd-tests],
+   [run_sshd_tests=no], [run_sshd_tests=yes])
+ AM_CONDITIONAL([RUN_SSHD_TESTS], [test "x$run_sshd_tests" != "xno"])
+ 
+-AM_CONDITIONAL([RUN_TESTS_WITH_LIB_STATIC], [test "x$enable_static" != "xno"])
+-
+ # Build example applications?
+ AC_MSG_CHECKING([whether to build example applications])
+ AC_ARG_ENABLE([examples-build],
+@@ -373,6 +371,8 @@ fi
+ AM_CONDITIONAL([HAVE_WINDRES],
+   [test "x$have_windows_h" = "xyes" && test "x${enable_shared}" = "xyes" && test -n "${RC}"])
+ 
++AM_CONDITIONAL([HAVE_LIB_STATIC], [test "x$enable_static" != "xno"])
++
+ # Configure parameters
+ LIBSSH2_CHECK_OPTION_WERROR
+ 
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 542e3b7ba..9cb4f2019 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -39,9 +39,11 @@ include(CopyRuntimeDependencies)
+ list(APPEND LIBRARIES ${SOCKET_LIBRARIES})
+ 
+ transform_makefile_inc("Makefile.inc" "${CMAKE_CURRENT_BINARY_DIR}/Makefile.inc.cmake")
+-# Get 'DOCKER_TESTS', 'STANDALONE_TESTS', 'SSHD_TESTS', 'TESTS_WITH_LIB_STATIC',
++# Get 'DOCKER_TESTS', 'DOCKER_TESTS_STATIC', 'STANDALONE_TESTS', 'STANDALONE_TESTS_STATIC', 'SSHD_TESTS',
+ # 'librunner_la_SOURCES' variables
+ include(${CMAKE_CURRENT_BINARY_DIR}/Makefile.inc.cmake)
++list(APPEND DOCKER_TESTS ${DOCKER_TESTS_STATIC})
++list(APPEND STANDALONE_TESTS ${STANDALONE_TESTS_STATIC})
+ 
+ if(CMAKE_COMPILER_IS_GNUCC)
+   find_program(GCOV_PATH gcov)
+@@ -70,8 +72,8 @@ add_library(runner STATIC ${librunner_la_SOURCES})
+ target_compile_definitions(runner PRIVATE "${CRYPTO_BACKEND_DEFINE}")
+ target_include_directories(runner PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/../src" ../src ../include "${CRYPTO_BACKEND_INCLUDE_DIR}")
+ 
+-foreach(test ${DOCKER_TESTS} ${DOCKER_TESTS_WITH_LIB_STATIC} ${STANDALONE_TESTS} ${STANDALONE_TESTS_WITH_LIB_STATIC} ${SSHD_TESTS})
+-  if(NOT ";${TESTS_WITH_LIB_STATIC};" MATCHES ";${test};")
++foreach(test ${DOCKER_TESTS} ${STANDALONE_TESTS} ${SSHD_TESTS})
++  if(NOT ";${DOCKER_TESTS_STATIC};${STANDALONE_TESTS_STATIC};" MATCHES ";${test};")
+     set(LIB_FOR_TESTS ${LIB_SELECTED})
+   elseif(TARGET ${LIB_STATIC})
+     set(LIB_FOR_TESTS ${LIB_STATIC})
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index 4b4c69da3..03e70b87a 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -2,21 +2,21 @@ SUBDIRS = ossfuzz
+ 
+ AM_CPPFLAGS = -I$(top_builddir)/src -I$(top_srcdir)/src -I$(top_srcdir)/include
+ 
+-# Get DOCKER_TESTS, STANDALONE_TESTS, SSHD_TESTS, TESTS_WITH_LIB_STATIC,
++# Get DOCKER_TESTS, DOCKER_TESTS_STATIC, STANDALONE_TESTS, STANDALONE_TESTS_STATOC, SSHD_TESTS,
+ # librunner_la_SOURCES defines and *_LDFLAGS for statically linked tests.
+ include Makefile.inc
+ 
++if HAVE_LIB_STATIC
++DOCKER_TESTS += $(DOCKER_TESTS_STATIC)
++STANDALONE_TESTS += $(STANDALONE_TESTS_STATIC)
++endif
++
+ # Some tests rely on the 'srcdir' env. Set by autotools automatically.
+ TESTS_ENVIRONMENT =
+ 
+ # Tests to run
+ TESTS = mansyntax.sh
+ 
+-if RUN_TESTS_WITH_LIB_STATIC
+-DOCKER_TESTS += $(DOCKER_TESTS_WITH_LIB_STATIC)
+-STANDALONE_TESTS += $(STANDALONE_TESTS_WITH_LIB_STATIC)
+-endif
+-
+ if RUN_DOCKER_TESTS
+ TESTS += $(DOCKER_TESTS)
+ endif
+diff --git a/tests/Makefile.inc b/tests/Makefile.inc
+index 32df5e0c7..1c9c23fb5 100644
+--- a/tests/Makefile.inc
++++ b/tests/Makefile.inc
+@@ -33,18 +33,15 @@ SSHD_TESTS = \
+ 
+ # Programs of the above that use internal libssh2 functions so they need
+ # to be statically linked against libssh2
+-DOCKER_TESTS_WITH_LIB_STATIC = \
++DOCKER_TESTS_STATIC = \
+   test_auth_keyboard_info_request \
+   test_hostkey
+ 
+-STANDALONE_TESTS_WITH_LIB_STATIC = \
+-  test_simple
+-
+-TESTS_WITH_LIB_STATIC = \
+-  test_auth_keyboard_info_request \
+-  test_hostkey \
++STANDALONE_TESTS_STATIC = \
+   test_simple
+ 
++# Copy of the above for Makefile.am.
++# Is there a way to reuse the lists above?
+ test_auth_keyboard_info_request_LDFLAGS = -static
+ test_hostkey_LDFLAGS = -static
+ test_simple_LDFLAGS = -static
