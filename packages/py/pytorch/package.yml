@@ -1,0 +1,145 @@
+name       : pytorch
+version    : 1.11.0
+release    : 19
+source     :
+    - https://github.com/pytorch/pytorch/releases/download/v1.11.0/pytorch-v1.11.0.tar.gz : dc0c2b8d13c112a2b9ea8757a475b0ce2ca97cd19c50a8b70b8c286676616f1d
+homepage   : https://pytorch.org/
+license    : BSD-3-Clause
+component  :
+    - programming.python
+    - ^libtorch : programming.library
+summary    :
+    - Tensors and Dynamic neural networks in Python with strong GPU acceleration
+    - ^libtorch : PyTorch C++ API
+description: |
+    PyTorch is an optimized tensor library for deep learning using GPUs and CPUs.
+patterns   :
+    - ^libtorch :
+        - /usr/lib64
+    - ^libtorch-devel :
+        - /usr/lib64/cmake
+        - /usr/include
+optimize   :
+    - speed
+# avx2       : yes # avx2 not yet available on the build server
+clang      : yes
+builddeps  :
+    - pkgconfig(eigen3)
+    - pkgconfig(fftw3)
+    - pkgconfig(hiredis)
+    - pkgconfig(lapack)
+    - pkgconfig(libavcodec)
+    - pkgconfig(libglog)
+    - pkgconfig(libuv)
+    - pkgconfig(libzmq)
+    - pkgconfig(ompi)
+    - pkgconfig(openblas)
+    - pkgconfig(opencv4)
+    - pkgconfig(protobuf)
+    - pkgconfig(python3)
+    - pkgconfig(rocksdb)
+    - pkgconfig(shaderc)
+    - intel-tbb-devel
+    - leveldb-devel
+    - lmdb-devel
+    - numpy
+    # onednn-devel # FIXME: If you have more RAM than I do please test if you don't get a ZIP64 Extensions requirement
+    - pybind11
+    - python-typing-extensions
+    - pyyaml
+    - vulkan-headers
+rundeps    :
+    - numpy
+    - python-cffi
+    - python-future
+    - python-protobuf
+    - python-typing-extensions
+    - pyyaml
+    - ^libtorch :
+        - pybind11
+    - ^libtorch-devel :
+        - ffmpeg-devel
+        - gflags-devel
+        - glog-devel
+        - libtorch
+replaces   :
+    - ^libtorch-devel :
+        - pytorch-devel
+environment: |
+    # Good luck while debugging
+    export CFLAGS="${CFLAGS/-g3/-gline-tables-only}"
+    export CXXFLAGS="${CXXFLAGS/-g3/-gline-tables-only}"
+
+    export PYTHON_BIN_PATH=/usr/bin/python3
+    export USE_DEFAULT_PYTHON_LIB_PATH=1
+
+    export BLAS=OpenBLAS \
+        BUILD_BINARY=1 \
+        BUILD_CAFFE2=1 \
+        BUILD_CUSTOM_PROTOBUF=0 \
+        BUILD_TEST=0 \
+        HAVE_SOVERSION=1 \
+        USE_CUDA=0 \
+        USE_DISTRIBUTED=1 \
+        USE_FBGEMM=0 \
+        USE_FFTW=1 \
+        USE_FFMPEG=1 \
+        USE_GFLAGS=1 \
+        USE_GLOG=1 \
+        USE_GLOO_WITH_OPENSSL=1 \
+        USE_LEVELDB=1 \
+        USE_LAPACK=1 \
+        USE_LIBUV=1 \
+        USE_LMDB=1 \
+        USE_MKLDNN=0 \
+        USE_BLAS=1 \
+        USE_OPENCV=1 \
+        USE_SYSTEM_EIGEN_INSTALL=1 \
+        USE_REDIS=1 \
+        USE_ROCKSDB=1 \
+        USE_TBB=1 \
+        USE_SYSTEM_TBB=1 \
+        USE_VULKAN=1 \
+        USE_ZMQ=1 \
+        USE_ZSTD=1 \
+
+    # Set it in case your computer starts chocking horribly
+    # export MAX_JOBS=$((%YJOBS%/4))
+    # For packagers. The default 5G is barely enough for a single build.
+    # export CCACHE_MAXSIZE=20G
+setup      : |
+    %patch -p1 < $pkgfiles/I-flag-instead-of-isystem.patch
+    %patch -p1 < $pkgfiles/system-libuv.patch
+    %patch -p1 < $pkgfiles/system-rocksdb.patch
+    %patch -p1 < $pkgfiles/system-zstd.patch
+
+    # Fix some compilation errors.
+    sed -i "s|<atomic>|<atomic>\n#include <array>|" third_party/gloo/gloo/transport/tcp/device.h
+    sed -i "141s|16384|(long int) 16384|" third_party/breakpad/src/client/linux/handler/exception_handler.cc
+
+    # Make sure lapack is detected.
+    sed -i "s|(BLAS_INFO STREQUAL \"generic\")|TRUE|" cmake/Modules/FindLAPACK.cmake
+
+    echo %version% > version.txt
+build      : |
+    %python3_setup
+install    : |
+    %python3_install
+
+    # Configure libtorch
+    install -dm00755 $installdir/%libdir%
+    TORCH_PATH=/usr/lib/python%python3_version%/site-packages/torch
+    mv $installdir/$TORCH_PATH/lib/* $installdir%libdir%
+
+    if [ ! -z "${AVX2BUILD}" ]; then
+        rm -rf $installdir/usr/lib/python*
+    else
+        install -dm00755 $installdir/usr/include $installdir/%libdir%/cmake
+        mv $installdir/$TORCH_PATH/include/* $installdir/usr/include
+        rm -rf $installdir/usr/include/pybind11
+        mv $installdir/$TORCH_PATH/share/cmake/* $installdir/%libdir%/cmake
+        rm -rf $installdir/$TORCH_PATH/{include,lib,share/cmake}
+        ln -sv /usr/include $installdir/$TORCH_PATH/include
+        ln -sv %libdir% $installdir/$TORCH_PATH/lib
+        ln -sv %libdir%/cmake $installdir/$TORCH_PATH/share/cmake
+    fi
