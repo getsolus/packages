@@ -4,7 +4,7 @@
   </a>
 </p>
 
-*Packages* is the main issue tracker for [Solus]. In the future it will also house all the packages, which can currently be found in the [Solus Packages] organisation.
+*Packages* contains all the packages definitions for [Solus]. It also contains the main issue tracker.
 
 # Welcome
 
