@@ -1,0 +1,65 @@
+name       : bitwarden-desktop
+version    : 2023.8.3
+release    : 13
+source     :
+    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2023.8.3.tar.gz : 4d23525585c4128a70136f614811df82e92d4fdc6872434e0625c3e18474be38
+license    : GPL-3.0-only
+component  : security
+summary    : A secure and free password manager for all of your devices
+description: A secure and free password manager for all of your devices
+networking : yes
+builddeps  :
+    - pkgconfig(gbm)
+    - pkgconfig(gtk+-3.0)
+    - pkgconfig(libdrm)
+    - pkgconfig(libnotify)
+    - pkgconfig(libsecret-1)
+    - pkgconfig(pangocairo)
+    - pkgconfig(xtst)
+    - cargo
+    - cups-devel
+    - git
+    - jq
+    - nodejs
+rundeps    :
+    - nodejs
+setup      : |
+    export ELECTRON_VERSION=24.8.2
+    npm install electron@$ELECTRON_VERSION
+
+    pushd apps/desktop
+    tmp=$(mktemp)
+    jq ".electronVersion = \"${ELECTRON_VERSION}\"" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
+
+    %patch --strip=1 src/main/messaging.main.ts < $pkgfiles/messaging.main.ts.patch
+    %patch --strip=1 desktop_native/index.js < $pkgfiles/nativelib.patch
+    popd
+
+    %patch -p1 < $pkgfiles/fix-argon-simd.patch
+
+    npm ci
+build      : |
+    export npm_config_build_from_source=true
+
+    cd apps/desktop
+    unset LD_PRELOAD
+    pushd desktop_native/
+    npm run build
+    popd
+    npm run build && npm run clean:dist
+    npm exec -c "electron-builder --linux --x64 --dir"
+install    : |
+    export bwdir=/usr/share/bitwarden-desktop
+    install -dm00755 $installdir/usr/bin
+    install -dm00755 $installdir/$bwdir
+
+    cp -R $workdir/apps/desktop/dist/linux-unpacked/* $installdir/$bwdir/
+
+    mv $installdir/$bwdir/bitwarden $installdir/$bwdir/bitwarden-desktop
+    ln -s $bwdir/bitwarden-desktop $installdir/usr/bin/bitwarden-desktop
+
+    install -Dm00644 $pkgfiles/Bitwarden.desktop $installdir/usr/share/applications/Bitwarden.desktop
+
+    for i in 16 32 64 128 256 512 1024; do
+        install -Dm00644 $workdir/apps/desktop/resources/icons/${i}x${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
+    done
