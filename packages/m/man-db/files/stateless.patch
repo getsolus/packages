@@ -1,0 +1,121 @@
+From f9c43add4178a1d64b9ac0b5af3efb8e39909308 Mon Sep 17 00:00:00 2001
+From: Pierre-Yves <pyu@riseup.net>
+Date: Sat, 10 Aug 2019 16:19:10 +0200
+Subject: [PATCH] Use system defaults in absence of site configuration
+
+Signed-off-by: Pierre-Yves <pyu@riseup.net>
+---
+ configure.ac                      |  1 +
+ m4/man-arg-default-config-file.m4 | 21 +++++++++++++++++++++
+ src/Makefile.am                   | 11 ++++++-----
+ src/manp.c                        | 17 ++++++++++++++---
+ 4 files changed, 42 insertions(+), 8 deletions(-)
+ create mode 100644 m4/man-arg-default-config-file.m4
+
+diff --git a/configure.ac b/configure.ac
+index ca12c0a..92c78f9 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -35,6 +35,7 @@ MAN_ARG_UNDOC
+ MAN_ARG_DEVICE
+ MAN_ARG_DB
+ MAN_ARG_CONFIG_FILE
++MAN_ARG_DEFAULT_CONFIG_FILE
+ MAN_ARG_SECTIONS
+ MAN_ARG_AUTOMATIC_CREATE
+ MAN_ARG_AUTOMATIC_UPDATE
+diff --git a/m4/man-arg-default-config-file.m4 b/m4/man-arg-default-config-file.m4
+new file mode 100644
+index 0000000..38ec52b
+--- /dev/null
++++ b/m4/man-arg-default-config-file.m4
+@@ -0,0 +1,21 @@
++# man-arg-config-file.m4 serial 1
++dnl MAN_ARG_DEFAULT_CONFIG_FILE
++dnl Add a --with-default-config-file option.
++
++AC_DEFUN([MAN_ARG_DEFAULT_CONFIG_FILE],
++[
++AC_ARG_WITH([default-config-file],
++[AS_HELP_STRING([--with-default-config-file=CF], [use config file CF [CF=DATADIR/defaults/mandb/man_db.conf]])],
++	[if test "$withval" = "yes" || test "$withval" = "no"
++	 then
++		AC_MSG_ERROR([--with-default-config-file requires an argument])
++	 else
++		default_config_file=$withval
++	 fi],
++	[: ${default_config_file=\$\{datadir\}/defaults/mandb/man_db.conf}])
++default_config_file_basename=${withval##*/}
++default_config_file_dirname=`AS_DIRNAME(["$default_config_file"])`
++AC_SUBST([default_config_file])
++AC_SUBST([default_config_file_basename])
++AC_SUBST([default_config_file_dirname])
++])
+diff --git a/src/Makefile.am b/src/Makefile.am
+index ecc397f..8d32d2f 100644
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -44,6 +44,7 @@ AM_CPPFLAGS = \
+ 	-I$(top_srcdir)/lib \
+ 	-I$(top_srcdir)/libdb \
+ 	-DCONFIG_FILE=\"$(config_file)\" \
++	-DDEFAULT_CONFIG_FILE=\"$(default_config_file)\" \
+ 	-DAPROPOS=\"$(bindir)/$(TRANS_APROPOS)\" \
+ 	-DAPROPOS_NAME=\"$(TRANS_APROPOS)\" \
+ 	-DMAN=\"$(bindir)/$(TRANS_MAN)\" \
+@@ -185,12 +186,12 @@ install-exec-hook:
+ 		$(LN_S) $(TRANS_WHATIS)$(EXEEXT) $(TRANS_APROPOS)$(EXEEXT)
+ 
+ install-data-hook:
+-	@if test -f $(DESTDIR)$(config_file); then \
+-		echo "$(DESTDIR)$(config_file) already exists; overwrite manually if necessary"; \
++	@if test -f $(DESTDIR)$(default_config_file); then \
++		echo "$(DESTDIR)$(default_config_file) already exists; overwrite manually if necessary"; \
+ 	else \
+-		test -z "$(config_file_dirname)" || $(MKDIR_P) "$(DESTDIR)$(config_file_dirname)"; \
+-		echo " $(INSTALL_DATA) man_db.conf $(DESTDIR)$(config_file)"; \
+-		$(INSTALL_DATA) man_db.conf $(DESTDIR)$(config_file); \
++		test -z "$(default_config_file_dirname)" || $(MKDIR_P) "$(DESTDIR)$(default_config_file_dirname)"; \
++		echo " $(INSTALL_DATA) man_db.conf $(DESTDIR)$(default_config_file)"; \
++		$(INSTALL_DATA) man_db.conf $(DESTDIR)$(default_config_file); \
+ 	fi
+ 
+ uninstall-hook:
+diff --git a/src/manp.c b/src/manp.c
+index 1dfecf3..711cd01 100644
+--- a/src/manp.c
++++ b/src/manp.c
+@@ -871,16 +871,27 @@ void read_config_file (bool optional)
+ 	}
+ 
+ 	if (getenv ("MAN_TEST_DISABLE_SYSTEM_CONFIG") == NULL) {
+-		config_file = fopen (CONFIG_FILE, "r");
++		config_file = fopen (DEFAULT_CONFIG_FILE, "r");
+ 		if (config_file == NULL) {
+ 			if (optional)
+ 				debug ("can't open %s; continuing anyway\n",
+-				       CONFIG_FILE);
++				       DEFAULT_CONFIG_FILE);
+ 			else
+ 				error (FAIL, 0,
+ 				       _("can't open the manpath "
+ 					 "configuration file %s"),
+-				       CONFIG_FILE);
++				       DEFAULT_CONFIG_FILE);
++		} else {
++			debug ("From the config file %s:\n\n", DEFAULT_CONFIG_FILE);
++
++			add_to_dirlist (config_file, 0);
++			fclose (config_file);
++		}
++		/* site configuration */
++		config_file = fopen (CONFIG_FILE, "r");
++		if (config_file == NULL) {
++			debug ("can't open %s; continuing anyway\n",
++				CONFIG_FILE);
+ 		} else {
+ 			debug ("From the config file %s:\n\n", CONFIG_FILE);
+ 
+-- 
+2.22.0
+
