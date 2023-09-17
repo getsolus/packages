@@ -1,0 +1,204 @@
+From 197fc401b4e32108074e18ff429f58a40e8b15bf Mon Sep 17 00:00:00 2001
+From: Julien Valentin <mp3butcher@hotmail.com>
+Date: Wed, 25 Mar 2020 23:00:24 +0100
+Subject: [PATCH] prevent immutability resetting when textureobject is taken
+ from orphans
+
+---
+ src/osg/Texture1D.cpp            | 10 +++++++---
+ src/osg/Texture2D.cpp            |  8 ++++++--
+ src/osg/Texture2DArray.cpp       |  6 ++++--
+ src/osg/Texture2DMultisample.cpp |  7 +++++--
+ src/osg/Texture3D.cpp            |  7 +++++--
+ src/osg/TextureCubeMap.cpp       |  6 +++++-
+ src/osg/TextureRectangle.cpp     |  7 +++++--
+ 7 files changed, 37 insertions(+), 14 deletions(-)
+
+diff --git a/src/osg/Texture1D.cpp b/src/osg/Texture1D.cpp
+index d24a77a491f..23e6f4ade0b 100644
+--- a/src/osg/Texture1D.cpp
++++ b/src/osg/Texture1D.cpp
+@@ -238,13 +238,15 @@ void Texture1D::apply(State& state) const
+             textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_1D, _numMipmapLevels, texStorageSizedInternalFormat, _textureWidth, 1, 1, 0);
+             textureObject->bind();
+             applyTexParameters(GL_TEXTURE_1D, state);
+-
+-            extensions->glTexStorage1D( GL_TEXTURE_1D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth);
++            if(!textureObject->_allocated)
++            {
++                extensions->glTexStorage1D( GL_TEXTURE_1D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth);
++            }
+         }
+         else
+         {
+             GLenum internalFormat = _sourceFormat ? _sourceFormat : _internalFormat;
+-            textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_1D, _numMipmapLevels, internalFormat, _textureWidth, 1, 1, 0);
++            textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_1D, _numMipmapLevels, internalFormat, _textureWidth, 1, 1, _borderWidth);
+             textureObject->bind();
+             applyTexParameters(GL_TEXTURE_1D, state);
+ 
+@@ -260,6 +262,8 @@ void Texture1D::apply(State& state) const
+             _readPBuffer->bindPBufferToTexture(GL_FRONT);
+         }
+ 
++        textureObject->setAllocated(_numMipmapLevels, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat: _internalFormat, _textureWidth, 1, 1, _borderWidth);
++
+     }
+     else
+     {
+diff --git a/src/osg/Texture2D.cpp b/src/osg/Texture2D.cpp
+index 2aac8b2b06e..f256793b2eb 100644
+--- a/src/osg/Texture2D.cpp
++++ b/src/osg/Texture2D.cpp
+@@ -306,8 +306,11 @@ void Texture2D::apply(State& state) const
+              textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_2D, _numMipmapLevels, texStorageSizedInternalFormat, _textureWidth, _textureHeight, 1, _borderWidth);
+              textureObject->bind();
+              applyTexParameters(GL_TEXTURE_2D, state);
+-             extensions->glTexStorage2D( GL_TEXTURE_2D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat,
+-                      _textureWidth, _textureHeight);
++             if(!textureObject->_allocated)
++             {
++                 extensions->glTexStorage2D( GL_TEXTURE_2D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat,
++                          _textureWidth, _textureHeight);
++             }
+          }
+          else
+          {
+@@ -327,6 +330,7 @@ void Texture2D::apply(State& state) const
+             _readPBuffer->bindPBufferToTexture(GL_FRONT);
+         }
+ 
++        textureObject->setAllocated(_numMipmapLevels, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat: _internalFormat, _textureWidth, _textureHeight, 1, _borderWidth);
+     }
+     else
+     {
+diff --git a/src/osg/Texture2DArray.cpp b/src/osg/Texture2DArray.cpp
+index 8edfe2c68e7..bc267f047d4 100644
+--- a/src/osg/Texture2DArray.cpp
++++ b/src/osg/Texture2DArray.cpp
+@@ -353,7 +353,7 @@ void Texture2DArray::apply(State& state) const
+         applyTexParameters(GL_TEXTURE_2D_ARRAY, state);
+ 
+         // First we need to allocate the texture memory
+-        if(texStorageSizedInternalFormat!=0)
++        if(texStorageSizedInternalFormat!=0 && !textureObject->_allocated)
+         {
+             extensions->glTexStorage3D(GL_TEXTURE_2D_ARRAY, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight, textureDepth);
+         }
+@@ -452,7 +452,7 @@ void Texture2DArray::apply(State& state) const
+ 
+         applyTexParameters(GL_TEXTURE_2D_ARRAY,state);
+ 
+-        if (texStorageSizedInternalFormat!=0)
++        if (texStorageSizedInternalFormat!=0 && !textureObject->_allocated)
+         {
+             extensions->glTexStorage3D( GL_TEXTURE_2D_ARRAY, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight, _textureDepth);
+         }
+@@ -463,6 +463,8 @@ void Texture2DArray::apply(State& state) const
+                      _sourceFormat ? _sourceFormat : _internalFormat,
+                      _sourceType ? _sourceType : GL_UNSIGNED_BYTE,
+                      0);
++
++        textureObject->setAllocated(_numMipmapLevels, texStorageSizedInternalFormat!=0 ? texStorageSizedInternalFormat :_internalFormat, _textureWidth, _textureHeight, _textureDepth, 0);
+     }
+ 
+     // nothing before, so just unbind the texture target
+diff --git a/src/osg/Texture2DMultisample.cpp b/src/osg/Texture2DMultisample.cpp
+index 94e5b53aef6..5961f3aa944 100644
+--- a/src/osg/Texture2DMultisample.cpp
++++ b/src/osg/Texture2DMultisample.cpp
+@@ -108,8 +108,10 @@ void Texture2DMultisample::apply(State& state) const
+         {
+             textureObject = generateAndAssignTextureObject(contextID, getTextureTarget(), 1, texStorageSizedInternalFormat, _textureWidth, _textureHeight, 1, 0);
+             textureObject->bind();
+-
+-            extensions->glTexStorage2DMultisample( GL_TEXTURE_2D_MULTISAMPLE, _numSamples, texStorageSizedInternalFormat, _textureWidth, _textureHeight, _fixedsamplelocations);
++            if(!textureObject->_allocated)
++            {
++                extensions->glTexStorage2DMultisample( GL_TEXTURE_2D_MULTISAMPLE, _numSamples, texStorageSizedInternalFormat, _textureWidth, _textureHeight, _fixedsamplelocations);
++            }
+         }
+         else
+         {
+@@ -123,6 +125,7 @@ void Texture2DMultisample::apply(State& state) const
+                                              _textureHeight,
+                                              _fixedsamplelocations );
+         }
++        textureObject->setAllocated(1, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat: _internalFormat, _textureWidth, _textureHeight, 1, _borderWidth);
+ 
+     }
+     else
+diff --git a/src/osg/Texture3D.cpp b/src/osg/Texture3D.cpp
+index 74fe713c9bb..ee97e691b27 100644
+--- a/src/osg/Texture3D.cpp
++++ b/src/osg/Texture3D.cpp
+@@ -322,8 +322,10 @@ void Texture3D::apply(State& state) const
+             textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_3D, _numMipmapLevels, texStorageSizedInternalFormat, _textureWidth, _textureHeight, _textureDepth,0);
+             textureObject->bind();
+             applyTexParameters(GL_TEXTURE_3D, state);
+-
+-            extensions->glTexStorage3D( GL_TEXTURE_3D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight, _textureDepth);
++            if(!textureObject->_allocated)
++            {
++                extensions->glTexStorage3D( GL_TEXTURE_3D, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight, _textureDepth);
++            }
+         }
+         else
+         {
+@@ -345,6 +347,7 @@ void Texture3D::apply(State& state) const
+             _readPBuffer->bindPBufferToTexture(GL_FRONT);
+         }
+ 
++        textureObject->setAllocated(_numMipmapLevels, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat : _internalFormat, _textureWidth, _textureHeight, _textureDepth, _borderWidth);
+     }
+     else
+     {
+diff --git a/src/osg/TextureCubeMap.cpp b/src/osg/TextureCubeMap.cpp
+index ba61ba90997..a2807ce6177 100644
+--- a/src/osg/TextureCubeMap.cpp
++++ b/src/osg/TextureCubeMap.cpp
+@@ -353,7 +353,10 @@ void TextureCubeMap::apply(State& state) const
+ 
+         if(texStorageSizedInternalFormat!=0)
+         {
+-            extensions->glTexStorage2D(GL_TEXTURE_CUBE_MAP, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight);
++            if(!textureObject->_allocated)
++            {
++                extensions->glTexStorage2D(GL_TEXTURE_CUBE_MAP, osg::maximum(_numMipmapLevels,1), texStorageSizedInternalFormat, _textureWidth, _textureHeight);
++            }
+ 
+         }
+         else
+@@ -367,6 +370,7 @@ void TextureCubeMap::apply(State& state) const
+                              0);
+             }
+ 
++        textureObject->setAllocated(_numMipmapLevels, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat : _internalFormat, _textureWidth, _textureHeight, 1, 0);
+     }
+     else
+     {
+diff --git a/src/osg/TextureRectangle.cpp b/src/osg/TextureRectangle.cpp
+index 47d81d79433..c79d667f651 100644
+--- a/src/osg/TextureRectangle.cpp
++++ b/src/osg/TextureRectangle.cpp
+@@ -281,8 +281,10 @@ void TextureRectangle::apply(State& state) const
+             textureObject = generateAndAssignTextureObject(contextID, GL_TEXTURE_RECTANGLE, 0, texStorageSizedInternalFormat, _textureWidth, _textureHeight, 1, 0);
+             textureObject->bind();
+             applyTexParameters(GL_TEXTURE_RECTANGLE, state);
+-
+-            extensions->glTexStorage2D( GL_TEXTURE_RECTANGLE, 1, texStorageSizedInternalFormat, _textureWidth, _textureHeight);
++            if(!textureObject->_allocated)
++            {
++                extensions->glTexStorage2D( GL_TEXTURE_RECTANGLE, 1, texStorageSizedInternalFormat, _textureWidth, _textureHeight);
++            }
+         }
+         else
+         {
+@@ -303,6 +305,7 @@ void TextureRectangle::apply(State& state) const
+             _readPBuffer->bindPBufferToTexture(GL_FRONT);
+         }
+ 
++        textureObject->setAllocated(0, texStorageSizedInternalFormat!=0? texStorageSizedInternalFormat : _internalFormat, _textureWidth, _textureHeight, 1, 0);
+     }
+     else
+     {
