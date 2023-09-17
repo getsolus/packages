@@ -1,0 +1,135 @@
+From 76f3708019580c90e8b844429c1a5973ce8c695f Mon Sep 17 00:00:00 2001
+From: Campbell Jones <git@serebit.com>
+Date: Thu, 31 Aug 2023 12:13:35 -0400
+Subject: [PATCH 1/2] Work around more SN/dbusmenu quirks
+
+---
+ src/panel/applets/tray/DBusMenu.vala     | 14 +++++++------
+ src/panel/applets/tray/DBusMenuNode.vala |  4 ++++
+ src/panel/applets/tray/TrayItem.vala     | 26 +++++++++++++++++-------
+ 3 files changed, 31 insertions(+), 13 deletions(-)
+
+diff --git a/src/panel/applets/tray/DBusMenu.vala b/src/panel/applets/tray/DBusMenu.vala
+index f26bc0e70..d574ccc8c 100644
+--- a/src/panel/applets/tray/DBusMenu.vala
++++ b/src/panel/applets/tray/DBusMenu.vala
+@@ -91,7 +91,7 @@ public class DBusMenu : Object {
+ 			all_nodes.set(id, node);
+ 		}
+ 
+-		if (v_children.is_container() && v_children.n_children() > 0) {
++		if (v_children.get_type().is_array() && v_children.n_children() > 0) {
+ 			var new_children = new List<DBusMenuNode>();
+ 
+ 			VariantIter it = v_children.iterator();
+@@ -119,11 +119,13 @@ public class DBusMenu : Object {
+ 	}
+ 
+ 	private void update_node_properties(DBusMenuNode node, Variant props) {
+-		VariantIter prop_it = props.iterator();
+-		string key;
+-		Variant value;
+-		while (prop_it.next("{sv}", out key, out value)) {
+-			node.update_property(key, value);
++		VariantIter it = props.iterator();
++		for (var prop = it.next_value(); prop != null; prop = it.next_value()) {
++			if (prop.is_of_type(new VariantType("{sv}"))) {
++				string key = prop.get_child_value(0).get_string();
++				Variant value = prop.get_child_value(1);
++				node.update_property(key, value);
++			}
+ 		}
+ 	}
+ 
+diff --git a/src/panel/applets/tray/DBusMenuNode.vala b/src/panel/applets/tray/DBusMenuNode.vala
+index 18174e37f..80be14458 100644
+--- a/src/panel/applets/tray/DBusMenuNode.vala
++++ b/src/panel/applets/tray/DBusMenuNode.vala
+@@ -47,6 +47,10 @@ public class DBusMenuNode : Object {
+ 		for (int i = 0; i < new_children.length(); i++) {
+ 			var item = new_children.nth_data(i).item;
+ 
++			if (item.parent != null) {
++				item.parent.remove(item);
++			}
++
+ 			if (item.parent != submenu) {
+ 				submenu.add(item);
+ 			}
+diff --git a/src/panel/applets/tray/TrayItem.vala b/src/panel/applets/tray/TrayItem.vala
+index b402f5d07..7f8376a8b 100644
+--- a/src/panel/applets/tray/TrayItem.vala
++++ b/src/panel/applets/tray/TrayItem.vala
+@@ -39,7 +39,8 @@ internal interface SnItemProperties : Object {
+ 	public abstract SnIconPixmap[] attention_icon_pixmap {owned get;}
+ 	public abstract string attention_movie_name {owned get;}
+ 	public abstract string icon_theme_path {owned get;}
+-	public abstract SnToolTip? tool_tip {owned get;}
++	[DBus (signature="(sa(iiay)ss)")]
++	public abstract Variant? tool_tip {owned get;}
+ 	public abstract bool item_is_menu {get;}
+ 	public abstract ObjectPath? menu {owned get;}
+ }
+@@ -206,14 +207,25 @@ internal class TrayItem : Gtk.EventBox {
+ 
+ 	private void reset_tooltip() {
+ 		if (dbus_properties.tool_tip != null) {
+-			if (dbus_properties.tool_tip.markup != "") {
+-				set_tooltip_markup(dbus_properties.tool_tip.markup);
+-			} else {
+-				set_tooltip_text(dbus_properties.tool_tip.title);
++			if (dbus_properties.tool_tip.get_type_string() == "(sa(iiay)ss)") {
++				string title = dbus_properties.tool_tip.get_child_value(2).get_string();
++				string markup = dbus_properties.tool_tip.get_child_value(3).get_string();
++
++				if (markup != "") {
++					set_tooltip_markup(markup);
++					return;
++				} else {
++					set_tooltip_text(title);
++					return;
++				}
++			} else if (dbus_properties.tool_tip.is_of_type(VariantType.STRING)) {
++				// quirk for TeamViewer
++				set_tooltip_text(dbus_properties.tool_tip.get_string());
++				return;
+ 			}
+-		} else {
+-			set_tooltip_text(null);
+ 		}
++
++		set_tooltip_text(null);
+ 	}
+ 
+ 	public override bool button_release_event(Gdk.EventButton event) {
+
+From 58b2c5d320b90282a6d2ea5c15f7ff23a669381b Mon Sep 17 00:00:00 2001
+From: Campbell Jones <git@serebit.com>
+Date: Thu, 31 Aug 2023 17:12:16 -0400
+Subject: [PATCH 2/2] Update src/panel/applets/tray/TrayItem.vala
+
+yep
+
+Co-authored-by: Evan Maddock <5157277+EbonJaeger@users.noreply.github.com>
+---
+ src/panel/applets/tray/TrayItem.vala | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/panel/applets/tray/TrayItem.vala b/src/panel/applets/tray/TrayItem.vala
+index 7f8376a8b..8f1859e88 100644
+--- a/src/panel/applets/tray/TrayItem.vala
++++ b/src/panel/applets/tray/TrayItem.vala
+@@ -213,11 +213,11 @@ internal class TrayItem : Gtk.EventBox {
+ 
+ 				if (markup != "") {
+ 					set_tooltip_markup(markup);
+-					return;
+ 				} else {
+ 					set_tooltip_text(title);
+-					return;
+ 				}
++				
++				return;
+ 			} else if (dbus_properties.tool_tip.is_of_type(VariantType.STRING)) {
+ 				// quirk for TeamViewer
+ 				set_tooltip_text(dbus_properties.tool_tip.get_string());
