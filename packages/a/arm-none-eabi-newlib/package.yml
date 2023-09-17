@@ -1,0 +1,111 @@
+name       : arm-none-eabi-newlib
+version    : 4.3.0
+release    : 4
+source     :
+    - https://sourceware.org/pub/newlib/newlib-4.3.0.20230120.tar.gz : 83a62a99af59e38eb9b0c58ed092ee24d700fff43a22c03e433955113ef35150
+    - https://ftp.gnu.org/gnu/gcc/gcc-13.1.0/gcc-13.1.0.tar.xz : 61d684f0aa5e76ac6585ad8898a2427aade8979ed5e7f85492286c4dfc13ee86
+license    : GPL-3.0-or-later
+summary    : A C standard library for Arm
+component  : programming
+description: |
+    A C standard library implementation intended for use on embedded systems (ARM bare metal)
+strip      : no
+builddeps  :
+    - pkgconfig(isl)
+    - pkgconfig(libelf)
+    - arm-none-eabi-binutils
+environment: |
+    export TARGET=arm-none-eabi
+    export PREFIX=/usr/share/$TARGET
+
+    # set temporary path for gcc we are going to build
+    export PATH=$workdir/gcc-installed/usr/bin:$PATH
+setup      : |
+    # Build barebone gcc compiler which will be used to build newlib
+    tar xf $sources/gcc-13.1.0.tar.xz
+    mv gcc-13.1.0 gcc-source
+    mkdir -p gcc-installed/usr
+    cp -r $PREFIX/* $workdir/gcc-installed/usr/
+    pushd gcc-source
+    ./configure \
+        --build=%HOST% \
+        --target=$TARGET \
+        --prefix=/usr \
+        --libexecdir=/usr/lib \
+        --enable-interwork \
+        --enable-multilib \
+        --enable-languages=c \
+        --with-system-zlib \
+        --with-newlib \
+        --without-headers \
+        --disable-shared \
+        --disable-nls \
+        --with-gnu-as \
+        --with-gnu-ld \
+        --with-host-libstdcxx='-static-libgcc -Wl,-Bstatic,-lstdc++,-Bdynamic -lm' \
+        --with-multilib-list=rmprofile
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    export CXXFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    %make all-gcc
+    make install-gcc DESTDIR="$workdir/gcc-installed"
+    unset CFLAGS_FOR_TARGET CXXFLAGS_FOR_TARGET
+    popd
+
+    # Build newlib with help of previously built gcc
+    mkdir build-{newlib,nano}
+
+    pushd build-newlib
+    ../configure \
+        --build=%HOST% \
+        --prefix=$PREFIX \
+        --target=$TARGET \
+        --disable-newlib-supplied-syscalls \
+        --disable-nls \
+        --enable-newlib-io-long-long \
+        --enable-newlib-register-fini
+    popd
+
+    pushd build-nano
+    ../configure \
+        --build=%HOST% \
+        --prefix=$PREFIX \
+        --target=$TARGET \
+        --disable-newlib-supplied-syscalls \
+        --disable-nls \
+        --enable-newlib-reent-small           \
+        --disable-newlib-fvwrite-in-streamio  \
+        --disable-newlib-fseek-optimization   \
+        --disable-newlib-wide-orient          \
+        --enable-newlib-nano-malloc           \
+        --disable-newlib-unbuf-stream-opt     \
+        --enable-lite-exit                    \
+        --enable-newlib-global-atexit         \
+        --enable-newlib-nano-formatted-io
+    popd
+build      : |
+    export CFLAGS_FOR_TARGET='-g -O2 -ffunction-sections -fdata-sections'
+    %make -C build-newlib
+
+    export CFLAGS_FOR_TARGET='-g -Os -ffunction-sections -fdata-sections'
+    %make -C build-nano
+install    : |
+    # do not use -jN with make install here, because it will fail if executed in parallel
+
+    # install nano version of newlib
+    make install -C build-nano DESTDIR="%installroot%"
+
+    find $installdir -regex ".*/lib\(c\|g\|rdimon\)\.a" -exec rename .a _nano.a '{}' \;
+    install -d $installdir$PREFIX/$TARGET/include/newlib-nano
+    install -m644 -t $installdir$PREFIX/$TARGET/include/newlib-nano $installdir$PREFIX/$TARGET/include/newlib.h
+
+    # install newlib
+    make install -C build-newlib DESTDIR="%installroot%"
+
+    # strip target binaries
+    find $installdir$PREFIX/$TARGET/lib \( -name "*.a" -or -name "*.o" \) -exec $TARGET-objcopy \
+        -R .comment -R .note -R .debug_info -R .debug_aranges -R .debug_pubnames -R .debug_pubtypes \
+        -R .debug_abbrev -R .debug_line -R .debug_str -R .debug_ranges -R .debug_loc '{}' \;
+
+    # remove empty dirs
+    rm -r $installdir$PREFIX/$TARGET/include/rpc
+    rm -r $installdir$PREFIX/$TARGET/include/bits
