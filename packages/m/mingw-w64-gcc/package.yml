@@ -1,0 +1,119 @@
+name       : mingw-w64-gcc
+version    : 11.2.0
+release    : 6
+source     :
+    - https://ftp.gnu.org/gnu/gcc/gcc-11.2.0/gcc-11.2.0.tar.xz : d08edc536b54c372a1010ff6619dd274c0f1603aa49212ba20f7aa2cda36fa8b
+    - http://isl.gforge.inria.fr/isl-0.24.tar.xz : 043105cc544f416b48736fff8caf077fb0663a717d06b1113f16e391ac99ebad
+license    : GPL-3.0-or-later
+homepage   : https://gcc.gnu.org/
+component  : programming
+summary    :
+    - GCC for MinGW-w64 targeting 64 bits
+    - 32bit : GCC for MinGW-w64 targeting 32 bits
+description: |
+    The GNU Compiler Collection includes front ends for C and C++, as well as libraries for these languages (libstdc++, libgcc,...). GCC was originally written as the compiler for the GNU operating system. The GNU system was developed to be 100% free software, free in the sense that it respects the user's freedom.
+strip      : no
+builddeps  :
+    - mingw-w64-binutils-32bit
+    - mingw-w64-32bit
+rundeps    :
+    - mingw-w64-binutils
+    - 32bit :
+        - mingw-w64-binutils-32bit
+environment: |
+    export CFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
+    export CXXFLAGS_FOR_TARGET="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
+    export LDFLAGS_FOR_TARGET="-Wl,--copy-dt-needed-entries -Wl,-O1 -Wl,-Bsymbolic-functions -Wl,--sort-common"
+    export FCFLAGS="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
+    export FFLAGS="-mtune=generic -march=x86-64 -O3 -pipe -fPIC -fasynchronous-unwind-tables -ftree-vectorize -feliminate-unused-debug-types -Wp,-D_REENTRANT"
+    export TARGET32=i686-w64-mingw32
+    export TARGET64=x86_64-w64-mingw32
+    export PREFIX=/usr/share/mingw-w64
+    export PATH=$PATH:$PREFIX/bin
+setup      : |
+    %patch -p1 < $pkgfiles/0020-libgomp-Don-t-hard-code-MS-printf-attributes.patch
+
+    tar xf $sources/isl-*.tar.xz
+    mv isl-* isl
+
+    sed -i "s|\-Werror||g" libbacktrace/configure
+
+    _gcc_cfg() {
+        local _dw2_exceptions="--disable-dw2-exceptions"
+        if [ $1 == $TARGET32 ]; then
+            _dw2_exceptions="--disable-sjlj-exceptions"
+        fi
+        ../configure \
+            --with-pkgversion='Solus' \
+            --with-bugurl='https://dev.getsol.us/' \
+            --target=$1 \
+            --prefix=$PREFIX \
+            --libexecdir=/usr/lib64 \
+            --enable-cet \
+            --enable-lto \
+            --enable-shared \
+            --enable-static \
+            --enable-default-ssp \
+            --disable-multilib \
+            --enable-threads=posix \
+            --enable-gnu-indirect-function \
+            --enable-fully-dynamic-string \
+            --enable-libstdcxx-time=yes \
+            --enable-libstdcxx-filesystem-ts=yes \
+            --with-dwarf2 \
+            --with-system-zlib \
+            --disable-nls \
+            --enable-cloog-backend=isl \
+            --enable-libgomp \
+            --enable-languages=c,c++,fortran,lto \
+            --enable-checking=release \
+            $_dw2_exceptions
+    }
+
+    mkdir gccdir32 && pushd gccdir32
+    _gcc_cfg $TARGET32
+    popd
+    mkdir gccdir64 && pushd gccdir64
+    _gcc_cfg $TARGET64
+    popd
+build      : |
+    %make -C gccdir32
+    %make -C gccdir64
+install    : |
+    install -dm00755 $installdir/usr/share/man
+
+    # Post installation strips and modifications, or the package bloats to 1.5GB
+    _post_install() {
+        pushd $installdir$PREFIX/bin
+        strip --strip-unneeded $1-*
+        ln -s $1-gcc $1-cc
+        popd
+        mkdir -p $installdir/$PREFIX/$1/bin
+        pushd $installdir/$PREFIX/$1/bin
+        mv $installdir/$PREFIX/$1/lib/*.dll .
+        $1-strip --strip-unneeded *.dll
+        popd
+        pushd $installdir$PREFIX/$1/lib
+        $1-strip -g *.a
+        popd
+        pushd $installdir/usr/lib64/gcc/$1/%version%
+        strip -g {cc1,cc1plus,collect2,lto1,lto-wrapper}
+        popd
+    }
+
+    %make_install -C gccdir32
+    _post_install $TARGET32
+
+    %make_install -C gccdir64
+    _post_install $TARGET64
+
+    mv $installdir$PREFIX/share/man/man1 $installdir/usr/share/man
+    rm -rf $installdir/$PREFIX/lib64 $installdir/$PREFIX/share $installdir/$PREFIX/include
+patterns   :
+    - 32bit :
+        - /usr/lib64/gcc/i686-w64-mingw32
+        - /usr/share/mingw-w64/bin/i686-w64-mingw32-*
+        - /usr/share/mingw-w64/i686-w64-mingw32
+        - /usr/share/mingw-w64/lib/gcc/i686-w64-mingw32
+        - /usr/share/info/i686-w64-mingw32-*
+        - /usr/share/man/man1/i686-w64-mingw32-*
