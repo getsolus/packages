@@ -1,0 +1,161 @@
+From 5c28f1e5757409a44f5d22e706151c8a3846b2fe Mon Sep 17 00:00:00 2001
+From: Jeremy Bicha <jeremy.bicha@canonical.com>
+Date: Thu, 1 Sep 2022 10:05:28 -0400
+Subject: [PATCH 1/2] nautilus: Don't import a specific version
+
+This isn't needed since
+https://gitlab.gnome.org/GNOME/nautilus-python/-/commit/8c88de8da42
+
+And interferes with being able to use this extension
+on Nautilus 43+
+---
+ data/nautilus/open-tilix.py | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/data/nautilus/open-tilix.py b/data/nautilus/open-tilix.py
+index 16a9b97c..21a1223d 100644
+--- a/data/nautilus/open-tilix.py
++++ b/data/nautilus/open-tilix.py
+@@ -14,7 +14,6 @@
+ 
+ from gi import require_version
+ require_version('Gtk', '3.0')
+-require_version('Nautilus', '3.0')
+ from gi.repository import Gio, GObject, Gtk, Nautilus
+ 
+ 
+
+From dd68daaa8b7fdeae1b1a0b7dde337dca4e9d2e2b Mon Sep 17 00:00:00 2001
+From: Jeremy Bicha <jeremy.bicha@canonical.com>
+Date: Fri, 9 Sep 2022 21:51:05 -0400
+Subject: [PATCH 2/2] nautilus: Add compatibility with Nautilus 43
+
+Nautilus 43 and nautilus-python 4 have made major changes to the API
+
+Nautilus.LocationWidgetProvider has been dropped from the API
+without a replacement
+
+https://gnome.pages.gitlab.gnome.org/nautilus-python/nautilus-python-migrating-to-4.html
+---
+ data/nautilus/open-tilix.py | 85 ++++++++++++++++++++-----------------
+ 1 file changed, 45 insertions(+), 40 deletions(-)
+
+diff --git a/data/nautilus/open-tilix.py b/data/nautilus/open-tilix.py
+index 21a1223d..ac7c53c5 100644
+--- a/data/nautilus/open-tilix.py
++++ b/data/nautilus/open-tilix.py
+@@ -12,9 +12,11 @@
+     from urllib.parse import unquote, urlparse
+ 
+ 
++from gi.repository import Gio, GObject, Nautilus
+ from gi import require_version
+-require_version('Gtk', '3.0')
+-from gi.repository import Gio, GObject, Gtk, Nautilus
++if hasattr(Nautilus, "LocationWidgetProvider"):
++    require_version('Gtk', '3.0')
++    from gi.repository import Gtk
+ 
+ 
+ TERMINAL = "tilix"
+@@ -34,43 +36,44 @@ def open_terminal_in_file(filename):
+     else:
+         call("{0} &".format(TERMINAL), shell=True)
+ 
++# Nautilus 43 doesn't offer the LocationWidgetProvider any more
++if hasattr(Nautilus, "LocationWidgetProvider"):
++    class OpenTilixShortcutProvider(GObject.GObject,
++                                    Nautilus.LocationWidgetProvider):
++
++        def __init__(self):
++            source = Gio.SettingsSchemaSource.get_default()
++            if source.lookup(TILIX_KEYBINDINGS, True):
++                self._gsettings = Gio.Settings.new(TILIX_KEYBINDINGS)
++                self._gsettings.connect("changed", self._bind_shortcut)
++                self._create_accel_group()
++            self._window = None
++            self._uri = None
++
++        def _create_accel_group(self):
++            self._accel_group = Gtk.AccelGroup()
++            shortcut = self._gsettings.get_string(GSETTINGS_OPEN_TERMINAL)
++            key, mod = Gtk.accelerator_parse(shortcut)
++            self._accel_group.connect(key, mod, Gtk.AccelFlags.VISIBLE,
++                                      self._open_terminal)
++
++        def _bind_shortcut(self, gsettings, key):
++            if key == GSETTINGS_OPEN_TERMINAL:
++                self._accel_group.disconnect(self._open_terminal)
++                self._create_accel_group()
++
++        def _open_terminal(self, *args):
++            filename = unquote(self._uri[7:])
++            open_terminal_in_file(filename)
+ 
+-class OpenTilixShortcutProvider(GObject.GObject,
+-                                Nautilus.LocationWidgetProvider):
+-
+-    def __init__(self):
+-        source = Gio.SettingsSchemaSource.get_default()
+-        if source.lookup(TILIX_KEYBINDINGS, True):
+-            self._gsettings = Gio.Settings.new(TILIX_KEYBINDINGS)
+-            self._gsettings.connect("changed", self._bind_shortcut)
+-            self._create_accel_group()
+-        self._window = None
+-        self._uri = None
+-
+-    def _create_accel_group(self):
+-        self._accel_group = Gtk.AccelGroup()
+-        shortcut = self._gsettings.get_string(GSETTINGS_OPEN_TERMINAL)
+-        key, mod = Gtk.accelerator_parse(shortcut)
+-        self._accel_group.connect(key, mod, Gtk.AccelFlags.VISIBLE,
+-                                  self._open_terminal)
+-
+-    def _bind_shortcut(self, gsettings, key):
+-        if key == GSETTINGS_OPEN_TERMINAL:
+-            self._accel_group.disconnect(self._open_terminal)
+-            self._create_accel_group()
+-
+-    def _open_terminal(self, *args):
+-        filename = unquote(self._uri[7:])
+-        open_terminal_in_file(filename)
+-
+-    def get_widget(self, uri, window):
+-        self._uri = uri
+-        if self._window:
+-            self._window.remove_accel_group(self._accel_group)
+-        if self._gsettings:
+-            window.add_accel_group(self._accel_group)
+-        self._window = window
+-        return None
++        def get_widget(self, uri, window):
++            self._uri = uri
++            if self._window:
++                self._window.remove_accel_group(self._accel_group)
++            if self._gsettings:
++                window.add_accel_group(self._accel_group)
++            self._window = window
++            return None
+ 
+ 
+ class OpenTilixExtension(GObject.GObject, Nautilus.MenuProvider):
+@@ -99,7 +102,8 @@ def _menu_activate_cb(self, menu, file_):
+     def _menu_background_activate_cb(self, menu, file_):
+         self._open_terminal(file_)
+ 
+-    def get_file_items(self, window, files):
++    def get_file_items(self, *args):
++        files = args[-1]
+         if len(files) != 1:
+             return
+         items = []
+@@ -124,7 +128,8 @@ def get_file_items(self, window, files):
+ 
+         return items
+ 
+-    def get_background_items(self, window, file_):
++    def get_background_items(self, *args):
++        file_ = args[-1]
+         items = []
+         if file_.get_uri_scheme() in REMOTE_URI_SCHEME:
+             item = Nautilus.MenuItem(name='NautilusPython::open_bg_remote_item',
