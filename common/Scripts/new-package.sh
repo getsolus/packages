@@ -17,6 +17,8 @@ else
     TARBALL=${prompt}
 fi
 
+YAUTO=$(git rev-parse --show-toplevel)/common/Scripts/yauto.py
+
 # Basic repo name linting check
 if [[ ! "${PACKAGE}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     echo "Package names are restricted to US ASCII lowercase letters, numbers and dashes."
@@ -30,9 +32,9 @@ else
     DIR="packages/${PACKAGE:0:1}/${PACKAGE}"
 fi
 
-mkdir -p ${DIR}
+mkdir -p $(git rev-parse --show-toplevel)/${DIR}
 
-pushd ${DIR}
-../../../common/Scripts/yauto.py ${TARBALL}
+pushd $(git rev-parse --show-toplevel)/${DIR}
+$YAUTO ${TARBALL}
 
 printf "\npackage.yml created in ${DIR}\n"
