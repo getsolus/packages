@@ -4,14 +4,18 @@
 
 set -euo pipefail
 
-if [ $# -ne 2 ]
-then
+if [[ $# -eq 2 ]]; then
+    PACKAGE="$1"
+    TARBALL="$2"
+elif [[ $# -gt 0 && $# -ne 2 ]]; then
     echo "Usage: $0 <package name> <tarball>"
     exit 1
+else
+    read -p "Package name: " prompt
+    PACKAGE=${prompt}
+    read -p "Tarball URL: " prompt
+    TARBALL=${prompt}
 fi
-
-PACKAGE="$1"
-TARBALL="$2"
 
 # Basic repo name linting check
 if [[ ! "${PACKAGE}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
