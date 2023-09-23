@@ -17,7 +17,7 @@ if [[ ! -z "${DISABLE_BUILD_SUCCESS_NOTIFY}" ]]; then
     echo "Notification and sound ping for build success disabled due to DISABLE_BUILD_SUCCESS_NOTIFY being set."
 fi
 
-TAG=$(.././common/Scripts/gettag.py package.yml)
+TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py package.yml)
 BUILDSERVER_URL="https://build.getsol.us"
 BUILDPAGE="/tmp/buildpage.html"
 
@@ -62,7 +62,7 @@ INDEX_SHA_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz.sha1sum"
 INDEX_XZ_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz"
 INDEX_SHA=$(curl -s $INDEX_SHA_URL)
 curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
-unxz /tmp/unstable-index.xml.xz
+unxz /tmp/unstable-index.xml.xz -f
 
 # Downloads and extracts the new index if the sha sum has changed.
 update_index_if_changed() {
@@ -74,7 +74,7 @@ update_index_if_changed() {
         echo "index sha: ${INDEX_SHA}"
         rm /tmp/unstable-index.xml
         curl -s $INDEX_XZ_URL -o /tmp/unstable-index.xml.xz
-        unxz /tmp/unstable-index.xml.xz
+        unxz /tmp/unstable-index.xml.xz -f
     # Same sha, do nothing
     elif [[ $NEW_INDEX_SHA = $INDEX_SHA ]]; then
         echo "index sha: ${INDEX_SHA}"
