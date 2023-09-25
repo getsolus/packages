@@ -1,16 +1,15 @@
 name       : openjdk-11
-version    : 11.0.17
-release    : 15
+version    : 11.0.20.1
+release    : 16
 source     :
-    - https://github.com/openjdk/jdk11u/archive/refs/tags/jdk-11.0.17-ga.tar.gz : 1d36043f2cecfe2b079ca288c66ad7f009c50c828f4eab989e1adaeee443367b
-    - https://github.com/openjdk/jfx11u/archive/refs/tags/11.0.17+1.tar.gz : 8535624f33b1ed8bcc4563c154435464447e1d05496b927a091300affa90230b
+    - https://github.com/openjdk/jdk11u/archive/refs/tags/jdk-11.0.20.1-ga.tar.gz : fe8012c253573536990ad0f987e0ffeae75a12f1dbd7c02caed8ea899006c313
+    - https://github.com/openjdk/jfx11u/archive/refs/tags/11.0.20+1.tar.gz : ef3349821610ed8226b7a75a831b5bffc124dad5a9c3814161b2e0d8a581fe0e
 license    : GPL-2.0-only WITH Classpath-exception-2.0
 component  : programming.java
 homepage   : https://openjdk.java.net/
 summary    : Open implementation of Oracle's Java Development Kit, major version 11
 description: |
     Open implementation of Oracle's Java Development Kit, major version 11. This package includes the JDK, the JRE is not separately provided.
-ccache     : no
 clang      : yes
 networking : yes
 builddeps  :
@@ -31,14 +30,20 @@ builddeps  :
     - apache-ant
     - cups-devel
     - giflib-devel
-    - gradle
+    # - gradle
     - jtreg
     - openjdk-11-devel
     - p7zip
 patterns   :
-    - devel : 
+    - devel :
         - /usr/lib64/openjdk-11/include/
 mancompress: yes
+environment: |
+    # ccache needs to be enabled via conf option, not by setting the path
+    if [[ " ${PATH[*]} " =~ "ccache" ]]; then
+        export PATH="${PATH//\/usr\/lib64\/ccache\/bin:/}"
+        export extra_conf_opts="--enable-ccache"
+    fi
 setup      : |
     # Build OpenJFX
     mkdir openjfx-11
@@ -49,7 +54,9 @@ setup      : |
     export GRADLE_USER_HOME=$workdir/.gradle_home
     export TERM=xterm
 
-    gradle zips \
+    # Currently incompatible with Gradle 8.x
+    chmod +x ./gradlew
+    ./gradlew zips \
         --no-daemon \
         --stacktrace \
         -PCONF=DebugNative \
@@ -59,14 +66,15 @@ setup      : |
     popd
     # done with OpenJFX
 
-    %patch -p1 < $pkgfiles/0001-Double-default-reserved-code-cache-size.patch
-    %patch -p1 < $pkgfiles/0001-Enable-tiered-compilation.patch
-    %patch -p1 < $pkgfiles/0001-Use-current-directory-as-backup-for-user-prefs.patch
-    %patch -p1 < $pkgfiles/0001-Dont-echo-_JAVA_OPTIONS.patch
+    %patch -p1 -i $pkgfiles/0001-Double-default-reserved-code-cache-size.patch
+    %patch -p1 -i $pkgfiles/0001-Enable-tiered-compilation.patch
+    %patch -p1 -i $pkgfiles/0001-Use-current-directory-as-backup-for-user-prefs.patch
+    %patch -p1 -i $pkgfiles/0001-Dont-echo-_JAVA_OPTIONS.patch
 
     # Clang 13+ fixes
-    %patch -p1 < $pkgfiles/0001-Backport-change-in-markOop-functionality-from-JDK-14.patch
-    %patch -p1 < $pkgfiles/0001-The-jdk-uses-tagged-pointers-on-this-which-clang-kno.patch
+    %patch -p1 -i $pkgfiles/0001-Backport-change-in-markOop-functionality-from-JDK-14.patch
+    %patch -p1 -i $pkgfiles/0001-The-jdk-uses-tagged-pointers-on-this-which-clang-kno.patch
+    %patch -p1 -i $pkgfiles/0001-8202171-Some-oopDesc-functions-compare-this-with-NUL.patch
 
     chmod +x configure
     %configure --prefix="$installdir/usr" \
@@ -75,7 +83,7 @@ setup      : |
         --with-boot-jdk="/usr/lib64/openjdk-11" \
         --with-native-debug-symbols=internal \
         --with-toolchain-type=clang \
-        --with-version-build="8" \
+        --with-version-build="1" \
         --with-version-pre="" \
         --with-version-opt="solus" \
         --with-stdc++lib=dynamic \
@@ -95,7 +103,8 @@ setup      : |
         --with-extra-ldflags="$LDFLAGS" \
         --with-import-modules=$workdir/openjfx-11/build/modular-sdk \
         --with-cacerts-file=%libdir%/openjdk-11/lib/security/cacerts \
-        --with-jobs=%YJOBS%
+        --with-jobs=%YJOBS% \
+        $extra_conf_opts
 build      : |
     # Build OpenJDK
     make images test-image
@@ -130,6 +139,10 @@ install    : |
 
     # Add java-11-jar.desktop into usable apps
     install -Dm 00644 $pkgfiles/java-11-jar.desktop $installdir/usr/share/applications/
+
+    # Link system JVM installations under /usr/lib64/jvm so that tools that scan the system for JVMs can easily find them
+    install -dm00755 $installdir/%libdir%/jvm
+    ln -s %libdir%/openjdk-11 $installdir/%libdir%/jvm/openjdk-11
 
 # Tests take a long time so should be disabled before pushing
 # Note that some of these tests can OOM if you don't have enough system memory (32GB+ recommended)

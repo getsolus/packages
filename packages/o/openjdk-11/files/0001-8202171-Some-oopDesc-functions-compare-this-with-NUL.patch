@@ -1,0 +1,366 @@
+From 0314a80e6f3b0288d2904ffd488a6e32d6a1acca Mon Sep 17 00:00:00 2001
+From: Harold Seigel <hseigel@openjdk.org>
+Date: Tue, 31 Jul 2018 14:24:10 -0400
+Subject: [PATCH] 8202171: Some oopDesc functions compare this with NULL
+
+Add Method* parameter and made verify* methods static to avoid 'this' comparison with NULL, Added NULL checks before calling print_on() methods.
+
+Reviewed-by: kbarrett, coleenp
+---
+ src/hotspot/share/classfile/dictionary.hpp    |  2 +-
+ .../share/classfile/systemDictionary.cpp      | 14 +++++++++++--
+ src/hotspot/share/code/debugInfo.cpp          |  6 +++++-
+ src/hotspot/share/code/nmethod.cpp            |  6 +++++-
+ .../share/gc/cms/compactibleFreeListSpace.cpp |  6 +++---
+ .../share/gc/parallel/immutableSpace.cpp      |  4 ++--
+ .../share/gc/parallel/mutableSpace.cpp        |  2 +-
+ src/hotspot/share/gc/shared/space.cpp         |  4 ++--
+ .../gc/shared/threadLocalAllocBuffer.cpp      |  2 +-
+ src/hotspot/share/oops/instanceKlass.cpp      |  8 +++++++-
+ src/hotspot/share/oops/objArrayKlass.cpp      | 14 ++++++++++---
+ src/hotspot/share/oops/oop.cpp                | 20 +++++++------------
+ src/hotspot/share/oops/oop.hpp                |  8 ++++----
+ src/hotspot/share/runtime/fieldDescriptor.cpp | 12 +++++++++--
+ src/hotspot/share/runtime/jniHandles.cpp      |  2 +-
+ 15 files changed, 72 insertions(+), 38 deletions(-)
+
+diff --git a/src/hotspot/share/classfile/dictionary.hpp b/src/hotspot/share/classfile/dictionary.hpp
+index d26f1f11fb4..647201413a3 100644
+--- a/src/hotspot/share/classfile/dictionary.hpp
++++ b/src/hotspot/share/classfile/dictionary.hpp
+@@ -179,7 +179,7 @@ class DictionaryEntry : public HashtableEntry<InstanceKlass*, mtClass> {
+     for (ProtectionDomainEntry* current = pd_set(); // accessed at a safepoint
+                                 current != NULL;
+                                 current = current->_next) {
+-      current->_pd_cache->object_no_keepalive()->verify();
++      oopDesc::verify(current->_pd_cache->object_no_keepalive());
+     }
+   }
+ 
+diff --git a/src/hotspot/share/classfile/systemDictionary.cpp b/src/hotspot/share/classfile/systemDictionary.cpp
+index 777737d4d31..92fa1b625c7 100644
+--- a/src/hotspot/share/classfile/systemDictionary.cpp
++++ b/src/hotspot/share/classfile/systemDictionary.cpp
+@@ -442,8 +442,18 @@ void SystemDictionary::validate_protection_domain(InstanceKlass* klass,
+     // Print out trace information
+     LogStream ls(lt);
+     ls.print_cr("Checking package access");
+-    ls.print("class loader: "); class_loader()->print_value_on(&ls);
+-    ls.print(" protection domain: "); protection_domain()->print_value_on(&ls);
++    if (class_loader() != NULL) {
++      ls.print("class loader: ");
++      class_loader()->print_value_on(&ls);
++    } else {
++      ls.print_cr("class loader: NULL");
++    }
++    if (protection_domain() != NULL) {
++      ls.print(" protection domain: ");
++      protection_domain()->print_value_on(&ls);
++    } else {
++      ls.print_cr(" protection domain: NULL");
++    }
+     ls.print(" loading: "); klass->print_value_on(&ls);
+     ls.cr();
+   }
+diff --git a/src/hotspot/share/code/debugInfo.cpp b/src/hotspot/share/code/debugInfo.cpp
+index 89e7e668405..3197a45ab90 100644
+--- a/src/hotspot/share/code/debugInfo.cpp
++++ b/src/hotspot/share/code/debugInfo.cpp
+@@ -251,7 +251,11 @@ void ConstantOopReadValue::write_on(DebugInfoWriteStream* stream) {
+ }
+ 
+ void ConstantOopReadValue::print_on(outputStream* st) const {
+-  value()()->print_value_on(st);
++  if (value()() != NULL) {
++    value()()->print_value_on(st);
++  } else {
++    st->print_cr("NULL");
++  }
+ }
+ 
+ 
+diff --git a/src/hotspot/share/code/nmethod.cpp b/src/hotspot/share/code/nmethod.cpp
+index 747971af416..a45fcf4035a 100644
+--- a/src/hotspot/share/code/nmethod.cpp
++++ b/src/hotspot/share/code/nmethod.cpp
+@@ -2342,7 +2342,11 @@ void nmethod::print_recorded_oops() {
+     if (o == (oop)Universe::non_oop_word()) {
+       tty->print("non-oop word");
+     } else {
+-      o->print_value();
++      if (o != NULL) {
++        o->print_value();
++      } else {
++        tty->print_cr("NULL");
++      }
+     }
+     tty->cr();
+   }
+diff --git a/src/hotspot/share/gc/cms/compactibleFreeListSpace.cpp b/src/hotspot/share/gc/cms/compactibleFreeListSpace.cpp
+index 17d563338b8..49f10d108d8 100644
+--- a/src/hotspot/share/gc/cms/compactibleFreeListSpace.cpp
++++ b/src/hotspot/share/gc/cms/compactibleFreeListSpace.cpp
+@@ -2436,7 +2436,7 @@ class VerifyAllBlksClosure: public BlkClosure {
+       res = _sp->adjustObjectSize(p->size());
+       if (_sp->obj_is_alive(addr)) {
+         was_live = true;
+-        p->verify();
++        oopDesc::verify(p);
+       }
+     } else {
+       FreeChunk* fc = (FreeChunk*)addr;
+@@ -2485,7 +2485,7 @@ class VerifyAllOopsClosure: public BasicOopIterateClosure {
+                   _sp->block_is_obj((HeapWord*)obj),
+                   "Should be an object");
+         guarantee(oopDesc::is_oop(obj), "Should be an oop");
+-        obj->verify();
++        oopDesc::verify(obj);
+         if (_past_remark) {
+           // Remark has been completed, the object should be marked
+           _bit_map->isMarked((HeapWord*)obj);
+@@ -2502,7 +2502,7 @@ class VerifyAllOopsClosure: public BasicOopIterateClosure {
+     } else if (_sp->is_in_reserved(p)) {
+       // the reference is from FLS, and points out of FLS
+       guarantee(oopDesc::is_oop(obj), "Should be an oop");
+-      obj->verify();
++      oopDesc::verify(obj);
+     }
+   }
+ 
+diff --git a/src/hotspot/share/gc/parallel/immutableSpace.cpp b/src/hotspot/share/gc/parallel/immutableSpace.cpp
+index 3774b18314a..a753710cc85 100644
+--- a/src/hotspot/share/gc/parallel/immutableSpace.cpp
++++ b/src/hotspot/share/gc/parallel/immutableSpace.cpp
+@@ -1,5 +1,5 @@
+ /*
+- * Copyright (c) 2001, 2015, Oracle and/or its affiliates. All rights reserved.
++ * Copyright (c) 2001, 2018, Oracle and/or its affiliates. All rights reserved.
+  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+  *
+  * This code is free software; you can redistribute it and/or modify it
+@@ -75,7 +75,7 @@ void ImmutableSpace::verify() {
+   HeapWord* t = end();
+   HeapWord* prev_p = NULL;
+   while (p < t) {
+-    oop(p)->verify();
++    oopDesc::verify(oop(p));
+     prev_p = p;
+     p += oop(p)->size();
+   }
+diff --git a/src/hotspot/share/gc/parallel/mutableSpace.cpp b/src/hotspot/share/gc/parallel/mutableSpace.cpp
+index 6e3c87a6585..2bb4546f6ed 100644
+--- a/src/hotspot/share/gc/parallel/mutableSpace.cpp
++++ b/src/hotspot/share/gc/parallel/mutableSpace.cpp
+@@ -259,7 +259,7 @@ void MutableSpace::verify() {
+   HeapWord* t = top();
+   HeapWord* prev_p = NULL;
+   while (p < t) {
+-    oop(p)->verify();
++    oopDesc::verify(oop(p));
+     prev_p = p;
+     p += oop(p)->size();
+   }
+diff --git a/src/hotspot/share/gc/shared/space.cpp b/src/hotspot/share/gc/shared/space.cpp
+index a46bac055e5..26928ee2424 100644
+--- a/src/hotspot/share/gc/shared/space.cpp
++++ b/src/hotspot/share/gc/shared/space.cpp
+@@ -461,7 +461,7 @@ void ContiguousSpace::verify() const {
+   HeapWord* t = top();
+   HeapWord* prev_p = NULL;
+   while (p < t) {
+-    oop(p)->verify();
++    oopDesc::verify(oop(p));
+     prev_p = p;
+     p += oop(p)->size();
+   }
+@@ -708,7 +708,7 @@ void OffsetTableContigSpace::verify() const {
+     }
+ 
+     if (objs == OBJ_SAMPLE_INTERVAL) {
+-      oop(p)->verify();
++      oopDesc::verify(oop(p));
+       objs = 0;
+     } else {
+       objs++;
+diff --git a/src/hotspot/share/gc/shared/threadLocalAllocBuffer.cpp b/src/hotspot/share/gc/shared/threadLocalAllocBuffer.cpp
+index 60a53c5c03e..1b215ab52d4 100644
+--- a/src/hotspot/share/gc/shared/threadLocalAllocBuffer.cpp
++++ b/src/hotspot/share/gc/shared/threadLocalAllocBuffer.cpp
+@@ -315,7 +315,7 @@ void ThreadLocalAllocBuffer::verify() {
+   HeapWord* t = top();
+   HeapWord* prev_p = NULL;
+   while (p < t) {
+-    oop(p)->verify();
++    oopDesc::verify(oop(p));
+     prev_p = p;
+     p += oop(p)->size();
+   }
+diff --git a/src/hotspot/share/oops/instanceKlass.cpp b/src/hotspot/share/oops/instanceKlass.cpp
+index 6612aceb93f..0fb2f70c7a0 100644
+--- a/src/hotspot/share/oops/instanceKlass.cpp
++++ b/src/hotspot/share/oops/instanceKlass.cpp
+@@ -3238,7 +3238,13 @@ void InstanceKlass::print_on(outputStream* st) const {
+   }
+   st->print(BULLET"inner classes:     "); inner_classes()->print_value_on(st);     st->cr();
+   st->print(BULLET"nest members:     "); nest_members()->print_value_on(st);     st->cr();
+-  st->print(BULLET"java mirror:       "); java_mirror()->print_value_on(st);       st->cr();
++  if (java_mirror() != NULL) {
++    st->print(BULLET"java mirror:       ");
++    java_mirror()->print_value_on(st);
++    st->cr();
++  } else {
++    st->print_cr(BULLET"java mirror:       NULL");
++  }
+   st->print(BULLET"vtable length      %d  (start addr: " INTPTR_FORMAT ")", vtable_length(), p2i(start_of_vtable())); st->cr();
+   if (vtable_length() > 0 && (Verbose || WizardMode))  print_vtable(start_of_vtable(), vtable_length(), st);
+   st->print(BULLET"itable length      %d (start addr: " INTPTR_FORMAT ")", itable_length(), p2i(start_of_itable())); st->cr();
+diff --git a/src/hotspot/share/oops/objArrayKlass.cpp b/src/hotspot/share/oops/objArrayKlass.cpp
+index ec61cfc3d44..ea2ecd9383e 100644
+--- a/src/hotspot/share/oops/objArrayKlass.cpp
++++ b/src/hotspot/share/oops/objArrayKlass.cpp
+@@ -477,8 +477,12 @@ void ObjArrayKlass::oop_print_on(oop obj, outputStream* st) {
+   int print_len = MIN2((intx) oa->length(), MaxElementPrintSize);
+   for(int index = 0; index < print_len; index++) {
+     st->print(" - %3d : ", index);
+-    oa->obj_at(index)->print_value_on(st);
+-    st->cr();
++    if (oa->obj_at(index) != NULL) {
++      oa->obj_at(index)->print_value_on(st);
++      st->cr();
++    } else {
++      st->print_cr("NULL");
++    }
+   }
+   int remaining = oa->length() - print_len;
+   if (remaining > 0) {
+@@ -494,7 +498,11 @@ void ObjArrayKlass::oop_print_value_on(oop obj, outputStream* st) {
+   element_klass()->print_value_on(st);
+   int len = objArrayOop(obj)->length();
+   st->print("[%d] ", len);
+-  obj->print_address_on(st);
++  if (obj != NULL) {
++    obj->print_address_on(st);
++  } else {
++    st->print_cr("NULL");
++  }
+ }
+ 
+ const char* ObjArrayKlass::internal_name() const {
+diff --git a/src/hotspot/share/oops/oop.cpp b/src/hotspot/share/oops/oop.cpp
+index a7bbd6b7cf6..91be51c6a29 100644
+--- a/src/hotspot/share/oops/oop.cpp
++++ b/src/hotspot/share/oops/oop.cpp
+@@ -36,11 +36,7 @@
+ bool always_do_update_barrier = false;
+ 
+ void oopDesc::print_on(outputStream* st) const {
+-  if (this == NULL) {
+-    st->print_cr("NULL");
+-  } else {
+-    klass()->oop_print_on(oop(this), st);
+-  }
++  klass()->oop_print_on(oop(this), st);
+ }
+ 
+ void oopDesc::print_address_on(outputStream* st) const {
+@@ -71,9 +67,7 @@ char* oopDesc::print_value_string() {
+ 
+ void oopDesc::print_value_on(outputStream* st) const {
+   oop obj = oop(this);
+-  if (this == NULL) {
+-    st->print("NULL");
+-  } else if (java_lang_String::is_instance(obj)) {
++  if (java_lang_String::is_instance(obj)) {
+     java_lang_String::print(obj, st);
+     print_address_on(st);
+   } else {
+@@ -82,15 +76,15 @@ void oopDesc::print_value_on(outputStream* st) const {
+ }
+ 
+ 
+-void oopDesc::verify_on(outputStream* st) {
+-  if (this != NULL) {
+-    klass()->oop_verify_on(this, st);
++void oopDesc::verify_on(outputStream* st, oopDesc* oop_desc) {
++  if (oop_desc != NULL) {
++    oop_desc->klass()->oop_verify_on(oop_desc, st);
+   }
+ }
+ 
+ 
+-void oopDesc::verify() {
+-  verify_on(tty);
++void oopDesc::verify(oopDesc* oop_desc) {
++  verify_on(tty, oop_desc);
+ }
+ 
+ intptr_t oopDesc::slow_identity_hash() {
+diff --git a/src/hotspot/share/oops/oop.hpp b/src/hotspot/share/oops/oop.hpp
+index 6311ee9088a..20251b8626d 100644
+--- a/src/hotspot/share/oops/oop.hpp
++++ b/src/hotspot/share/oops/oop.hpp
+@@ -225,8 +225,8 @@ class oopDesc {
+   void release_address_field_put(int offset, address contents);
+ 
+   // printing functions for VM debugging
+-  void print_on(outputStream* st) const;         // First level print
+-  void print_value_on(outputStream* st) const;   // Second level print.
++  void print_on(outputStream* st) const;        // First level print
++  void print_value_on(outputStream* st) const;  // Second level print.
+   void print_address_on(outputStream* st) const; // Address printing
+ 
+   // printing on default output stream
+@@ -239,8 +239,8 @@ class oopDesc {
+   char* print_value_string();
+ 
+   // verification operations
+-  void verify_on(outputStream* st);
+-  void verify();
++  static void verify_on(outputStream* st, oopDesc* oop_desc);
++  static void verify(oopDesc* oopDesc);
+ 
+   // locking operations
+   inline bool is_locked()   const;
+diff --git a/src/hotspot/share/runtime/fieldDescriptor.cpp b/src/hotspot/share/runtime/fieldDescriptor.cpp
+index bc4515b93bd..b80c9f9ca2c 100644
+--- a/src/hotspot/share/runtime/fieldDescriptor.cpp
++++ b/src/hotspot/share/runtime/fieldDescriptor.cpp
+@@ -190,12 +190,20 @@ void fieldDescriptor::print_on_for(outputStream* st, oop obj) {
+     case T_ARRAY:
+       st->print(" ");
+       NOT_LP64(as_int = obj->int_field(offset()));
+-      obj->obj_field(offset())->print_value_on(st);
++      if (obj->obj_field(offset()) != NULL) {
++        obj->obj_field(offset())->print_value_on(st);
++      } else {
++        st->print_cr("NULL");
++      }
+       break;
+     case T_OBJECT:
+       st->print(" ");
+       NOT_LP64(as_int = obj->int_field(offset()));
+-      obj->obj_field(offset())->print_value_on(st);
++      if (obj->obj_field(offset()) != NULL) {
++        obj->obj_field(offset())->print_value_on(st);
++      } else {
++        st->print_cr("NULL");
++      }
+       break;
+     default:
+       ShouldNotReachHere();
+diff --git a/src/hotspot/share/runtime/jniHandles.cpp b/src/hotspot/share/runtime/jniHandles.cpp
+index af2d79d315f..deb92d431c3 100644
+--- a/src/hotspot/share/runtime/jniHandles.cpp
++++ b/src/hotspot/share/runtime/jniHandles.cpp
+@@ -312,7 +312,7 @@ void JNIHandles::print_on(outputStream* st) {
+ class VerifyJNIHandles: public OopClosure {
+ public:
+   virtual void do_oop(oop* root) {
+-    (*root)->verify();
++    oopDesc::verify(*root);
+   }
+   virtual void do_oop(narrowOop* root) { ShouldNotReachHere(); }
+ };
+-- 
+2.42.0
+
