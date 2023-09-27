@@ -1,8 +1,8 @@
 name       : llvm
-version    : 15.0.7
-release    : 109
+version    : 16.0.6
+release    : 110
 source     :
-    - https://github.com/llvm/llvm-project/releases/download/llvmorg-15.0.7/llvm-project-15.0.7.src.tar.xz : 8b5fcb24b4128cf04df1b0b9410ce8b1a729cb3c544e6da885d234280dedeac6
+    - https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.6/llvm-project-16.0.6.src.tar.xz : ce5e71081d17ce9e86d7cbcfa28c4b04b9300f8fb7e78422b1feb6bc52c3028e
 homepage   : http://llvm.org/
 license    : Apache-2.0-with-LLVM-exception
 summary    :
@@ -25,8 +25,10 @@ builddeps  :
     - pkgconfig32(libelf)
     - pkgconfig32(libffi)
     - pkgconfig32(libxml-2.0)
-    - pkgconfig32(ncursesw)
     - pkgconfig32(libedit)
+    - pkgconfig32(libzstd)
+    - pkgconfig32(ncursesw)
+    - pkgconfig32(zlib)
     - doxygen
     - glibc-32bit-devel
     - libgcc-32bit
@@ -34,9 +36,10 @@ builddeps  :
     - llvm-32bit-devel
     - python-recommonmark
     - swig
-    - zlib-32bit-devel
     - llvm-bolt
 rundeps    :
+    - devel:
+        - zstd-devel
     - clang :
         - llvm-devel
     - clang-devel :
@@ -134,13 +137,15 @@ environment: |
     # We compile just the neccessities during the pgo gen build to speed things up
     if [[ ! -z "${PGO_GEN_BUILD}" ]]; then
         export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-generate=default-%m.profraw"
-        export _PROJECTS="clang;compiler-rt;lld;llvm"
+        export _PROJECTS="clang;lld;llvm"
+        export _RUNTIMES="compiler-rt"
         export _TARGETS="host"
     fi
     if [[ ! -z "${PGO_USE_BUILD}" ]]; then
         PGO_PATH="/home/build/YPKG/root/llvm/pgo/default.profdata"
         export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-use=$PGO_PATH"
-        export _PROJECTS="compiler-rt;libcxx;libcxxabi;clang;clang-tools-extra;lld;llvm;openmp;mlir;polly"
+        export _PROJECTS="clang;clang-tools-extra;lld;llvm;mlir;polly"
+        export _RUNTIMES="libcxxabi;libcxx;compiler-rt;openmp"
         export _TARGETS="all"
     fi
 
@@ -157,6 +162,7 @@ environment: |
         -DLLVM_BINUTILS_INCDIR=/usr/include \
         -DLLVM_ENABLE_FFI=ON \
         -DLLVM_ENABLE_ZLIB=ON \
+        -DLLVM_ENABLE_ZSTD=ON \
         -DLLVM_ENABLE_RTTI=ON \
         -DLLVM_ENABLE_ASSERTIONS=OFF \
         -DENABLE_LINKER_BUILD_ID=ON \
@@ -185,14 +191,15 @@ setup      : |
     # Support solus, it's triplet, etc.
     %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
 
-    # https://github.com/llvm/llvm-project/issues/58219
-    %patch -p1 -i $pkgfiles/remove-dep-on-devicertl-gpu-plugins.patch
+    # AMDGPU related
+    %patch -p1 -i $pkgfiles/fix-amdgpu-si-fold-operands-assertion-error.patch
 
-    # Patch cfe for Solus specific options
     pushd clang
+        # Patch cfe for Solus specific options
         %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
-        %patch -p1 -i $pkgfiles/0002-cfe-Use-the-GNU-hash-style-for-Solus-binary-build-id.patch
         %patch -p1 -i $pkgfiles/0001-Enable-stack-protector-strong-by-default.patch
+        # Allow us to ignore -Werror even when projects force append them
+        %patch -p2 -i $pkgfiles/ignore-werror.patch
     popd
 
     # Pull lld in line with binutils linkers for consistency
@@ -200,10 +207,6 @@ setup      : |
         %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
         %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
     popd
-
-    # Backported from LLVM 16 for ffmpeg, thunderbird, firefox, etc.
-    %patch -p1 -i $pkgfiles/clang-structured-bindings-lambdas.patch
-    %patch -p1 -i $pkgfiles/fix-structured-bindings-in-lambdas-regression.patch
 build      : |
     ### PGO gen/use build for amd64.
     cmake -G Ninja -B solusBuildDir -S llvm \
@@ -212,6 +215,7 @@ build      : |
         -DCMAKE_C_FLAGS_RELEASE="$PGOFLAGS" \
         -DCMAKE_CXX_FLAGS_RELEASE="$PGOFLAGS" \
         -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
+        -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
         -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
         -DLLVM_BUILD_DOCS=ON \
         -DLLVM_ENABLE_SPHINX=ON \
@@ -238,7 +242,8 @@ build      : |
           -DLLVM_LIBDIR_SUFFIX=32 \
           -DLLVM_TARGET_ARCH=i686 \
           -DLLVM_DEFAULT_TARGET_TRIPLE=i686-pc-linux-gnu \
-          -DLLVM_ENABLE_PROJECTS="compiler-rt;libcxx;libcxxabi;clang;llvm;openmp" \
+          -DLLVM_ENABLE_PROJECTS="clang;llvm" \
+          -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;compiler-rt;openmp" \
           -DLLVM_TARGETS_TO_BUILD="host;AMDGPU;BPF" \
           -DCMAKE_FIND_LIBRARY_CUSTOM_LIB_SUFFIX=32 \
           -DLLVM_CCACHE_BUILD=ON
@@ -284,8 +289,8 @@ install    : |
 
     ### BOLT
     # Instrument
-    %bolt_instr $workdir/lto-build/lib64/libclang-cpp.so.15
-    %bolt_instr $workdir/lto-build/lib64/libLLVM-15.so
+    %bolt_instr $workdir/lto-build/lib64/libclang-cpp.so.16
+    %bolt_instr $workdir/lto-build/lib64/libLLVM-16.so
     # Profile
     cmake -G Ninja -B bolt-profile -S runtimes \
         ${CMAKE_COMMON_OPTIONS} \
@@ -300,13 +305,13 @@ install    : |
         -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL"
     ninja %JOBS% -C bolt-profile -v
     # Merge and optimize
-    %bolt_merge $workdir/lto-build/lib64/libclang-cpp.so.15
-    %bolt_merge $workdir/lto-build/lib64/libLLVM-15.so
-    %bolt_opt $workdir/lto-build/lib64/libclang-cpp.so.15
-    %bolt_opt $workdir/lto-build/lib64/libLLVM-15.so
+    %bolt_merge $workdir/lto-build/lib64/libclang-cpp.so.16
+    %bolt_merge $workdir/lto-build/lib64/libLLVM-16.so
+    %bolt_opt $workdir/lto-build/lib64/libclang-cpp.so.16
+    %bolt_opt $workdir/lto-build/lib64/libLLVM-16.so
     # Install BOLT'd libs over the LTO build
-    install -Dm00777 $workdir/lto-build/lib64/libLLVM-15.so $installdir/usr/lib64/libLLVM-15.so
-    install -Dm00755 $workdir/lto-build/lib64/libclang-cpp.so.15 $installdir/usr/lib64/libclang-cpp.so.15
+    install -Dm00777 $workdir/lto-build/lib64/libLLVM-16.so $installdir/usr/lib64/libLLVM-16.so
+    install -Dm00755 $workdir/lto-build/lib64/libclang-cpp.so.16 $installdir/usr/lib64/libclang-cpp.so.16
 
     mv $installdir/usr/include/llvm/Config/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config-%LIBSUFFIX%.h
 
@@ -318,3 +323,6 @@ install    : |
     ln -sv ../LLVMgold.so $installdir/%libdir%/bfd-plugins/.
     # Finally add our compatibility header
     install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
+
+    # For some reason, the include path only contains the major version now
+    ln -sv %libdir%/clang/16 $installdir/%libdir%/clang/%version%
