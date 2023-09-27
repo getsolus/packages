@@ -1,0 +1,106 @@
+From bbc5c2595d809b95f067248a371f096070964c8e Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Wed, 27 Sep 2023 13:16:44 -0500
+Subject: [PATCH] Enable configuration of whether or not to generate history
+
+---
+ builder/config.go     |  2 ++
+ builder/manager.go    | 20 ++++++++++++--------
+ cli/build.go          |  7 +++++++
+ data/00_solbuild.conf |  4 ++++
+ 4 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/builder/config.go b/builder/config.go
+index 59bc801..4660c2a 100644
+--- a/builder/config.go
++++ b/builder/config.go
+@@ -27,6 +27,7 @@ import (
+ // Config defines the global defaults for solbuild
+ type Config struct {
+ 	DefaultProfile string `toml:"default_profile"`  // Name of the default profile to use
++	EnableHistory  bool   `toml:"enable_history"`   // Whether to enable history generation or not
+ 	EnableTmpfs    bool   `toml:"enable_tmpfs"`     // Whether to enable tmpfs builds or
+ 	OverlayRootDir string `toml:"overlay_root_dir"` // Custom Overlay Root Dir
+ 	TmpfsSize      string `toml:"tmpfs_size"`       // Bounding size on the tmpfs
+@@ -49,6 +50,7 @@ func NewConfig() (*Config, error) {
+ 	// Set up some sane defaults just in case someone mangles the configs
+ 	config := &Config{
+ 		DefaultProfile: "main-x86_64",
++		EnableHistory:  false,
+ 		EnableTmpfs:    false,
+ 		OverlayRootDir: "/var/cache/solbuild",
+ 		TmpfsSize:      "",
+diff --git a/builder/manager.go b/builder/manager.go
+index 9e5cef0..ac8ea25 100644
+--- a/builder/manager.go
++++ b/builder/manager.go
+@@ -181,14 +181,18 @@ func (m *Manager) SetPackage(pkg *Package) error {
+ 	// Obtain package history for git builds
+ 	if pkg.Type == PackageTypeYpkg {
+ 		repoDir := filepath.Dir(pkg.Path)
+-		repo, err := git.OpenRepositoryExtended(repoDir, 0, "/")
+-
+-		if err == nil {
+-			if history, err := NewPackageHistory(repo, pkg.Path); err == nil {
+-				log.Debugln("Obtained package history")
+-				m.history = history
+-			} else {
+-				log.Warnf("Failed to obtain package git history %s\n", err)
++
++		if m.Config.EnableHistory {
++			log.Infoln("History generation enabled")
++
++			repo, err := git.OpenRepositoryExtended(repoDir, 0, "/")
++			if err == nil {
++				if history, err := NewPackageHistory(repo, pkg.Path); err == nil {
++					log.Debugln("Obtained package history")
++					m.history = history
++				} else {
++					log.Warnf("Failed to obtain package git history %s\n", err)
++				}
+ 			}
+ 		}
+ 	}
+diff --git a/cli/build.go b/cli/build.go
+index 5aa529e..17baf42 100644
+--- a/cli/build.go
++++ b/cli/build.go
+@@ -48,6 +48,7 @@ type BuildFlags struct {
+ 	Memory          string `short:"m" long:"memory"             desc:"Set the tmpfs size to use, e.g. 8G"`
+ 	TransitManifest string `long:"transit-manifest"             desc:"Create transit manifest for the given target"`
+ 	ABIReport       bool   `short:"r" long:"disable-abi-report" desc:"Don't generate an ABI report of the completed build"`
++	History         bool   `short:"h" long:"history"            desc:"Enable history generation for this build"`
+ }
+ 
+ // BuildArgs are arguments for the "build" sub-command
+@@ -96,6 +97,12 @@ func BuildRun(r *cmd.Root, s *cmd.Sub) {
+ 	if err = manager.SetProfile(rFlags.Profile); err != nil {
+ 		os.Exit(1)
+ 	}
++
++	// Enable history generation
++	if sFlags.History {
++		manager.Config.EnableHistory = true
++	}
++
+ 	pkg, err := builder.NewPackage(pkgPath)
+ 	if err != nil {
+ 		log.Fatalf("Failed to load package: %s\n", err)
+diff --git a/data/00_solbuild.conf b/data/00_solbuild.conf
+index 88a815d..99c983b 100644
+--- a/data/00_solbuild.conf
++++ b/data/00_solbuild.conf
+@@ -10,6 +10,10 @@
+ # "-p" profile argument to solbuild
+ default_profile = "main-x86_64"
+ 
++# Setting this to true will enable package history generation
++# Note you can still override this at runtime with the -h flag
++enable_history = false
++
+ # Setting this to true will default the builder to using tmpfs
+ # Note you can still override this at runtime with the -t flag
+ enable_tmpfs = false
+-- 
+2.42.0
+
