@@ -8,9 +8,11 @@
 # FIXME: Check for rundeps changes as well for system.{base,devel} packages.
 # FIXME: For the initial inclusion check that the release == 1
 
-LAST_COMMIT_DIFF=`git diff @~ @`
+LAST_COMMIT=$(git rev-list -1 HEAD .)
 
-PKG_BUMP=`git diff @~ @ package.yml | grep -w +release`
+LAST_COMMIT_DIFF=$(git log -u -1 ${LAST_COMMIT})
+
+PKG_BUMP=$(git log -u -1 ${LAST_COMMIT} package.yml | grep -w +release)
 
 # Check the release has been bumped
 if [[ $PKG_BUMP == "" ]]; then
@@ -31,7 +33,7 @@ fi
 
 if [[ `grep -E abi_used_libs <<< $LAST_COMMIT_DIFF` ]]; then
     # Only if the change is an addition
-    ABI_ADDITION=`git diff @~ @ -U0 --word-diff abi_used_libs | grep {+`
+    ABI_ADDITION=`git log -u -1 ${LAST_COMMIT} -U0 --word-diff abi_used_libs | grep {+`
     if [[ $ABI_ADDITION != "" ]]; then
         CHANGED_ABI_USED_LIBS=1
     fi
