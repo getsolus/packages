@@ -6,7 +6,6 @@
 # IFF an argument is supplied, it is expected to be a positive integer.
 # IFF an argument is NOT supplied (or 0 is supplied), the default value will be used.
 
-AFFECTED=()
 ARGS="$1"
 DAYS=
 # Define it here because bash doesn't like quotes in pattern matching expressions ('=~' below)
@@ -31,25 +30,20 @@ function parse-cmd-line-args () {
 }
 
 function check-dir () {
-    if [[ ! -d ./common/.git ]]; then
-        echo -e "\nThis script needs to be run from the directory that contains common/ and package repo clones.\n"
+if [[ ! -d ./.git || ! -d common/ || ! -d packages/ ]]; then
+        echo -e "\nThis script needs to be run from the the packages.git clone root that contains common/ and packages/.\n"
         exit 1
     fi
 }
 
 function find-affected () {
-    local nom
     local output
-    for i in $(find . -maxdepth 2 -name .git); do
-        nom="$(dirname ${i})"
-        output="$(git -c color.ui=always -C ${nom} log --pretty=format:'%C(yellow)%h%Creset %ad | %Cgreen%s%Creset %Cred%d%Creset %Cblue[%an]%Creset' --date=short --after=@{$DAYS.days.ago})"
-        if [[ -z "${output}" ]]; then
-            continue
-        fi
-        echo -e "# $nom:\n$output\n#"
-        AFFECTED+="${nom} "
-    done
-    unset nom
+    output="$(git -c color.ui=always log --pretty=format:'%C(yellow)%h%Creset %ad | %Cgreen%s%Creset %Cred%d%Creset %Cblue[%an]%Creset' --date=short --after=@{$DAYS.days.ago})"
+    if [[ -z "${output}" ]]; then
+        echo "No changes...?"
+    else
+        echo -e "#\n$output\n#"
+    fi
     unset output
 }
 
@@ -57,7 +51,6 @@ function find-affected () {
 check-dir
 parse-cmd-line-args
 find-affected
+#echo "# packages affected in the last ${DAYS} days:"
 
-echo "# Repos affected in the last ${DAYS} days:"
-echo "${AFFECTED[@]}"|tr ' ' '\n'|sort|uniq
 
