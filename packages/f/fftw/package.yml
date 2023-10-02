@@ -1,6 +1,6 @@
 name       : fftw
 version    : 3.3.8
-release    : 12
+release    : 13
 source     :
     - http://fftw.org/fftw-3.3.8.tar.gz : 6113262f6e92c5bd474f2875fa1b01054c4ad5040f6b0da7c03c98821d9ae303
 license    : GPL-2.0-or-later
@@ -12,9 +12,16 @@ avx2       : yes
 builddeps  :
     - gfortran
     - libpth-devel
+environment: |
+    if [[ ! -z "${AVX2BUILD}" ]]; then
+        export CFLAGS="$CFLAGS -mtune=haswell -march=haswell"
+        export TO_BUILD="fftw-single-avx2 fftw-double-avx2"
+    else
+        export TO_BUILD="fftw-single fftw-double fftw-long-double"
+    fi
 setup      : |
     export CONFOPTS="$CONFOPTS --prefix=/usr --libdir=%libdir% --disable-static --enable-shared --enable-openmp --enable-threads"
-    export avxflags="--libdir=%libdir%/haswell --enable-sse2 --enable-fma --enable-avx2"
+    export avxflags="--enable-sse2 --enable-fma --enable-avx2"
 
     mkdir .fftw && mv * .fftw/
 
@@ -49,16 +56,24 @@ setup      : |
         popd
     fi
 build      : |
-    if [[ ! -z "${AVX2BUILD}" ]]; then
-        export CFLAGS="$CFLAGS -mtune=haswell -march=haswell"
-        export TO_BUILD="fftw-single-avx2 fftw-double-avx2"
-    else
-        export TO_BUILD="fftw-single fftw-double fftw-long-double"
-    fi
-
     for dir in $TO_BUILD; do
         pushd $dir
         %make
+        popd
+    done
+install    : |
+    for dir in $TO_BUILD; do
+        pushd $dir
         %make_install
         popd
     done
+
+    if [[ -z "${AVX2BUILD}" ]]; then
+        pushd fftw-double
+        # install missing FFTW3LibraryDepends.cmake
+        export CMAKE_OPTS="-DENABLE_OPENMP=ON -DENABLE_THREADS=ON -DENABLE_FLOAT=ON -DENABLE_LONG_DOUBLE=ON -DENABLE_QUAD_PRECISION=ON -DENABLE_SSE=ON -DENABLE_SSE2=ON -DENABLE_AVX=ON -DENABLE_AVX2=ON"
+        %cmake_ninja ${CMAKE_OPTS}
+        # https://github.com/FFTW/fftw3/issues/130#issuecomment-1030280157
+        sed -e 's|\(IMPORTED_LOCATION_NONE\).*|\1 "/usr/lib64/libfftw3.so.3"|' -i solusBuildDir/FFTW3LibraryDepends.cmake
+        install -vDm 00644 solusBuildDir/FFTW3LibraryDepends.cmake -t $installdir/usr/lib64/cmake/fftw3/
+    fi
