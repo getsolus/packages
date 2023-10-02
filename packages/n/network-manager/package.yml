@@ -1,6 +1,6 @@
 name       : network-manager
 version    : 1.42.8
-release    : 78
+release    : 79
 source     :
     - https://download.gnome.org/sources/NetworkManager/1.42/NetworkManager-1.42.8.tar.xz : 0337e7583d2ec5ade2ba2e8c625d2f09eeccda1d22836ee29aa72925d399c353
 license    : GPL-2.0-or-later
@@ -25,18 +25,21 @@ builddeps  :
     - pkgconfig32(liblzma)
     - pkgconfig32(libndp)
     - pkgconfig32(libnl-3.0)
+    - pkgconfig32(libpsl)
     - pkgconfig32(ncursesw)
     - pkgconfig32(nss)
     - pkgconfig32(readline)
     - pkgconfig32(uuid)
     - pkgconfig(mm-glib)
-    - dhclient
+    - pkgconfig(mobile-broadband-provider-info)
+    - gtk-doc
+    - iproute2
+    - nftables
     - ppp-devel
     - python-gobject-devel
     - vala
 rundeps    :
-    - dhclient
-    - dnsmasq
+    - mobile-broadband-provider-info
     - ppp
     - usb-modeswitch
     - wireless-tools
@@ -51,38 +54,64 @@ emul32     : yes
 environment: |
     unset LD_AS_NEEDED
 setup      : |
+    %patch -p1 -i $pkgfiles/0001-Use-run-instead-of-var-run-for-runstatedir.patch
     if [[ ! -z "${EMUL32BUILD}" ]]; then
-        normOpts="--without-modem-manager-1 --with-nmtui=no --enable-polkit=disabled --disable-gtk-doc --disable-introspection --disable-ppp"
+        extraOpts="-Dintrospection=false -Dmodem_manager=false -Dpolkit=false -Dppp=false -Dvapi=false"
     else
-        normOpts="--with-modem-manager-1 --enable-ppp --enable-vala --with-pppd-plugin-dir=%libdir%/pppd/2.4.8/"
+        extraOpts="-Ddocs=true"
     fi
-    %configure \
-        --enable-modify-system \
-        --with-config-dhcp-default=dhclient \
-        --with-dbus-sys-dir=/usr/share/dbus-1/system.d \
-        --with-dhclient=/usr/bin/dhclient \
-        --with-dist-version="${version}-solus" \
-        --with-session-tracking=systemd \
-        --with-suspend-resume=systemd \
-        --with-systemdsystemunitdir=%libdir%/systemd/system \
-        --runstatedir=/run \
-        --with-udev-dir=/usr/lib/udev \
-        --with-iwd \
-        $normOpts
+    %meson_configure \
+                     -Dconfig_dhcp_default=internal \
+                     -Dconfig_dns_rc_manager_default=auto \
+                     -Dconfig_plugins_default=keyfile \
+                     -Ddhclient=no \
+                     -Ddhcpcanon=no \
+                     -Ddhcpcd=no \
+                     -Ddist_version="${version}-solus" \
+                     -Diwd=true \
+                     -Dlibaudit=no \
+                     -Dmodify_system=true \
+                     -Dmore_asserts=no \
+                     -Dmore_logging=false \
+                     -Dnmtui=false \
+                     -Dpppd_plugin_dir=%libdir%/pppd/2.4.8/ \
+                     -Dqt=false \
+                     -Dresolvconf=no \
+                     -Dselinux=false \
+                     -Dsession_tracking_consolekit=false \
+                     -Dsystemdsystemunitdir=%libdir%/systemd/system \
+                     $extraOpts
 build      : |
-    %make
+    %ninja_build
 install    : |
-    %make_install
-    ln -sv %libdir%/systemd/system/NetworkManager.service  $installdir/%libdir%/systemd/system/dbus-org.freedesktop.NetworkManager.service
-    install -Dm00644 $pkgfiles/NetworkManager.conf $installdir/usr/lib/NetworkManager/conf.d/NetworkManager.conf
-    install -Dm00644 $pkgfiles/20-connectivity-solus.conf $installdir/usr/lib/NetworkManager/conf.d/20-connectivity-solus.conf
-    install -Dm00644 $pkgfiles/60-live-disable-hostname-mode.conf $installdir/usr/lib/NetworkManager/conf.d/60-live-disable-hostname-mode.conf
-    install -Dm00644 $pkgfiles/10-iwd-wifi-backend.conf $installdir/usr/lib/NetworkManager/conf.d/10-iwd-wifi-backend.conf
-    if [[ -z "${EMUL32BUILD}" ]] ; then
-        install -D -m 00644 $pkgfiles/NetworkManager.tmpfiles $installdir/%libdir%/tmpfiles.d/NetworkManager.conf
-    fi
+    %ninja_install
 
-    # More stateless
-    rmdir $installdir/var/lib/NetworkManager
-    rmdir $installdir/var/lib/
-    rmdir $installdir/var/
+    if [[ "${EMUL32BUILD}" ]]; then
+        # We only need libnm
+        rm -rfv $installdir/%libdir%/systemd \
+                $installdir/%libdir%/network-manager \
+                $installdir/%libdir%/NetworkManager
+    else
+
+        # Enable by default
+        install -dm00755 $installdir/usr/lib/systemd/system/{multi-user,network-online}.target.wants
+        ln -sv ../NetworkManager.service $installdir/usr/lib/systemd/system/multi-user.target.wants/NetworkManager.service
+        ln -sv NetworkManager-dispatcher.service $installdir/usr/lib/systemd/system/dbus-org.freedesktop.nm-dispatcher.service
+        ln -sv ../NetworkManager-wait-online.service $installdir/usr/lib/systemd/system/network-online.target.wants/NetworkManager-wait-online.service
+
+        # Configuration
+        install -Dm00644 $pkgfiles/NetworkManager.conf $installdir/usr/lib/NetworkManager/conf.d/NetworkManager.conf
+        install -Dm00644 $pkgfiles/20-connectivity-solus.conf $installdir/usr/lib/NetworkManager/conf.d/20-connectivity-solus.conf
+        install -Dm00644 $pkgfiles/60-live-disable-hostname-mode.conf $installdir/usr/lib/NetworkManager/conf.d/60-live-disable-hostname-mode.conf
+        install -Dm00644 $pkgfiles/10-iwd-wifi-backend.conf $installdir/usr/lib/NetworkManager/conf.d/10-iwd-wifi-backend.conf
+
+        install -D -m 00644 $pkgfiles/NetworkManager.tmpfiles $installdir/%libdir%/tmpfiles.d/NetworkManager.conf
+
+        # Why do these even exist? We disabled nmtui during the build
+        rm -v $installdir/usr/share/man/man1/{nmtui,nmtui-connect,nmtui-edit,nmtui-hostname}.1
+
+        # More stateless
+        rmdir -v $installdir/var/lib/NetworkManager \
+                 $installdir/var/lib/ \
+                 $installdir/var/
+    fi
