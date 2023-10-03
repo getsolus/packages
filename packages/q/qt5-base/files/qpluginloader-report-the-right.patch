@@ -1,0 +1,96 @@
+From 29380235b7281986f924bca9cab2275b999eff02 Mon Sep 17 00:00:00 2001
+From: Giuseppe D'Angelo <giuseppe.dangelo@kdab.com>
+Date: Wed, 2 Feb 2022 16:10:18 +0100
+Subject: [PATCH] QPluginLoader: report the right load hints
+
+A default-constructed QPluginLoader erroneously reports that the
+load hints are empty. However, setting a filename would then
+automatically set the PreventUnload hint, surprising the user.
+
+Return the correct flags instead.
+
+Amends 494376f980e96339b6f1eff7c41336ca4d853065
+
+Change-Id: I7a95964cb680afd3adf2f71ed73d2f93023238f2
+Fixes: QTBUG-100416
+Pick-to: 5.15 6.2 6.3
+Reviewed-by: Thiago Macieira <thiago.macieira@intel.com>
+(cherry picked from commit e7d627339cc35907c0d5bb263ede10a017e0b988)
+---
+ src/corelib/plugin/qpluginloader.cpp                | 13 ++++++++++---
+ .../plugin/qpluginloader/tst_qpluginloader.cpp      | 11 ++++++++++-
+ 2 files changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/src/corelib/plugin/qpluginloader.cpp b/src/corelib/plugin/qpluginloader.cpp
+index 0a63b93762c..de429d5b476 100644
+--- a/src/corelib/plugin/qpluginloader.cpp
++++ b/src/corelib/plugin/qpluginloader.cpp
+@@ -105,6 +105,8 @@ QT_BEGIN_NAMESPACE
+     \sa QLibrary, {Plug & Paint Example}
+ */
+ 
++static constexpr QLibrary::LoadHints defaultLoadHints = QLibrary::PreventUnloadHint;
++
+ /*!
+     \class QStaticPlugin
+     \inmodule QtCore
+@@ -155,7 +157,7 @@ QPluginLoader::QPluginLoader(const QString &fileName, QObject *parent)
+     : QObject(parent), d(nullptr), did_load(false)
+ {
+     setFileName(fileName);
+-    setLoadHints(QLibrary::PreventUnloadHint);
++    setLoadHints(defaultLoadHints);
+ }
+ 
+ /*!
+@@ -357,7 +359,7 @@ static QString locatePlugin(const QString& fileName)
+ void QPluginLoader::setFileName(const QString &fileName)
+ {
+ #if defined(QT_SHARED)
+-    QLibrary::LoadHints lh = QLibrary::PreventUnloadHint;
++    QLibrary::LoadHints lh = defaultLoadHints;
+     if (d) {
+         lh = d->loadHints();
+         d->release();
+@@ -422,7 +424,12 @@ void QPluginLoader::setLoadHints(QLibrary::LoadHints loadHints)
+ 
+ QLibrary::LoadHints QPluginLoader::loadHints() const
+ {
+-    return d ? d->loadHints() : QLibrary::LoadHints();
++    // Not having a d-pointer means that the user hasn't called
++    // setLoadHints() / setFileName() yet. In setFileName() we will
++    // then force defaultLoadHints on loading, so we must return them
++    // from here as well.
++
++    return d ? d->loadHints() : defaultLoadHints;
+ }
+ 
+ #endif // QT_CONFIG(library)
+diff --git a/tests/auto/corelib/plugin/qpluginloader/tst_qpluginloader.cpp b/tests/auto/corelib/plugin/qpluginloader/tst_qpluginloader.cpp
+index ce8057372cf..3b91fc7d0d8 100644
+--- a/tests/auto/corelib/plugin/qpluginloader/tst_qpluginloader.cpp
++++ b/tests/auto/corelib/plugin/qpluginloader/tst_qpluginloader.cpp
+@@ -243,10 +243,19 @@ void tst_QPluginLoader::loadHints()
+     QSKIP("This test requires Qt to create shared libraries.");
+ #endif
+     QPluginLoader loader;
+-    QCOMPARE(loader.loadHints(), QLibrary::LoadHints{});   //Do not crash
++    QCOMPARE(loader.loadHints(), QLibrary::PreventUnloadHint);   //Do not crash
+     loader.setLoadHints(QLibrary::ResolveAllSymbolsHint);
++    QCOMPARE(loader.loadHints(), QLibrary::ResolveAllSymbolsHint);
+     loader.setFileName( sys_qualifiedLibraryName("theplugin"));     //a plugin
+     QCOMPARE(loader.loadHints(), QLibrary::ResolveAllSymbolsHint);
++
++    QPluginLoader loader2;
++    QCOMPARE(loader2.loadHints(), QLibrary::PreventUnloadHint);
++    loader2.setFileName(sys_qualifiedLibraryName("theplugin"));
++    QCOMPARE(loader2.loadHints(), QLibrary::PreventUnloadHint);
++
++    QPluginLoader loader3(sys_qualifiedLibraryName("theplugin"));
++    QCOMPARE(loader3.loadHints(), QLibrary::PreventUnloadHint);
+ }
+ 
+ void tst_QPluginLoader::deleteinstanceOnUnload()
+-- 
+GitLab
+
