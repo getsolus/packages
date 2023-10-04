@@ -185,7 +185,6 @@ verify() {
     if [[ -z "${FILE}" ]]; then
         echo "FILE not set. e.g. FILE=package.yml or FILE=abi_used_libs"
     fi
-
     if [[ -z "${CHANGE}" ]]; then
         echo "CHANGE not set. e.g. CHANGE=libfoobar.so.8 or CHANGE=23.04.6"
     fi
@@ -198,7 +197,7 @@ verify() {
         var=$((var+1))
         echo -e "Verifying ${i}: ${var} out of" $(package_count)
 
-        VERIFY=$(git diff -U0 --word-diff ${FILE} | grep +${CHANGE})
+        VERIFY=$(git diff -U0 --word-diff ${FILE} | grep ${CHANGE})
         if [[ $VERIFY = "" ]]; then
             echo "Package ${i} failed to rebuild against ${MAINPAK}"
             exit 1
@@ -248,7 +247,7 @@ commit() {
         CUSTOM_COMMIT_MSG="0"
 
         for pkg in "${excludes[@]}"; do
-            if [[ ${pkg} == ${DIR} ]]; then
+            if [[ ${pkg} == ${i} ]]; then
                 CUSTOM_COMMIT_MSG="1"
             fi
         done
@@ -258,7 +257,12 @@ commit() {
         if [ "${CUSTOM_COMMIT_MSG}" == "1" ]; then
             git commit
         else
-            git commit -m "${i}: Update to KDE Frameworks 5.110.0" -m "[Changelog](https://kde.org/announcements/frameworks/5/5.110.0/)"
+            git commit -F- <<EOF
+${i}: Rebuild against ${MAINPAK}
+
+
+
+EOF
         fi
         popd
     done
@@ -339,7 +343,7 @@ NUKE() {
 checkDeleteCache() {
     DISKUSAGE=$(df -H / | awk '{ print $5 }' | cut -d'%' -f1 | sed 1d)
     if [ $DISKUSAGE -ge $DELETE_CACHE_THRESHOLD ]; then
-        echo -e "${INFO} > Disk usage above ${DELETE_CACHE_THRESHOLD}%, running solbuild delete-cache --all...${NC}"
+        echo -e "${INFO} > Disk usage above ${DELETE_CACHE_THRESHOLD}%, running solbuild delete-cache --all ${NC}"
         sudo solbuild dc -a
     fi
 }
