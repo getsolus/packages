@@ -129,25 +129,31 @@ class UnwantedFiles(PullRequestCheck):
 
 
 class Pspec(PullRequestCheck):
-    _error = '`package.yml` and `pspec_x86_64.xml` are not consistent'
+    _error = '`package.yml` and `pspec_x86_64.xml` are not consistent, please rebuild.'
     _level = Level.ERROR
 
     def run(self, files: List[str]) -> List[Result]:
         paths = [os.path.dirname(f) for f in self._filter_packages(files)]
 
-        return [Result(self._error, self._xml_file(path), None, self._level)
+        return [Result(self._error, os.path.join(path, 'pspec_x86_64.xml'), None, self._level)
                 for path in paths
                 if not self._check_consistent(path)]
 
     @staticmethod
     def _check_consistent(package_dir: str) -> bool:
-        xml = Pspec._xml_file(package_dir)
-        xml_release = int(ElementTree.parse(xml).findall('.//Update')[0].attrib['release'])
+        xml = ElementTree.parse(Pspec._xml_file(package_dir))
+        xml_release = int(xml.findall('.//Update')[0].attrib['release'])
+        xml_homepage: str = ''
+
+        if xml.find('.//Homepage') is not None:
+            xml_homepage = xml.find('.//Homepage').text
 
         with open(Pspec._yml_file(package_dir), 'r') as f:
-            yml_release = yaml.safe_load(f)['release']
+            yml = yaml.safe_load(f)
+            yml_release = yml.get('release', '')
+            yml_homepage = yml.get('homepage', '')
 
-        return yml_release == xml_release
+        return yml_release == xml_release and yml_homepage == xml_homepage
 
     @staticmethod
     def _yml_file(package_dir: str) -> str:
