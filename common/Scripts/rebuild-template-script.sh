@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -euo pipefail
-
 # A script to automate package rebuilds for solus.
 # Can be adapted to suit the needs for different packages.
 
@@ -58,18 +56,32 @@ package_count() {
 }
 
 setup() {
+    set -euo pipefail
+
+    # Getopts for this function
+    #setup_usage() { echo "setup -m mainpkg -p packages" 1>&2; exit; }
+    #local OPTIND o m p
+    #while getopts ":m:p" o; do
+    #    case "${o}" in
+    #        m) MAINPAK+=("$OPTARG") ;;
+    #        p) PACKAGES+=("$OPTARG") ;;
+    #        *) _usage ;;
+    #    esac
+    #done
+    #shift $((OPTIND-1))
+
     if [[ -z "$MAINPAK" ]]; then
         echo -e "> ${ERROR} MAINPAK is empty, please edit the script and set it before continuing.${NC}"
         exit 1
     fi
 
-    echo -e "${INFO} > Switching to new git branch...${NC}"
-    git switch -C ${MAINPAK}-rebuilds
+    echo -e "${INFO} > Switching up git worktree...${NC}"
+    git worktree add ~/${MAINPAK}-rebuilds
 
     echo -e "${INFO} > Setting up custom local repo...${NC}"
     sudo mkdir -p /var/lib/solbuild/local-${MAINPAK}
     sudo mkdir -p /etc/solbuild
-    cp $(git rev-parse --show-toplevel)/common/Scripts/local-unstable-MAINPAK-x86_64.profile /tmp/
+    cp ~/${MAINPAK}-rebuilds/common/Scripts/local-unstable-MAINPAK-x86_64.profile /tmp/
     sed -i "s/MAINPAK/${MAINPAK}/g" "/tmp/local-unstable-MAINPAK-x86_64.profile"
     sudo mv -v /tmp/local-unstable-MAINPAK-x86_64.profile /etc/solbuild/local-unstable-${MAINPAK}-x86_64.profile
     echo -e "${PROGRESS} > Done! ${NC}"
@@ -101,15 +113,21 @@ prechecks() {
 bump() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     echo -e "${INFO} > Bumping the release number...${NC}"
 
     for i in ${PACKAGES}; do
         pushd $(git rev-parse --show-toplevel)/packages/*/${i}
-        go-task bump
-        # backup when pyyaml doesn't play ball
-        # perl -i -pe 's/(release    : )(\d+)$/$1.($2+1)/e' package.yml
+
+        git diff package.yml | grep +release -q
+        if [ $? -eq 1 ]; then
+            go-task bump
+            # backup when pyyaml doesn't play ball
+            # perl -i -pe 's/(release    : )(\d+)$/$1.($2+1)/e' package.yml
+        else
+            echo -e "${INFO} Package: ${i} already bumped, skipping. ${NC}"
+        fi
         popd
     done
 
@@ -121,12 +139,9 @@ bump() {
 build() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    set -euo pipefail
 
-    gsi=$(which gnome-session-inhibit 2>/dev/null)
-    if [[ $XDG_CURRENT_DESKTOP = "GNOME" ]] && [[ ! -z ${gsi} ]]; then
-      GNOME=1
-    fi
+    pushd ~/${MAINPAK}-rebuilds
 
     # Get sudo
     sudo -p "Enter sudo password: " printf "" || exit 1
@@ -138,6 +153,11 @@ build() {
     if [[ ! $(find /var/lib/solbuild/local-${MAINPAK} -type f -iname "*${MAINPAK}*") ]]; then
         echo -e "${ERROR} > No package ${MAINPAK} was found in the repo. Remember to copy it to /var/lib/solbuild/local-${MAINPAK} before starting. ${NC}"
         exit 1
+    fi
+
+    gsi=$(which gnome-session-inhibit 2>/dev/null)
+    if [[ $XDG_CURRENT_DESKTOP = "GNOME" ]] && [[ ! -z ${gsi} ]]; then
+      GNOME=1
     fi
 
     var=0
@@ -180,7 +200,7 @@ build() {
 verify() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     if [[ -z "${FILE}" ]]; then
         echo "FILE not set. e.g. FILE=package.yml or FILE=abi_used_libs"
@@ -222,7 +242,9 @@ install() {
 commit() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    set -euo pipefail
+
+    pushd ~/${MAINPAK}-rebuilds
 
     # Getopts for this function
     commit_usage() { echo "commit -e <pkg 1> -e <pkg 2> to use a custom commit message for these packages" 1>&2; exit; }
@@ -260,8 +282,6 @@ commit() {
             git commit -F- <<EOF
 ${i}: Rebuild against ${MAINPAK}
 
-
-
 EOF
         fi
         popd
@@ -273,9 +293,9 @@ EOF
 # Publish package to the build server and wait for it to be indexed into the repo
 # before publishing the next package.
 publish() {
-    #$(prechecks)
+    set -euo pipefail
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     # Download initial index
     INDEX_XZ_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz"
@@ -319,13 +339,14 @@ publish() {
 NUKE() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    set -euo pipefail
+
+    pushd ~/${MAINPAK}-rebuilds
 
     read -p "This will nuke all of your work, if you are sure input 'NUKE my work' to continue. " prompt
     if [[ $prompt = "NUKE my work" ]]; then
         echo -e "${INFO} > Removing rebuilds repo for ${MAINPAK} ${NC}"
-        git switch main
-        git branch -D ${MAINPAK}-rebuilds
+        git worktree remove ~/${MAINPAK}-rebuilds
         echo -e "${INFO} > Removing custom local repo for ${MAINPAK} ${NC}"
         sudo rm -frv /var/lib/solbuild/local-${MAINPAK}
         echo -e "${INFO} > Remove custom local repo configuration file ${NC}"
@@ -352,7 +373,7 @@ checkDeleteCache() {
 kf_update() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     if [[ -z "${KF_VERSION}" ]]; then
         echo -e "${ERROR} Set KF_VERSION first e.g 1.108.0 ${NC}"
@@ -382,7 +403,7 @@ kf_update() {
 plasma_update() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     if [[ -z "${PLASMA_VERSION}" ]]; then
         echo -e "${ERROR} Set PLASMA_VERSION first e.g 5.25.4 ${NC}"
@@ -413,7 +434,7 @@ plasma_update() {
 kdegear_update() {
     $(prechecks)
 
-    pushd $(git rev-parse --show-toplevel)
+    pushd ~/${MAINPAK}-rebuilds
 
     if [[ -z "${KDEGEAR_VERSION}" ]]; then
         echo -e "${ERROR} Set KDEGEAR_VERSION first e.g 23.04.2 ${NC}"
