@@ -202,6 +202,14 @@ def repo_relative_paths(root: str, files: List[str]) -> List[str]:
     return [os.path.relpath(os.path.realpath(f), root) for f in files]
 
 
+def modified_files(root: str) -> List[str]:
+    return _git(root, ['ls-files', '--others',  '--exclude-standard', root]).split("\n")
+
+
+def untracked_files(root: str) -> List[str]:
+    return _git(root, ['diff', '--name-only', '--diff-filter=AM']).split("\n")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--base', type=str,
@@ -210,6 +218,10 @@ if __name__ == "__main__":
                         help='Optional reference to the current branch head')
     parser.add_argument('--root', type=str, default=_git_root('.'),
                         help='Repository root directory')
+    parser.add_argument('--modified', action='store_true',
+                        help='Include modified files')
+    parser.add_argument('--untracked', action='store_true',
+                        help='Include untracked files')
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
     args = parser.parse_args()
@@ -217,5 +229,11 @@ if __name__ == "__main__":
 
     if args.base:
         args.filename += files_from_ref(args.root, args.base, args.head)
+
+    if args.modified:
+        args.filename += modified_files(args.root)
+
+    if args.untracked:
+        args.filename += untracked_files(args.root)
 
     run_checks(args.root, args.filename)
