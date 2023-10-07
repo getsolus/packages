@@ -88,7 +88,7 @@ class PackageDirectory(PullRequestCheck):
 
         return path.split('/') == exp
 
-    def _dir(self, package: str):
+    def _dir(self, package: str) -> str:
         for two in self._two_letter_dirs:
             if package.startswith(two):
                 return two
@@ -144,16 +144,17 @@ class Pspec(PullRequestCheck):
         xml = ElementTree.parse(Pspec._xml_file(package_dir))
         xml_release = int(xml.findall('.//Update')[0].attrib['release'])
         xml_homepage: str = ''
+        xml_homepage_element = xml.find('.//Homepage')
 
-        if xml.find('.//Homepage') is not None:
-            xml_homepage = xml.find('.//Homepage').text
+        if xml_homepage_element is not None:
+            xml_homepage = xml_homepage_element.text or ''
 
         with open(Pspec._yml_file(package_dir), 'r') as f:
             yml = yaml.safe_load(f)
             yml_release = yml.get('release', '')
             yml_homepage = yml.get('homepage', '')
 
-        return yml_release == xml_release and yml_homepage == xml_homepage
+        return bool(yml_release == xml_release and yml_homepage == xml_homepage)
 
     @staticmethod
     def _yml_file(package_dir: str) -> str:
@@ -164,7 +165,7 @@ class Pspec(PullRequestCheck):
         return PullRequestCheck._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
-def run_checks(files: List[str]):
+def run_checks(files: List[str]) -> None:
     print(f'Checking files: {", ".join(files)}')
 
     checks = [Homepage(), PackageDirectory(), Patch(), UnwantedFiles(), Pspec()]
