@@ -17,7 +17,12 @@ if [[ ! -z "${DISABLE_BUILD_SUCCESS_NOTIFY}" ]]; then
     echo "Notification and sound ping for build success disabled due to DISABLE_BUILD_SUCCESS_NOTIFY being set."
 fi
 
-TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py package.yml)
+if [ -f "package.yml" ]; then
+    TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py package.yml)
+else
+    TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py pspec.xml)
+fi
+
 BUILDSERVER_URL="https://build.getsol.us"
 BUILDPAGE="/tmp/buildpage.html"
 
