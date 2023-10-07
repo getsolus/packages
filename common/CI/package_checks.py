@@ -36,6 +36,9 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
 
+    def __init__(self, root: str):
+        self._root = root
+
     def run(self, files: List[str]) -> List[Result]:
         raise NotImplementedError
 
@@ -43,17 +46,11 @@ class PullRequestCheck:
     def _filter_packages(files: List[str]) -> List[str]:
         return [f for f in files if os.path.basename(f) in PullRequestCheck._package_files]
 
-    @staticmethod
-    def _root() -> str:
-        return _git(['rev-parse', '--show-toplevel'])
+    def _path(self, path: str) -> str:
+        return os.path.join(self._root, path)
 
-    @staticmethod
-    def _path(path: str) -> str:
-        return os.path.join(PullRequestCheck._root(), path)
-
-    @staticmethod
-    def _open(path: str) -> TextIO:
-        return open(PullRequestCheck._path(path), 'r')
+    def _open(self, path: str) -> TextIO:
+        return open(self._path(path), 'r')
 
 
 class Homepage(PullRequestCheck):
@@ -65,9 +62,8 @@ class Homepage(PullRequestCheck):
                 for f in self._filter_packages(files)
                 if not self._includes_homepage(f)]
 
-    @staticmethod
-    def _includes_homepage(file: str) -> bool:
-        with PullRequestCheck._open(file) as f:
+    def _includes_homepage(self, file: str) -> bool:
+        with self._open(file) as f:
             return 'homepage' in yaml.safe_load(f)
 
 
@@ -139,9 +135,8 @@ class Pspec(PullRequestCheck):
                 for path in paths
                 if not self._check_consistent(path)]
 
-    @staticmethod
-    def _check_consistent(package_dir: str) -> bool:
-        xml = ElementTree.parse(Pspec._xml_file(package_dir))
+    def _check_consistent(self, package_dir: str) -> bool:
+        xml = ElementTree.parse(self._xml_file(package_dir))
         xml_release = int(xml.findall('.//Update')[0].attrib['release'])
         xml_homepage: str = ''
         xml_homepage_element = xml.find('.//Homepage')
@@ -149,26 +144,24 @@ class Pspec(PullRequestCheck):
         if xml_homepage_element is not None:
             xml_homepage = xml_homepage_element.text or ''
 
-        with open(Pspec._yml_file(package_dir), 'r') as f:
+        with open(self._yml_file(package_dir), 'r') as f:
             yml = yaml.safe_load(f)
             yml_release = yml.get('release', '')
             yml_homepage = yml.get('homepage', '')
 
         return bool(yml_release == xml_release and yml_homepage == xml_homepage)
 
-    @staticmethod
-    def _yml_file(package_dir: str) -> str:
-        return PullRequestCheck._path(os.path.join(package_dir, 'package.yml'))
+    def _yml_file(self, package_dir: str) -> str:
+        return self._path(os.path.join(package_dir, 'package.yml'))
 
-    @staticmethod
-    def _xml_file(package_dir: str) -> str:
-        return PullRequestCheck._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
+    def _xml_file(self, package_dir: str) -> str:
+        return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
-def run_checks(files: List[str]) -> None:
+def run_checks(root: str, files: List[str]) -> None:
     print(f'Checking files: {", ".join(files)}')
 
-    checks = [Homepage(), PackageDirectory(), Patch(), UnwantedFiles(), Pspec()]
+    checks = [Homepage(root), PackageDirectory(root), Patch(root), UnwantedFiles(root), Pspec(root)]
     results = [result for check in checks for result in check.run(files)]
     errors = [r for r in results if r.level == Level.ERROR]
 
@@ -181,29 +174,31 @@ def run_checks(files: List[str]) -> None:
         exit(1)
 
 
-def _git(args: List[str]) -> str:
-    res = subprocess.run(['git'] + args, capture_output=True, text=True)
+def _git(dir: str, args: List[str]) -> str:
+    res = subprocess.run(['git', '-C', dir] + args, capture_output=True, text=True)
     if res.returncode != 0:
         raise Exception("git error: " + res.stderr)
 
     return res.stdout.strip()
 
 
+def _git_root(dir: str) -> str:
+    return _git(dir, ['rev-parse', '--show-toplevel'])
+
+
 def _ref_to_fetch(ref: str) -> List[str]:
     return ref.split('..')[0].split('/')
 
 
-def files_from_ref(base: str, head: str) -> List[str]:
-    _git(['fetch'] + _ref_to_fetch(base))
+def files_from_ref(root: str, base: str, head: str) -> List[str]:
+    _git(root, ['fetch'] + _ref_to_fetch(base))
 
-    merge_base = _git(['merge-base', head, base])
+    merge_base = _git(root, ['merge-base', head, base])
 
-    return _git(['diff', '--name-only', '--diff-filter=AM', merge_base, head]).split("\n")
+    return _git(root, ['diff', '--name-only', '--diff-filter=AM', merge_base, head]).split("\n")
 
 
-def repo_relative_paths(files: List[str]) -> List[str]:
-    root = _git(['rev-parse', '--show-toplevel'])
-
+def repo_relative_paths(root: str, files: List[str]) -> List[str]:
     return [os.path.relpath(os.path.realpath(f), root) for f in files]
 
 
@@ -213,12 +208,14 @@ if __name__ == "__main__":
                         help='Optional reference to the base branch')
     parser.add_argument('--head', type=str, default='HEAD',
                         help='Optional reference to the current branch head')
+    parser.add_argument('--root', type=str, default=_git_root('.'),
+                        help='Repository root directory')
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
     args = parser.parse_args()
-    args.filename = repo_relative_paths(args.filename)
+    args.filename = repo_relative_paths(args.root, args.filename)
 
     if args.base:
-        args.filename += files_from_ref(args.base, args.head)
+        args.filename += files_from_ref(args.root, args.base, args.head)
 
-    run_checks(args.filename)
+    run_checks(args.root, args.filename)
