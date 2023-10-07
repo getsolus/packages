@@ -1,6 +1,6 @@
 name       : firefox
 version    : 118.0.1
-release    : 288
+release    : 289
 source     :
     - https://ftp.mozilla.org/pub/firefox/releases/118.0.1/source/firefox-118.0.1.source.tar.xz : a3f4da56d13605d615a740c739e3504261649d040bc473ae2ed609336d79fd95
     - https://sources.getsol.us/mozilla/firefox/firefox-118.0.1-langpacks.tar.zst : 7bb2e362e97118a3a777c14f3c1d601b34d339533f755de26895098b1e4e4a25
@@ -15,17 +15,26 @@ clang      : yes
 optimize   : icf-safe
 builddeps  :
     - pkgconfig(alsa)
+    - pkgconfig(aom)
     - pkgconfig(bzip2)
+    - pkgconfig(dav1d)
     - pkgconfig(dbus-glib-1)
     - pkgconfig(gbm)
     - pkgconfig(gconf-2.0)
     - pkgconfig(gtk+-2.0)
     - pkgconfig(gtk+-3.0)
     - pkgconfig(libevent)
+    - pkgconfig(libffi)
+    - pkgconfig(libpci)
     - pkgconfig(libpulse)
     - pkgconfig(libturbojpeg)
     - pkgconfig(libva)
-    - pkgconfig(libpci)
+    - pkgconfig(libwebp)
+    # TODO re-enable these when libnss is updated
+    # - pkgconfig(nspr)
+    # - pkgconfig(nss)
+    - pkgconfig(pixman-1)
+    - pkgconfig(vpx)
     - pkgconfig(xcomposite)
     - pkgconfig(xt)
     - autoconf213
@@ -45,6 +54,8 @@ environment: |
     export MOZBUILD_STATE_PATH=$PWD
 setup      : |
     %patch -p1 -i $pkgfiles/firefox-enable-vaapi.patch
+    %patch -p1 -i $pkgfiles/bmo-1559213-Support-system-av1.patch
+    %patch -p1 -i $pkgfiles/bmo-1559213-fix-system-av1-libs.patch
 
     cp $pkgfiles/{google-safebrowsing,mozilla}-api-key .
     cp $pkgfiles/config .mozconfig
@@ -53,28 +64,35 @@ setup      : |
     echo "ac_add_options --with-google-safebrowsing-api-keyfile=${workdir}/google-safebrowsing-api-key" >> .mozconfig
     ./mach configure
 build      : |
-    # Instrument build
-    echo "ac_add_options --enable-profile-generate=cross" >> .mozconfig
-    ./mach build
+    # Set this to 0 if you want to create a release build, 1 if you're just doing builds locally for testing purposes
+    # Note that you still need to do a full release build locally and test it before pushing it
+    FULL_BUILD=0
+    if [ $FULL_BUILD -ne 0 ]; then
+        ./mach build
+    else
+        # Instrument build
+        echo "ac_add_options --enable-profile-generate=cross" >> .mozconfig
+        ./mach build
 
-    # Package and run automated benchmarks for profiling
-    ./mach package
-    LLVM_PROFDATA=llvm-profdata JARLOG_FILE="$PWD/jarlog" xvfb-run -s "-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
-    ./mach python build/pgo/profileserver.py
+        # Package and run automated benchmarks for profiling
+        ./mach package
+        LLVM_PROFDATA=llvm-profdata JARLOG_FILE="$PWD/jarlog" xvfb-run -s "-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
+        ./mach python build/pgo/profileserver.py
 
-    # Clean for rebuild
-    ./mach clobber
+        # Clean for rebuild
+        ./mach clobber
 
-    # Profile use build and enable lto
-    sed -i '/--enable-profile-generate=cross/d' .mozconfig
-    echo "ac_add_options --enable-profile-use" >> .mozconfig
-    echo "ac_add_options --with-pgo-profile-path=${PWD@Q}/merged.profdata" >> .mozconfig
-    echo "ac_add_options --with-pgo-jarlog=${PWD@Q}/jarlog" >> .mozconfig
-    ./mach build
-    ./mach buildsymbols
+        # Profile use build and enable lto
+        sed -i '/--enable-profile-generate=cross/d' .mozconfig
+        echo "ac_add_options --enable-profile-use" >> .mozconfig
+        echo "ac_add_options --with-pgo-profile-path=${PWD@Q}/merged.profdata" >> .mozconfig
+        echo "ac_add_options --with-pgo-jarlog=${PWD@Q}/jarlog" >> .mozconfig
+        ./mach build
+        ./mach buildsymbols
+    fi
 install    : |
     # Install locales first
-    langpackdir="$installdir/%libdir%/firefox/browser/extensions"
+    langpackdir="$installdir/%libdir%/firefox/langpacks"
     install -D -d -m 00755 "${langpackdir}"
 
     tar xf "${sources}/firefox-${version}-langpacks.tar.zst"
@@ -91,8 +109,9 @@ install    : |
     install -Dm00644 $pkgfiles/firefox.appdata.xml.in $installdir/usr/share/metainfo/firefox.appdata.xml
 
     # Use a wrapper script to launch in Wayland (temporarily disabled since this breaks default browser detection)
-    # rm -v $installdir/usr/bin/firefox
-    # install -D -m 00755 $pkgfiles/firefox-wrapper.sh $installdir/usr/bin/firefox
+    install build/unix/run-mozilla.sh -t $installdir/%libdir%/firefox/
+    rm -v $installdir/usr/bin/firefox
+    install -D -m 00755 $pkgfiles/firefox-wrapper.sh $installdir/usr/bin/firefox
 
     # set up defaults
     mkdir -p $installdir/%libdir%/firefox/browser/defaults/preferences
