@@ -95,10 +95,11 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
 
-    def __init__(self, git: Git):
+    def __init__(self, git: Git, files: List[str]):
         self.git = git
+        self.files = files
 
-    def run(self, files: List[str]) -> List[Result]:
+    def run(self) -> List[Result]:
         raise NotImplementedError
 
     @staticmethod
@@ -116,9 +117,9 @@ class Homepage(PullRequestCheck):
     _error = '`homepage` is not set'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
+    def run(self) -> List[Result]:
         return [Result(message=self._error, file=f, level=self._level)
-                for f in self._filter_packages(files)
+                for f in self._filter_packages(self.files)
                 if not self._includes_homepage(f)]
 
     def _includes_homepage(self, file: str) -> bool:
@@ -131,8 +132,8 @@ class PackageDirectory(PullRequestCheck):
     _error = 'Package not in correct directory'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(files)]
+    def run(self) -> List[Result]:
+        paths = [os.path.dirname(f) for f in self._filter_packages(self.files)]
 
         return [Result(message=self._error, file=path, level=self._level) for path in paths
                 if not self._check_path(path)]
@@ -156,8 +157,8 @@ class Patch(PullRequestCheck):
     _error = 'Uses `patch <`, use `patch -i` instead'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        return [r for f in self._filter_packages(files)
+    def run(self) -> List[Result]:
+        return [r for f in self._filter_packages(self.files)
                 for r in self._wrong_patch(f)]
 
     def _wrong_patch(self, file: str) -> List[Result]:
@@ -176,9 +177,9 @@ class UnwantedFiles(PullRequestCheck):
     _error = 'This file should not be included'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
+    def run(self) -> List[Result]:
         return [Result(message=self._error, file=f, level=self._level)
-                for f in files
+                for f in self.files
                 for p in self._patterns
                 if not os.path.isdir(f) and re.match(p, f)]
 
@@ -187,8 +188,8 @@ class Pspec(PullRequestCheck):
     _error = '`package.yml` and `pspec_x86_64.xml` are not consistent, please rebuild.'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(files)]
+    def run(self) -> List[Result]:
+        paths = [os.path.dirname(f) for f in self._filter_packages(self.files)]
 
         return [Result(message=self._error, file=os.path.join(path, 'pspec_x86_64.xml'), level=self._level)
                 for path in paths
@@ -217,24 +218,47 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
-def run_checks(git: Git, files: List[str]) -> None:
-    print(f'Checking files: {", ".join(files)}')
+class Checker:
+    checks = [
+        Homepage,
+        PackageDirectory,
+        Patch,
+        UnwantedFiles,
+        Pspec,
+    ]
 
-    checks = [Homepage(git), PackageDirectory(git), Patch(git), UnwantedFiles(git), Pspec(git)]
-    results = [result for check in checks for result in check.run(files)]
-    errors = [r for r in results if r.level == Level.ERROR]
+    def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):
+        self.base = base
+        self.head = head
+        self.git = Git(path)
+        self.files = self.git.relpaths(files)
 
-    print(f"Found {len(results)} issue(s)")
+        if base is not None:
+            self.git.fetch(self._base_to_remote(base))
+            self.files += self.git.changed_files(base, head)
 
-    for result in results:
-        print(result)
+        if modified:
+            self.files += self.git.modified_files()
 
-    if len(errors) > 0:
-        exit(1)
+        if untracked:
+            self.files += self.git.untracked_files()
 
+    def run(self) -> bool:
+        print(f'Checking files: {", ".join(self.files)}')
 
-def _base_to_remote(base: str) -> List[str]:
-    return base.split('~')[0].split('/')
+        results = [result for check in self.checks for result in check(self.git, self.files).run()]
+        errors = [r for r in results if r.level == Level.ERROR]
+
+        print(f"Found {len(results)} result(s), {len(errors)} error(s)")
+
+        for result in results:
+            print(result)
+
+        return len(errors) > 0
+
+    @staticmethod
+    def _base_to_remote(base: str) -> List[str]:
+        return base.split('~')[0].split('/')
 
 
 if __name__ == "__main__":
@@ -251,19 +275,11 @@ if __name__ == "__main__":
                         help='Include untracked files')
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
-    args = parser.parse_args()
-
-    git = Git(args.root)
-    args.filename = git.relpaths(args.filename)
-
-    if args.base:
-        git.fetch(_base_to_remote(args.base))
-        args.filename += git.changed_files(args.base, args.head)
-
-    if args.modified:
-        args.filename += git.modified_files()
-
-    if args.untracked:
-        args.filename += git.untracked_files()
-
-    run_checks(git, args.filename)
+    cli_args = parser.parse_args()
+    checker = Checker(cli_args.base,
+                      cli_args.head,
+                      cli_args.root,
+                      cli_args.modified,
+                      cli_args.untracked,
+                      cli_args.filename)
+    exit(checker.run())
