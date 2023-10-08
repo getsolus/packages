@@ -102,9 +102,13 @@ class PullRequestCheck:
     def run(self) -> List[Result]:
         raise NotImplementedError
 
-    @staticmethod
-    def _filter_packages(files: List[str]) -> List[str]:
-        return [f for f in files if os.path.basename(f) in PullRequestCheck._package_files]
+    @property
+    def package_files(self) -> List[str]:
+        return self._filter_packages(self.files)
+
+    def _filter_packages(self, files: List[str]) -> List[str]:
+        return [f for f in files
+                if os.path.basename(f) in self._package_files]
 
     def _path(self, path: str) -> str:
         return os.path.join(self.git.root, path)
@@ -119,7 +123,7 @@ class Homepage(PullRequestCheck):
 
     def run(self) -> List[Result]:
         return [Result(message=self._error, file=f, level=self._level)
-                for f in self._filter_packages(self.files)
+                for f in self.package_files
                 if not self._includes_homepage(f)]
 
     def _includes_homepage(self, file: str) -> bool:
@@ -133,7 +137,7 @@ class PackageDirectory(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(self.files)]
+        paths = [os.path.dirname(f) for f in self.package_files]
 
         return [Result(message=self._error, file=path, level=self._level) for path in paths
                 if not self._check_path(path)]
@@ -158,7 +162,7 @@ class Patch(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self) -> List[Result]:
-        return [r for f in self._filter_packages(self.files)
+        return [r for f in self.package_files
                 for r in self._wrong_patch(f)]
 
     def _wrong_patch(self, file: str) -> List[Result]:
@@ -189,7 +193,7 @@ class Pspec(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(self.files)]
+        paths = [os.path.dirname(f) for f in self.package_files]
 
         return [Result(message=self._error, file=os.path.join(path, 'pspec_x86_64.xml'), level=self._level)
                 for path in paths
