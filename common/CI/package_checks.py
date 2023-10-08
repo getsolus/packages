@@ -34,6 +34,10 @@ class Git:
         return self.run_lines('diff', '--name-only', '--diff-filter=AM',
                               self.merge_base(base, head), head)
 
+    def commit_refs(self, base: str, head: str) -> List[str]:
+        return self.run_lines('log', '--pretty=%H',
+                              self.merge_base(base, head) + '..' + head)
+
     def fetch(self, remote: List[str]) -> None:
         self.run('fetch', *remote)
 
@@ -95,9 +99,10 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
 
-    def __init__(self, git: Git, files: List[str]):
+    def __init__(self, git: Git, files: List[str], commits: List[str]):
         self.git = git
         self.files = files
+        self.commits = commits
 
     def run(self) -> List[Result]:
         raise NotImplementedError
@@ -236,10 +241,12 @@ class Checker:
         self.head = head
         self.git = Git(path)
         self.files = self.git.relpaths(files)
+        self.commits = []
 
         if base is not None:
             self.git.fetch(self._base_to_remote(base))
             self.files += self.git.changed_files(base, head)
+            self.commits = self.git.commit_refs(base, head)
 
         if modified:
             self.files += self.git.modified_files()
@@ -249,8 +256,11 @@ class Checker:
 
     def run(self) -> bool:
         print(f'Checking files: {", ".join(self.files)}')
+        if self.commits:
+            print(f'Checking commits: {", ".join(self.commits)}')
 
-        results = [result for check in self.checks for result in check(self.git, self.files).run()]
+        results = [result for check in self.checks
+                   for result in check(self.git, self.files, self.commits).run()]
         errors = [r for r in results if r.level == Level.ERROR]
 
         print(f"Found {len(results)} result(s), {len(errors)} error(s)")
