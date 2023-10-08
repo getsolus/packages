@@ -11,6 +11,45 @@ from xml.etree import ElementTree
 import yaml
 
 
+class Git:
+    def __init__(self, path: str):
+        self.path = path
+        self.root = self._run(path, ['rev-parse', '--show-toplevel'])
+
+    @staticmethod
+    def _run(path: str, args: List[str]) -> str:
+        res = subprocess.run(['git', '-C', path] + args, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise Exception("git error: " + res.stderr)
+
+        return res.stdout.strip()
+
+    def run(self, *args: str) -> str:
+        return self._run(self.root, list(args))
+
+    def run_lines(self, *args: str) -> List[str]:
+        return self.run(*args).split("\n")
+
+    def changed_files(self, base: str, head: str) -> List[str]:
+        return self.run_lines('diff', '--name-only', '--diff-filter=AM',
+                              self.merge_base(base, head), head)
+
+    def fetch(self, remote: List[str]) -> None:
+        self.run('fetch', *remote)
+
+    def merge_base(self, head: str, base: str) -> str:
+        return self.run('merge-base', head, base)
+
+    def modified_files(self) -> List[str]:
+        return self.run_lines('ls-files', '--others', '--exclude-standard', self.root)
+
+    def relpaths(self, files: List[str]) -> List[str]:
+        return [os.path.relpath(os.path.realpath(f), self.root) for f in files]
+
+    def untracked_files(self) -> List[str]:
+        return self.run_lines('diff', '--name-only', '--diff-filter=AM')
+
+
 class Level(str, Enum):
     __str__ = Enum.__str__
     ERROR = 'error'
@@ -33,22 +72,22 @@ class Result:
 
     @property
     def _message(self) -> str:
-        return self.message.replace('\n', '%0A').replace('%',  '%25')
+        return self.message.replace('\n', '%0A').replace('%', '%25')
 
     @property
     def _meta(self) -> str:
         attrs = ['title', 'file', 'col', 'endColumn', 'line', 'endLine']
-        meta = [self._property(key) for key in attrs]
-        meta = [m for m in meta if m is not None]
+        meta = [self._property(key) for key in attrs
+                if self._property(key) != '']
         if len(meta) == 0:
             return ''
 
         return ' ' + ",".join(meta)
 
-    def _property(self, key: str) -> Optional[str]:
+    def _property(self, key: str) -> str:
         value = getattr(self, key)
         if value is None:
-            return None
+            return ''
 
         return f'{key}={value}'
 
@@ -56,8 +95,8 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
 
-    def __init__(self, root: str):
-        self._root = root
+    def __init__(self, git: Git):
+        self.git = git
 
     def run(self, files: List[str]) -> List[Result]:
         raise NotImplementedError
@@ -67,7 +106,7 @@ class PullRequestCheck:
         return [f for f in files if os.path.basename(f) in PullRequestCheck._package_files]
 
     def _path(self, path: str) -> str:
-        return os.path.join(self._root, path)
+        return os.path.join(self.git.root, path)
 
     def _open(self, path: str) -> TextIO:
         return open(self._path(path), 'r')
@@ -178,10 +217,10 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
-def run_checks(root: str, files: List[str]) -> None:
+def run_checks(git: Git, files: List[str]) -> None:
     print(f'Checking files: {", ".join(files)}')
 
-    checks = [Homepage(root), PackageDirectory(root), Patch(root), UnwantedFiles(root), Pspec(root)]
+    checks = [Homepage(git), PackageDirectory(git), Patch(git), UnwantedFiles(git), Pspec(git)]
     results = [result for check in checks for result in check.run(files)]
     errors = [r for r in results if r.level == Level.ERROR]
 
@@ -194,40 +233,8 @@ def run_checks(root: str, files: List[str]) -> None:
         exit(1)
 
 
-def _git(dir: str, args: List[str]) -> str:
-    res = subprocess.run(['git', '-C', dir] + args, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise Exception("git error: " + res.stderr)
-
-    return res.stdout.strip()
-
-
-def _git_root(dir: str) -> str:
-    return _git(dir, ['rev-parse', '--show-toplevel'])
-
-
-def _ref_to_fetch(ref: str) -> List[str]:
-    return ref.split('..')[0].split('/')
-
-
-def files_from_ref(root: str, base: str, head: str) -> List[str]:
-    _git(root, ['fetch'] + _ref_to_fetch(base))
-
-    merge_base = _git(root, ['merge-base', head, base])
-
-    return _git(root, ['diff', '--name-only', '--diff-filter=AM', merge_base, head]).split("\n")
-
-
-def repo_relative_paths(root: str, files: List[str]) -> List[str]:
-    return [os.path.relpath(os.path.realpath(f), root) for f in files]
-
-
-def modified_files(root: str) -> List[str]:
-    return _git(root, ['ls-files', '--others',  '--exclude-standard', root]).split("\n")
-
-
-def untracked_files(root: str) -> List[str]:
-    return _git(root, ['diff', '--name-only', '--diff-filter=AM']).split("\n")
+def _base_to_remote(base: str) -> List[str]:
+    return base.split('~')[0].split('/')
 
 
 if __name__ == "__main__":
@@ -236,7 +243,7 @@ if __name__ == "__main__":
                         help='Optional reference to the base branch')
     parser.add_argument('--head', type=str, default='HEAD',
                         help='Optional reference to the current branch head')
-    parser.add_argument('--root', type=str, default=_git_root('.'),
+    parser.add_argument('--root', type=str, default='.',
                         help='Repository root directory')
     parser.add_argument('--modified', action='store_true',
                         help='Include modified files')
@@ -245,15 +252,18 @@ if __name__ == "__main__":
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
     args = parser.parse_args()
-    args.filename = repo_relative_paths(args.root, args.filename)
+
+    git = Git(args.root)
+    args.filename = git.relpaths(args.filename)
 
     if args.base:
-        args.filename += files_from_ref(args.root, args.base, args.head)
+        git.fetch(_base_to_remote(args.base))
+        args.filename += git.changed_files(args.base, args.head)
 
     if args.modified:
-        args.filename += modified_files(args.root)
+        args.filename += git.modified_files()
 
     if args.untracked:
-        args.filename += untracked_files(args.root)
+        args.filename += git.untracked_files()
 
-    run_checks(args.root, args.filename)
+    run_checks(git, args.filename)
