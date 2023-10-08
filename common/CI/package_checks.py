@@ -19,18 +19,38 @@ class Level(str, Enum):
 
 @dataclass
 class Result:
-    message: str
-    file: str
-    line: Optional[int]
     level: Level
+    message: str
+    title: Optional[str] = None
+    file: Optional[str] = None
+    col: Optional[int] = None
+    endColumn: Optional[int] = None
+    line: Optional[int] = None
+    endLine: Optional[int] = None
 
     def __str__(self) -> str:
-        if self.file:
-            if self.line:
-                return f'::{self.level} file={self.file},line={self.line}::{self.message}'
-            return f'::{self.level} file={self.file}::{self.message}'
+        return f'::{self.level}{self._meta}::{self._message}'
 
-        return f'::{self.level}::{self.message}'
+    @property
+    def _message(self) -> str:
+        return self.message.replace('\n', '%0A').replace('%',  '%25')
+
+    @property
+    def _meta(self) -> str:
+        attrs = ['title', 'file', 'col', 'endColumn', 'line', 'endLine']
+        meta = [self._property(key) for key in attrs]
+        meta = [m for m in meta if m is not None]
+        if len(meta) == 0:
+            return ''
+
+        return ' ' + ",".join(meta)
+
+    def _property(self, key: str) -> Optional[str]:
+        value = getattr(self, key)
+        if value is None:
+            return None
+
+        return f'{key}={value}'
 
 
 class PullRequestCheck:
@@ -58,7 +78,7 @@ class Homepage(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self, files: List[str]) -> List[Result]:
-        return [Result(self._error, f, None, self._level)
+        return [Result(message=self._error, file=f, level=self._level)
                 for f in self._filter_packages(files)
                 if not self._includes_homepage(f)]
 
@@ -75,7 +95,7 @@ class PackageDirectory(PullRequestCheck):
     def run(self, files: List[str]) -> List[Result]:
         paths = [os.path.dirname(f) for f in self._filter_packages(files)]
 
-        return [Result(self._error, path, None, self._level) for path in paths
+        return [Result(message=self._error, file=path, level=self._level) for path in paths
                 if not self._check_path(path)]
 
     def _check_path(self, path: str) -> bool:
@@ -107,7 +127,7 @@ class Patch(PullRequestCheck):
         with self._open(file) as f:
             for i, line in enumerate(f.readlines()):
                 if re.search(self._regex, line):
-                    results.append(Result(self._error, file, i + 1, self._level))
+                    results.append(Result(message=self._error, file=file, line=i + 1, level=self._level))
 
         return results
 
@@ -118,7 +138,7 @@ class UnwantedFiles(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self, files: List[str]) -> List[Result]:
-        return [Result(self._error, f, None, self._level)
+        return [Result(message=self._error, file=f, level=self._level)
                 for f in files
                 for p in self._patterns
                 if not os.path.isdir(f) and re.match(p, f)]
@@ -131,7 +151,7 @@ class Pspec(PullRequestCheck):
     def run(self, files: List[str]) -> List[Result]:
         paths = [os.path.dirname(f) for f in self._filter_packages(files)]
 
-        return [Result(self._error, os.path.join(path, 'pspec_x86_64.xml'), None, self._level)
+        return [Result(message=self._error, file=os.path.join(path, 'pspec_x86_64.xml'), level=self._level)
                 for path in paths
                 if not self._check_consistent(path)]
 
