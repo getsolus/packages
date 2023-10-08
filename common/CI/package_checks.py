@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO
 from xml.etree import ElementTree
 
 import yaml
@@ -31,15 +31,19 @@ class Git:
         return self.run(*args).split("\n")
 
     def changed_files(self, base: str, head: str) -> List[str]:
-        return self.run_lines('diff', '--name-only', '--diff-filter=AM',
-                              self.merge_base(base, head), head)
+        return self.run_lines('diff', '--name-only', '--diff-filter=AM', base, head)
 
     def commit_refs(self, base: str, head: str) -> List[str]:
-        return self.run_lines('log', '--pretty=%H',
-                              self.merge_base(base, head) + '..' + head)
+        return self.run_lines('log', '--pretty=%H', base + '..' + head)
 
     def fetch(self, remote: List[str]) -> None:
         self.run('fetch', *remote)
+
+    def file_from_commit(self, ref: str, file: str) -> str:
+        return self.run('show', f'{ref}:{file}')
+
+    def files_in_commit(self, ref: str) -> List[str]:
+        return self.changed_files(ref + '~', ref)
 
     def merge_base(self, head: str, base: str) -> str:
         return self.run('merge-base', head, base)
@@ -99,10 +103,11 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
 
-    def __init__(self, git: Git, files: List[str], commits: List[str]):
+    def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
         self.git = git
         self.files = files
         self.commits = commits
+        self.base = base
 
     def run(self) -> List[Result]:
         raise NotImplementedError
@@ -121,6 +126,13 @@ class PullRequestCheck:
     def _open(self, path: str) -> TextIO:
         return open(self._path(path), 'r')
 
+    def load_package_yml(self, file: str) -> Dict[str, Any]:
+        with self._open(file) as f:
+            return dict(yaml.safe_load(f))
+
+    def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
+        return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
+
 
 class Homepage(PullRequestCheck):
     _error = '`homepage` is not set'
@@ -134,6 +146,32 @@ class Homepage(PullRequestCheck):
     def _includes_homepage(self, file: str) -> bool:
         with self._open(file) as f:
             return 'homepage' in yaml.safe_load(f)
+
+
+class PackageBumped(PullRequestCheck):
+    _msg = 'Package release is not incremented by 1'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        results = [self._check_commit(self.base or 'HEAD', file)
+                   for file in self.package_files]
+
+        return [result for result in results if result is not None]
+
+    def _check_commit(self, base: str, file: str) -> Optional[Result]:
+        try:
+            old = self.load_package_yml_from_commit(base, file)
+            new = self.load_package_yml(file)
+
+            if int(old['release']) + 1 != int(new['release']):
+                return Result(level=self._level, file=file, message=self._msg)
+
+            return None
+        except Exception as e:
+            if 'exists on disk, but not in' in str(e):
+                return None
+
+            raise e
 
 
 class PackageDirectory(PullRequestCheck):
@@ -230,6 +268,7 @@ class Pspec(PullRequestCheck):
 class Checker:
     checks = [
         Homepage,
+        PackageBumped,
         PackageDirectory,
         Patch,
         UnwantedFiles,
@@ -245,8 +284,8 @@ class Checker:
 
         if base is not None:
             self.git.fetch(self._base_to_remote(base))
-            self.files += self.git.changed_files(base, head)
-            self.commits = self.git.commit_refs(base, head)
+            self.files += self.git.changed_files(self.git.merge_base(base, head), head)
+            self.commits = self.git.commit_refs(self.git.merge_base(base, head), head)
 
         if modified:
             self.files += self.git.modified_files()
@@ -260,7 +299,7 @@ class Checker:
             print(f'Checking commits: {", ".join(self.commits)}')
 
         results = [result for check in self.checks
-                   for result in check(self.git, self.files, self.commits).run()]
+                   for result in check(self.git, self.files, self.commits, self.base).run()]
         errors = [r for r in results if r.level == Level.ERROR]
 
         print(f"Found {len(results)} result(s), {len(errors)} error(s)")
