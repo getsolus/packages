@@ -150,6 +150,7 @@ class Homepage(PullRequestCheck):
 
 class PackageBumped(PullRequestCheck):
     _msg = 'Package release is not incremented by 1'
+    _msg_new = 'Package release is not 1'
     _level = Level.WARNING
 
     def run(self) -> List[Result]:
@@ -159,16 +160,19 @@ class PackageBumped(PullRequestCheck):
         return [result for result in results if result is not None]
 
     def _check_commit(self, base: str, file: str) -> Optional[Result]:
+        new = self.load_package_yml(file)
+
         try:
             old = self.load_package_yml_from_commit(base, file)
-            new = self.load_package_yml(file)
-
             if int(old['release']) + 1 != int(new['release']):
                 return Result(level=self._level, file=file, message=self._msg)
 
             return None
         except Exception as e:
             if 'exists on disk, but not in' in str(e):
+                if int(new['release']) != 1:
+                    return Result(level=self._level, file=file, message=self._msg_new)
+
                 return None
 
             raise e
