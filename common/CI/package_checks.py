@@ -5,10 +5,57 @@ import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO
 from xml.etree import ElementTree
 
 import yaml
+
+
+class Git:
+    def __init__(self, path: str):
+        self.path = path
+        self.root = self._run(path, ['rev-parse', '--show-toplevel'])
+
+    @staticmethod
+    def _run(path: str, args: List[str]) -> str:
+        res = subprocess.run(['git', '-C', path] + args, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise Exception("git error: " + res.stderr)
+
+        return res.stdout.strip()
+
+    def run(self, *args: str) -> str:
+        return self._run(self.root, list(args))
+
+    def run_lines(self, *args: str) -> List[str]:
+        return self.run(*args).split("\n")
+
+    def changed_files(self, base: str, head: str) -> List[str]:
+        return self.run_lines('diff', '--name-only', '--diff-filter=AM', base, head)
+
+    def commit_refs(self, base: str, head: str) -> List[str]:
+        return self.run_lines('log', '--pretty=%H', base + '..' + head)
+
+    def fetch(self, remote: List[str]) -> None:
+        self.run('fetch', *remote)
+
+    def file_from_commit(self, ref: str, file: str) -> str:
+        return self.run('show', f'{ref}:{file}')
+
+    def files_in_commit(self, ref: str) -> List[str]:
+        return self.changed_files(ref + '~', ref)
+
+    def merge_base(self, head: str, base: str) -> str:
+        return self.run('merge-base', head, base)
+
+    def modified_files(self) -> List[str]:
+        return self.run_lines('ls-files', '--others', '--exclude-standard', self.root)
+
+    def relpaths(self, files: List[str]) -> List[str]:
+        return [os.path.relpath(os.path.realpath(f), self.root) for f in files]
+
+    def untracked_files(self) -> List[str]:
+        return self.run_lines('diff', '--name-only', '--diff-filter=AM')
 
 
 class Level(str, Enum):
@@ -19,47 +66,81 @@ class Level(str, Enum):
 
 @dataclass
 class Result:
-    message: str
-    file: str
-    line: Optional[int]
     level: Level
+    message: str
+    title: Optional[str] = None
+    file: Optional[str] = None
+    col: Optional[int] = None
+    endColumn: Optional[int] = None
+    line: Optional[int] = None
+    endLine: Optional[int] = None
 
     def __str__(self) -> str:
-        if self.file:
-            if self.line:
-                return f'::{self.level} file={self.file},line={self.line}::{self.message}'
-            return f'::{self.level} file={self.file}::{self.message}'
+        return f'::{self.level}{self._meta}::{self._message}'
 
-        return f'::{self.level}::{self.message}'
+    @property
+    def _message(self) -> str:
+        return self.message.replace('\n', '%0A').replace('%', '%25')
+
+    @property
+    def _meta(self) -> str:
+        attrs = ['title', 'file', 'col', 'endColumn', 'line', 'endLine']
+        meta = [self._property(key) for key in attrs
+                if self._property(key) != '']
+        if len(meta) == 0:
+            return ''
+
+        return ' ' + ",".join(meta)
+
+    def _property(self, key: str) -> str:
+        value = getattr(self, key)
+        if value is None:
+            return ''
+
+        return f'{key}={value}'
 
 
 class PullRequestCheck:
     _package_files = ['package.yml']
 
-    def __init__(self, root: str):
-        self._root = root
+    def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
+        self.git = git
+        self.files = files
+        self.commits = commits
+        self.base = base
 
-    def run(self, files: List[str]) -> List[Result]:
+    def run(self) -> List[Result]:
         raise NotImplementedError
 
-    @staticmethod
-    def _filter_packages(files: List[str]) -> List[str]:
-        return [f for f in files if os.path.basename(f) in PullRequestCheck._package_files]
+    @property
+    def package_files(self) -> List[str]:
+        return self._filter_packages(self.files)
+
+    def _filter_packages(self, files: List[str]) -> List[str]:
+        return [f for f in files
+                if os.path.basename(f) in self._package_files]
 
     def _path(self, path: str) -> str:
-        return os.path.join(self._root, path)
+        return os.path.join(self.git.root, path)
 
     def _open(self, path: str) -> TextIO:
         return open(self._path(path), 'r')
+
+    def load_package_yml(self, file: str) -> Dict[str, Any]:
+        with self._open(file) as f:
+            return dict(yaml.safe_load(f))
+
+    def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
+        return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
 
 
 class Homepage(PullRequestCheck):
     _error = '`homepage` is not set'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        return [Result(self._error, f, None, self._level)
-                for f in self._filter_packages(files)
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, file=f, level=self._level)
+                for f in self.package_files
                 if not self._includes_homepage(f)]
 
     def _includes_homepage(self, file: str) -> bool:
@@ -67,15 +148,45 @@ class Homepage(PullRequestCheck):
             return 'homepage' in yaml.safe_load(f)
 
 
+class PackageBumped(PullRequestCheck):
+    _msg = 'Package release is not incremented by 1'
+    _msg_new = 'Package release is not 1'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        results = [self._check_commit(self.base or 'HEAD', file)
+                   for file in self.package_files]
+
+        return [result for result in results if result is not None]
+
+    def _check_commit(self, base: str, file: str) -> Optional[Result]:
+        new = self.load_package_yml(file)
+
+        try:
+            old = self.load_package_yml_from_commit(base, file)
+            if int(old['release']) + 1 != int(new['release']):
+                return Result(level=self._level, file=file, message=self._msg)
+
+            return None
+        except Exception as e:
+            if 'exists on disk, but not in' in str(e):
+                if int(new['release']) != 1:
+                    return Result(level=self._level, file=file, message=self._msg_new)
+
+                return None
+
+            raise e
+
+
 class PackageDirectory(PullRequestCheck):
     _two_letter_dirs = ['py']
     _error = 'Package not in correct directory'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(files)]
+    def run(self) -> List[Result]:
+        paths = [os.path.dirname(f) for f in self.package_files]
 
-        return [Result(self._error, path, None, self._level) for path in paths
+        return [Result(message=self._error, file=path, level=self._level) for path in paths
                 if not self._check_path(path)]
 
     def _check_path(self, path: str) -> bool:
@@ -97,8 +208,8 @@ class Patch(PullRequestCheck):
     _error = 'Uses `patch <`, use `patch -i` instead'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        return [r for f in self._filter_packages(files)
+    def run(self) -> List[Result]:
+        return [r for f in self.package_files
                 for r in self._wrong_patch(f)]
 
     def _wrong_patch(self, file: str) -> List[Result]:
@@ -107,7 +218,7 @@ class Patch(PullRequestCheck):
         with self._open(file) as f:
             for i, line in enumerate(f.readlines()):
                 if re.search(self._regex, line):
-                    results.append(Result(self._error, file, i + 1, self._level))
+                    results.append(Result(message=self._error, file=file, line=i + 1, level=self._level))
 
         return results
 
@@ -117,9 +228,9 @@ class UnwantedFiles(PullRequestCheck):
     _error = 'This file should not be included'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        return [Result(self._error, f, None, self._level)
-                for f in files
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, file=f, level=self._level)
+                for f in self.files
                 for p in self._patterns
                 if not os.path.isdir(f) and re.match(p, f)]
 
@@ -128,10 +239,10 @@ class Pspec(PullRequestCheck):
     _error = '`package.yml` and `pspec_x86_64.xml` are not consistent, please rebuild.'
     _level = Level.ERROR
 
-    def run(self, files: List[str]) -> List[Result]:
-        paths = [os.path.dirname(f) for f in self._filter_packages(files)]
+    def run(self) -> List[Result]:
+        paths = [os.path.dirname(f) for f in self.package_files]
 
-        return [Result(self._error, os.path.join(path, 'pspec_x86_64.xml'), None, self._level)
+        return [Result(message=self._error, file=os.path.join(path, 'pspec_x86_64.xml'), level=self._level)
                 for path in paths
                 if not self._check_consistent(path)]
 
@@ -158,56 +269,53 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
-def run_checks(root: str, files: List[str]) -> None:
-    print(f'Checking files: {", ".join(files)}')
+class Checker:
+    checks = [
+        Homepage,
+        PackageBumped,
+        PackageDirectory,
+        Patch,
+        UnwantedFiles,
+        Pspec,
+    ]
 
-    checks = [Homepage(root), PackageDirectory(root), Patch(root), UnwantedFiles(root), Pspec(root)]
-    results = [result for check in checks for result in check.run(files)]
-    errors = [r for r in results if r.level == Level.ERROR]
+    def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):
+        self.base = base
+        self.head = head
+        self.git = Git(path)
+        self.files = self.git.relpaths(files)
+        self.commits = []
 
-    print(f"Found {len(results)} issue(s)")
+        if base is not None:
+            self.git.fetch(self._base_to_remote(base))
+            self.files += self.git.changed_files(self.git.merge_base(base, head), head)
+            self.commits = self.git.commit_refs(self.git.merge_base(base, head), head)
 
-    for result in results:
-        print(result)
+        if modified:
+            self.files += self.git.modified_files()
 
-    if len(errors) > 0:
-        exit(1)
+        if untracked:
+            self.files += self.git.untracked_files()
 
+    def run(self) -> bool:
+        print(f'Checking files: {", ".join(self.files)}')
+        if self.commits:
+            print(f'Checking commits: {", ".join(self.commits)}')
 
-def _git(dir: str, args: List[str]) -> str:
-    res = subprocess.run(['git', '-C', dir] + args, capture_output=True, text=True)
-    if res.returncode != 0:
-        raise Exception("git error: " + res.stderr)
+        results = [result for check in self.checks
+                   for result in check(self.git, self.files, self.commits, self.base).run()]
+        errors = [r for r in results if r.level == Level.ERROR]
 
-    return res.stdout.strip()
+        print(f"Found {len(results)} result(s), {len(errors)} error(s)")
 
+        for result in results:
+            print(result)
 
-def _git_root(dir: str) -> str:
-    return _git(dir, ['rev-parse', '--show-toplevel'])
+        return len(errors) > 0
 
-
-def _ref_to_fetch(ref: str) -> List[str]:
-    return ref.split('..')[0].split('/')
-
-
-def files_from_ref(root: str, base: str, head: str) -> List[str]:
-    _git(root, ['fetch'] + _ref_to_fetch(base))
-
-    merge_base = _git(root, ['merge-base', head, base])
-
-    return _git(root, ['diff', '--name-only', '--diff-filter=AM', merge_base, head]).split("\n")
-
-
-def repo_relative_paths(root: str, files: List[str]) -> List[str]:
-    return [os.path.relpath(os.path.realpath(f), root) for f in files]
-
-
-def modified_files(root: str) -> List[str]:
-    return _git(root, ['ls-files', '--others',  '--exclude-standard', root]).split("\n")
-
-
-def untracked_files(root: str) -> List[str]:
-    return _git(root, ['diff', '--name-only', '--diff-filter=AM']).split("\n")
+    @staticmethod
+    def _base_to_remote(base: str) -> List[str]:
+        return base.split('~')[0].split('/')
 
 
 if __name__ == "__main__":
@@ -216,7 +324,7 @@ if __name__ == "__main__":
                         help='Optional reference to the base branch')
     parser.add_argument('--head', type=str, default='HEAD',
                         help='Optional reference to the current branch head')
-    parser.add_argument('--root', type=str, default=_git_root('.'),
+    parser.add_argument('--root', type=str, default='.',
                         help='Repository root directory')
     parser.add_argument('--modified', action='store_true',
                         help='Include modified files')
@@ -224,16 +332,11 @@ if __name__ == "__main__":
                         help='Include untracked files')
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
-    args = parser.parse_args()
-    args.filename = repo_relative_paths(args.root, args.filename)
-
-    if args.base:
-        args.filename += files_from_ref(args.root, args.base, args.head)
-
-    if args.modified:
-        args.filename += modified_files(args.root)
-
-    if args.untracked:
-        args.filename += untracked_files(args.root)
-
-    run_checks(args.root, args.filename)
+    cli_args = parser.parse_args()
+    checker = Checker(cli_args.base,
+                      cli_args.head,
+                      cli_args.root,
+                      cli_args.modified,
+                      cli_args.untracked,
+                      cli_args.filename)
+    exit(checker.run())
