@@ -2,3 +2,4 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Evan Maddock
   - Email: maddock.evan@vivaldi.net
+  - Matrix: @ebonjaeger:matrix.org
