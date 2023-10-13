@@ -1,1 +1,220 @@
-common/Taskfile.yml
+version : '3'
+
+set: [pipefail]
+
+vars:
+  SPECFILE:
+    sh: if [ -f "{{ .USER_WORKING_DIR }}/package.yml" ]; then echo "package.yml"; else echo "pspec.xml"; fi;
+  PSPECFILE:
+    sh: if [ -f "{{ .USER_WORKING_DIR }}/package.yml" ]; then echo "pspec_x86_64.xml"; else echo "pspec.xml"; fi;
+
+includes:
+  qt5:
+    taskfile: ./common/Tasks/Taskfile.qt5.yml
+  infra:
+    dir: ../infrastructure-tooling
+    taskfile: ../infrastructure-tooling/Infra.yml
+    optional: true
+
+tasks:
+  # Ensure people new to go-task and used to 'make help' have an easier time
+  help:
+    desc: Show how to list available tasks
+    cmds:
+      - |
+        echo "Use 'go-task -l/--list' to list available tasks."
+
+  # Utility tasks, mainly for precondition checks
+  package-file:
+    internal: true
+    desc: |
+      Check that either `package.yml` or `pspec.xml` exists in the current directory
+    dir: '{{ .USER_WORKING_DIR }}'
+    requires:
+      vars: [SPECFILE]
+    preconditions:
+      - sh: test -f package.yml || test -f pspec.xml
+        msg: Either `package.yml` or `pspec.xml` must exists in the current directory
+
+  # Build packages
+  build:
+    desc: Build the current package against the unstable repo
+    aliases: [default]
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      PROFILE: '{{ default "unstable-x86_64" .PROFILE }}'
+    deps:
+      - package-file
+    cmds:
+      - |
+        sudo solbuild build {{ .SPECFILE }} -p {{ .PROFILE }} {{ .CLI_ARGS }}
+
+  build-stable:
+    desc: Build the current package against the stable repo (do NOT use for official submissions!)
+    aliases: [stable]
+    cmds:
+      - task: build
+        vars:
+          PROFILE: 'main-x86_64'
+      - |
+        echo "=========================================================================="
+        echo "WARNING: This package was built against -stable and is for local use only."
+        echo "                                                                          "
+        echo "         Do NOT publish packages or Pull Requests built against -stable!!!"
+        echo "=========================================================================="
+
+  build-local:
+    desc: "Build the current package against the unstable and the default local repo"
+    aliases: [local]
+    cmds:
+      - task: build
+        vars:
+          PROFILE: 'local-unstable-x86_64'
+
+  build-localcp:
+    desc: "Build the current package against the unstable and the default local repo and forcibly copy .eopkgs to the default local repo."
+    aliases: [localcp]
+    cmds:
+      - task: build
+        vars:
+          PROFILE: 'local-unstable-x86_64'
+      - |
+        sudo cp -fv {{ .USER_WORKING_DIR }}/*.eopkg /var/lib/solbuild/local/
+
+  # Modify package recipes
+  bump:
+    desc: Bump current release
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      YBUMP: "/usr/share/ypkg/ybump.py"
+      PBUMP: "{{ .TASKFILE_DIR }}/common/Scripts/pbump.py"
+      BUMP_SCRIPT: '{{ eq .SPECFILE "package.yml" | ternary .YBUMP .PBUMP }}'
+    deps:
+      - package-file
+    cmds:
+      - |
+        {{ .BUMP_SCRIPT }} {{ .SPECFILE }}
+
+  convert:
+    desc: Convert pspec to package.yml
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test -f pspec.xml
+        msg: "`pspec.xml` must exist in the current directory to perform conversion"
+    cmds:
+      - |
+        {{ .TASKFILE_DIR }}/common/Scripts/yconvert.py pspec.xml
+
+  pkgconfig:
+    desc: |
+      Find which package provides a given pkgconfig target.
+
+      Example usage: `go-task pkgconfig -- Qt5Core Qt6Core`
+    cmds:
+      - |
+        {{ .TASKFILE_DIR }}/common/Scripts/epcsearch.py {{ .CLI_ARGS }}
+
+  update:
+    desc: |
+      Update an existing package.yml recipe to a new version given a version and a download URI.
+
+      Example usage: `go-task update -- 7.2 https://www.nano-editor.org/dist/v7/nano-7.2.tar.xz`
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test -f package.yml
+        msg: "`package.yml` ust exist in the current directory"
+    cmds:
+      - |
+        /usr/share/ypkg/yupdate.py {{ .CLI_ARGS }}
+
+  cvecheck:
+    desc: Check package for CVEs
+    dir: '{{ .USER_WORKING_DIR }}'
+    cmds:
+      - cve-check-tool {{ .PSPECFILE }} -M {{ .TASKFILE_DIR }}/common/mapping -o report.html
+
+  notify-complete:
+    desc: Get a notification when the build has finished on the buildserver
+    dir: '{{ .USER_WORKING_DIR }}'
+    deps:
+      - package-file
+    cmds:
+      - "{{ .TASKFILE_DIR }}/common/Scripts/buildserver-notification.sh"
+
+  # For staff and packagers with push access
+  publish:
+    desc: Tag and publish a release
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/main"
+        msg: Not on main branch
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    deps:
+      - package-file
+    cmds:
+      - git push
+      - task: push
+
+  republish:
+    desc: Rebuild existing tag
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - sh: test $(git symbolic-ref HEAD 2>/dev/null) = "refs/heads/main"
+        msg: Not on main branch
+      - sh: "{{ .TASKFILE_DIR }}/common/Scripts/package-publish-safety-catches.sh"
+        msg: Failed to pass safety catches
+    cmds:
+      - task: push
+
+  push:
+    desc: Push package to the build server
+    internal: true
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      SOURCE:
+        sh: basename '{{ .USER_WORKING_DIR }}'
+      TAG:
+        sh: if [ -f {{ .SPECFILE }} ]; then {{ .TASKFILE_DIR }}/common/Scripts/gettag.py {{ .USER_WORKING_DIR }}/{{ .SPECFILE }}; fi
+      PATH:
+        sh: git rev-parse --show-prefix
+      REF:
+        sh: git rev-list -1 HEAD "{{ .USER_WORKING_DIR }}"
+    cmds:
+      - ssh build-controller@build.getsol.us build "{{ .SOURCE }}" "{{ .TAG }}" "{{ .PATH }}" "{{ .REF }}"
+
+  # Other utilities
+  check:
+    desc: Run package sanity checks
+    dir: '{{ .USER_WORKING_DIR }}'
+    cmds:
+      - "{{ .TASKFILE_DIR }}/common/CI/package_checks.py --modified --untracked --base origin/main {{.CLI_ARGS}}"
+
+  clean:
+    desc: Clean current tree
+    dir: '{{ .USER_WORKING_DIR }}'
+    cmds:
+      - rm *.eopkg -fv
+
+  clean-all:
+    desc: WARNING - Clean ALL eopkgs found in the monorepo
+    dir: '{{ .TASKFILE_DIR }}'
+    cmds:
+      - find $(git rev-parse --show-toplevel) -type f -name '*.eopkg' -delete
+
+  pull:
+    desc: Pull/rebase latest changes
+    dir: '{{ .USER_WORKING_DIR }}'
+    preconditions:
+      - test -d .git
+    cmds:
+      - git pull --rebase
+
+  new:
+    desc: Create a new package
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      NEWPKG: "{{ .TASKFILE_DIR }}/common/Scripts/new-package.sh"
+    cmds:
+      - |
+        {{ .NEWPKG }} {{.CLI_ARGS}}
