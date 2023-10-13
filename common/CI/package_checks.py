@@ -33,6 +33,9 @@ class Git:
     def changed_files(self, base: str, head: str) -> List[str]:
         return self.run_lines('diff', '--name-only', '--diff-filter=AM', base, head)
 
+    def commit_message(self, ref: str) -> str:
+        return self.run('log', '-1', '--format=%B', ref)
+
     def commit_refs(self, base: str, head: str) -> List[str]:
         return self.run_lines('log', '--pretty=%H', base + '..' + head)
 
@@ -269,6 +272,35 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
+class SummaryGenerator(PullRequestCheck):
+    def generate(self) -> str:
+        s = "# Changelog entries\n\n"
+
+        for commit in self.commits:
+            package_tag = self._commit_package_tag(commit)
+            if package_tag is None:
+                continue
+
+            s += f"## {package_tag}\n\n"
+            s += self.git.commit_message(commit) + "\n\n"
+
+        return s
+
+    def _commit_package_tag(self, ref: str) -> Optional[str]:
+        package = self._commit_package_yaml(ref)
+        if package is None:
+            return None
+
+        return f"{package['name']}-{package['version']}-{package['release']}"
+
+    def _commit_package_yaml(self, ref: str) -> Optional[Dict[str, Any]]:
+        files = [f for f in self.git.files_in_commit(ref) if os.path.basename(f) == 'package.yml']
+        if len(files) == 0:
+            return None
+
+        return self.load_package_yml_from_commit(ref, files[0])
+
+
 class Checker:
     checks = [
         Homepage,
@@ -285,6 +317,7 @@ class Checker:
         self.git = Git(path)
         self.files = self.git.relpaths(files)
         self.commits = []
+        self.summary_file = os.environ.get('GITHUB_STEP_SUMMARY', None)
 
         if base is not None:
             self.git.fetch(self._base_to_remote(base))
@@ -311,7 +344,16 @@ class Checker:
         for result in results:
             print(result)
 
+        self.write_summary()
+
         return len(errors) > 0
+
+    def write_summary(self) -> None:
+        if self.summary_file is None:
+            return
+
+        with open(self.summary_file, 'w') as f:
+            f.write(SummaryGenerator(self.git, self.files, self.commits, self.base).generate())
 
     @staticmethod
     def _base_to_remote(base: str) -> List[str]:
