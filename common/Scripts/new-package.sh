@@ -20,8 +20,8 @@ fi
 YAUTO=$(git rev-parse --show-toplevel)/common/Scripts/yauto.py
 
 # Basic repo name linting check
-if [[ ! "${PACKAGE}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-    echo "Package names are restricted to US ASCII lowercase letters, numbers and dashes."
+if [[ ! "${PACKAGE}" =~ ^[a-z0-9.]+(-[a-z0-9.]+)*$ ]]; then
+    echo "Package names are restricted to US ASCII lowercase letters, numbers, dashes, and, dots."
     exit 1
 fi
 
