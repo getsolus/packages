@@ -1,0 +1,136 @@
+From 7c87800f1d7e85589678f01281b45451085c7482 Mon Sep 17 00:00:00 2001
+From: Volker Schroer <3470424+dl1ksv@users.noreply.github.com>
+Date: Thu, 9 Mar 2023 12:37:46 +0100
+Subject: [PATCH] The uninstall script did not remove the previously installed
+ freedesktop icons and desktop files. Now grc_setup_freedesktop uninstall is
+ called in cmake_uninstall.cmake
+
+As far as I can see the icon and menu files are only needed in the freedesktop environment.
+It's not necessary to put them into gnuradio install path.
+
+So I removed these copies and installed these files directly from the source directory
+using xdg-icon-resource and other xdg-utils.
+
+Giving grc_setup_freedesktop execute permissions in the build directory avoids copying it
+to the libexec directory. So even if ENABLE_POSTINSTALL=ON no libexec directory will be created.
+
+Signed-off-by: Volker Schroer <3470424+dl1ksv@users.noreply.github.com>
+---
+ cmake/cmake_uninstall.cmake.in                |  8 ++++
+ grc/scripts/freedesktop/CMakeLists.txt        | 41 +------------------
+ .../freedesktop/grc_setup_freedesktop.in      |  8 ++--
+ 3 files changed, 15 insertions(+), 42 deletions(-)
+
+diff --git a/cmake/cmake_uninstall.cmake.in b/cmake/cmake_uninstall.cmake.in
+index 410b4a8b9d0..186c5c18448 100644
+--- a/cmake/cmake_uninstall.cmake.in
++++ b/cmake/cmake_uninstall.cmake.in
+@@ -7,6 +7,14 @@ if(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+     )
+ endif(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt")
+ 
++if(NOT EXISTS "@CMAKE_CURRENT_BINARY_DIR@/grc/scripts/freedesktop/grc_setup_freedesktop")
++    message(STATUS "Cannot find freedesktop install script")
++else("@CMAKE_CURRENT_BINARY_DIR@/grc/scripts/freedesktop/grc_setup_freedesktop")
++    exec_program(
++        "@CMAKE_CURRENT_BINARY_DIR@/grc/scripts/freedesktop/grc_setup_freedesktop"
++        ARGS "uninstall"
++    )
++endif("@CMAKE_CURRENT_BINARY_DIR@/grc/scripts/freedesktop/grc_setup_freedesktop")
+ file(READ "@CMAKE_CURRENT_BINARY_DIR@/install_manifest.txt" files)
+ string(REGEX REPLACE "\n" ";" files "${files}")
+ foreach(file ${files})
+diff --git a/grc/scripts/freedesktop/CMakeLists.txt b/grc/scripts/freedesktop/CMakeLists.txt
+index ef42c3e410b..356f07a182f 100644
+--- a/grc/scripts/freedesktop/CMakeLists.txt
++++ b/grc/scripts/freedesktop/CMakeLists.txt
+@@ -6,54 +6,17 @@
+ #
+ 
+ ########################################################################
+-set(grc_freedesktop_path ${GR_PKG_DATA_DIR}/grc/freedesktop)
+-
+-install(FILES
+-    grc-icon-256.png
+-    grc-icon-128.png
+-    grc-icon-64.png
+-    grc-icon-48.png
+-    grc-icon-32.png
+-    grc-icon-24.png
+-    grc-icon-16.png
+-    gnuradio-grc.xml
+-    gnuradio-grc.desktop
+-    DESTINATION ${grc_freedesktop_path}
+-)
+-
+-# Install desktop
+-install(FILES gnuradio-grc.desktop DESTINATION share/applications)
+-
+-# Install mime
+-install(FILES gnuradio-grc.xml DESTINATION share/mime/packages)
+-
+-# Install appstream / metainfo file
+-install(FILES org.gnuradio.grc.metainfo.xml DESTINATION share/metainfo)
+-
+-# Install icons
+-install(FILES grc-icon-256.png DESTINATION share/icons/hicolor/256x256/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-128.png DESTINATION share/icons/hicolor/128x128/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-64.png DESTINATION share/icons/hicolor/64x64/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-48.png DESTINATION share/icons/hicolor/48x48/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-32.png DESTINATION share/icons/hicolor/32x32/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-24.png DESTINATION share/icons/hicolor/24x24/apps RENAME gnuradio-grc.png)
+-install(FILES grc-icon-16.png DESTINATION share/icons/hicolor/16x16/apps RENAME gnuradio-grc.png)
+ 
+ find_program(HAVE_XDG_UTILS xdg-desktop-menu)
+ 
+ if(UNIX AND HAVE_XDG_UTILS AND ENABLE_POSTINSTALL)
+-    set(SRCDIR ${CMAKE_INSTALL_PREFIX}/${grc_freedesktop_path})
+     configure_file(
+         ${CMAKE_CURRENT_SOURCE_DIR}/grc_setup_freedesktop.in
+         ${CMAKE_CURRENT_BINARY_DIR}/grc_setup_freedesktop
++        FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+     @ONLY)
+-    install(
+-        PROGRAMS ${CMAKE_CURRENT_BINARY_DIR}/grc_setup_freedesktop
+-        DESTINATION ${GR_PKG_LIBEXEC_DIR}
+-        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+-    )
+    install (
+-        CODE "execute_process(COMMAND ${CMAKE_INSTALL_PREFIX}/${GR_PKG_LIBEXEC_DIR}/grc_setup_freedesktop install)"
++        CODE "execute_process(COMMAND ${CMAKE_CURRENT_BINARY_DIR}/grc_setup_freedesktop install)"
+     )
+ endif(UNIX AND HAVE_XDG_UTILS AND ENABLE_POSTINSTALL)
+ 
+diff --git a/grc/scripts/freedesktop/grc_setup_freedesktop.in b/grc/scripts/freedesktop/grc_setup_freedesktop.in
+index 50e02ee16ac..5aacf5e7c54 100644
+--- a/grc/scripts/freedesktop/grc_setup_freedesktop.in
++++ b/grc/scripts/freedesktop/grc_setup_freedesktop.in
+@@ -19,7 +19,7 @@ ICON_SIZES="16 24 32 48 64 128 256"
+ if [ -n "$2" ]; then
+ 	SRCDIR="$2"
+ else
+-	SRCDIR="@SRCDIR@"
++	SRCDIR="@CMAKE_CURRENT_SOURCE_DIR@"
+ fi
+ 
+ case "$1" in
+@@ -32,7 +32,8 @@ case "$1" in
+ 		xdg-icon-resource install --noupdate --context apps --theme gnome --size ${size} ${SRCDIR}/grc-icon-${size}.png gnuradio-grc; \
+ 		xdg-icon-resource install --noupdate --context apps --size ${size} ${SRCDIR}/grc-icon-${size}.png gnuradio-grc; \
+ 	done
+-	xdg-icon-resource forceupdate
++	xdg-icon-resource forceupdate                #update for system (hicolor) theme
++	xdg-icon-resource forceupdate --theme gnome  #update for gnome theme
+ 	echo "Install mime type"
+ 	xdg-mime install ${SRCDIR}/gnuradio-grc.xml
+ 	echo "Install menu items"
+@@ -49,7 +50,8 @@ case "$1" in
+ 		xdg-icon-resource uninstall --noupdate --context apps --theme gnome --size ${size} gnuradio-grc; \
+ 		xdg-icon-resource uninstall --noupdate --context apps --size ${size} gnuradio-grc; \
+ 	done
+-	xdg-icon-resource forceupdate
++	xdg-icon-resource forceupdate                 #update for system (hicolor) theme
++	xdg-icon-resource forceupdate --theme gnome   #update for gnome theme
+ 	echo "Uninstall mime type"
+ 	xdg-mime uninstall ${SRCDIR}/gnuradio-grc.xml
+ 	echo "Uninstall menu items"
