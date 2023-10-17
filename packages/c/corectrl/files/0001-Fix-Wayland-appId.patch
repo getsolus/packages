@@ -1,0 +1,130 @@
+From 27eaa29bc9883414e4e7fe8689c7b55861c9e6c9 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Tue, 17 Oct 2023 10:42:18 -0500
+Subject: [PATCH] Fix Wayland appId
+
+Wayland DEs use the desktopFileName Wayland property in order to associate windows with the appropriate .desktop file.
+
+Qt5 sets this to the binary name by default which does not match the previous name of the .desktop file. Fix this by directly calling `setDesktopFileName` with the name of the .desktop file.
+
+This should fix Wayland DEs while not breaking X11 ones. Qt5 on X11 sets the resourceClass to the binary name, but this is fine since windows can be matched by the `StartupWMClass` property in the .desktop file which is already set to the binary name.
+
+Also while we're at it fix the .desktop file and appdata.xml to use `org.corectrl.CoreCtrl` instead of `org.corectrl.corectrl`. This better follows the FreeDesktop specifications.
+---
+ CMakeLists.txt                                    | 15 ++++++++++-----
+ ...rectrl.corectrl.appdata.xml => appdata.xml.in} | 14 +++++++-------
+ src/app/app.cpp                                   |  1 +
+ src/app/app.h                                     |  1 +
+ src/config.h.in                                   |  1 +
+ 5 files changed, 20 insertions(+), 12 deletions(-)
+ rename resources/{org.corectrl.corectrl.appdata.xml => appdata.xml.in} (62%)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e3badb0..c9ea29d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,7 +1,10 @@
+-cmake_minimum_required(VERSION 3.3)
++cmake_minimum_required(VERSION 3.12)
+ 
+-project(CoreCtrl LANGUAGES CXX)
+-set(PROJECT_VERSION 1.3.6)
++project(CoreCtrl
++        VERSION 1.3.6
++        HOMEPAGE_URL "https://gitlab.com/corectrl/corectrl"
++        LANGUAGES CXX)
++set(PROJECT_FQDN "org.corectrl.CoreCtrl")
+ 
+ include(GNUInstallDirs)
+ 
+@@ -110,11 +113,13 @@ endforeach()
+ install(
+   FILES resources/launcher.desktop
+   DESTINATION ${CMAKE_INSTALL_FULL_DATADIR}/applications
+-  RENAME org.corectrl.corectrl.desktop
++  RENAME ${PROJECT_FQDN}.desktop
+ )
+ 
++configure_file(resources/appdata.xml.in resources/appdata.xml)
+ # AppStream metadata
+ install(
+-  FILES resources/org.corectrl.corectrl.appdata.xml
++  FILES ${CMAKE_BINARY_DIR}/resources/appdata.xml
+   DESTINATION ${CMAKE_INSTALL_FULL_DATADIR}/metainfo
++  RENAME ${PROJECT_FQDN}.appdata.xml
+ )
+diff --git a/resources/org.corectrl.corectrl.appdata.xml b/resources/appdata.xml.in
+similarity index 62%
+rename from resources/org.corectrl.corectrl.appdata.xml
+rename to resources/appdata.xml.in
+index 86c848b..d8e5d06 100644
+--- a/resources/org.corectrl.corectrl.appdata.xml
++++ b/resources/appdata.xml.in
+@@ -1,10 +1,10 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <component type="desktop">
+-  <id>org.corectrl.corectrl</id>
++  <id>@PROJECT_FQDN@</id>
+   <!-- Copyright 2019 Artem Polishchuk <ego.cordatus@gmail.com> -->
+   <metadata_license>CC0</metadata_license>
+   <project_license>GPL-3.0-or-later</project_license>
+-  <name>CoreCtrl</name>
++  <name>@PROJECT_NAME@</name>
+   <summary>A friendly hardware control</summary>
+   <description>
+     <p>CoreCtrl is a Free and Open Source GNU/Linux application that allows you
+@@ -16,12 +16,12 @@
+   </provides>
+   <screenshots>
+     <screenshot type="default">
+-      <image>https://gitlab.com/corectrl/corectrl/wikis/img/screenshot1.png</image>
++      <image>@PROJECT_HOMEPAGE_URL@/wikis/img/screenshot1.png</image>
+     </screenshot>
+   </screenshots>
+   <developer_name>Juan Palacios</developer_name>
+-  <url type="homepage">https://gitlab.com/corectrl/corectrl</url>
+-  <url type="bugtracker">https://gitlab.com/corectrl/corectrl/issues</url>
+-  <url type="translate">https://gitlab.com/corectrl/corectrl/tree/master/src/translations</url>
+-  <url type="help">https://gitlab.com/corectrl/corectrl/wikis</url>
++  <url type="homepage">@PROJECT_HOMEPAGE_URL@</url>
++  <url type="bugtracker">@PROJECT_HOMEPAGE_URL@/issues</url>
++  <url type="translate">@PROJECT_HOMEPAGE_URL@/tree/master/src/translations</url>
++  <url type="help">@PROJECT_HOMEPAGE_URL@/wikis</url>
+ </component>
+diff --git a/src/app/app.cpp b/src/app/app.cpp
+index d47c200..1477dcb 100644
+--- a/src/app/app.cpp
++++ b/src/app/app.cpp
+@@ -52,6 +52,7 @@ int App::exec(int argc, char **argv)
+   QCoreApplication::setApplicationVersion(App::VersionStr.data());
+   QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+   QCoreApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
++  QGuiApplication::setDesktopFileName(QString(App::Fqdn.data()));
+ 
+   // Ignore QT_STYLE_OVERRIDE. It breaks the qml theme.
+   if (qEnvironmentVariableIsSet("QT_STYLE_OVERRIDE")) {
+diff --git a/src/app/app.h b/src/app/app.h
+index 7a3e39f..bedc621 100644
+--- a/src/app/app.h
++++ b/src/app/app.h
+@@ -60,6 +60,7 @@ class App final : public QObject
+  public:
+   static constexpr std::string_view Name{PROJECT_NAME};
+   static constexpr std::string_view VersionStr{PROJECT_VERSION};
++  static constexpr std::string_view Fqdn{PROJECT_FQDN};
+   static constexpr QRect DefaultWindowGeometry{0, 0, 970, 600};
+ 
+   App(std::unique_ptr<IHelperControl> &&helperControl,
+diff --git a/src/config.h.in b/src/config.h.in
+index 3f82b39..1e1dadf 100644
+--- a/src/config.h.in
++++ b/src/config.h.in
+@@ -5,4 +5,5 @@
+ 
+ #define PROJECT_NAME "${PROJECT_NAME}"
+ #define PROJECT_VERSION "${PROJECT_VERSION}"
++#define PROJECT_FQDN "${PROJECT_FQDN}"
+ #define PCI_IDS_PATH "${WITH_PCI_IDS_PATH}"
+-- 
+2.42.0
+
