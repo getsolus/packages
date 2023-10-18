@@ -142,7 +142,7 @@ class Homepage(PullRequestCheck):
     _level = Level.ERROR
 
     def run(self) -> List[Result]:
-        return [Result(message=self._error, file=f, level=self._level)
+        return [Result(message=self._error, file=_path, level=self._level)
                 for f in self.package_files
                 if not self._includes_homepage(f)]
 
