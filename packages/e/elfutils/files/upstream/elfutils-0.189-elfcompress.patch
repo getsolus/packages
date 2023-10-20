@@ -1,0 +1,95 @@
+From ef9164520c81ea61efe88777a8ad61bf17a54201 Mon Sep 17 00:00:00 2001
+From: Mark Wielaard <mark@klomp.org>
+Date: Sat, 22 Apr 2023 01:26:17 +0200
+Subject: [PATCH] elfcompress: Don't compress if section already compressed
+ unless forced
+
+Before commit a5b07cdf9 "support ZSTD compression algorithm"
+elfcompress would not try to compress a section if it already
+had the requested compression type (or was already uncompressed)
+unless the --force flag was given. An else if construct was changed
+to an if in the commit causing elfcompress to warn (in verbose mode)
+but then still try to (re)compress the section.
+
+Add an explicit check so if nothing needs (un)compressing, the file
+isn't changed.
+
+The diff looks large, but git diff -b -w is just:
+
++     if (force || type != schtype)
++       {
+          if (shdr->sh_type != SHT_NOBITS
+              && (shdr->sh_flags & SHF_ALLOC) == 0)
+            {
+@@ -554,6 +556,7 @@ process_file (const char *fname)
+              printf ("[%zd] %s ignoring %s section\n", ndx, sname,
+                      (shdr->sh_type == SHT_NOBITS ? "no bits" : "allocated"));
+        }
++   }
+
+Signed-off-by: Mark Wielaard <mark@klomp.org>
+---
+ src/elfcompress.c | 43 +++++++++++++++++++++++--------------------
+ 1 file changed, 23 insertions(+), 20 deletions(-)
+
+diff --git a/src/elfcompress.c b/src/elfcompress.c
+index 18ade66f..f771b92a 100644
+--- a/src/elfcompress.c
++++ b/src/elfcompress.c
+@@ -529,30 +529,33 @@ process_file (const char *fname)
+ 		  }
+ 	    }
+ 
+-	  if (shdr->sh_type != SHT_NOBITS
+-	      && (shdr->sh_flags & SHF_ALLOC) == 0)
++	  if (force || type != schtype)
+ 	    {
+-	      set_section (sections, ndx);
+-	      /* Check if we might want to change this section name.  */
+-	      if (! adjust_names
+-		  && ((type != ZLIB_GNU
+-		       && startswith (sname, ".zdebug"))
+-		      || (type == ZLIB_GNU
+-			  && startswith (sname, ".debug"))))
+-		adjust_names = true;
+-
+-	      /* We need a buffer this large if we change the names.  */
+-	      if (adjust_names)
++	      if (shdr->sh_type != SHT_NOBITS
++		  && (shdr->sh_flags & SHF_ALLOC) == 0)
+ 		{
+-		  size_t slen = strlen (sname);
+-		  if (slen > maxnamelen)
+-		    maxnamelen = slen;
++		  set_section (sections, ndx);
++		  /* Check if we might want to change this section name.  */
++		  if (! adjust_names
++		      && ((type != ZLIB_GNU
++			   && startswith (sname, ".zdebug"))
++			  || (type == ZLIB_GNU
++			      && startswith (sname, ".debug"))))
++		    adjust_names = true;
++
++		  /* We need a buffer this large if we change the names.  */
++		  if (adjust_names)
++		    {
++		      size_t slen = strlen (sname);
++		      if (slen > maxnamelen)
++			maxnamelen = slen;
++		    }
+ 		}
++	      else
++		if (verbose >= 0)
++		  printf ("[%zd] %s ignoring %s section\n", ndx, sname,
++			  (shdr->sh_type == SHT_NOBITS ? "no bits" : "allocated"));
+ 	    }
+-	  else
+-	    if (verbose >= 0)
+-	      printf ("[%zd] %s ignoring %s section\n", ndx, sname,
+-		      (shdr->sh_type == SHT_NOBITS ? "no bits" : "allocated"));
+ 	}
+ 
+       if (shdr->sh_type == SHT_SYMTAB)
+-- 
+2.31.1
+
