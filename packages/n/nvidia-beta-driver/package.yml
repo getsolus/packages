@@ -1,6 +1,6 @@
 name       : nvidia-beta-driver
 version    : 545.23.06
-release    : 237
+release    : 238
 source     :
     - https://us.download.nvidia.com/XFree86/Linux-x86_64/545.23.06/NVIDIA-Linux-x86_64-545.23.06.run : 4139d328019f72f2af2878a4d018007a65773eb46a46533707d8e365eba9082f
 extract    : no
@@ -54,8 +54,12 @@ conflicts  :
 patterns   :
     - common : /*
     - 32bit : /usr/lib32
-    - main : /lib/modules/*.lts
-    - current : /lib/modules/*.current
+    - main :
+        - /lib/modules/*.lts
+        - /usr/lib/kernel/initrd-com.solus-project.lts.*
+    - current :
+        - /lib/modules/*.current
+        - /usr/lib/kernel/initrd-com.solus-project.current.*
 strip      : no
 debug      : no
 builddeps  :
@@ -70,6 +74,7 @@ builddeps  :
     - libglvnd-32bit
 permanent  :
     - /lib/modules
+    - /usr/lib/kernel
 setup      : |
     sh $sources/NVIDIA-Linux-x86_64-$version.run --extract-only
     pushd NVIDIA*
@@ -216,5 +221,47 @@ install    : |
     # Nuke egl wayland conflict, we package it separately
     rm -fv $installdir/%libdir%/libnvidia-egl-wayland*
 
-    # Compress modules with zstd
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    shopt -s extglob
+    # Create an initrd containing just the Nvidia modules
+    for i in current lts; do
+        mkdir init-$i
+        pushd init-$i
+
+        # Copy from what we have in the installdir already
+        cp -ra $installdir/* .
+
+        # cleanup, don't need anything besides the modules for the chosen kernel
+        rm -rfv usr sbin
+        rm -rv lib/modules/!(*.$i)
+
+        # Strip the debug symobls (we can get them from the normal kernel modules).
+        # Don't compress the kernel modules here so that the final archive is slightly smaller
+        find . -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+
+        # FUCK AROUND
+        mkdir nvidia
+        pushd nvidia
+        find ../. -name '*.ko' -exec mv {} . \;
+        popd
+        rm -rf lib
+
+        # Create the initrd
+        find . | cpio --create --format='newc' | zstd > $workdir/initrd-$i
+
+        # TODO Sign it
+
+        popd
+    done
+
+    # Install it (do it here so that we don't copy this again during the second loop of the above for)
+    kernel_current=%kernel_version_current%
+    current_string="${kernel_current/.current}"
+    install -Dm00644 $workdir/initrd-current $installdir/usr/lib/kernel/initrd-com.solus-project.current.$current_string.nvidia
+
+    kernel_lts=%kernel_version_lts%
+    lts_string="${kernel_lts/.lts}"
+    install -Dm00644 $workdir/initrd-lts $installdir/usr/lib/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
+
+    # Compress modules with zstd. TODO fix this so that we're able to capture the debug symbols (needs ypkg changes)
+    find "$installdir" -name '*.ko' -exec strip --strip-unneeded {} \; -exec zstd {} \; -exec rm -v {} \;
