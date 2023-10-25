@@ -1,8 +1,8 @@
 name       : linux-current
-version    : 6.5.8
-release    : 260
+version    : 6.5.9
+release    : 262
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.5.8.tar.xz : 299cca897d90deaa176eebec42f0a80eeb7516afed330a45c14da9de086cf717
+    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.5.9.tar.xz : c6662f64713f56bf30e009c32eac15536fad5fd1c02e8a3daf62a0dc2f058fd5
 license    : GPL-2.0-only
 component  :
     - kernel.image
@@ -83,7 +83,7 @@ install    : |
 
     # Install kernel modules, disable depmod + firmware install
     install -D -d -m 00755 $installdir/lib/modules/$kversion
-    %make ARCH=x86_64 INSTALL_MOD_PATH=$installdir/ INSTALL_MOD_STRIP=1 modules_install KERNELRELEASE=$kversion mod-fw= DEPMOD=/bin/true
+    %make ARCH=x86_64 INSTALL_MOD_PATH=$installdir/ modules_install KERNELRELEASE=$kversion mod-fw= DEPMOD=/bin/true
 
     # Remove broken links
     rm -v $installdir/lib/modules/${kversion}/{source,build}
@@ -94,13 +94,25 @@ install    : |
     # Fix mods
     depmod -b $installdir/ $kversion -a
 
+    # Strip the kernel modules for the initramfs. We can eke out some slight size improvements by keeping the modules
+    # uncompressed before we compress the entire initramfs.
+    mkdir -p dracut-modules/lib/modules/
+    cp -ra $installdir/lib/modules/${kversion} dracut-modules/lib/modules/
+    find "dracut-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
+
+    # Create a directory structure that we'll merge with the initrd. This is because we can't use symlinks with --include
+    # By creating symlinks here we can reference modules outside of the ordinary directory. This is needed for injecting
+    # modules from a secondary initramfs. We'll likely need to create such a symlink for every extra initramfs we intend to support
+    mkdir -p initramfs/lib/modules/${kversion}/extra-modules/
+    ln -sv /nvidia initramfs/lib/modules/${kversion}/extra-modules/nvidia
+
     # Store vendor initrd within the kernel package, prevent mangling from fakeroot
     # 2021-01-20: Force early KMS for everything except Nouveau (this will not work with Nvidia propretary)
-    LD_PRELOAD='' dracut --strip --tmpdir /tmp -N -f  \
-        --kmoddir $installdir/lib/modules/${kversion} \
+    # TODO Try different zstd compression levels to see how they affect boot times
+    LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
+        --kmoddir dracut-modules/lib/modules/${kversion} \
         --kver $kversion --add "bash systemd lvm dm rescue fido2 tpm2-tss virtiofs" \
-        --strip --hardlink --zstd \
-        --nomdadmconf --early-microcode \
+        --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
         --add-drivers "amdgpu hyperv_drm i915 qxl radeon simpledrm virtio-gpu" \
         --include $pkgfiles/systemd/timeouts.conf /usr/lib64/systemd/system.conf.d/timeouts.conf \
         $installdir/usr/lib/kernel/initrd-$kernID.${version}-${release}
@@ -153,3 +165,7 @@ install    : |
     # Fix up build/source links
     ln -sv build $installdir/lib/modules/$kversion/source
     ln -sv $tgtDir $installdir/lib/modules/$kversion/build
+
+    # Compress modules with zstd and strip them in the process
+    # TODO remove this once the kernel module compression w/ dbginfo is fixed
+    find "$installdir/lib/modules" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
