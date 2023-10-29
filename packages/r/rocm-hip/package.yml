@@ -1,49 +1,69 @@
 name       : rocm-hip
-version    : 5.3.3
-release    : 4
+version    : 5.5.1
+release    : 5
 source     :
-    - https://github.com/ROCm-Developer-Tools/HIP/archive/refs/tags/rocm-5.3.3.tar.gz#HIP-5.3.3.tar.gz : 51d4049dc37d261afb9e1270e60e112708ff06b470721ff21023e16e040e4403
-    - https://github.com/ROCm-Developer-Tools/ROCclr/archive/refs/tags/rocm-5.3.3.tar.gz#ROCclr-5.3.3.tar.gz : f8133a5934f9c53b253d324876d74f08a19e2f5b073bc94a62fe64b0d2183a18
-    - https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime/archive/refs/tags/rocm-5.3.3.tar.gz#ROCm-OpenCL-Runtime-5.3.3.tar.gz : cab394e6ef16c35bab8de29a66b96a7dc0e7d1297aaacba3718fa1d369233c9f
-    - https://github.com/ROCm-Developer-Tools/hipamd/archive/refs/tags/rocm-5.3.3.tar.gz#hipamd-5.3.3.tar.gz : 36acce92af39b0fa06002e164f5a7f5a9c7daa19bf96645361325775a325499d
-    - https://github.com/ROCm-Developer-Tools/roctracer/archive/refs/tags/rocm-5.3.3.tar.gz#roctracer-5.3.3.tar.gz : f2cb1e6bb69ea1a628c04f984741f781ae1d8498dc58e15795bb03015f924d13
+    - https://github.com/ROCm-Developer-Tools/HIP/archive/refs/tags/rocm-5.5.1.tar.gz#HIP-5.5.1.tar.gz : 1f5f6bb72d8d64335ccc8242ef2e2ea8efeb380cce2997f475b1ee77528d9fb4
+    - https://github.com/ROCm-Developer-Tools/ROCclr/archive/refs/tags/rocm-5.5.1.tar.gz#ROCclr-5.5.1.tar.gz : 1375fc7723cfaa0ae22a78682186d4804188b0a54990bfd9c0b8eb421b85e37e
+    - https://github.com/RadeonOpenCompute/ROCm-OpenCL-Runtime/archive/refs/tags/rocm-5.5.1.tar.gz#ROCm-OpenCL-Runtime-5.5.1.tar.gz : a8a62a7c6fc5398406d2203b8cb75621a24944688e545d917033d87de2724498
+    - https://github.com/ROCm-Developer-Tools/hipamd/archive/refs/tags/rocm-5.5.1.tar.gz#hipamd-5.5.1.tar.gz : 9c8cb7611b3a496a0e9db92269143ee33b608eb69a8384957ace04e135ac90e9
+    - https://github.com/ROCm-Developer-Tools/roctracer/archive/refs/tags/rocm-5.5.1.tar.gz#roctracer-5.5.1.tar.gz : 3afc31ebfdb14b0365185ca6b9326a83b1503a94a51d910f5ce7ced192d8c133
+homepage   : https://rocm.docs.amd.com/projects/HIP
 component  : programming.devel
-clang      : yes
 summary    : AMD ROCm HIP
 license    : MIT
 description: |
     HIP is a C++ Runtime API and Kernel Language that allows developers to create portable applications for AMD and NVIDIA GPUs from single source code.
 extract    : false
-patterns   :
-    - docs:
-      - /usr/share/**
+clang      : yes
 builddeps  :
     - pkgconfig(gl)
     - pkgconfig(libhsakmt)
     - pkgconfig(numa)
     - pkgconfig(x11-xcb)
     - python-cppheaderparser
+    - python-ply
     - rocminfo
     - rocm-cmake
     - rocm-compilersupport-devel
     - rocm-device-libs-devel
     - rocm-opencl-devel
     - rocm-runtime-devel
+patterns   :
+    - docs:
+        - /usr/share/*
 rundeps    :
     - rocminfo
     - devel:
+        - llvm-clang-devel
+        - rocm-compilersupport-devel
+        - rocm-smi
+        - rocm-device-libs-devel
+        - rocm-runtime-devel
         - rocminfo
-        - llvm-clang
 environment: |
-    export HIP_CLANG_PATH="/usr/bin"
-    export ROCM_PATH="/usr"
+    declare -A rocm_vars
+    rocm_vars=(
+        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
+        ["HIP_CLANG_PATH"]="/usr/bin"
+        ["HIP_COMPILER"]="clang"
+        ["HIP_LIB_PATH"]="/usr/lib64"
+        ["HIP_PATH"]="/usr"
+        ["HIP_PLATFORM"]="amd"
+        ["HIP_ROCCLR_HOME"]="/usr"
+        ["ROCM_PATH"]="/usr"
+    )
+
+    for name in "${!rocm_vars[@]}"; do
+        echo "Setting $name to ${rocm_vars[$name]}";
+        export "$name"="${rocm_vars[$name]}";
+        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
+    done
     
     export AMDOPENCL_DIR="%workdir%/ROCm-OpenCL-Runtime-rocm-%version%"
     export HIPAMD_DIR="%workdir%/hipamd-rocm-%version%"
     export HIP_DIR="%workdir%/HIP-rocm-%version%"
     export ROCCLR_DIR="%workdir%/ROCclr-rocm-%version%"
     export ROCTRACER_DIR="%workdir%/roctracer-rocm-%version%"
-    export CXXFLAGS="$CXXFLAGS -I/usr/include/amd_comgr/"
 setup      : |
     tar -xzf $sources/ROCclr-%version%.tar.gz
     tar -xzf $sources/ROCm-OpenCL-Runtime-%version%.tar.gz
@@ -54,40 +74,31 @@ setup      : |
     pushd $ROCCLR_DIR
         %patch -p1 -i $pkgfiles/0001-enable-gfx800.patch
         %patch -p1 -i $pkgfiles/0022-improve-rocclr-isa-compatibility-check.patch
+        %patch -p1 -i $pkgfiles/missing-cstdint.diff
+        echo "set_target_properties(rocclr PROPERTIES VERSION %version% SOVERSION 5.5)" >> cmake/ROCclr.cmake
+    popd
+
+    pushd $AMDOPENCL_DIR
+        echo "set_target_properties(cltrace PROPERTIES VERSION %version% SOVERSION 5.5)" >> tools/cltrace/CMakeLists.txt
     popd
 
     pushd $HIP_DIR
-        %patch -p1 -i $pkgfiles/0001-remove-failing-cmake-test.patch
-        %patch -p1 -i $pkgfiles/0001-Fix-hipcc.pl-paths-for-Solus.patch
-        %patch -p1 -i $pkgfiles/0001-Fix-chomp-return.patch
-        %patch -p1 -i $pkgfiles/0007-isystem-removal.patch
+        %patch -p1 -i $pkgfiles/bitcode_paths.patch
     popd
 
     cd $HIPAMD_DIR
-        %patch -p1 -i $pkgfiles/0023-extend-hip-isa-compatibility-check.patch
-        # HIP requires RPATH
-        sed -i "/CMAKE_INSTALL_RPATH/d" CMakeLists.txt
 
-        %cmake -DPROF_API_HEADER_PATH=$ROCTRACER_DIR/inc/ext \
-            -DAMD_OPENCL_PATH=$AMDOPENCL_DIR \
-            -DROCCLR_PATH=$ROCCLR_DIR \
-            -DHIP_COMMON_DIR=$HIP_DIR \
-            -DROCM_PATH=$ROCM_PATH \
-            -DHIP_COMPILER=clang \
-            -DHIP_PLATFORM=amd \
-            -DFILE_REORG_BACKWARD_COMPATIBILITY=OFF \
+    %patch -p1 -i $pkgfiles/hipamd_bitcode_paths.patch
+    %patch -p1 -i $pkgfiles/0023-extend-hip-isa-compatibility-check.patch
+    %cmake_ninja $ROCM_CMAKE_FLAGS \
+                 -DAMD_OPENCL_PATH=$AMDOPENCL_DIR \
+                 -DPROF_API_HEADER_PATH=$ROCTRACER_DIR/inc/ext \
+                 -DROCCLR_PATH=$ROCCLR_DIR \
+                 -DHIP_COMMON_DIR=$HIP_DIR \
+                 -DFILE_REORG_BACKWARD_COMPATIBILITY=OFF \
 build      : |
     cd $HIPAMD_DIR
-    %make
+    %ninja_build
 install    : |
     cd $HIPAMD_DIR
-    %make_install
-
-    # make hip-config.cmake less broken, allowing to build stuff that relies on hip
-    sed -i 's|${_IMPORT_PREFIX}/../include|${_IMPORT_PREFIX}/include|g' $installdir%libdir%/cmake/hip/hip-config.cmake
-    sed -i 's|"${ROCM_PATH}/llvm"|"/usr"|g' $installdir%libdir%/cmake/hip/hip-config.cmake
-
-    # https://salsa.debian.org/rocm-team/rocm-hipamd/-/blob/master/debian/patches/0003-hip-config.cmake.patch
-    sed -i 's|${AMD_DEVICE_LIBS_PREFIX}/lib|${AMD_DEVICE_LIBS_PREFIX}/lib64/amdgcn/bitcode|g' $installdir%libdir%/cmake/hip/hip-config.cmake
-    sed -i 's|${AMD_DEVICE_LIBS_PREFIX}/lib|${AMD_DEVICE_LIBS_PREFIX}/lib64/amdgcn/bitcode|g' $installdir%libdir%/cmake/hip-lang/hip-lang-config.cmake
-
+    %ninja_install
