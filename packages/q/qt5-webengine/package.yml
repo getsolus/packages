@@ -1,8 +1,10 @@
 name       : qt5-webengine
 version    : 5.15.15
-release    : 59
+release    : 60
 source     :
     - git|https://code.qt.io/qt/qtwebengine.git : v5.15.15-lts
+    # We need to use a catapult git snapshot for Python 3 support. Let's just use the same one SUSE uses
+    - https://github.com/catapult-project/catapult/archive/2da767c6c13e331107f4c8026fd4584a7a85a214.tar.gz#catapult.tar.gz : 090f45683f7510025c25e425e75261bc7583d78a9973e3478f773836ad8e0739
 homepage   : https://www.qt.io
 license    :
     - GPL-2.0-or-later
@@ -61,12 +63,16 @@ builddeps  :
     - gperf
     - ninja
     - nodejs
+    - python3
     - snappy-devel
+# 2023-10-31 Reilly:
+# Chromium 87 is just too old for LLVM >=16. Just use GCC so we don't waste a bunch of time trying to track down support patches
+# Symptom: It builds but there's random segfaults in various blink engine code.
+# Let's try again on a future version, perhaps qt will integrate llvm 16 support patches themselves
+# clang      : yes
 patterns   :
     - demos :
         - /usr/lib64/qt5/examples
-environment: |
-    unset LDFLAGS
 setup      : |
     git config --global user.email "solus@getsol.us"
     git config --global user.name "Solus"
@@ -74,12 +80,26 @@ setup      : |
     # Multiple CVEs
     git cherry-pick 00c524f3a8c164aed4eaee203f151fb18d5c4e90
 
+    # Build fixes
     %patch -p1 -i $pkgfiles/gcc-12.patch
     %patch -p1 -i $pkgfiles/fix-clang-14.patch
+    %patch -p1 -i $pkgfiles/qtwebengine-5.15.15-compile.patch
+    %patch -p1 -i $pkgfiles/qtwebengine-5.15.15-clang16.patch
+    %patch -p1 -i $pkgfiles/qtwebengine-5.15.15-clang16-2.patch
+
+    # Use Python 3
+    %patch -p1 -i $pkgfiles/qt5-webengine-python3.patch
 
     # 3rdparty patches
     %patch -p1 -d src/3rdparty -i $pkgfiles/qt5-webengine-pipewire-0.3.patch
+    # Fix compat with minizip-ng
     %patch -p1 -d src/3rdparty -i $pkgfiles/0001-minizip-ng-compat.patch
+
+    # Replace catapult with git snapshot
+    pushd src/3rdparty/chromium/third_party
+    rm -rf catapult/*
+    tar -xf $sources/catapult.tar.gz --strip-components=1 -C catapult
+    popd
 
     # Some applications that need qt5-webengine seem to want all of the qt5 libs to be the same version.
     # Work around this by faking that qt5-webengine is the same version as qt5-base
@@ -87,7 +107,7 @@ setup      : |
     sed -i "s|MODULE_VERSION = %version%|MODULE_VERSION = $qt_version|g" .qmake.conf
 
     sed -i -e 's|use_jumbo_build=true|use_jumbo_build=false|' src/buildtools/config/common.pri
-    %qmake QMAKE_C=clang QMAKE_CXX=clang++ CONFIG+=use_lld_linker \
+    %qmake -spec linux-g++ \
         qtwebengine.pro -- \
         -system-webengine-ffmpeg \
         -system-webengine-icu \
