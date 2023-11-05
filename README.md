@@ -51,10 +51,9 @@ Donations are welcome on our [Open Collective].
 [Getting Involved]: https://help.getsol.us/docs/user/contributing/getting-involved
 [Community]: https://help.getsol.us/docs/user/contributing/getting-involved#engaging-with-the-community
 [Report Bugs]: https://help.getsol.us/docs/user/contributing/getting-involved#report-bugs
-[Solus Packages]: https://github.com/solus-packages
 [Issue tracker]: https://github.com/getsolus/packages/issues
-[Bug]: https://github.com/getsolus/packages/issues/new?template=bug.yaml
-[Package]: https://github.com/getsolus/packages/issues/new?template=request-new-package.yaml
-[Update]: https://github.com/getsolus/packages/issues/new?template=request-package-update.yaml
-[Security]: https://github.com/getsolus/packages/issues/new
-[Issue]: https://github.com/getsolus/packages/issues/new
+[Bug]: https://github.com/getsolus/packages/issues/new?template=bug.yml
+[Package]: https://github.com/getsolus/packages/issues/new?template=request-new-package.yml
+[Update]: https://github.com/getsolus/packages/issues/new?template=request-package-update.yml
+[Security]: https://github.com/getsolus/packages/security/advisories/new
+[Issue]: https://github.com/getsolus/packages/issues/new/choose
