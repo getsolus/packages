@@ -3,3 +3,6 @@ This file is used to indicate primary maintainership for this package. A package
 - Joey Riches
   - Email: josephriches@gmail.com
   - Matrix: @joebonrichie:matrix.org
+- Thomas Staudinger
+  - Email: staudi.kaos@gmail.com
+  - Matrix: @staudey:matrix.org
