@@ -1,0 +1,51 @@
+From: Diego Escalante Urrelo <diegoe@gnome.org>
+Date: Tue, 28 Jul 2020 11:19:37 -0500
+Subject: wl: Fix mac address setting
+
+The function was returning BCM_UNSUPPORTED (-23) when the device did not
+allow for mac address changes. This however corresponds to "too many
+files open" so userspace was getting conflicting info on what was
+happening. Example:
+
+  $ ip link set wlp3s0 address  3c:15:c2:cf:29:dd
+  RTNETLINK answers: Too many open files in system
+
+Now the function properly returns -EADDRNOTAVAIL instead.
+
+This fixes the popular error where NetworkManager is unable to connect
+to wifi networks when wifi.scan-rand-mac-addr=yes (the default) or other
+mac-addr options are in use (see the work around supplied by
+wpasupplicant in /usr/lib/NetworkManager/conf.d/no-mac-addr-change.conf)
+
+Also, the function was incorrectly changing the `net_device->dev_addr`
+even when the hardware had not been able to change it.
+---
+ src/wl/sys/wl_linux.c | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/src/wl/sys/wl_linux.c b/src/wl/sys/wl_linux.c
+index 4f5e43a..acdac06 100644
+--- a/src/wl/sys/wl_linux.c
++++ b/src/wl/sys/wl_linux.c
+@@ -1848,15 +1848,17 @@ wl_set_mac_address(struct net_device *dev, void *addr)
+ 	WL_TRACE(("wl%d: wl_set_mac_address\n", wl->pub->unit));
+ 
+ 	WL_LOCK(wl);
+-
+-	bcopy(sa->sa_data, dev->dev_addr, ETHER_ADDR_LEN);
+ 	err = wlc_iovar_op(wl->wlc, "cur_etheraddr", NULL, 0, sa->sa_data, ETHER_ADDR_LEN,
+ 		IOV_SET, (WL_DEV_IF(dev))->wlcif);
+ 	WL_UNLOCK(wl);
+-	if (err)
++	if (err) {
+ 		WL_ERROR(("wl%d: wl_set_mac_address: error setting MAC addr override\n",
+ 			wl->pub->unit));
+-	return err;
++		return OSL_ERROR(err);
++	} else {
++		bcopy(sa->sa_data, dev->dev_addr, ETHER_ADDR_LEN);
++		return 0;
++	}
+ }
+ 
+ static void

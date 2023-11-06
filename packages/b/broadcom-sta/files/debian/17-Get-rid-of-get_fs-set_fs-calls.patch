@@ -1,33 +1,32 @@
-From f3d652840f8dd959395065a1cf67ca40b04ec69b Mon Sep 17 00:00:00 2001
 From: Joan Bruguera <joanbrugueram@gmail.com>
-Date: Tue, 13 Oct 2020 19:35:55 +0200
-Subject: [PATCH] Get rid of get_fs/set_fs calls in Broadcom WL driver.
+Date: Sun, 13 Sep 2020 07:33:32 +0200
+Subject: Get rid of get_fs/set_fs calls in Broadcom WL driver.
 
-Tentative patch for broadcom-wl 6.30.223.271 driver for Linux 5.10 (tested -rc1 up to 5.10.1)
+Origin: https://gist.github.com/joanbm/5c640ac074d27fd1d82c74a5b67a1290
 
-Applies on top of all the patches applied to broadcom-wl-dkms 6.30.223.271-23 on Arch Linux.
+Fixes linux-next where get_fs/set_fs is already removed for some architectures.
 
 NB: Some checks in wlc_ioctl_internal are likely superfluous,
     but I'm not familiar enough with the driver to remove them with confidence.
 
 See also: https://lwn.net/Articles/722267/
-          https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=47058bb54b57962b3958a936ddbc59355e4c5504
-          https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=5e6e9852d6f76e01b2e6803c74258afa5b432bc5
+          https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/commit/arch/x86/include/asm/uaccess.h?h=next-20200911&id=47058bb54b57962b3958a936ddbc59355e4c5504
+          https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git/commit/include/linux/uaccess.h?h=next-20200911&id=5e6e9852d6f76e01b2e6803c74258afa5b432bc5
 
 Signed-off-by: Joan Bruguera <joanbrugueram@gmail.com>
 ---
- src/wl/sys/wl_cfg80211_hybrid.c | 25 ++-------------------
- src/wl/sys/wl_iw.c              | 25 ++-------------------
- src/wl/sys/wl_linux.c           | 40 ++++++++++++++++++++++++++++-----
+ src/wl/sys/wl_cfg80211_hybrid.c | 29 ++-----------------------
+ src/wl/sys/wl_iw.c              | 25 ++--------------------
+ src/wl/sys/wl_linux.c           | 40 ++++++++++++++++++++++++++++++-----
  src/wl/sys/wl_linux.h           |  2 ++
  src/wl/sys/wlc_pub.h            |  1 +
- 5 files changed, 42 insertions(+), 51 deletions(-)
+ 5 files changed, 42 insertions(+), 55 deletions(-)
 
 diff --git a/src/wl/sys/wl_cfg80211_hybrid.c b/src/wl/sys/wl_cfg80211_hybrid.c
-index 7b606e0..1e0adb7 100644
+index 8e01841..111ec5a 100644
 --- a/src/wl/sys/wl_cfg80211_hybrid.c
 +++ b/src/wl/sys/wl_cfg80211_hybrid.c
-@@ -38,6 +38,7 @@
+@@ -41,6 +41,7 @@
  #include <wlioctl.h>
  #include <proto/802.11.h>
  #include <wl_cfg80211_hybrid.h>
@@ -35,7 +34,7 @@ index 7b606e0..1e0adb7 100644
  
  #define EVENT_TYPE(e) dtoh32((e)->event_type)
  #define EVENT_FLAGS(e) dtoh16((e)->flags)
-@@ -435,30 +436,7 @@ static void key_endian_to_host(struct wl_wsec_key *key)
+@@ -442,34 +443,8 @@ static void key_endian_to_host(struct wl_wsec_key *key)
  static s32
  wl_dev_ioctl(struct net_device *dev, u32 cmd, void *arg, u32 len)
  {
@@ -44,7 +43,7 @@ index 7b606e0..1e0adb7 100644
 -	mm_segment_t fs;
 -	s32 err = 0;
 -
--	BUG_ON(len < sizeof(int));
+ 	BUG_ON(len < sizeof(int));
 -
 -	memset(&ioc, 0, sizeof(ioc));
 -	ioc.cmd = cmd;
@@ -54,7 +53,11 @@ index 7b606e0..1e0adb7 100644
 -	ifr.ifr_data = (caddr_t)&ioc;
 -
 -	fs = get_fs();
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 1, 0)
 -	set_fs(get_ds());
+-#else
+-	set_fs(KERNEL_DS);
+-#endif
 -#if defined(WL_USE_NETDEV_OPS)
 -	err = dev->netdev_ops->ndo_do_ioctl(dev, &ifr, SIOCDEVPRIVATE);
 -#else
@@ -111,10 +114,10 @@ index c4c610b..e346b15 100644
  
  static int
 diff --git a/src/wl/sys/wl_linux.c b/src/wl/sys/wl_linux.c
-index 947cef3..f04c148 100644
+index 66069d4..cc01d2b 100644
 --- a/src/wl/sys/wl_linux.c
 +++ b/src/wl/sys/wl_linux.c
-@@ -1643,10 +1643,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+@@ -1661,10 +1661,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
  		goto done2;
  	}
  
@@ -126,7 +129,7 @@ index 947cef3..f04c148 100644
  		if (!(buf = (void *) MALLOC(wl->osh, MAX(ioc.len, WLC_IOCTL_MAXLEN)))) {
  			bcmerror = BCME_NORESOURCE;
  			goto done2;
-@@ -1667,7 +1664,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
+@@ -1681,7 +1678,7 @@ wl_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
  	WL_UNLOCK(wl);
  
  done1:
@@ -135,7 +138,7 @@ index 947cef3..f04c148 100644
  		if (copy_to_user(ioc.buf, buf, ioc.len))
  			bcmerror = BCME_BADADDR;
  		MFREE(wl->osh, buf, MAX(ioc.len, WLC_IOCTL_MAXLEN));
-@@ -1680,6 +1677,39 @@ done2:
+@@ -1694,6 +1691,39 @@ done2:
  	return (OSL_ERROR(bcmerror));
  }
  
@@ -207,5 +210,3 @@ index 53a98b8..2b5a029 100644
  #include "proto/802.11.h"
  #include "proto/bcmevent.h"
  
---
-2.28.0
