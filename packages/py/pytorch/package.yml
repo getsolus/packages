@@ -1,8 +1,8 @@
 name       : pytorch
-version    : 1.11.0
-release    : 19
+version    : 2.1.0
+release    : 20
 source     :
-    - https://github.com/pytorch/pytorch/releases/download/v1.11.0/pytorch-v1.11.0.tar.gz : dc0c2b8d13c112a2b9ea8757a475b0ce2ca97cd19c50a8b70b8c286676616f1d
+    - https://github.com/pytorch/pytorch/releases/download/v2.1.0/pytorch-v2.1.0.tar.gz : 631c71f7f7d6174952f35b5ed4a45ec115720a4ef3eb619678de5893af54f403
 homepage   : https://pytorch.org/
 license    : BSD-3-Clause
 component  :
@@ -19,9 +19,7 @@ patterns   :
     - ^libtorch-devel :
         - /usr/lib64/cmake
         - /usr/include
-optimize   :
-    - speed
-# avx2       : yes # avx2 not yet available on the build server
+avx2       : yes
 clang      : yes
 builddeps  :
     - pkgconfig(eigen3)
@@ -35,6 +33,7 @@ builddeps  :
     - pkgconfig(ompi)
     - pkgconfig(openblas)
     - pkgconfig(opencv4)
+    - pkgconfig(openssl-1.1)
     - pkgconfig(protobuf)
     - pkgconfig(python3)
     - pkgconfig(rocksdb)
@@ -43,11 +42,37 @@ builddeps  :
     - leveldb-devel
     - lmdb-devel
     - numpy
-    # onednn-devel # FIXME: If you have more RAM than I do please test if you don't get a ZIP64 Extensions requirement
+    # - onednn-devel # FIXME: If you have more RAM than I do please test if you don't get a ZIP64 Extensions requirement
     - pybind11
     - python-typing-extensions
     - pyyaml
     - vulkan-headers
+
+    # ROCm packages
+    - pkgconfig(numa)
+    - pkgconfig(libhsakmt)
+    - rocm-core-devel
+    - rocm-cmake
+    - rocm-hip-devel
+    - hipblas-devel
+    - hipcub
+    - hipfft-devel
+    - hipsolver-devel
+    - hipsparse-devel
+    - hipmagma-devel
+    - miopen-devel
+    - miopengemm-devel
+    - rccl-devel
+    - rocblas-devel
+    - rocfft-devel
+    - rocprim
+    - rocrand-devel
+    - hiprand-devel
+    - rocprofiler
+    - rocsolver-devel
+    - rocsparse-devel
+    - rocthrust
+    - roctracer-devel
 rundeps    :
     - numpy
     - python-cffi
@@ -55,6 +80,7 @@ rundeps    :
     - python-protobuf
     - python-typing-extensions
     - pyyaml
+    - sympy
     - ^libtorch :
         - pybind11
     - ^libtorch-devel :
@@ -62,14 +88,11 @@ rundeps    :
         - gflags-devel
         - glog-devel
         - libtorch
+        - rocthrust
 replaces   :
     - ^libtorch-devel :
         - pytorch-devel
 environment: |
-    # Good luck while debugging
-    export CFLAGS="${CFLAGS/-g3/-gline-tables-only}"
-    export CXXFLAGS="${CXXFLAGS/-g3/-gline-tables-only}"
-
     export PYTHON_BIN_PATH=/usr/bin/python3
     export USE_DEFAULT_PYTHON_LIB_PATH=1
 
@@ -86,39 +109,78 @@ environment: |
         USE_FFMPEG=1 \
         USE_GFLAGS=1 \
         USE_GLOG=1 \
-        USE_GLOO_WITH_OPENSSL=1 \
         USE_LEVELDB=1 \
         USE_LAPACK=1 \
-        USE_LIBUV=1 \
         USE_LMDB=1 \
+        USE_MAGMA=1 \
         USE_MKLDNN=0 \
         USE_BLAS=1 \
         USE_OPENCV=1 \
-        USE_SYSTEM_EIGEN_INSTALL=1 \
+        USE_ROCM=1 \
         USE_REDIS=1 \
         USE_ROCKSDB=1 \
         USE_TBB=1 \
-        USE_SYSTEM_TBB=1 \
         USE_VULKAN=1 \
         USE_ZMQ=1 \
         USE_ZSTD=1 \
+        USE_SYSTEM_EIGEN_INSTALL=1 \
+        USE_SYSTEM_PYBIND11=1 \
+        USE_SYSTEM_TBB=1 \
+        USE_SYSTEM_ZSTD=1 \
+        REL_WITH_DEB_INFO=1 \
+
+    declare -A rocm_vars
+    rocm_vars=(
+        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
+        ["DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
+        ["HIP_CLANG_PATH"]="/usr/bin"
+        ["HIP_COMPILER"]="clang"
+        ["HIP_LIB_PATH"]="/usr/lib64"
+        ["HIP_PATH"]="/usr"
+        ["HIP_PLATFORM"]="amd"
+        ["HIP_ROCCLR_HOME"]="/usr"
+        ["ROCM_PATH"]="/usr"
+        ["BUILD_FILE_REORG_BACKWARD_COMPATIBILITY"]="OFF"
+        ["HIPCC_VERBOSE"]="0"
+        ["CMAKE_MODULE_PATH"]="/usr/lib64/cmake/hip"
+        ["PYTORCH_ROCM_ARCH"]="gfx803;gfx900;gfx906:xnack-;gfx908:xnack-;gfx90a:xnack+;gfx90a:xnack-;gfx1010;gfx1012;gfx1030;gfx1100;gfx1101;gfx1102"
+    )
+
+    for name in "${!rocm_vars[@]}"; do
+        export "$name"="${rocm_vars[$name]}";
+        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
+    done
+
+    # Needs it to find system zstd
+    export CMAKE_MODULE_PATH="$CMAKE_MODULE_PATH;/usr/lib64/cmake/llvm"
+
+    # Cannot compile C code with clang due to https://github.com/pytorch/pytorch/issues/103222
+    export CC=gcc
+    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
 
     # Set it in case your computer starts chocking horribly
     # export MAX_JOBS=$((%YJOBS%/4))
     # For packagers. The default 5G is barely enough for a single build.
     # export CCACHE_MAXSIZE=20G
 setup      : |
-    %patch -p1 -i $pkgfiles/I-flag-instead-of-isystem.patch
-    %patch -p1 -i $pkgfiles/system-libuv.patch
-    %patch -p1 -i $pkgfiles/system-rocksdb.patch
-    %patch -p1 -i $pkgfiles/system-zstd.patch
-
-    # Fix some compilation errors.
-    sed -i "s|<atomic>|<atomic>\n#include <array>|" third_party/gloo/gloo/transport/tcp/device.h
-    sed -i "141s|16384|(long int) 16384|" third_party/breakpad/src/client/linux/handler/exception_handler.cc
-
     # Make sure lapack is detected.
-    sed -i "s|(BLAS_INFO STREQUAL \"generic\")|TRUE|" cmake/Modules/FindLAPACK.cmake
+    sed -i 's|(BLAS_INFO STREQUAL "generic")|TRUE|' cmake/Modules/FindLAPACK.cmake
+
+    # kineto is still using old include paths
+    sed -i "s|#include <roctracer|#include <roctracer/roctracer|g" third_party/kineto/libkineto/src/*.h
+
+    # Too strict, Vulcan doesn't like that
+    sed -i 's|append_cxx_flag_if_supported("-Werror=cast-function-type" CMAKE_CXX_FLAGS)||' CMakeLists.txt
+
+    # They forgot to include iostream and some other standard libraries
+    sed -i 's|<fstream>|<bits/stdc++.h>|' binaries/dump_operator_names.cc 
+
+    python3 ./tools/amd_build/build_amd.py
+
+    # From Arch.
+    # For some reason, I cannot consistently reproduce build failures without 
+    # this patch. Let's just have it for good measure.
+    %patch -p1 -i $pkgfiles/pytorch-rocm-jit.patch
 
     echo %version% > version.txt
 build      : |
@@ -136,8 +198,8 @@ install    : |
     else
         install -dm00755 $installdir/usr/include $installdir/%libdir%/cmake
         mv $installdir/$TORCH_PATH/include/* $installdir/usr/include
-        rm -rf $installdir/usr/include/pybind11
         mv $installdir/$TORCH_PATH/share/cmake/* $installdir/%libdir%/cmake
+        rm $installdir/usr/include/*.h
         rm -rf $installdir/$TORCH_PATH/{include,lib,share/cmake}
         ln -sv /usr/include $installdir/$TORCH_PATH/include
         ln -sv %libdir% $installdir/$TORCH_PATH/lib
