@@ -1,8 +1,8 @@
 name       : vscode
-version    : 1.83.1
-release    : 199
+version    : 1.84.2
+release    : 200
 source     :
-    - git|https://github.com/Microsoft/vscode.git : 1.83.1
+    - git|https://github.com/Microsoft/vscode.git : 1.84.2
 homepage   : https://code.visualstudio.com/
 license    :
     - GPL-3.0-or-later # Icon (from Papirus)
@@ -27,6 +27,7 @@ builddeps  :
     - pkgconfig(xshmfence)
     - pkgconfig(xtst)
     - yarn
+    - yq
 rundeps    :
     - git
     - libxscrnsaver
@@ -37,10 +38,28 @@ setup      : |
     %patch -p1 -i $pkgfiles/0001-Attempt-to-symlink-.config-Code-to-.config-Code-OSS-.patch
     cp $pkgfiles/code.png $workdir/resources/linux/
 
+    # Appdata/MIME
+    sed -i -e 's|@@NAME@@|code-oss|g' \
+           -e 's|@@NAME_LONG@@|Visual Studio Code|g' \
+           -e 's|@@LICENSE@@|MIT|g' resources/linux/code.appdata.xml
+    sed -i -e 's|@@NAME@@|code|g' \
+           -e 's|@@NAME_LONG@@|Visual Studio Code|g' resources/linux/code-workspace.xml
+
+    # Add icon to MIME
+    yq -o=xml '.mime-info.mime-type.icon.+@name = "visual-studio-code"' -i resources/linux/code-workspace.xml
+
     # Bug in newer npm: https://github.com/npm/cli/issues/6842 
     yarn global add node-gyp
 
-    yarn
+    # Override Electron version to one that doesn't crash on Wayland
+    export ELECTRON_VERSION=25.9.4
+    sed -i "s|^target.*|target \"$ELECTRON_VERSION\"|" .yarnrc
+    yarn add electron@$ELECTRON_VERSION
+
+    # This file is only needed if you're overriding the Electron version. You can download the files from the Electron github releases and checksum them
+    cat $pkgfiles/electron-override.checksums >> $workdir/build/checksums/electron.txt
+
+    yarn install --frozen-lockfile --network-timeout 180000
 build      : |
     yarn run gulp vscode-linux-x64
 install    : |
@@ -59,3 +78,7 @@ install    : |
 
     # Fix Wayland/Xorg window associations
     sed -i 's|Code - OSS|code-oss|g' $installdir/$vsdir/resources/app/package.json
+
+    # Appdata/MIME
+    install -Dm00644 $workdir/resources/linux/code.appdata.xml $installdir/usr/share/metainfo/com.visualstudio.code.appdata.xml
+    install -Dm00644 $workdir/resources/linux/code-workspace.xml $installdir/usr/share/mime/packages/code-workspace.xml
