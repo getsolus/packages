@@ -1,6 +1,6 @@
 name       : element
 version    : 1.11.65
-release    : 166
+release    : 167
 homepage   : https://element.io/
 source     :
     - git|https://github.com/vector-im/element-desktop.git : v1.11.65
@@ -45,9 +45,15 @@ setup      : |
     jq '.update_base_url = null | .posthog = null | .show_labs_settings = true' \
         element.io/release/config.json > config.json
 
+    # Ensure that autolaunch files specify the direct path to the wrapper script
+    %patch -p1 -i $pkgfiles/autolaunch.patch
+
+    # Unpack the package.json so we can fix the Wayland AppID
+    %patch -p1 -i $pkgfiles/0001-Unpack-package.json.patch
+
     # Perform yarn install on both
-    yarn install
-    yarn --cwd element-web install
+    yarn install --frozen-lockfile --network-timeout 180000
+    yarn --cwd element-web install --frozen-lockfile --network-timeout 180000
 build      : |
     # Build element-web
     yarn --cwd element-web build
@@ -56,14 +62,18 @@ build      : |
     yarn run build:native
     yarn run build
 install    : |
-    install -dm00644 $installdir/usr/bin
-    install -dm00644 $installdir/usr/share/element
-    cp -Rv dist/linux-unpacked/* $installdir/usr/share/element
-    cp -Rv element-web/webapp $installdir/usr/share/element/resources/
-    ln -sv ../share/element/element-desktop $installdir/usr/bin/element-desktop
+    # Installdir for Element
+    element_installdir=$installdir/usr/share/element
+
+    install -dm00644 $element_installdir
+    cp -Rv dist/linux-unpacked/* $element_installdir
+    cp -Rv element-web/webapp $element_installdir/resources/
+
+    # Wrapper script
+    install -Dm00755 $pkgfiles/electron-desktop.sh $installdir/usr/bin/element-desktop
 
     # Install configuration
-    install -Dm00644 config.json $installdir/usr/share/element/resources/webapp/
+    install -Dm00644 config.json $element_installdir/resources/webapp/
 
     # Install Icons
     for icon_size in 16 24 48 64 96 128 256 512
@@ -73,8 +83,14 @@ install    : |
         ln -s element-desktop.png $installdir/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/element.png
     done
 
+    # Fix Wayland appid
+    package_json=$element_installdir/resources/app.asar.unpacked/package.json
+    tmp=$(mktemp)
+    jq ".desktopName = \"Element.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
+    chmod 644 $package_json
+
     # Desktop File
     install -Dm00644 $pkgfiles/Element.desktop $installdir/usr/share/applications/Element.desktop
 
     # appstream data
-    install -Dm00644 $pkgfiles/element.metainfo.xml $installdir/usr/share/metainfo/element.appdata.xml
+    install -Dm00644 $pkgfiles/element.appdata.xml $installdir/usr/share/metainfo/element.appdata.xml
