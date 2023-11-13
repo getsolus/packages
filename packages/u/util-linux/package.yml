@@ -1,8 +1,8 @@
 name       : util-linux
-version    : 2.39.1
-release    : 39
+version    : 2.39.2
+release    : 40
 source     :
-    - https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/v2.39/util-linux-2.39.1.tar.xz : 890ae8ff810247bd19e274df76e8371d202cda01ad277681b0ea88eeaa00286b
+    - https://mirrors.edge.kernel.org/pub/linux/utils/util-linux/v2.39/util-linux-2.39.2.tar.xz : 87abdfaa8e490f8be6dde976f7c80b9b5ff9f301e1b67e3899e1f05a59a1531f
 homepage   : https://github.com/util-linux/util-linux
 license    :
     - BSD-3-Clause
@@ -11,55 +11,84 @@ license    :
     - GPL-2.0-or-later
     - LGPL-2.1-or-later
     - Public-Domain
-component  : system.base
-summary    : util-linux (Essential Linux utilties)
-description: |
-    Util-linux is a suite of essential tools for any Linux system, such as chsh, kill, cfdisk, mkfs, mount, and more.
+component  :
+    - system.base
+    - ^python3-libmount : programming.python
+summary    :
+    - util-linux (Essential Linux utilties)
+    - ^python3-libmount : Libmount bindings for Python
+description:
+    - Util-linux is a suite of essential tools for any Linux system, such as chsh, kill, cfdisk, mkfs, mount, and more.
+    - ^python3-libmount : Libmount bindings for Python
 emul32     : yes
 autodep    : no
 devel      : yes
 builddeps  :
-    - pkgconfig32(zlib)
-    # These are only needed for tests
-    - pkgconfig32(ncursesw)
+    # - pkgconfig32(libeconf)
+    - libeconf-devel
+    - libeconf-32bit-devel
     - pkgconfig32(libgcrypt)
     - pkgconfig32(liblzma)
     - pkgconfig32(libsystemd)
     - pkgconfig32(libxcrypt)
+    - pkgconfig32(ncursesw)
+    - pkgconfig32(zlib)
     - pkgconfig(libcap-ng)
-    - pkgconfig(libeconf)
+    - pkgconfig(python3)
     - pam-32bit-devel
+    - asciidoctor
 setup      : |
+    # Fix libeconf dependency not being properly declared in the meson build
+    sed -i 's|dependencies : chfn_chsh_deps|dependencies : [chfn_chsh_deps, lib_econf]|g' meson.build
+
     # Fix usage with musl
     export CFLAGS="${CFLAGS/-D_FORTIFY_SOURCE=2/}"
-    if [[ ! -z "${EMUL32BUILD}" ]]; then
-        %configure --disable-pylibmount \
-                   --prefix=/usr
+
+    if [ -n "${EMUL32BUILD+set}" ]; then
+        %meson_configure \
+                         -Dbuild-python=disabled
     else
-        %configure --disable-chfn-chsh \
-                   --disable-login \
-                   --disable-nologin \
-                   --disable-su \
-                   --with-vendordir=/usr/share/defaults/etc
+        %meson_configure \
+                         -Deconf=enabled \
+                         -Dvendordir=/usr/share/defaults/etc
     fi
 build      : |
-    if [[ ! -z "${EMUL32BUILD}" ]]; then
-        %make lib{uuid,blkid,fdisk,mount,smartcols}.la
+    if [ -n "${EMUL32BUILD+set}" ]; then
+        meson compile -C solusBuildDir %JOBS% \
+                      ./libblkid/blkid:shared_library \
+                      ./libblkid/blkid:static_library \
+                      fdisk:shared_library \
+                      mount:shared_library \
+                      ./libsmartcols/smartcols:shared_library \
+                      ./libsmartcols/smartcols:static_library \
+                      ./libuuid/uuid:shared_library \
+                      ./libuuid/uuid:static_library
     else
-        %make
+        %ninja_build
     fi
 install    : |
-    if [[ ! -z "${EMUL32BUILD}" ]]; then
-        %make install-usrlib_execLTLIBRARIES install-pkgconfigDATA DESTDIR="$installdir"
+    if [ -n "${EMUL32BUILD+set}" ]; then
+        # create the dirs we need first
+        install -dm00755 $installdir/usr/lib32/pkgconfig
+        # install libraries
+        find solusBuildDir/ \
+            \( -name '*.so' -o -name '*.so.*' -o -name '*.a' \) ! -name '*.p' ! -name '*.symbols'  \
+            -print \
+            -exec install -Dm0644 '{}' $installdir/usr/lib32/ \;
+        # install .pc files
+        find solusBuildDir/ \
+            -type f -name '*.pc' ! -name '*uninstalled*' \
+            -print \
+            -exec install -Dm0644 '{}' $installdir/usr/lib32/pkgconfig/ \;
     else
-        %make_install
+        %ninja_install
 
-        rm -v $installdir/usr/share/man/man8/fsck.8
+        # Arch command
         install -m 00755 $pkgfiles/arch $installdir/usr/bin/arch
-        rm -v $installdir/usr/share/bash-completion/completions/{mount,umount,rfkill}
 
-        install -Dm00644 $pkgfiles/runuser $installdir/usr/share/defaults/etc/pam.d/runuser
-        install -Dm00644 $pkgfiles/runuser-l $installdir/usr/share/defaults/etc/pam.d/runuser-l
+        # PAM
+        install -dm00755 $installdir/usr/share/defaults/etc/pam.d
+        install -m00644 $pkgfiles/pam.d/* -t $installdir/usr/share/defaults/etc/pam.d
 
         # Install compat links T10615
         for TOP in {bin,sbin}; do
@@ -73,5 +102,11 @@ install    : |
     fi
 # Tests compile but they are not run because of
 # "Ignore util-linux test suite [non-root UID expected]."
-#check      : |
-#    %make check
+# check      : |
+#     if [ -z "${EMUL32BUILD+set}" ]; then
+#         unset LD_PRELOAD
+#         %ninja_check
+#     fi
+patterns   :
+    - ^python3-libmount :
+        - /usr/lib/python3*/site-packages/libmount
