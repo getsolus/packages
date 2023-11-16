@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO, Tuple
 from xml.etree import ElementTree
 
 import yaml
@@ -83,7 +83,7 @@ class Result:
 
     @property
     def _message(self) -> str:
-        return self.message.replace('\n', '%0A').replace('%', '%25')
+        return self.message.replace('%', '%25').replace('\n', '%0A')
 
     @property
     def _meta(self) -> str:
@@ -136,6 +136,14 @@ class PullRequestCheck:
     def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
         return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
 
+    def package_line(self, file: str, expr: str) -> Optional[int]:
+        with self._open(file) as f:
+            for i, line in enumerate(f.read().splitlines()):
+                if re.match(expr, line):
+                    return i+1
+
+        return None
+
 
 class Homepage(PullRequestCheck):
     _error = '`homepage` is not set'
@@ -179,6 +187,36 @@ class PackageBumped(PullRequestCheck):
                 return None
 
             raise e
+
+
+class PackageDependenciesOrder(PullRequestCheck):
+    _deps_keys = ['builddeps', 'checkdeps', 'rundeps']
+    _error = '`` are not in order'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        results = [self._check_deps(deps, file)
+                   for deps in self._deps_keys
+                   for file in self.package_files]
+
+        return [result for result in results if result is not None]
+
+    def _check_deps(self, deps: str, file: str) -> Optional[Result]:
+        cur = self.load_package_yml(file).get(deps, [])
+        exp = sorted(cur, key=self._sort)
+
+        if cur != exp:
+            return Result(file=file, level=self._level, line=self.package_line(file, '^' + deps + r'\s*:'),
+                          message=f'{deps} are not in order, expected: \n' + '\n'.join([f'- {p}' for p in exp]))
+
+        return None
+
+    @staticmethod
+    def _sort(pkg: str) -> Tuple[int, str]:
+        if pkg.startswith('pkgconfig('):
+            return 0, pkg.removeprefix('pkgconfig(')
+
+        return 1, pkg
 
 
 class PackageDirectory(PullRequestCheck):
@@ -305,6 +343,7 @@ class Checker:
     checks = [
         Homepage,
         PackageBumped,
+        PackageDependenciesOrder,
         PackageDirectory,
         Patch,
         UnwantedFiles,
