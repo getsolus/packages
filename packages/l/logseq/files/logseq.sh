@@ -17,4 +17,9 @@ if [ -z "${LOGSEQ_NO_WAYLAND+set}" ]; then
   LOGSEQ_FLAGS="$LOGSEQ_FLAGS --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations"
 fi
 
+# Use system git
+if [ -z "${LOCAL_GIT_DIRECTORY+set}" ]; then
+  LOCAL_GIT_DIRECTORY="/usr"
+fi
+
 exec /usr/share/logseq/Logseq $LOGSEQ_FLAGS "$@"
