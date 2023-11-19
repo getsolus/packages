@@ -19,7 +19,7 @@ fi
 
 # Use system git
 if [ -z "${LOCAL_GIT_DIRECTORY+set}" ]; then
-  LOCAL_GIT_DIRECTORY="/usr"
+  export LOCAL_GIT_DIRECTORY="/usr"
 fi
 
 exec /usr/share/logseq/Logseq $LOGSEQ_FLAGS "$@"
