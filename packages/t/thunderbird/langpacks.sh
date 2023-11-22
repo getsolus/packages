@@ -18,12 +18,17 @@ NC='\033[0m' # No Color
 
 echo -e "${WHITE}Processing Thunderbird langpacks${NC}"
 
-# Ensure we don't have a previous run living here
-rm -rf thunderbird_langpacks
-mkdir thunderbird_langpacks
-cd thunderbird_langpacks
+URL="${RELURL}/${VER}/linux-${ARCH}/xpi/"
 
-  wget --quiet -r -np -l1 -nd -A xpi $RELURL/$VER/linux-$ARCH/xpi/
+# Ensure we don't have a previous run living here
+if [[ -e thunderbird_langpacks ]]; then
+  rm -rf thunderbird_langpacks
+fi
+
+mkdir thunderbird_langpacks
+pushd thunderbird_langpacks
+echo ${URL}
+echo "mirror ." | lftp "${URL}"
 
   for i in *.xpi ; do
     ln="$(basename ${i} .xpi)"
@@ -31,6 +36,7 @@ cd thunderbird_langpacks
     echo "Processing thunderbird locale: ${ln}"
     unzip -qq $i -d "${eid}"
     find "${eid}" -type f | xargs chmod 00644
+    find "${eid}" | xargs touch --no-dereference --date="@0"
     cd "${eid}"
       zip -qq -r9mX "../${eid}.xpi" *
       rm ../$i
@@ -38,14 +44,17 @@ cd thunderbird_langpacks
     rm -rf "${eid}"
   done
 
-  echo "Creating thunderbird-$VER-langpacks.tar.xz..."
-  tar cJf ../thunderbird-$VER-langpacks.tar.xz *.xpi
+popd
 
-cd ..
+# Fully reproducible
+tar --sort=name \
+    --mtime="@0" \
+    --owner=0 --group=0 --numeric-owner \
+    -acvf thunderbird-${VER}-langpacks.tar.zst thunderbird_langpacks
 
 rm -rf thunderbird_langpacks
 
-SHASUM=$(sha256sum thunderbird-$VER-langpacks.tar.xz)
+SHASUM=$(sha256sum thunderbird-${VER}-langpacks.tar.zst)
 echo ""
-echo "thunderbird-$VER-langpacks.tar.xz : ${SHASUM%% *}"
+echo "thunderbird-${VER}-langpacks.tar.zst : ${SHASUM%% *}"
 
