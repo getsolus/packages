@@ -1,6 +1,6 @@
 name       : gamescope
 version    : 3.13.8
-release    : 12
+release    : 13
 source     :
     - git|https://github.com/ValveSoftware/gamescope.git : 3.13.8
 license    : BSD-2-Clause
@@ -13,12 +13,12 @@ networking : yes
 patterns   :
     - /*
 builddeps  :
-    # - pkgconfig(benchmark)
     - pkgconfig(libcap)
     - pkgconfig(libdisplay-info)
     - pkgconfig(libdrm)
-    # - pkgconfig(libliftoff)
+    - pkgconfig(libliftoff)
     - pkgconfig(libpipewire-0.3)
+    - pkgconfig(openvr)
     - pkgconfig(sdl2)
     # - pkgconfig(stb)
     - pkgconfig(vulkan)
@@ -40,10 +40,37 @@ builddeps  :
     - glslang-devel
     - vulkan-headers
 setup      : |
-    # %patch -p1 -i $pkgfiles/stb-fix.patch
-    # %patch -p1 -i $pkgfiles/0001-Revert-rendervulkan-Get-a-general-graphics-compute-q.patch
+    # For issue getsolus/packages#869. Let's create a special nvidia binary with the offending patch reverted. This only works on Nvidia, so we still need non-patched.
+    mkdir ../nvidia
+    cp -ra * ../nvidia
+
+    # Normal build
+    %meson_configure -Dforce_fallback_for="stb"
+
+    cd ../nvidia
+    %patch -p1 -i $pkgfiles/0001-Revert-rendervulkan-Get-a-general-graphics-compute-q.patch
     %meson_configure -Dforce_fallback_for="stb"
 build      : |
     %ninja_build
+
+    cd ../nvidia
+    %ninja_build
 install    : |
+    # Install the nvidia build first so we can rename the binary
+    pushd ../nvidia
     %ninja_install
+
+    # Rename binary and remove everything else that would otherwise conflict
+    mv $installdir/usr/bin/gamescope $installdir/usr/bin/gamescope-nvidia
+    rm -rf $installdir/usr/include \
+           $installdir/usr/lib64 \
+           $installdir/usr/share
+    popd
+
+    # Unpatched install
+    %ninja_install
+
+    # Unneeded. This were only for libs that were statically compiled in
+    rm -v $installdir/usr/include/vkroots.h \
+          $installdir/usr/lib64/pkgconfig/vkroots.pc
+    find $installdir -type d -empty -print -delete
