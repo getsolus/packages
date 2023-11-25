@@ -145,6 +145,25 @@ class PullRequestCheck:
         return None
 
 
+class CommitMessage(PullRequestCheck):
+    def run(self) -> List[Result]:
+        return [result
+                for commit in self.commits
+                for result in self._check_commit(commit)]
+
+    def _check_commit(self, commit: str) -> List[Result]:
+        msg = self.git.commit_message(commit)
+        files = self.git.files_in_commit(commit)
+        file = files[0] if files else ''
+
+        results: List[Result] = []
+
+        if msg.strip().endswith(']'):
+            results.append(Result(message='commit ends with ]', level=Level.ERROR, file=file))
+
+        return results
+
+
 class Homepage(PullRequestCheck):
     _error = '`homepage` is not set'
     _level = Level.ERROR
@@ -341,6 +360,7 @@ class SummaryGenerator(PullRequestCheck):
 
 class Checker:
     checks = [
+        CommitMessage,
         Homepage,
         PackageBumped,
         PackageDependenciesOrder,
