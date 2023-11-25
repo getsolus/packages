@@ -5,7 +5,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 from xml.etree import ElementTree
 
 import yaml
@@ -203,16 +203,31 @@ class PackageDependenciesOrder(PullRequestCheck):
 
     def _check_deps(self, deps: str, file: str) -> Optional[Result]:
         cur = self.load_package_yml(file).get(deps, [])
-        exp = sorted(cur, key=self._sort)
+        exp = self._sorted(cur)
 
         if cur != exp:
             return Result(file=file, level=self._level, line=self.package_line(file, '^' + deps + r'\s*:'),
-                          message=f'{deps} are not in order, expected: \n' + '\n'.join([f'- {p}' for p in exp]))
+                          message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
 
         return None
 
     @staticmethod
-    def _sort(pkg: str) -> Tuple[int, str]:
+    def _sorted(deps: List[Union[str, Dict[str, List[str]]]]) -> List[Union[str, Dict[str, List[str]]]]:
+        for dep in deps:
+            if isinstance(dep, dict):
+                for k, v in dep.items():
+                    if isinstance(v, str):
+                        dep[k] = v
+                    else:
+                        dep[k] = sorted(v, key=PackageDependenciesOrder._sort)
+
+        return sorted(deps, key=PackageDependenciesOrder._sort)
+
+    @staticmethod
+    def _sort(pkg: Union[str, Dict[str, List[str]]]) -> Tuple[int, str]:
+        if isinstance(pkg, dict):
+            pkg = list(pkg.keys())[0]
+
         if pkg.startswith('pkgconfig('):
             return 0, pkg.removeprefix('pkgconfig(')
 
