@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os.path
 import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
+from urllib import request
 from xml.etree import ElementTree
 
 import yaml
@@ -279,6 +281,40 @@ class Patch(PullRequestCheck):
         return results
 
 
+class SPDXLicense(PullRequestCheck):
+    _licenses_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json'
+    _licenses: Optional[List[str]] = None
+    _extra_licenses = ['Distributable', 'Public-Domain']
+    _error = 'Invalid license identifier: '
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [r for f in self.package_files
+                for r in self._validate_spdx(f) if r]
+
+    def _validate_spdx(self, file: str) -> List[Optional[Result]]:
+        license = self.load_package_yml(file)['license']
+        if isinstance(license, list):
+            return [self._validate_license(file, id) for id in license]
+
+        return [self._validate_license(file, license)]
+
+    def _validate_license(self, file: str, identifier: str) -> Optional[Result]:
+        if identifier in self._license_ids():
+            return None
+
+        return Result(file=file, level=self._level,
+                      message=f'invalid license identifier: {repr(identifier)}',
+                      line=self.package_line(file, r'^license\s*:'))
+
+    def _license_ids(self) -> List[str]:
+        if self._licenses is None:
+            with request.urlopen(self._licenses_url) as f:
+                self._licenses = [license['licenseId'] for license in json.load(f)['licenses']]
+
+        return self._licenses + self._extra_licenses
+
+
 class UnwantedFiles(PullRequestCheck):
     _patterns = ['Makefile^', r'.*\.eopkg^', r'.*\.tar\..*', r'^packages/[^/]+(/[^/]+)?$']
     _error = 'This file should not be included'
@@ -361,8 +397,9 @@ class Checker:
         PackageDependenciesOrder,
         PackageDirectory,
         Patch,
-        UnwantedFiles,
         Pspec,
+        SPDXLicense,
+        UnwantedFiles,
     ]
 
     def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):
