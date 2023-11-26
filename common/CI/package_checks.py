@@ -39,7 +39,7 @@ class Git:
         return self.run('log', '-1', '--format=%B', ref)
 
     def commit_refs(self, base: str, head: str) -> List[str]:
-        return self.run_lines('log', '--pretty=%H', base + '..' + head)
+        return self.run_lines('log', '--no-merges', '--pretty=%H', base + '..' + head)
 
     def fetch(self, remote: List[str]) -> None:
         self.run('fetch', *remote)
