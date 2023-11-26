@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
+import json
 import os.path
 import re
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, TextIO, Tuple
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
+from urllib import request
 from xml.etree import ElementTree
 
 import yaml
@@ -203,16 +205,31 @@ class PackageDependenciesOrder(PullRequestCheck):
 
     def _check_deps(self, deps: str, file: str) -> Optional[Result]:
         cur = self.load_package_yml(file).get(deps, [])
-        exp = sorted(cur, key=self._sort)
+        exp = self._sorted(cur)
 
         if cur != exp:
             return Result(file=file, level=self._level, line=self.package_line(file, '^' + deps + r'\s*:'),
-                          message=f'{deps} are not in order, expected: \n' + '\n'.join([f'- {p}' for p in exp]))
+                          message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
 
         return None
 
     @staticmethod
-    def _sort(pkg: str) -> Tuple[int, str]:
+    def _sorted(deps: List[Union[str, Dict[str, List[str]]]]) -> List[Union[str, Dict[str, List[str]]]]:
+        for dep in deps:
+            if isinstance(dep, dict):
+                for k, v in dep.items():
+                    if isinstance(v, str):
+                        dep[k] = v
+                    else:
+                        dep[k] = sorted(v, key=PackageDependenciesOrder._sort)
+
+        return sorted(deps, key=PackageDependenciesOrder._sort)
+
+    @staticmethod
+    def _sort(pkg: Union[str, Dict[str, List[str]]]) -> Tuple[int, str]:
+        if isinstance(pkg, dict):
+            pkg = list(pkg.keys())[0]
+
         if pkg.startswith('pkgconfig('):
             return 0, pkg.removeprefix('pkgconfig(')
 
@@ -262,6 +279,40 @@ class Patch(PullRequestCheck):
                     results.append(Result(message=self._error, file=file, line=i + 1, level=self._level))
 
         return results
+
+
+class SPDXLicense(PullRequestCheck):
+    _licenses_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json'
+    _licenses: Optional[List[str]] = None
+    _extra_licenses = ['Distributable', 'Public-Domain']
+    _error = 'Invalid license identifier: '
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [r for f in self.package_files
+                for r in self._validate_spdx(f) if r]
+
+    def _validate_spdx(self, file: str) -> List[Optional[Result]]:
+        license = self.load_package_yml(file)['license']
+        if isinstance(license, list):
+            return [self._validate_license(file, id) for id in license]
+
+        return [self._validate_license(file, license)]
+
+    def _validate_license(self, file: str, identifier: str) -> Optional[Result]:
+        if identifier in self._license_ids():
+            return None
+
+        return Result(file=file, level=self._level,
+                      message=f'invalid license identifier: {repr(identifier)}',
+                      line=self.package_line(file, r'^license\s*:'))
+
+    def _license_ids(self) -> List[str]:
+        if self._licenses is None:
+            with request.urlopen(self._licenses_url) as f:
+                self._licenses = [license['licenseId'] for license in json.load(f)['licenses']]
+
+        return self._licenses + self._extra_licenses
 
 
 class UnwantedFiles(PullRequestCheck):
@@ -346,8 +397,9 @@ class Checker:
         PackageDependenciesOrder,
         PackageDirectory,
         Patch,
-        UnwantedFiles,
         Pspec,
+        SPDXLicense,
+        UnwantedFiles,
     ]
 
     def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):
