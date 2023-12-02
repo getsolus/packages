@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import glob
 import json
 import os.path
 import re
@@ -107,6 +108,7 @@ class Result:
 
 class PullRequestCheck:
     _package_files = ['package.yml']
+    _two_letter_dirs = ['py']
 
     def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
         self.git = git
@@ -138,13 +140,34 @@ class PullRequestCheck:
     def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
         return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
 
-    def package_line(self, file: str, expr: str) -> Optional[int]:
+    def file_line(self, file: str, expr: str) -> Optional[int]:
         with self._open(file) as f:
             for i, line in enumerate(f.read().splitlines()):
                 if re.match(expr, line):
-                    return i+1
+                    return i + 1
 
         return None
+
+    def package_file_line(self, package: str, file: str, expr: str) -> Optional[int]:
+        return self.file_line(self.package_file(package, file), expr)
+
+    def package_yml_path(self, package: str) -> str:
+        return self.package_file(package, 'package.yml')
+
+    def package_file(self, package: str, file: str) -> str:
+        return os.path.join(self.package_dir(package), file)
+
+    def package_dir(self, package: str) -> str:
+        return os.path.join('packages', self._package_subdir(package), package)
+
+    def _package_subdir(self, package: str) -> str:
+        package = package.lower()
+
+        for two in self._two_letter_dirs:
+            if package.startswith(two):
+                return two
+
+        return package[0]
 
 
 class CommitMessage(PullRequestCheck):
@@ -227,7 +250,7 @@ class PackageDependenciesOrder(PullRequestCheck):
         exp = self._sorted(cur)
 
         if cur != exp:
-            return Result(file=file, level=self._level, line=self.package_line(file, '^' + deps + r'\s*:'),
+            return Result(file=file, level=self._level, line=self.file_line(file, '^' + deps + r'\s*:'),
                           message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
 
         return None
@@ -256,7 +279,6 @@ class PackageDependenciesOrder(PullRequestCheck):
 
 
 class PackageDirectory(PullRequestCheck):
-    _two_letter_dirs = ['py']
     _error = 'Package not in correct directory'
     _level = Level.ERROR
 
@@ -268,16 +290,9 @@ class PackageDirectory(PullRequestCheck):
 
     def _check_path(self, path: str) -> bool:
         pkg = os.path.basename(os.path.realpath(path))
-        exp = ['packages', self._dir(pkg), pkg]
+        exp = ['packages', self._package_subdir(pkg), pkg]
 
         return path.split('/') == exp
-
-    def _dir(self, package: str) -> str:
-        for two in self._two_letter_dirs:
-            if package.startswith(two):
-                return two
-
-        return package[0]
 
 
 class Patch(PullRequestCheck):
@@ -324,7 +339,7 @@ class SPDXLicense(PullRequestCheck):
 
         return Result(file=file, level=self._level,
                       message=f'invalid license identifier: {repr(identifier)}',
-                      line=self.package_line(file, r'^license\s*:'))
+                      line=self.file_line(file, r'^license\s*:'))
 
     def _license_ids(self) -> List[str]:
         if self._licenses is None:
@@ -380,6 +395,60 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
+class SystemDependencies(PullRequestCheck):
+    _components = ['system.base', 'system.devel']
+
+    def run(self) -> List[Result]:
+        return [result
+                for f in self.package_files
+                for result in self._check_deps(f)]
+
+    def _check_deps(self, pkg_file: str) -> List[Result]:
+        pkg = os.path.basename(os.path.dirname(pkg_file))
+        pkg_components = self._package_components(pkg)
+
+        return self._validate_deps(pkg) if self._components_match(pkg_components) else []
+
+    def _package_components(self, pkg: str) -> List[str]:
+        return self._unwrap_component(self.load_package_yml(self.package_yml_path(pkg))['component'])
+
+    def _unwrap_component(self, component: Any) -> List[str]:
+        if isinstance(component, dict):
+            return [c for v in component.values() for c in self._unwrap_component(v)]
+
+        if isinstance(component, list):
+            return [c for item in component for c in self._unwrap_component(item)]
+
+        return [component]
+
+    def _validate_deps(self, pkg: str) -> List[Result]:
+        libs_file = self.package_file(pkg, 'abi_used_libs')
+        if not os.path.exists(libs_file):
+            return []
+
+        with self._open(libs_file) as f:
+            results = {package: (lib, self._components_match(self._package_components(package)))
+                       for lib, package in set([self._search_lib(lib.strip()) for lib in f])
+                       if package is not None}
+
+            return [Result(message=f'Dependency not in system.base/devel: {dep}',
+                           level=Level.WARNING, file=libs_file,
+                           line=self.package_file_line(pkg, 'abi_used_libs', f'^{lib}$'))
+                    for dep, (lib, check) in results.items() if not check]
+
+    def _components_match(self, components: List[str]) -> bool:
+        return len(set(components) & set(self._components)) > 0
+
+    def _search_lib(self, name: str) -> Tuple[str, Optional[str]]:
+        for f in glob.glob(self._path(os.path.join('packages', '*', '*', 'abi_libs'))):
+            with open(f, 'r') as libs:
+                for lib in libs:
+                    if lib.strip() == name:
+                        return name, os.path.basename(os.path.dirname(f))
+
+        return name, None
+
+
 class SummaryGenerator(PullRequestCheck):
     def generate(self) -> str:
         s = "# Changelog entries\n\n"
@@ -419,6 +488,7 @@ class Checker:
         Patch,
         Pspec,
         SPDXLicense,
+        SystemDependencies,
         UnwantedFiles,
     ]
 
