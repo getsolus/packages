@@ -295,6 +295,22 @@ class PackageDirectory(PullRequestCheck):
         return path.split('/') == exp
 
 
+class PackageVersion(PullRequestCheck):
+    _error = 'Package version is not a string'
+    _level = Level.ERROR
+
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, level=self._level,
+                       file=path, line=self.file_line(path, r'^version\s*:'),)
+                for path in self.package_files
+                if not self._check_version(path)]
+
+    def _check_version(self, path: str) -> bool:
+        version = self.load_package_yml(path)['version']
+
+        return isinstance(version, str)
+
+
 class Patch(PullRequestCheck):
     _regex = r'patch -p1 <'
     _error = 'Uses `patch <`, use `patch -i` instead'
@@ -485,6 +501,7 @@ class Checker:
         PackageBumped,
         PackageDependenciesOrder,
         PackageDirectory,
+        PackageVersion,
         Patch,
         Pspec,
         SPDXLicense,
