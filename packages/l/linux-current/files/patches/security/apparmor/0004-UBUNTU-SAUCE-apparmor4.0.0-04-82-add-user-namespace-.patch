@@ -1,7 +1,7 @@
-From 3c2b86f49b51aa07f1c2001ae45270b5092c1f26 Mon Sep 17 00:00:00 2001
+From 37d6e10fa481d924fe664bc423122be0e6643c75 Mon Sep 17 00:00:00 2001
 From: John Johansen <john.johansen@canonical.com>
 Date: Fri, 9 Sep 2022 16:00:09 -0700
-Subject: [PATCH 04/82] UBUNTU: SAUCE: apparmor4.0.0 [04/82]: add user
+Subject: [PATCH 04/78] UBUNTU: SAUCE: apparmor4.0.0 [04/82]: add user
  namespace creation mediation
 
 BugLink: https://bugs.launchpad.net/bugs/2028253
@@ -24,11 +24,11 @@ Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
  security/apparmor/include/apparmor.h |  1 +
  security/apparmor/include/audit.h    |  1 +
  security/apparmor/include/policy.h   |  1 +
- security/apparmor/include/task.h     |  6 ++++
- security/apparmor/lsm.c              | 32 +++++++++++++++++++-
+ security/apparmor/include/task.h     |  7 +++++
+ security/apparmor/lsm.c              | 33 +++++++++++++++++++-
  security/apparmor/policy.c           |  1 +
- security/apparmor/task.c             | 44 ++++++++++++++++++++++++++++
- 10 files changed, 99 insertions(+), 2 deletions(-)
+ security/apparmor/task.c             | 45 ++++++++++++++++++++++++++++
+ 10 files changed, 102 insertions(+), 2 deletions(-)
 
 diff --git a/security/apparmor/Kconfig b/security/apparmor/Kconfig
 index e0d1dd0a192a..4abf9d0f52cb 100644
@@ -54,10 +54,10 @@ index e0d1dd0a192a..4abf9d0f52cb 100644
  	tristate "Build KUnit tests for policy_unpack.c" if !KUNIT_ALL_TESTS
  	depends on KUNIT && SECURITY_APPARMOR
 diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
-index ba192e51bfd2..f7530b2ffc3f 100644
+index ca7609732537..76ff0dc26542 100644
 --- a/security/apparmor/apparmorfs.c
 +++ b/security/apparmor/apparmorfs.c
-@@ -2367,6 +2367,7 @@ static struct aa_sfs_entry aa_sfs_entry_mount[] = {
+@@ -2370,6 +2370,7 @@ static struct aa_sfs_entry aa_sfs_entry_mount[] = {
  static struct aa_sfs_entry aa_sfs_entry_ns[] = {
  	AA_SFS_FILE_BOOLEAN("profile",		1),
  	AA_SFS_FILE_BOOLEAN("pivot_root",	0),
@@ -66,7 +66,7 @@ index ba192e51bfd2..f7530b2ffc3f 100644
  };
  
 diff --git a/security/apparmor/audit.c b/security/apparmor/audit.c
-index 5a7978aa4b19..c955bf809751 100644
+index 6933cb2f679b..3b24f4a8c727 100644
 --- a/security/apparmor/audit.c
 +++ b/security/apparmor/audit.c
 @@ -58,7 +58,7 @@ static const char *const aa_class_names[] = {
@@ -91,7 +91,7 @@ index 4bd8e9487d19..57d18d79b98a 100644
  #define AA_CLASS_X		31
  #define AA_CLASS_DBUS		32
 diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
-index c328f07f11cd..6da97bbce518 100644
+index 42d701fec5a6..095707e05b70 100644
 --- a/security/apparmor/include/audit.h
 +++ b/security/apparmor/include/audit.h
 @@ -103,6 +103,7 @@ enum audit_type {
@@ -103,7 +103,7 @@ index c328f07f11cd..6da97bbce518 100644
  struct apparmor_audit_data {
  	int error;
 diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
-index 0693681064d3..c68aa29a8483 100644
+index 25165a90e0e7..7cda078cb941 100644
 --- a/security/apparmor/include/policy.h
 +++ b/security/apparmor/include/policy.h
 @@ -34,6 +34,7 @@
@@ -115,25 +115,26 @@ index 0693681064d3..c68aa29a8483 100644
  extern const char *const aa_profile_mode_names[];
  #define APPARMOR_MODE_NAMES_MAX_INDEX 4
 diff --git a/security/apparmor/include/task.h b/security/apparmor/include/task.h
-index 13437d62c70f..c420abd6a4d0 100644
+index 29ba55107b7d..1eeb0572a9a9 100644
 --- a/security/apparmor/include/task.h
 +++ b/security/apparmor/include/task.h
-@@ -95,4 +95,10 @@ int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
+@@ -96,4 +96,11 @@ int aa_may_ptrace(const struct cred *tracer_cred, struct aa_label *tracer,
  		  u32 request);
  
  
 +
 +#define AA_USERNS_CREATE	8
 +
-+int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_ns_perm(struct aa_profile *profile,
++		       struct apparmor_audit_data *ad,
 +		       u32 request);
 +
  #endif /* __AA_TASK_H */
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index 6888490c4f66..22a8b5d4918e 100644
+index 8e8c40a8109f..169b21eb7a4a 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
-@@ -818,6 +818,25 @@ static int apparmor_task_kill(struct task_struct *target, struct kernel_siginfo
+@@ -851,6 +851,26 @@ static int apparmor_task_kill(struct task_struct *target, struct kernel_siginfo
  	return error;
  }
  
@@ -142,13 +143,14 @@ index 6888490c4f66..22a8b5d4918e 100644
 +	struct aa_label *label;
 +	struct aa_profile *profile;
 +	int error = 0;
-+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_TASK, AA_CLASS_NS,
 +			  OP_USERNS_CREATE);
 +
++	ad.subj_cred = current_cred();
 +	label = begin_current_label_crit_section();
 +	if (unprivileged_userns_restricted || !unconfined(label)) {
 +		error = fn_for_each(label, profile,
-+				    aa_profile_ns_perm(profile, &sa,
++				    aa_profile_ns_perm(profile, &ad,
 +						       AA_USERNS_CREATE));
 +		end_current_label_crit_section(label);
 +	}
@@ -159,7 +161,7 @@ index 6888490c4f66..22a8b5d4918e 100644
  /**
   * apparmor_sk_alloc_security - allocate and attach the sk_security field
   */
-@@ -1294,6 +1313,7 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
+@@ -1329,6 +1349,7 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(task_getsecid_obj, apparmor_task_getsecid_obj),
  	LSM_HOOK_INIT(task_setrlimit, apparmor_task_setrlimit),
  	LSM_HOOK_INIT(task_kill, apparmor_task_kill),
@@ -167,7 +169,7 @@ index 6888490c4f66..22a8b5d4918e 100644
  
  #ifdef CONFIG_AUDIT
  	LSM_HOOK_INIT(audit_rule_init, aa_audit_rule_init),
-@@ -1765,6 +1785,7 @@ static int apparmor_dointvec(struct ctl_table *table, int write,
+@@ -1800,6 +1821,7 @@ static int apparmor_dointvec(struct ctl_table *table, int write,
  }
  
  static struct ctl_table apparmor_sysctl_table[] = {
@@ -175,7 +177,7 @@ index 6888490c4f66..22a8b5d4918e 100644
  	{
  		.procname       = "unprivileged_userns_apparmor_policy",
  		.data           = &unprivileged_userns_apparmor_policy,
-@@ -1772,6 +1793,7 @@ static struct ctl_table apparmor_sysctl_table[] = {
+@@ -1807,6 +1829,7 @@ static struct ctl_table apparmor_sysctl_table[] = {
  		.mode           = 0600,
  		.proc_handler   = apparmor_dointvec,
  	},
@@ -183,7 +185,7 @@ index 6888490c4f66..22a8b5d4918e 100644
  	{
  		.procname       = "apparmor_display_secid_mode",
  		.data           = &apparmor_display_secid_mode,
-@@ -1779,7 +1801,15 @@ static struct ctl_table apparmor_sysctl_table[] = {
+@@ -1814,7 +1837,15 @@ static struct ctl_table apparmor_sysctl_table[] = {
  		.mode           = 0600,
  		.proc_handler   = apparmor_dointvec,
  	},
@@ -201,7 +203,7 @@ index 6888490c4f66..22a8b5d4918e 100644
  };
  
 diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
-index ae08c1c7714e..55fd645ea013 100644
+index 16e1d48a9f29..42b53f5648b1 100644
 --- a/security/apparmor/policy.c
 +++ b/security/apparmor/policy.c
 @@ -88,6 +88,7 @@
@@ -213,40 +215,41 @@ index ae08c1c7714e..55fd645ea013 100644
  const char *const aa_profile_mode_names[] = {
  	"enforce",
 diff --git a/security/apparmor/task.c b/security/apparmor/task.c
-index 84d16a29bfcb..235d6f86b11c 100644
+index 0d7af707cccd..38e114a2746a 100644
 --- a/security/apparmor/task.c
 +++ b/security/apparmor/task.c
-@@ -293,3 +293,47 @@ int aa_may_ptrace(struct aa_label *tracer, struct aa_label *tracee,
- 			profile_tracer_perm(profile, tracee, request, &sa),
- 			profile_tracee_perm(profile, tracer, xrequest, &sa));
+@@ -301,3 +301,48 @@ int aa_may_ptrace(const struct cred *tracer_cred, struct aa_label *tracer,
+ 			profile_tracee_perm(tracee_cred, profile, tracer,
+ 					    xrequest, &sa));
  }
 +
 +/* call back to audit ptrace fields */
 +static void audit_ns_cb(struct audit_buffer *ab, void *va)
 +{
 +	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
 +
-+	if (aad(sa)->request & AA_USERNS_CREATE)
++	if (ad->request & AA_USERNS_CREATE)
 +		audit_log_format(ab, " requested=\"userns_create\"");
 +
-+	if (aad(sa)->denied & AA_USERNS_CREATE)
++	if (ad->denied & AA_USERNS_CREATE)
 +		audit_log_format(ab, " denied=\"userns_create\"");
 +}
 +
-+int aa_profile_ns_perm(struct aa_profile *profile, struct common_audit_data *sa,
++int aa_profile_ns_perm(struct aa_profile *profile,
++		       struct apparmor_audit_data *ad,
 +		       u32 request)
 +{
 +	struct aa_perms perms = { };
 +
-+	aad(sa)->label = &profile->label;
-+	aad(sa)->request = request;
++	ad->request = request;
 +
 +	if (profile_unconfined(profile)) {
 +		if (!unprivileged_userns_restricted ||
 +		    ns_capable_noaudit(current_user_ns(), CAP_SYS_ADMIN))
 +			return 0;
 +
-+		aad(sa)->info = "User namespace creation restricted";
++		ad->info = "User namespace creation restricted";
 +		/* don't just return: allow complain mode to override */
 +	} else {
 +		struct aa_ruleset *rules = list_first_entry(&profile->rules,
@@ -254,7 +257,7 @@ index 84d16a29bfcb..235d6f86b11c 100644
 +							    list);
 +		aa_state_t state;
 +
-+		state = RULE_MEDIATES(rules, aad(sa)->class);
++		state = RULE_MEDIATES(rules, ad->class);
 +		if (!state)
 +			/* TODO: add flag to complain about unmediated */
 +			return 0;
@@ -262,7 +265,7 @@ index 84d16a29bfcb..235d6f86b11c 100644
 +	}
 +
 +	aa_apply_modes_to_perms(profile, &perms);
-+	return aa_check_perms(profile, &perms, request, sa, audit_ns_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_ns_cb);
 +}
 -- 
 2.43.0

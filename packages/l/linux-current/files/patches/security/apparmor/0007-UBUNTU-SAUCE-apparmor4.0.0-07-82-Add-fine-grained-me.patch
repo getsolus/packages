@@ -1,7 +1,7 @@
-From dc4cad76b5096d0dcc261db786b35cd97e1975d1 Mon Sep 17 00:00:00 2001
+From deb80a0fad3440fd286f1491e6e6761708db5b2e Mon Sep 17 00:00:00 2001
 From: John Johansen <john.johansen@canonical.com>
 Date: Mon, 13 Dec 2021 15:46:09 -0800
-Subject: [PATCH 07/82] UBUNTU: SAUCE: apparmor4.0.0 [07/82]: Add fine grained
+Subject: [PATCH 07/78] UBUNTU: SAUCE: apparmor4.0.0 [07/82]: Add fine grained
  mediation of posix mqueues
 
 BugLink: https://bugs.launchpad.net/bugs/2028253
@@ -17,22 +17,22 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
 Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
 ---
  security/apparmor/apparmorfs.c    |   7 ++
- security/apparmor/file.c          |  60 +++++++++-
- security/apparmor/include/audit.h |   4 +
+ security/apparmor/file.c          |  61 +++++++++-
+ security/apparmor/include/audit.h |   3 +
  security/apparmor/include/inode.h |  42 +++++++
- security/apparmor/include/ipc.h   |  57 +++++++++
- security/apparmor/include/perms.h |   9 ++
- security/apparmor/ipc.c           | 107 +++++++++++++++++
- security/apparmor/lib.c           |  38 +++---
- security/apparmor/lsm.c           | 191 +++++++++++++++++++++++++++++-
- 9 files changed, 497 insertions(+), 18 deletions(-)
+ security/apparmor/include/ipc.h   |  58 +++++++++
+ security/apparmor/include/perms.h |  11 +-
+ security/apparmor/ipc.c           | 107 ++++++++++++++++
+ security/apparmor/lib.c           |  39 +++---
+ security/apparmor/lsm.c           | 195 +++++++++++++++++++++++++++++-
+ 9 files changed, 503 insertions(+), 20 deletions(-)
  create mode 100644 security/apparmor/include/inode.h
 
 diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
-index 9a3b3916aea5..b610390b8455 100644
+index 4e8228c1d5f1..d45263bfaa8e 100644
 --- a/security/apparmor/apparmorfs.c
 +++ b/security/apparmor/apparmorfs.c
-@@ -2314,6 +2314,12 @@ static struct aa_sfs_entry aa_sfs_entry_file[] = {
+@@ -2317,6 +2317,12 @@ static struct aa_sfs_entry aa_sfs_entry_file[] = {
  	{ }
  };
  
@@ -45,7 +45,7 @@ index 9a3b3916aea5..b610390b8455 100644
  static struct aa_sfs_entry aa_sfs_entry_ptrace[] = {
  	AA_SFS_FILE_STRING("mask", "read trace"),
  	{ }
-@@ -2391,6 +2397,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
+@@ -2394,6 +2400,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
  	AA_SFS_DIR("policy",			aa_sfs_entry_policy),
  	AA_SFS_DIR("domain",			aa_sfs_entry_domain),
  	AA_SFS_DIR("file",			aa_sfs_entry_file),
@@ -54,7 +54,7 @@ index 9a3b3916aea5..b610390b8455 100644
  	AA_SFS_DIR("network",			aa_sfs_entry_network_compat),
  	AA_SFS_DIR("mount",			aa_sfs_entry_mount),
 diff --git a/security/apparmor/file.c b/security/apparmor/file.c
-index f18aa82e50ae..2061295f50f6 100644
+index f7947bab47a1..0d89fb87fdfe 100644
 --- a/security/apparmor/file.c
 +++ b/security/apparmor/file.c
 @@ -19,6 +19,7 @@
@@ -65,19 +65,20 @@ index f18aa82e50ae..2061295f50f6 100644
  #include "include/match.h"
  #include "include/net.h"
  #include "include/path.h"
-@@ -537,6 +538,60 @@ static int __file_sock_perm(const char *op, struct aa_label *label,
+@@ -572,6 +573,61 @@ static int __file_sock_perm(const char *op, const struct cred *subj_cred,
  	return error;
  }
  
 +/* TODO: combine with __file_path_perm */
-+static int __file_mqueue_perm(const char *op, struct aa_label *label,
++static int __file_mqueue_perm(const char *op, const struct cred *subj_cred,
++			      struct aa_label *label,
 +			      struct aa_label *flabel, struct file *file,
 +			      u32 request, u32 denied, bool in_atomic)
 +{
 +	struct aa_profile *profile;
 +	char *buffer;
 +	int error;
-+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
 +
 +	/* revalidation due to label out of date. No revocation at this time */
 +	if (!denied && aa_label_is_subset(flabel, label))
@@ -88,15 +89,15 @@ index f18aa82e50ae..2061295f50f6 100644
 +	if (!buffer)
 +		return -ENOMEM;
 +
-+	aad(&sa)->request = request;
-+	aad(&sa)->peer = NULL;
-+	aad(&sa)->mq.ouid = file_inode(file)->i_uid;
-+	aad(&sa)->mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
++	ad.subj_cred = subj_cred;
++	ad.request = request;
++	ad.peer = NULL;
++	ad.mq.ouid = file_inode(file)->i_uid;
 +
 +	/* check every profile in task label not in current cache */
 +	error = fn_for_each_not_in_set(flabel, label, profile,
 +			aa_profile_mqueue_perm(profile, &file->f_path,
-+					       request, buffer, &sa));
++					       request, buffer, &ad));
 +	if (denied && !error) {
 +		/*
 +		 * check every profile in file label that was not tested
@@ -109,11 +110,11 @@ index f18aa82e50ae..2061295f50f6 100644
 +		if (label == flabel)
 +			error = fn_for_each(label, profile,
 +				aa_profile_mqueue_perm(profile, &file->f_path,
-+						       request, buffer, &sa));
++						       request, buffer, &ad));
 +		else
 +			error = fn_for_each_not_in_set(label, flabel, profile,
 +				aa_profile_mqueue_perm(profile, &file->f_path,
-+						       request, buffer, &sa));
++						       request, buffer, &ad));
 +	}
 +	if (!error)
 +		update_file_ctx(file_ctx(file), label, request);
@@ -126,28 +127,27 @@ index f18aa82e50ae..2061295f50f6 100644
  /**
   * aa_file_perm - do permission revalidation check & audit for @file
   * @op: operation being checked
-@@ -582,7 +637,10 @@ int aa_file_perm(const char *op, struct aa_label *label, struct file *file,
+@@ -619,7 +675,10 @@ int aa_file_perm(const char *op, const struct cred *subj_cred,
  	rcu_read_unlock();
  	/* TODO: label cross check */
  
 -	if (file->f_path.mnt && path_mediated_fs(file->f_path.dentry))
 +	if (is_mqueue_inode(file_inode(file))) {
-+		error = __file_mqueue_perm(op, label, flabel, file,
++		error = __file_mqueue_perm(op, subj_cred, label, flabel, file,
 +					   request, denied, in_atomic);
 +	} else if (file->f_path.mnt && path_mediated_fs(file->f_path.dentry))
- 		error = __file_path_perm(op, label, flabel, file, request,
- 					 denied, in_atomic);
+ 		error = __file_path_perm(op, subj_cred, label, flabel, file,
+ 					 request, denied, in_atomic);
  
 diff --git a/security/apparmor/include/audit.h b/security/apparmor/include/audit.h
-index 6da97bbce518..9b3efc10130c 100644
+index 095707e05b70..967e74b58229 100644
 --- a/security/apparmor/include/audit.h
 +++ b/security/apparmor/include/audit.h
-@@ -138,6 +138,10 @@ struct apparmor_audit_data {
+@@ -139,6 +139,9 @@ struct apparmor_audit_data {
  					void *addr;
  					int addrlen;
  				} net;
 +				struct {
-+					kuid_t fsuid;
 +					kuid_t ouid;
 +				} mq;
  			};
@@ -202,10 +202,10 @@ index 000000000000..a9b3e4d6c968
 +
 +#endif /* __AA_INODE_H */
 diff --git a/security/apparmor/include/ipc.h b/security/apparmor/include/ipc.h
-index a1ac6ffb95e9..2e8c440a9df3 100644
+index 74d17052f76b..f15d6a480e6a 100644
 --- a/security/apparmor/include/ipc.h
 +++ b/security/apparmor/include/ipc.h
-@@ -11,8 +11,65 @@
+@@ -11,10 +11,68 @@
  #ifndef __AA_IPC_H
  #define __AA_IPC_H
  
@@ -254,7 +254,9 @@ index a1ac6ffb95e9..2e8c440a9df3 100644
 +	return isec && isec->sclass == AA_CLASS_POSIX_MQUEUE;
 +}
 +
- int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig);
+ int aa_may_signal(const struct cred *subj_cred, struct aa_label *sender,
+ 		  const struct cred *target_cred, struct aa_label *target,
+ 		  int sig);
  
 +#define AA_AUDIT_POSIX_MQUEUE_MASK (AA_MAY_WRITE | AA_MAY_READ |    \
 +				    AA_MAY_CREATE | AA_MAY_DELETE | \
@@ -265,21 +267,29 @@ index a1ac6ffb95e9..2e8c440a9df3 100644
 +int aa_profile_mqueue_perm(struct aa_profile *profile,
 +			   const struct path *path,
 +			   u32 request, char *buffer,
-+			   struct common_audit_data *sa);
++			   struct apparmor_audit_data *ad);
 +
-+int aa_mqueue_perm(const char *op, struct aa_label *label,
++int aa_mqueue_perm(const char *op, const struct cred *subj_cred,
++		   struct aa_label *label,
 +		   const struct path *path, u32 request);
 +
  #endif /* __AA_IPC_H */
 diff --git a/security/apparmor/include/perms.h b/security/apparmor/include/perms.h
-index 797a7a00644d..560685f0d4ce 100644
+index 83534df8939f..f719e99f0327 100644
 --- a/security/apparmor/include/perms.h
 +++ b/security/apparmor/include/perms.h
-@@ -201,6 +201,9 @@ void aa_perm_mask_to_str(char *str, size_t str_size, const char *chrs,
+@@ -195,12 +195,15 @@ static inline void aa_perms_accum(struct aa_perms *accum,
+ 
+ 
+ extern struct aa_perms default_perms;
+-
++struct apparmor_audit_data;
+ 
+ void aa_perm_mask_to_str(char *str, size_t str_size, const char *chrs,
  			 u32 mask);
  void aa_audit_perm_names(struct audit_buffer *ab, const char * const *names,
  			 u32 mask);
-+void aa_audit_perms(struct audit_buffer *ab,  struct common_audit_data *sa,
++void aa_audit_perms(struct audit_buffer *ab,  struct apparmor_audit_data *ad,
 +		    const char *chrs, u32 chrsmask, const char * const *names,
 +		    u32 namesmask);
  void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
@@ -288,7 +298,7 @@ index 797a7a00644d..560685f0d4ce 100644
 @@ -213,6 +216,12 @@ void aa_profile_match_label(struct aa_profile *profile,
  int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
  			  u32 request, int type, u32 *deny,
- 			  struct common_audit_data *sa);
+ 			  struct apparmor_audit_data *ad);
 +
 +static inline u32 denied_perms(struct aa_perms *perms, u32 request)
 +{
@@ -296,10 +306,10 @@ index 797a7a00644d..560685f0d4ce 100644
 +}
 +
  int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
- 		   u32 request, struct common_audit_data *sa,
+ 		   u32 request, struct apparmor_audit_data *ad,
  		   void (*cb)(struct audit_buffer *, void *));
 diff --git a/security/apparmor/ipc.c b/security/apparmor/ipc.c
-index 5acde746775f..bd7d03880cf9 100644
+index c0d0dbd7b4c4..8d1a0a0fcc71 100644
 --- a/security/apparmor/ipc.c
 +++ b/security/apparmor/ipc.c
 @@ -9,10 +9,13 @@
@@ -316,36 +326,37 @@ index 5acde746775f..bd7d03880cf9 100644
  #include "include/policy.h"
  #include "include/ipc.h"
  #include "include/sig_names.h"
-@@ -108,3 +111,107 @@ int aa_may_signal(struct aa_label *sender, struct aa_label *target, int sig)
- 			profile_signal_perm(profile, target, MAY_WRITE, &sa),
- 			profile_signal_perm(profile, sender, MAY_READ, &sa));
+@@ -115,3 +118,107 @@ int aa_may_signal(const struct cred *subj_cred, struct aa_label *sender,
+ 			     profile_signal_perm(target_cred, profile, sender,
+ 						 MAY_READ, &ad));
  }
 +
 +
 +static void audit_mqueue_cb(struct audit_buffer *ab, void *va)
 +{
 +	struct common_audit_data *sa = va;
++	struct apparmor_audit_data *ad = aad(sa);
 +
-+	aa_audit_perms(ab, sa, NULL, 0, NULL, AA_AUDIT_POSIX_MQUEUE_MASK);
++	aa_audit_perms(ab, ad, NULL, 0, NULL, AA_AUDIT_POSIX_MQUEUE_MASK);
 +
 +	/* move class into generic audit framse work */
 +	audit_log_format(ab, "class=\"posix_mqueue\"");
-+	if (aad(sa)->request & AA_AUDIT_FILE_MASK) {
++	if (ad->request & AA_AUDIT_FILE_MASK) {
 +		audit_log_format(ab, " fsuid=%u",
-+				 from_kuid(&init_user_ns, aad(sa)->mq.fsuid));
++				 from_kuid(&init_user_ns, ad->subj_cred->fsuid));
 +		audit_log_format(ab, " ouid=%u",
-+				 from_kuid(&init_user_ns, aad(sa)->mq.ouid));
++				 from_kuid(&init_user_ns, ad->mq.ouid));
 +	}
-+	if (aad(sa)->peer) {
++	if (ad->peer) {
 +		audit_log_format(ab, " olabel=");
-+		aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
++		aa_label_xaudit(ab, labels_ns(ad->subj_label), ad->peer,
 +				FLAGS_NONE, GFP_ATOMIC);
 +	}
 +}
 +
 +int aa_profile_mqueue_perm(struct aa_profile *profile, const struct path *path,
 +			   u32 request, char *buffer,
-+			   struct common_audit_data *sa)
++			   struct apparmor_audit_data *ad)
 +{
 +	struct aa_ruleset *rules = list_first_entry(&profile->rules,
 +						    typeof(*rules), list);
@@ -357,8 +368,6 @@ index 5acde746775f..bd7d03880cf9 100644
 +	    !RULE_MEDIATES(rules, AA_CLASS_POSIX_MQUEUE))
 +		return 0;
 +
-+	aad(sa)->label = &profile->label;
-+
 +	name = dentry_path_raw(path->dentry, buffer, aa_g_path_max);
 +	if (IS_ERR(name))
 +		return PTR_ERR(name);
@@ -367,7 +376,7 @@ index 5acde746775f..bd7d03880cf9 100644
 +		pr_warn("apparmor mqueue disconnected TODO\n");
 +	}
 +
-+	aad(sa)->name = name;
++	ad->name = name;
 +
 +	state = aa_dfa_match(rules->policy.dfa,
 +			     rules->policy.start[AA_CLASS_POSIX_MQUEUE],
@@ -378,7 +387,7 @@ index 5acde746775f..bd7d03880cf9 100644
 +		/* early bailout sufficient perms no need to do further
 +		 * checks
 +		 */
-+		return aa_check_perms(profile, &perms, request, sa,
++		return aa_check_perms(profile, &perms, request, ad,
 +				      audit_mqueue_cb);
 +	}
 +	/* continue check to see if we have label perms */
@@ -386,17 +395,18 @@ index 5acde746775f..bd7d03880cf9 100644
 +	//aa_apply_modes_to_perms(profile, &perms);
 +
 +	// this will just cause failure without above label check
-+	return aa_check_perms(profile, &perms, request, sa, audit_mqueue_cb);
++	return aa_check_perms(profile, &perms, request, ad, audit_mqueue_cb);
 +}
 +
 +/* mqueue - no label caching test */
-+int aa_mqueue_perm(const char *op, struct aa_label *label,
++int aa_mqueue_perm(const char *op, const struct cred *subj_cred,
++		   struct aa_label *label,
 +		   const struct path *path, u32 request)
 +{
 +	struct aa_profile *profile;
 +	char *buffer;
 +	int error;
-+	DEFINE_AUDIT_DATA(sa, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
++	DEFINE_AUDIT_DATA(ad, LSM_AUDIT_DATA_NONE, AA_CLASS_POSIX_MQUEUE, op);
 +
 +	// do we need delegate deleted with mqueues? probably
 +	//flags |= PATH_DELEGATE_DELETED;
@@ -410,25 +420,25 @@ index 5acde746775f..bd7d03880cf9 100644
 +		return -ENOMEM;
 +
 +	/* audit fields that won't change during iteration */
-+	aad(&sa)->request = request;
-+	aad(&sa)->peer = NULL;
-+	aad(&sa)->mq.fsuid = current_fsuid();	/* mqueue uses fsuid() */
-+	aad(&sa)->mq.ouid = d_backing_inode(path->dentry) ?
-+					d_backing_inode(path->dentry)->i_uid :
-+					current_fsuid();
++	ad.subj_cred = subj_cred;
++	ad.request = request;
++	ad.peer = NULL;
++	ad.mq.ouid = d_backing_inode(path->dentry) ?
++				d_backing_inode(path->dentry)->i_uid :
++				subj_cred->fsuid;
 +
 +	error = fn_for_each_confined(label, profile,
 +			aa_profile_mqueue_perm(profile, path, request,
-+					       buffer, &sa));
++					       buffer, &ad));
 +	aa_put_buffer(buffer);
 +
 +	return error;
 +}
 diff --git a/security/apparmor/lib.c b/security/apparmor/lib.c
-index a630c951bb3b..58f3a94e262b 100644
+index c87bccafff44..99fab96e408b 100644
 --- a/security/apparmor/lib.c
 +++ b/security/apparmor/lib.c
-@@ -170,7 +170,7 @@ void aa_str_kref(struct kref *kref)
+@@ -171,7 +171,7 @@ void aa_str_kref(struct kref *kref)
  
  
  const char aa_file_perm_chrs[] = "xwracd         km l     ";
@@ -437,7 +447,7 @@ index a630c951bb3b..58f3a94e262b 100644
  	"exec",
  	"write",
  	"read",
-@@ -260,6 +260,10 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
+@@ -261,6 +261,10 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
  {
  	char str[33];
  
@@ -448,22 +458,22 @@ index a630c951bb3b..58f3a94e262b 100644
  	audit_log_format(ab, "\"");
  	if ((mask & chrsmask) && chrs) {
  		aa_perm_mask_to_str(str, sizeof(str), chrs, mask & chrsmask);
-@@ -273,6 +277,22 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
+@@ -274,6 +278,22 @@ void aa_audit_perm_mask(struct audit_buffer *ab, u32 mask, const char *chrs,
  	audit_log_format(ab, "\"");
  }
  
-+void aa_audit_perms(struct audit_buffer *ab, struct common_audit_data *sa,
++void aa_audit_perms(struct audit_buffer *ab, struct apparmor_audit_data *ad,
 +		    const char *chrs, u32 chrsmask, const char * const *names,
 +		    u32 namesmask)
 +{
-+	if (aad(sa)->request) {
++	if (ad->request) {
 +		audit_log_format(ab, " requested=");
-+		aa_audit_perm_mask(ab, aad(sa)->request, chrs, chrsmask,
++		aa_audit_perm_mask(ab, ad->request, chrs, chrsmask,
 +				   names, namesmask);
 +	}
-+	if (aad(sa)->denied) {
++	if (ad->denied) {
 +		audit_log_format(ab, " denied=");
-+		aa_audit_perm_mask(ab, aad(sa)->denied, chrs, chrsmask,
++		aa_audit_perm_mask(ab, ad->denied, chrs, chrsmask,
 +				   names, namesmask);
 +	}
 +}
@@ -471,28 +481,36 @@ index a630c951bb3b..58f3a94e262b 100644
  /**
   * aa_audit_perms_cb - generic callback fn for auditing perms
   * @ab: audit buffer (NOT NULL)
-@@ -282,18 +302,8 @@ static void aa_audit_perms_cb(struct audit_buffer *ab, void *va)
- {
+@@ -284,18 +304,8 @@ static void aa_audit_perms_cb(struct audit_buffer *ab, void *va)
  	struct common_audit_data *sa = va;
+ 	struct apparmor_audit_data *ad = aad(sa);
  
--	if (aad(sa)->request) {
+-	if (ad->request) {
 -		audit_log_format(ab, " requested_mask=");
--		aa_audit_perm_mask(ab, aad(sa)->request, aa_file_perm_chrs,
+-		aa_audit_perm_mask(ab, ad->request, aa_file_perm_chrs,
 -				   PERMS_CHRS_MASK, aa_file_perm_names,
 -				   PERMS_NAMES_MASK);
 -	}
--	if (aad(sa)->denied) {
+-	if (ad->denied) {
 -		audit_log_format(ab, "denied_mask=");
--		aa_audit_perm_mask(ab, aad(sa)->denied, aa_file_perm_chrs,
+-		aa_audit_perm_mask(ab, ad->denied, aa_file_perm_chrs,
 -				   PERMS_CHRS_MASK, aa_file_perm_names,
 -				   PERMS_NAMES_MASK);
 -	}
-+	aa_audit_perms(ab, sa, aa_file_perm_chrs, PERMS_CHRS_MASK,
++	aa_audit_perms(ab, ad, aa_file_perm_chrs, PERMS_CHRS_MASK,
 +		       aa_base_perm_names, PERMS_NAMES_MASK);
  	audit_log_format(ab, " peer=");
- 	aa_label_xaudit(ab, labels_ns(aad(sa)->label), aad(sa)->peer,
+ 	aa_label_xaudit(ab, labels_ns(ad->subj_label), ad->peer,
  				      FLAGS_NONE, GFP_ATOMIC);
-@@ -389,7 +399,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
+@@ -372,6 +382,7 @@ int aa_profile_label_perm(struct aa_profile *profile, struct aa_profile *target,
+  * @profile: profile being checked
+  * @perms: perms computed for the request
+  * @request: requested perms
++ * @deny: Returns: explicit deny set
+  * @ad: initialized audit structure (MAY BE NULL if not auditing)
+  * @cb: callback fn for type specific fields (MAY BE NULL)
+  *
+@@ -389,7 +400,7 @@ int aa_check_perms(struct aa_profile *profile, struct aa_perms *perms,
  		   void (*cb)(struct audit_buffer *, void *))
  {
  	int type, error;
@@ -502,7 +520,7 @@ index a630c951bb3b..58f3a94e262b 100644
  	if (likely(!denied)) {
  		/* mask off perms that are not being force audited */
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index c8774041bc16..4d8cccc42b62 100644
+index 5bfe97ed8ed0..ade3fb45c012 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
 @@ -18,6 +18,8 @@
@@ -534,7 +552,7 @@ index c8774041bc16..4d8cccc42b62 100644
  /*
   * LSM hook functions
   */
-@@ -433,11 +441,168 @@ static int apparmor_path_chown(const struct path *path, kuid_t uid, kgid_t gid)
+@@ -444,11 +452,169 @@ static int apparmor_path_chown(const struct path *path, kuid_t uid, kgid_t gid)
  	return common_perm_cond(OP_CHOWN, path, AA_MAY_CHOWN);
  }
  
@@ -546,7 +564,8 @@ index c8774041bc16..4d8cccc42b62 100644
 +
 +	label = begin_current_label_crit_section();
 +	if (!unconfined(label))
-+		error = aa_mqueue_perm(OP_UNLINK, label, path, request);
++		error = aa_mqueue_perm(OP_UNLINK, current_cred(), label, path,
++				       request);
 +
 +	end_current_label_crit_section(label);
 +
@@ -656,8 +675,8 @@ index c8774041bc16..4d8cccc42b62 100644
 +			.mnt = current->nsproxy->ipc_ns->mq_mnt,
 +		};
 +		if (is_mqueue_inode(dir))
-+			error = aa_mqueue_perm(OP_CREATE, label, &path,
-+					       AA_MAY_CREATE);
++			error = aa_mqueue_perm(OP_CREATE, current_cred(),
++					       label, &path, AA_MAY_CREATE);
 +	}
 +	end_current_label_crit_section(label);
 +
@@ -703,17 +722,20 @@ index c8774041bc16..4d8cccc42b62 100644
  static int apparmor_file_open(struct file *file)
  {
  	struct aa_file_ctx *fctx = file_ctx(file);
-@@ -468,10 +633,15 @@ static int apparmor_file_open(struct file *file)
+@@ -479,11 +645,17 @@ static int apparmor_file_open(struct file *file)
  		vfsuid = i_uid_into_vfsuid(idmap, inode);
  		cond.uid = vfsuid_into_kuid(vfsuid);
  
--		error = aa_path_perm(OP_OPEN, label, &file->f_path, 0,
+-		error = aa_path_perm(OP_OPEN, file->f_cred,
+-				     label, &file->f_path, 0,
 -				     aa_map_file_to_perms(file), &cond);
 +		if (is_mqueue_inode(file_inode(file)))
-+			error = aa_mqueue_perm(OP_OPEN, label, &file->f_path,
++			error = aa_mqueue_perm(OP_OPEN, file->f_cred,
++					       label, &file->f_path,
 +					       aa_map_file_to_perms(file));
 +		else
-+			error = aa_path_perm(OP_OPEN, label, &file->f_path, 0,
++			error = aa_path_perm(OP_OPEN, file->f_cred,
++					     label, &file->f_path, 0,
 +					     aa_map_file_to_perms(file), &cond);
  		/* todo cache full allowed permissions set and state */
 -		fctx->allow = aa_map_file_to_perms(file);
@@ -722,7 +744,7 @@ index c8774041bc16..4d8cccc42b62 100644
  	}
  	aa_put_label(label);
  
-@@ -483,6 +653,7 @@ static int apparmor_file_alloc_security(struct file *file)
+@@ -495,6 +667,7 @@ static int apparmor_file_alloc_security(struct file *file)
  	struct aa_file_ctx *ctx = file_ctx(file);
  	struct aa_label *label = begin_current_label_crit_section();
  
@@ -730,7 +752,7 @@ index c8774041bc16..4d8cccc42b62 100644
  	spin_lock_init(&ctx->lock);
  	rcu_assign_pointer(ctx->label, aa_get_label(label));
  	end_current_label_crit_section(label);
-@@ -1345,7 +1516,11 @@ static int apparmor_inet_conn_request(const struct sock *sk, struct sk_buff *skb
+@@ -1383,7 +1556,11 @@ static int apparmor_inet_conn_request(const struct sock *sk, struct sk_buff *skb
  struct lsm_blob_sizes apparmor_blob_sizes __ro_after_init = {
  	.lbs_cred = sizeof(struct aa_label *),
  	.lbs_file = sizeof(struct aa_file_ctx),
@@ -742,7 +764,7 @@ index c8774041bc16..4d8cccc42b62 100644
  };
  
  static struct security_hook_list apparmor_hooks[] __ro_after_init = {
-@@ -1370,6 +1545,16 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
+@@ -1409,6 +1586,16 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(path_truncate, apparmor_path_truncate),
  	LSM_HOOK_INIT(inode_getattr, apparmor_inode_getattr),
  
