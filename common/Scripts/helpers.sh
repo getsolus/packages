@@ -5,27 +5,27 @@
 # This function will only work if this script is sourced
 # by your bash shell.
 function gotosoluspkgs() {
-    cd $(dirname $(readlink "${BASH_SOURCE[0]}"))/../../
+    cd "$(dirname "$(readlink "${BASH_SOURCE[0]}")")/../../" || exit 1
 }
 
 # Goes to the root directory of the git repository
 function goroot() {
-    cd $(git rev-parse --show-toplevel)
+    cd "$(git rev-parse --show-toplevel)" || exit 1
 }
 
 # Push into a package directory
 function gotopkg() {
-    cd $(git rev-parse --show-toplevel)/packages/*/$1
+    cd "$(git rev-parse --show-toplevel)"/packages/*/"$1" || exit 1
 }
 
 # What provides a lib
 function whatprovides() {
-    grep $1 $(git rev-parse --show-toplevel)/packages/*/*/abi_libs
+    grep "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_libs
 }
 
 # What uses a lib
 function whatuses() {
-    grep $1 $(git rev-parse --show-toplevel)/packages/*/*/abi_used_libs
+    grep "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_used_libs
 }
 
 
@@ -33,15 +33,14 @@ function whatuses() {
 _gotopkg()
 {
 
-    _list=$(ls $(git rev-parse --show-toplevel)/packages/*/)
+    _list=$(ls "$(git rev-parse --show-toplevel)"/packages/*/)
 
-    local cur prev
+    local cur
     COMPREPLY=()
     cur=${COMP_WORDS[COMP_CWORD]}
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     if [[ $COMP_CWORD -eq 1 ]] ; then
-        COMPREPLY=( $(compgen -W "${_list}" -- ${cur}) )
+        readarray -t COMPREPLY < <(compgen -W "${_list}" -- "${cur}")
         return 0
     fi
 }
