@@ -32,7 +32,7 @@ function whatuses() {
 # Bash completions
 _gotopkg()
 {
-
+    # list of package directories we can go into
     _list=$(ls "$(git rev-parse --show-toplevel)"/packages/*/)
 
     local cur
@@ -40,6 +40,7 @@ _gotopkg()
     cur=${COMP_WORDS[COMP_CWORD]}
 
     if [[ $COMP_CWORD -eq 1 ]] ; then
+        # set up an array with valid package dirname completions
         readarray -t COMPREPLY < <(compgen -W "${_list}" -- "${cur}")
         return 0
     fi
