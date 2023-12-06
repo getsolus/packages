@@ -6,12 +6,37 @@ import os.path
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 from urllib import request
 from xml.etree import ElementTree
 
 import yaml
+
+
+@dataclass
+class FreezeConfig:
+    start: Optional[datetime]
+    end: Optional[datetime]
+
+    def active(self) -> bool:
+        now = datetime.now(tz=timezone.utc)
+
+        return (self.start is not None and now > self.start and
+                (self.end is None or now < self.end))
+
+
+@dataclass
+class Config:
+    freeze: FreezeConfig
+
+    @staticmethod
+    def load(stream: Any) -> 'Config':
+        return Config(**yaml.safe_load(stream))
+
+    def __post_init__(self) -> None:
+        self.freeze = FreezeConfig(**self.freeze)  # type: ignore
 
 
 class Git:
@@ -66,6 +91,8 @@ class Git:
 
 class Level(str, Enum):
     __str__ = Enum.__str__
+    DEBUG = 'debug'
+    NOTICE = 'notice'
     ERROR = 'error'
     WARNING = 'warning'
 
@@ -109,6 +136,7 @@ class Result:
 class PullRequestCheck:
     _package_files = ['package.yml']
     _two_letter_dirs = ['py']
+    _config: Optional[Config] = None
 
     def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
         self.git = git
@@ -118,6 +146,14 @@ class PullRequestCheck:
 
     def run(self) -> List[Result]:
         raise NotImplementedError
+
+    @property
+    def config(self) -> Config:
+        if self._config is None:
+            with self._open(os.path.join('common', 'CI', 'config.yaml')) as f:
+                self._config = Config.load(f)
+
+        return self._config
 
     @property
     def package_files(self) -> List[str]:
@@ -160,6 +196,14 @@ class PullRequestCheck:
     def package_dir(self, package: str) -> str:
         return os.path.join('packages', self._package_subdir(package), package)
 
+    @staticmethod
+    def package_for(path: str) -> str:
+        parts = path.split("/")
+        if len(parts) != 3 or parts[0] != "packages":
+            return ""
+
+        return parts[2]
+
     def _package_subdir(self, package: str) -> str:
         package = package.lower()
 
@@ -187,6 +231,36 @@ class CommitMessage(PullRequestCheck):
             results.append(Result(message='commit ends with ]', level=Level.ERROR, file=file))
 
         return results
+
+
+class FrozenPackage(PullRequestCheck):
+    __packages: Optional[List[str]] = None
+    __message_normal = ('This package is included in the ISO. '
+                        'Consider validating the functionality in a newly built ISO.')
+    __message_freeze = ('This package is included in the ISO and is currently frozen. '
+                        'It can only be updated to fix critical bugs, '
+                        'in consultation with multiple Solus staff members.')
+
+    def run(self) -> List[Result]:
+        return [self._make_result(f)
+                for f in self.package_files
+                if not self._is_frozen(f)]
+
+    def _make_result(self, file: str) -> Result:
+        if self.config.freeze.active():
+            return Result(message=self.__message_freeze, file=file, level=Level.WARNING)
+
+        return Result(message=self.__message_normal, file=file, level=Level.NOTICE)
+
+    def _is_frozen(self, file: str) -> bool:
+        return self.package_for(file) in self._packages()
+
+    def _packages(self) -> List[str]:
+        if self.__packages is None:
+            with self._open(os.path.join('common', 'iso_packages.txt')) as file:
+                self.__packages = [line.strip() for line in file]
+
+        return self.__packages
 
 
 class Homepage(PullRequestCheck):
@@ -481,6 +555,7 @@ class SummaryGenerator(PullRequestCheck):
 class Checker:
     checks = [
         CommitMessage,
+        FrozenPackage,
         Homepage,
         PackageBumped,
         PackageDependenciesOrder,
