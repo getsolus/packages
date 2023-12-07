@@ -8,6 +8,7 @@ This is a list of things to rebuild after this, in the right order:
 * nvidia-developer-driver
 * open-vm-tools
 * openrazer
+* rtl8852bu
 * v4l2loopback
 * virtualbox
 * vhba-module
