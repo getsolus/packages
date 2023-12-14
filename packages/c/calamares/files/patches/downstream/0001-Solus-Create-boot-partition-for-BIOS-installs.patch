@@ -1,0 +1,96 @@
+From bda04865b5d80b0edda8449e8fb0fa375cc1ee9b Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Wed, 13 Dec 2023 19:27:51 -0600
+Subject: [PATCH] Solus: Create boot partition for BIOS installs
+
+Signed-off-by: Reilly Brogan <reilly@reillybrogan.com>
+---
+ src/modules/partition/Config.cpp              |  5 +++++
+ src/modules/partition/core/KPMHelpers.h       |  1 +
+ .../partition/core/PartitionActions.cpp       | 20 +++++++++++++++----
+ src/modules/partition/partition.schema.yaml   |  1 +
+ 4 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/src/modules/partition/Config.cpp b/src/modules/partition/Config.cpp
+index 367c4ee38..ab2e19bc7 100644
+--- a/src/modules/partition/Config.cpp
++++ b/src/modules/partition/Config.cpp
+@@ -270,6 +270,11 @@ fillGSConfigurationEFI( Calamares::GlobalStorage* gs, const QVariantMap& configu
+     {
+         gs->insert( "efiSystemPartitionName", CalamaresUtils::getString( configurationMap, "efiSystemPartitionName" ) );
+     }
++    // Read and parse key bootPartitionName
++    if ( configurationMap.contains( "bootPartitionName" ) )
++    {
++        gs->insert( "bootPartitionName", CalamaresUtils::getString( configurationMap, "bootPartitionName" ) );
++    }
+ }
+ 
+ void
+diff --git a/src/modules/partition/core/KPMHelpers.h b/src/modules/partition/core/KPMHelpers.h
+index e059c934a..5f039555a 100644
+--- a/src/modules/partition/core/KPMHelpers.h
++++ b/src/modules/partition/core/KPMHelpers.h
+@@ -31,6 +31,7 @@ class PartitionRole;
+ #define KPM_PARTITION_FLAG( x ) PartitionTable::Flag::x
+ #define KPM_PARTITION_STATE( x ) Partition::State::x
+ #define KPM_PARTITION_FLAG_ESP PartitionTable::Flag::Boot
++#define KPM_PARTITION_FLAG_BOOT PartitionTable::Flag::Boot
+ #else
+ #define KPM_PARTITION_FLAG( x ) PartitionTable::Flag##x
+ #define KPM_PARTITION_STATE( x ) Partition::State##x
+diff --git a/src/modules/partition/core/PartitionActions.cpp b/src/modules/partition/core/PartitionActions.cpp
+index 0ce9ff4ed..05c4966f7 100644
+--- a/src/modules/partition/core/PartitionActions.cpp
++++ b/src/modules/partition/core/PartitionActions.cpp
+@@ -116,7 +116,8 @@ doAutopartition( PartitionCoreModule* core, Device* dev, Choices::AutoPartitionO
+ 
+     core->createPartitionTable( dev, partType );
+ 
+-    if ( isEfi )
++    // On Solus we always want to create a /boot partition
++    if ( true )
+     {
+         size_t uefisys_part_sizeB = PartUtils::efiFilesystemMinimumSize();
+         qint64 efiSectorCount = CalamaresUtils::bytesToSectors( uefisys_part_sizeB, dev->logicalSize() );
+@@ -136,11 +137,22 @@ doAutopartition( PartitionCoreModule* core, Device* dev, Choices::AutoPartitionO
+                                                                   KPM_PARTITION_FLAG( None ) );
+         PartitionInfo::setFormat( efiPartition, true );
+         PartitionInfo::setMountPoint( efiPartition, o.efiPartitionMountPoint );
+-        if ( gs->contains( "efiSystemPartitionName" ) )
++        if ( isEfi )
+         {
+-            efiPartition->setLabel( gs->value( "efiSystemPartitionName" ).toString() );
++            if ( gs->contains( "efiSystemPartitionName" ) )
++            {
++                efiPartition->setLabel( gs->value( "efiSystemPartitionName" ).toString() );
++            }
++            core->createPartition( dev, efiPartition, KPM_PARTITION_FLAG_ESP );
++        }
++        else
++        {
++            if ( gs->contains( "bootPartitionName" ) )
++            {
++                efiPartition->setLabel( gs->value( "bootPartitionName" ).toString() );
++            }
++            core->createPartition( dev, efiPartition, KPM_PARTITION_FLAG_BOOT );
+         }
+-        core->createPartition( dev, efiPartition, KPM_PARTITION_FLAG_ESP );
+         firstFreeSector = lastSector + 1;
+     }
+ 
+diff --git a/src/modules/partition/partition.schema.yaml b/src/modules/partition/partition.schema.yaml
+index 6c65e8ae7..6d5b7d1b3 100644
+--- a/src/modules/partition/partition.schema.yaml
++++ b/src/modules/partition/partition.schema.yaml
+@@ -9,6 +9,7 @@ properties:
+     efiSystemPartition: { type: string }  # Mount point
+     efiSystemPartitionSize: { type: string }
+     efiSystemPartitionName: { type: string }
++    bootPartitionName: { type: string }
+ 
+     userSwapChoices: { type: array, items: { type: string, enum: [ none, reuse, small, suspend, file ] } }
+     # ensureSuspendToDisk: { type: boolean, default: true }  # Legacy
+-- 
+2.43.0
+
