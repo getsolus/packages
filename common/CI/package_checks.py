@@ -407,7 +407,9 @@ class Patch(PullRequestCheck):
 
 class SPDXLicense(PullRequestCheck):
     _licenses_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json'
+    _exceptions_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/exceptions.json'
     _licenses: Optional[List[str]] = None
+    _exceptions: Optional[List[str]] = None
     _extra_licenses = ['Distributable', 'Public-Domain']
     _error = 'Invalid license identifier: '
     _level = Level.WARNING
@@ -424,12 +426,29 @@ class SPDXLicense(PullRequestCheck):
         return [self._validate_license(file, license)]
 
     def _validate_license(self, file: str, identifier: str) -> Optional[Result]:
-        if identifier in self._license_ids():
+        if self._valid_license(identifier):
             return None
 
         return Result(file=file, level=self._level,
                       message=f'invalid license identifier: {repr(identifier)}',
                       line=self.file_line(file, r'^license\s*:'))
+
+    def _valid_license(self, identifier: str) -> bool:
+        identifier = identifier.strip(" ()+")
+        identifiers = [id_o
+                       for id_a in identifier.split(' AND ')
+                       for id_o in id_a.split(' OR ')]
+
+        if len(identifiers) > 1:
+            return all([self._valid_license(id) for id in identifiers])
+
+        if ' WITH ' in identifier:
+            identifier, exception = identifier.split(' WITH ', 1)
+
+            if exception not in self._exception_ids():
+                return False
+
+        return identifier in self._license_ids()
 
     def _license_ids(self) -> List[str]:
         if self._licenses is None:
@@ -437,6 +456,13 @@ class SPDXLicense(PullRequestCheck):
                 self._licenses = [license['licenseId'] for license in json.load(f)['licenses']]
 
         return self._licenses + self._extra_licenses
+
+    def _exception_ids(self) -> List[str]:
+        if self._exceptions is None:
+            with request.urlopen(self._exceptions_url) as f:
+                self._exceptions = [exception['licenseExceptionId'] for exception in json.load(f)['exceptions']]
+
+        return self._exceptions
 
 
 class UnwantedFiles(PullRequestCheck):
