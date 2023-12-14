@@ -346,10 +346,13 @@ class PackageDependenciesOrder(PullRequestCheck):
         if isinstance(pkg, dict):
             pkg = list(pkg.keys())[0]
 
-        if pkg.startswith('pkgconfig('):
-            return 0, pkg.removeprefix('pkgconfig(')
+        if pkg.startswith('pkgconfig32('):
+            return 0, pkg.removeprefix('pkgconfig32(')
 
-        return 1, pkg
+        if pkg.startswith('pkgconfig('):
+            return 1, pkg.removeprefix('pkgconfig(')
+
+        return 2, pkg
 
 
 class PackageDirectory(PullRequestCheck):
