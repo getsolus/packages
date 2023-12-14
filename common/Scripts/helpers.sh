@@ -5,17 +5,17 @@
 # This function will only work if this script is sourced
 # by your bash shell.
 function gotosoluspkgs() {
-    cd "$(dirname "$(readlink "${BASH_SOURCE[0]}")")/../../" || exit 1
+    cd "$(dirname "$(readlink "${BASH_SOURCE[0]}")")/../../" || return 1
 }
 
 # Goes to the root directory of the git repository
 function goroot() {
-    cd "$(git rev-parse --show-toplevel)" || exit 1
+    cd "$(git rev-parse --show-toplevel)" || return 1
 }
 
 # Push into a package directory
 function gotopkg() {
-    cd "$(git rev-parse --show-toplevel)"/packages/*/"$1" || exit 1
+    cd "$(git rev-parse --show-toplevel)"/packages/*/"$1" || return 1
 }
 
 # What provides a lib
