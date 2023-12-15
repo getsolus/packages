@@ -1,8 +1,8 @@
 name       : protonmail-bridge
-version    : 3.3.2
-release    : 13
+version    : 3.6.1
+release    : 14
 source     :
-    - git|https://github.com/ProtonMail/proton-bridge : v3.3.2
+    - https://github.com/ProtonMail/proton-bridge/archive/refs/tags/v3.6.1.tar.gz : 2dd18b5460fff9c84edaf3eb7401357e8d311c3e63564db8c5adcb63e54877af
 license    : GPL-3.0-or-later
 component  : network.mail
 summary    : ProtonMail Bridge for e-mail clients.
@@ -21,16 +21,57 @@ builddeps  :
     - pkgconfig(libsecret-1)
     - pkgconfig(openssl)
     - pkgconfig(protobuf)
-    - git
     - golang
+    - sentry-native-devel
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-fix-build.patch
+    %apply_patches
+
+    # Use system Qt rather than bundling it
+    rm internal/frontend/bridge-gui/bridge-gui/DeployLinux.cmake
+    touch internal/frontend/bridge-gui/bridge-gui/DeployLinux.cmake
+
+    go mod download -x
+
+    pushd internal/frontend/bridge-gui/bridge-gui
+    %cmake_ninja \
+                 -DBRIDGE_APP_FULL_NAME="Proton Mail Bridge" \
+                 -DBRIDGE_VENDOR="Proton AG" \
+                 -DBRIDGE_REVISION=NOGIT \
+                 -DBRIDGE_TAG=$version \
+                 -DBRIDGE_DSN_SENTRY= \
+                 -DBRIDGE_BUILD_ENV="Solus Project" \
+                 -DBRIDGE_APP_VERSION=$version
 build      : |
-    export VCPKG_OVERLAY_PORTS=$pkgfiles/overlays
-    make build
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GOFLAGS="-buildmode=pie -trimpath -mod=readonly -modcacherw"
+
+    _ld_flags=" \
+        -X github.com/ProtonMail/proton-bridge/v3/internal/constants.Version=$version \
+        -X github.com/ProtonMail/proton-bridge/v3/internal/constants.Revision=NOGIT \
+        -X github.com/ProtonMail/proton-bridge/v3/internal/constants.Tag=$version \
+        -X github.com/ProtonMail/proton-bridge/v3/internal/constants.BuildTime= \
+        -X 'github.com/ProtonMail/proton-bridge/v3/internal/constants.FullAppName=Proton Mail Bridge' \
+        -X 'github.com/ProtonMail/proton-bridge/v3/internal/constants.BuildEnv=Solus Project' \
+    "
+
+    pushd utils
+    ./credits.sh bridge
+    popd
+
+    go build -v \
+        -ldflags "$_ld_flags" \
+        -o proton-bridge \
+        ./cmd/Desktop-Bridge/
+
+    pushd internal/frontend/bridge-gui/bridge-gui
+    %ninja_build
 install    : |
-    install -D cmd/Desktop-Bridge/deploy/linux/proton-bridge $installdir/usr/bin/proton-bridge
-    install -D cmd/Desktop-Bridge/deploy/linux/bridge-gui $installdir/usr/bin/proton-bridge-gui
-    install -D cmd/Desktop-Bridge/deploy/linux/protonmail-bridge $installdir/usr/bin/protonmail-bridge
-    install -Dm00644 cmd/Desktop-Bridge/deploy/linux/logo.svg $installdir/usr/share/icons/hicolor/scalable/apps/protonmail-bridge.svg
-    install -Dm00644 cmd/Desktop-Bridge/deploy/linux/proton-bridge.desktop $installdir/usr/share/applications/protonmail-bridge.desktop
+    install -Dm00755 proton-bridge $installdir/usr/bin/proton-bridge
+    install -Dm00755 internal/frontend/bridge-gui/bridge-gui/solusBuildDir/bridge-gui $installdir/usr/bin/protonmail-bridge
+
+    install -Dm00644 dist/bridge.svg $installdir/usr/share/icons/hicolor/scalable/apps/protonmail-bridge.svg
+    install -Dm00644 dist/proton-bridge.desktop $installdir/usr/share/applications/ch.protonmail.protonmail-bridge.desktop
+    install -Dm00644 $pkgfiles/ch.protonmail.protonmail-bridge.metainfo.xml $installdir/usr/share/metainfo/ch.protonmail.protonmail-bridge.metainfo.xml
