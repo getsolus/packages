@@ -199,7 +199,7 @@ class PullRequestCheck:
     @staticmethod
     def package_for(path: str) -> str:
         parts = path.split("/")
-        if len(parts) != 3 or parts[0] != "packages":
+        if len(parts) < 3 or parts[0] != "packages":
             return ""
 
         return parts[2]
@@ -244,7 +244,7 @@ class FrozenPackage(PullRequestCheck):
     def run(self) -> List[Result]:
         return [self._make_result(f)
                 for f in self.package_files
-                if not self._is_frozen(f)]
+                if self._is_frozen(f)]
 
     def _make_result(self, file: str) -> Result:
         if self.config.freeze.active():
