@@ -1,14 +1,42 @@
 #!/usr/bin/env python3
 import argparse
+import glob
+import json
 import os.path
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
+from urllib import request
 from xml.etree import ElementTree
 
 import yaml
+
+
+@dataclass
+class FreezeConfig:
+    start: Optional[datetime]
+    end: Optional[datetime]
+
+    def active(self) -> bool:
+        now = datetime.now(tz=timezone.utc)
+
+        return (self.start is not None and now > self.start and
+                (self.end is None or now < self.end))
+
+
+@dataclass
+class Config:
+    freeze: FreezeConfig
+
+    @staticmethod
+    def load(stream: Any) -> 'Config':
+        return Config(**yaml.safe_load(stream))
+
+    def __post_init__(self) -> None:
+        self.freeze = FreezeConfig(**self.freeze)  # type: ignore
 
 
 class Git:
@@ -37,7 +65,7 @@ class Git:
         return self.run('log', '-1', '--format=%B', ref)
 
     def commit_refs(self, base: str, head: str) -> List[str]:
-        return self.run_lines('log', '--pretty=%H', base + '..' + head)
+        return self.run_lines('log', '--no-merges', '--pretty=%H', base + '..' + head)
 
     def fetch(self, remote: List[str]) -> None:
         self.run('fetch', *remote)
@@ -63,6 +91,8 @@ class Git:
 
 class Level(str, Enum):
     __str__ = Enum.__str__
+    DEBUG = 'debug'
+    NOTICE = 'notice'
     ERROR = 'error'
     WARNING = 'warning'
 
@@ -83,7 +113,7 @@ class Result:
 
     @property
     def _message(self) -> str:
-        return self.message.replace('\n', '%0A').replace('%', '%25')
+        return self.message.replace('%', '%25').replace('\n', '%0A')
 
     @property
     def _meta(self) -> str:
@@ -105,6 +135,8 @@ class Result:
 
 class PullRequestCheck:
     _package_files = ['package.yml']
+    _two_letter_dirs = ['py']
+    _config: Optional[Config] = None
 
     def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
         self.git = git
@@ -114,6 +146,14 @@ class PullRequestCheck:
 
     def run(self) -> List[Result]:
         raise NotImplementedError
+
+    @property
+    def config(self) -> Config:
+        if self._config is None:
+            with self._open(os.path.join('common', 'CI', 'config.yaml')) as f:
+                self._config = Config.load(f)
+
+        return self._config
 
     @property
     def package_files(self) -> List[str]:
@@ -135,6 +175,92 @@ class PullRequestCheck:
 
     def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
         return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
+
+    def file_line(self, file: str, expr: str) -> Optional[int]:
+        with self._open(file) as f:
+            for i, line in enumerate(f.read().splitlines()):
+                if re.match(expr, line):
+                    return i + 1
+
+        return None
+
+    def package_file_line(self, package: str, file: str, expr: str) -> Optional[int]:
+        return self.file_line(self.package_file(package, file), expr)
+
+    def package_yml_path(self, package: str) -> str:
+        return self.package_file(package, 'package.yml')
+
+    def package_file(self, package: str, file: str) -> str:
+        return os.path.join(self.package_dir(package), file)
+
+    def package_dir(self, package: str) -> str:
+        return os.path.join('packages', self._package_subdir(package), package)
+
+    @staticmethod
+    def package_for(path: str) -> str:
+        parts = path.split("/")
+        if len(parts) < 3 or parts[0] != "packages":
+            return ""
+
+        return parts[2]
+
+    def _package_subdir(self, package: str) -> str:
+        package = package.lower()
+
+        for two in self._two_letter_dirs:
+            if package.startswith(two):
+                return two
+
+        return package[0]
+
+
+class CommitMessage(PullRequestCheck):
+    def run(self) -> List[Result]:
+        return [result
+                for commit in self.commits
+                for result in self._check_commit(commit)]
+
+    def _check_commit(self, commit: str) -> List[Result]:
+        msg = self.git.commit_message(commit)
+        files = self.git.files_in_commit(commit)
+        file = files[0] if files else ''
+
+        results: List[Result] = []
+
+        if msg.strip().endswith(']'):
+            results.append(Result(message='commit ends with ]', level=Level.ERROR, file=file))
+
+        return results
+
+
+class FrozenPackage(PullRequestCheck):
+    __packages: Optional[List[str]] = None
+    __message_normal = ('This package is included in the ISO. '
+                        'Consider validating the functionality in a newly built ISO.')
+    __message_freeze = ('This package is included in the ISO and is currently frozen. '
+                        'It can only be updated to fix critical bugs, '
+                        'in consultation with multiple Solus staff members.')
+
+    def run(self) -> List[Result]:
+        return [self._make_result(f)
+                for f in self.package_files
+                if self._is_frozen(f)]
+
+    def _make_result(self, file: str) -> Result:
+        if self.config.freeze.active():
+            return Result(message=self.__message_freeze, file=file, level=Level.WARNING)
+
+        return Result(message=self.__message_normal, file=file, level=Level.NOTICE)
+
+    def _is_frozen(self, file: str) -> bool:
+        return self.package_for(file) in self._packages()
+
+    def _packages(self) -> List[str]:
+        if self.__packages is None:
+            with self._open(os.path.join('common', 'iso_packages.txt')) as file:
+                self.__packages = [line.strip() for line in file]
+
+        return self.__packages
 
 
 class Homepage(PullRequestCheck):
@@ -181,8 +307,55 @@ class PackageBumped(PullRequestCheck):
             raise e
 
 
+class PackageDependenciesOrder(PullRequestCheck):
+    _deps_keys = ['builddeps', 'checkdeps', 'rundeps']
+    _error = '`` are not in order'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        results = [self._check_deps(deps, file)
+                   for deps in self._deps_keys
+                   for file in self.package_files]
+
+        return [result for result in results if result is not None]
+
+    def _check_deps(self, deps: str, file: str) -> Optional[Result]:
+        cur = self.load_package_yml(file).get(deps, [])
+        exp = self._sorted(cur)
+
+        if cur != exp:
+            return Result(file=file, level=self._level, line=self.file_line(file, '^' + deps + r'\s*:'),
+                          message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
+
+        return None
+
+    @staticmethod
+    def _sorted(deps: List[Union[str, Dict[str, List[str]]]]) -> List[Union[str, Dict[str, List[str]]]]:
+        for dep in deps:
+            if isinstance(dep, dict):
+                for k, v in dep.items():
+                    if isinstance(v, str):
+                        dep[k] = v
+                    else:
+                        dep[k] = sorted(v, key=PackageDependenciesOrder._sort)
+
+        return sorted(deps, key=PackageDependenciesOrder._sort)
+
+    @staticmethod
+    def _sort(pkg: Union[str, Dict[str, List[str]]]) -> Tuple[int, str]:
+        if isinstance(pkg, dict):
+            pkg = list(pkg.keys())[0]
+
+        if pkg.startswith('pkgconfig32('):
+            return 0, pkg.removeprefix('pkgconfig32(')
+
+        if pkg.startswith('pkgconfig('):
+            return 1, pkg.removeprefix('pkgconfig(')
+
+        return 2, pkg
+
+
 class PackageDirectory(PullRequestCheck):
-    _two_letter_dirs = ['py']
     _error = 'Package not in correct directory'
     _level = Level.ERROR
 
@@ -194,16 +367,25 @@ class PackageDirectory(PullRequestCheck):
 
     def _check_path(self, path: str) -> bool:
         pkg = os.path.basename(os.path.realpath(path))
-        exp = ['packages', self._dir(pkg), pkg]
+        exp = ['packages', self._package_subdir(pkg), pkg]
 
         return path.split('/') == exp
 
-    def _dir(self, package: str) -> str:
-        for two in self._two_letter_dirs:
-            if package.startswith(two):
-                return two
 
-        return package[0]
+class PackageVersion(PullRequestCheck):
+    _error = 'Package version is not a string'
+    _level = Level.ERROR
+
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, level=self._level,
+                       file=path, line=self.file_line(path, r'^version\s*:'),)
+                for path in self.package_files
+                if not self._check_version(path)]
+
+    def _check_version(self, path: str) -> bool:
+        version = self.load_package_yml(path)['version']
+
+        return isinstance(version, str)
 
 
 class Patch(PullRequestCheck):
@@ -224,6 +406,66 @@ class Patch(PullRequestCheck):
                     results.append(Result(message=self._error, file=file, line=i + 1, level=self._level))
 
         return results
+
+
+class SPDXLicense(PullRequestCheck):
+    _licenses_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json'
+    _exceptions_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/exceptions.json'
+    _licenses: Optional[List[str]] = None
+    _exceptions: Optional[List[str]] = None
+    _extra_licenses = ['Distributable', 'Public-Domain']
+    _error = 'Invalid license identifier: '
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [r for f in self.package_files
+                for r in self._validate_spdx(f) if r]
+
+    def _validate_spdx(self, file: str) -> List[Optional[Result]]:
+        license = self.load_package_yml(file)['license']
+        if isinstance(license, list):
+            return [self._validate_license(file, id) for id in license]
+
+        return [self._validate_license(file, license)]
+
+    def _validate_license(self, file: str, identifier: str) -> Optional[Result]:
+        if self._valid_license(identifier):
+            return None
+
+        return Result(file=file, level=self._level,
+                      message=f'invalid license identifier: {repr(identifier)}',
+                      line=self.file_line(file, r'^license\s*:'))
+
+    def _valid_license(self, identifier: str) -> bool:
+        identifier = identifier.strip(" ()+")
+        identifiers = [id_o
+                       for id_a in identifier.split(' AND ')
+                       for id_o in id_a.split(' OR ')]
+
+        if len(identifiers) > 1:
+            return all([self._valid_license(id) for id in identifiers])
+
+        if ' WITH ' in identifier:
+            identifier, exception = identifier.split(' WITH ', 1)
+
+            if exception not in self._exception_ids():
+                return False
+
+        return identifier in self._license_ids()
+
+    def _license_ids(self) -> List[str]:
+        if self._licenses is None:
+            with request.urlopen(self._licenses_url) as f:
+                self._licenses = [license['licenseId'] for license in json.load(f)['licenses']]
+
+        return self._licenses + self._extra_licenses
+
+    def _exception_ids(self) -> List[str]:
+        if self._exceptions is None:
+            with request.urlopen(self._exceptions_url) as f:
+                self._exceptions = [exception['licenseExceptionId'] for exception in json.load(f)['exceptions']]
+
+        return self._exceptions
 
 
 class UnwantedFiles(PullRequestCheck):
@@ -272,6 +514,60 @@ class Pspec(PullRequestCheck):
         return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
+class SystemDependencies(PullRequestCheck):
+    _components = ['system.base', 'system.devel']
+
+    def run(self) -> List[Result]:
+        return [result
+                for f in self.package_files
+                for result in self._check_deps(f)]
+
+    def _check_deps(self, pkg_file: str) -> List[Result]:
+        pkg = os.path.basename(os.path.dirname(pkg_file))
+        pkg_components = self._package_components(pkg)
+
+        return self._validate_deps(pkg) if self._components_match(pkg_components) else []
+
+    def _package_components(self, pkg: str) -> List[str]:
+        return self._unwrap_component(self.load_package_yml(self.package_yml_path(pkg))['component'])
+
+    def _unwrap_component(self, component: Any) -> List[str]:
+        if isinstance(component, dict):
+            return [c for v in component.values() for c in self._unwrap_component(v)]
+
+        if isinstance(component, list):
+            return [c for item in component for c in self._unwrap_component(item)]
+
+        return [component]
+
+    def _validate_deps(self, pkg: str) -> List[Result]:
+        libs_file = self.package_file(pkg, 'abi_used_libs')
+        if not os.path.exists(libs_file):
+            return []
+
+        with self._open(libs_file) as f:
+            results = {package: (lib, self._components_match(self._package_components(package)))
+                       for lib, package in set([self._search_lib(lib.strip()) for lib in f])
+                       if package is not None}
+
+            return [Result(message=f'Dependency not in system.base/devel: {dep}',
+                           level=Level.WARNING, file=libs_file,
+                           line=self.package_file_line(pkg, 'abi_used_libs', f'^{lib}$'))
+                    for dep, (lib, check) in results.items() if not check]
+
+    def _components_match(self, components: List[str]) -> bool:
+        return len(set(components) & set(self._components)) > 0
+
+    def _search_lib(self, name: str) -> Tuple[str, Optional[str]]:
+        for f in glob.glob(self._path(os.path.join('packages', '*', '*', 'abi_libs'))):
+            with open(f, 'r') as libs:
+                for lib in libs:
+                    if lib.strip() == name:
+                        return name, os.path.basename(os.path.dirname(f))
+
+        return name, None
+
+
 class SummaryGenerator(PullRequestCheck):
     def generate(self) -> str:
         s = "# Changelog entries\n\n"
@@ -303,12 +599,18 @@ class SummaryGenerator(PullRequestCheck):
 
 class Checker:
     checks = [
+        CommitMessage,
+        FrozenPackage,
         Homepage,
         PackageBumped,
+        PackageDependenciesOrder,
         PackageDirectory,
+        PackageVersion,
         Patch,
-        UnwantedFiles,
         Pspec,
+        SPDXLicense,
+        SystemDependencies,
+        UnwantedFiles,
     ]
 
     def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):

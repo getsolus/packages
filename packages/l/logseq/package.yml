@@ -1,0 +1,97 @@
+name       : logseq
+version    : 0.10.1
+release    : 7
+source     :
+    - https://github.com/logseq/logseq/archive/refs/tags/0.10.1.tar.gz : f2fc8ba913664fabbd84f9ff2427c19a326363695ef03c44188f385c631a118a
+    # Keep these updated with each version of logseq (https://github.com/flathub/com.logseq.Logseq)
+    - https://raw.githubusercontent.com/flathub/com.logseq.Logseq/231f3559895b0ca0dd6f969b7b42e2371a4e992c/com.logseq.Logseq.metainfo.xml : 3e327ae22d8861d4750b87c892050a37846d85fc158354bfb817e4243e2ec802
+    - https://raw.githubusercontent.com/flathub/com.logseq.Logseq/231f3559895b0ca0dd6f969b7b42e2371a4e992c/com.logseq.Logseq.svg : ec2148ed51e69f57f1723073abf419d89bcb95d0c5bad7513b4e658cd2e6994b
+homepage   : https://logseq.com/
+license    : AGPL-3.0-or-later
+component  : office
+summary    : A privacy-first, open-source platform for knowledge management and collaboration
+description: |
+    Logseq is a knowledge management and collaboration platform. It focuses on privacy, longevity, and user control. Logseq offers a range of powerful tools for knowledge management, collaboration, PDF annotation, and task management with support for multiple file formats, including Markdown and Org-mode, and various features for organizing and structuring your notes.    
+networking : yes
+builddeps  :
+    - clojure-tools
+    - git
+    - jq
+    - nodejs
+    - yarn
+    # Autodeps
+    - at-spi2
+    - cups
+    - libcairo
+    - libdrm
+    - libgtk-3
+    - libxcomposite
+    - libxdamage
+    - libxfixes
+    - libxkbcommon
+    - libxrandr
+    - mesalib
+    - pango
+rundeps    :
+    - git
+environment: |
+    export JAVA_HOME=/usr/lib64/openjdk-17
+    export PATH=$JAVA_HOME/bin:$PATH
+setup      : |
+    # patch :parallel-build true in shadow-cljs.edn
+    %patch -p1 -i $pkgfiles/build.patch
+
+    # Upgrade electron to a version without the rendering issue
+    %patch -p1 -i $pkgfiles/0001-electron-v25.9.6.patch
+build      : |
+    # Compile cljs
+    yarn install --immutable --immutable-cache --inline-builds --locked
+    yarn gulp:build
+    yarn cljs:release-electron
+
+    # Build linux package
+    yarn --cwd static install --immutable --immutable-cache --inline-builds --locked
+    yarn --cwd static electron-forge package
+
+    # Cleanup some things we don't need to reduce package size
+    pushd static/out/Logseq-linux-x64
+
+    find . -type f -name "*.js.map" -print0 | xargs -0 -n1 rm -v
+    find . -type f -name "*.ts.map" -print0 | xargs -0 -n1 rm -v
+    find . -type f -name "*.d.ts" -print0 | xargs -0 -n1 rm -v
+    find . -type d -empty -delete
+
+    # Not needed for now since we're forcing better-sqlite3 to use pre-built binaries
+    # rm -rfv resources/app/node_modules/better-sqlite3/bin
+    # rm -rfv resources/app/node_modules/better-sqlite3/build/Release/.deps
+    # rm -rfv resources/app/node_modules/better-sqlite3/build/Release/obj.target
+    # rm -rfv resources/app/node_modules/better-sqlite3/build/Release/obj
+    # rm -rfv resources/app/node_modules/better-sqlite3/build/Release/sqlite3.a
+
+    # Shrink package size. We force it to use system git via the wrapper script
+    rm -rfv resources/app/node_modules/dugite/git
+install    : |
+    export logdir=/usr/share/logseq
+
+    # create destination folder and copy files
+    install -dm00755 $installdir/$logdir
+    cp -R $workdir/static/out/Logseq-linux-x64/* $installdir/$logdir/
+
+    # create a soft link to the executable
+    install -dm00755 $installdir/usr/bin
+    install -m755 $pkgfiles/logseq.sh $installdir/usr/bin/logseq
+
+    # Desktop file
+    install -Dm00644 $pkgfiles/com.logseq.Logseq.desktop $installdir/usr/share/applications/com.logseq.Logseq.desktop
+
+    # Icon
+    install -Dm00644 $sources/com.logseq.Logseq.svg $installdir/usr/share/icons/hicolor/scalable/apps/com.logseq.Logseq.svg
+
+    # Fix Wayland AppID
+    package_json=$installdir/$logdir/resources/app/package.json
+    tmp=$(mktemp)
+    jq ".productName = \"com.logseq.Logseq\"" $package_json > "$tmp" && mv "$tmp" $package_json
+    chmod 644 $package_json
+
+    # Appdata
+    install -Dm00644 $sources/com.logseq.Logseq.metainfo.xml $installdir/usr/share/metainfo/com.logseq.Logseq.metainfo.xml

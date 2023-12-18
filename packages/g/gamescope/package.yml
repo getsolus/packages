@@ -1,10 +1,11 @@
 name       : gamescope
-version    : 3.11.51
-release    : 9
+version    : 3.13.11
+release    : 14
 source     :
-    - git|https://github.com/Plagman/gamescope.git : 3.11.51
+    - git|https://github.com/ValveSoftware/gamescope.git : 3.13.11
 license    : BSD-2-Clause
 component  : system.utils
+homepage   : https://github.com/ValveSoftware/gamescope
 summary    : gamescope - a micro wayland compositor useful for games
 description: |
     gamescope is a micro wayland compositor useful for games. It creates a virtual environment for a game application to run in that helps solves various headaches such as resolution, alt-tabbing, mouse focusing issues etc. Gamescope also tries to remove as many unneccessary copies as it can and should provide better latency.
@@ -13,10 +14,13 @@ patterns   :
     - /*
 builddeps  :
     - pkgconfig(libcap)
+    - pkgconfig(libdisplay-info)
     - pkgconfig(libdrm)
+    - pkgconfig(libliftoff)
     - pkgconfig(libpipewire-0.3)
+    - pkgconfig(openvr)
     - pkgconfig(sdl2)
-    - pkgconfig(stb)
+    # - pkgconfig(stb)
     - pkgconfig(vulkan)
     - pkgconfig(wayland-protocols)
     - pkgconfig(wayland-server)
@@ -26,17 +30,48 @@ builddeps  :
     - pkgconfig(xext)
     - pkgconfig(xfixes)
     - pkgconfig(xkbcommon)
+    - pkgconfig(xmu)
     - pkgconfig(xrender)
     - pkgconfig(xres)
     - pkgconfig(xtst)
     - pkgconfig(xwayland)
     - pkgconfig(xxf86vm)
+    - pkgconfig(wayland-protocols)
     - pkgconfig(wlroots)
     - glslang-devel
     - vulkan-headers
 setup      : |
-    %meson_configure -Dforce_fallback_for=""
+    # For issue getsolus/packages#869. Let's create a special nvidia binary with the offending patch reverted. This only works on Nvidia, so we still need non-patched.
+    mkdir ../nvidia
+    cp -ra * ../nvidia
+
+    # Normal build
+    %meson_configure -Dforce_fallback_for="stb"
+
+    cd ../nvidia
+    %patch -p1 -i $pkgfiles/0001-Revert-rendervulkan-Get-a-general-graphics-compute-q.patch
+    %meson_configure -Dforce_fallback_for="stb"
 build      : |
     %ninja_build
+
+    cd ../nvidia
+    %ninja_build
 install    : |
+    # Install the nvidia build first so we can rename the binary
+    pushd ../nvidia
     %ninja_install
+
+    # Rename binary and remove everything else that would otherwise conflict
+    mv $installdir/usr/bin/gamescope $installdir/usr/bin/gamescope-nvidia
+    rm -rf $installdir/usr/include \
+           $installdir/usr/lib64 \
+           $installdir/usr/share
+    popd
+
+    # Unpatched install
+    %ninja_install
+
+    # Unneeded. This were only for libs that were statically compiled in
+    rm -v $installdir/usr/include/vkroots.h \
+          $installdir/usr/lib64/pkgconfig/vkroots.pc
+    find $installdir -type d -empty -print -delete

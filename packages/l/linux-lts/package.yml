@@ -1,8 +1,8 @@
 name       : linux-lts
-version    : 5.15.136
-release    : 219
+version    : 5.15.143
+release    : 225
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.136.tar.xz : c624b9fe7ee4708d34cfd0b7ebc58037afac7463338cc498641ea31c55eeacb8
+    - https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.143.tar.xz : 096bb16ec07232f27f6a07998c41b655883a8d0a6bb613d39bf524a9ffd99e02
 license    : GPL-2.0-only
 component  :
     - kernel.image
@@ -51,9 +51,18 @@ environment: |
 setup      : |
     %apply_patches
 
-    # Set the version
+    # Make sure the kernel version is consistent with the package version, even if we set the package version to something different
+    # We might do this if we're bisecting and don't want to mess with creating many different module dirs.
+    major="$( cut -d '.' -f 1 <<< "$version" )"
+    patch="$( cut -d '.' -f 2 <<< "$version" )"
+    sub="$( cut -d '.' -f 3 <<< "$version" )"
+    sed -e "s/^VERSION =.*/VERSION = $major/" -i Makefile
+    sed -e "s/^PATCHLEVEL =.*/PATCHLEVEL = $patch/" -i Makefile
+    sed -e "s/^SUBLEVEL =.*/SUBLEVEL = $sub/" -i Makefile
+
+    # Set the EXTRAVERSION to the Solus-specific string
     extraVersion="-${release}.lts"
-    sed -e "s/EXTRAVERSION =.*/EXTRAVERSION = $extraVersion/" -i Makefile
+    sed -e "s/^EXTRAVERSION =.*/EXTRAVERSION = $extraVersion/" -i Makefile
 
     # Ensure config is valid
     install $pkgfiles/config .config
@@ -94,13 +103,24 @@ install    : |
     # Fix mods
     depmod -b $installdir/ $kversion -a
 
+    # Strip the kernel modules for the initramfs. We can eke out some slight size improvements by keeping the modules
+    # uncompressed before we compress the entire initramfs.
+    mkdir -p dracut-modules/lib/modules/
+    cp -ra $installdir/lib/modules/${kversion} dracut-modules/lib/modules/
+    find "dracut-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
+
+    # Create a directory structure that we'll merge with the initrd. This is because we can't use symlinks with --include
+    # By creating symlinks here we can reference modules outside of the ordinary directory. This is needed for injecting
+    # modules from a secondary initramfs. We'll likely need to create such a symlink for every extra initramfs we intend to support
+    mkdir -p initramfs/lib/modules/${kversion}/extra-modules/
+    ln -sv /nvidia initramfs/lib/modules/${kversion}/extra-modules/nvidia
+
     # Store vendor initrd within the kernel package, prevent mangling from fakeroot
     # 2021-01-20: Force early KMS for everything except Nouveau (this will not work with Nvidia propretary)
-    LD_PRELOAD='' dracut --strip --tmpdir /tmp -N -f  \
-        --kmoddir $installdir/lib/modules/${kversion} \
+    LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
+        --kmoddir dracut-modules/lib/modules/${kversion} \
         --kver $kversion --add "bash systemd lvm dm rescue fido2 tpm2-tss virtiofs" \
-        --strip --hardlink --zstd \
-        --nomdadmconf --early-microcode \
+        --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
         --add-drivers "amdgpu hyperv_drm i915 qxl radeon virtio-gpu" \
         --include $pkgfiles/systemd/timeouts.conf /usr/lib64/systemd/system.conf.d/timeouts.conf \
         $installdir/usr/lib/kernel/initrd-$kernID.${version}-${release}
@@ -152,3 +172,7 @@ install    : |
     # Fix up build/source links
     ln -sv build $installdir/lib/modules/$kversion/source
     ln -sv $tgtDir $installdir/lib/modules/$kversion/build
+
+    # Compress modules with zstd and strip them in the process
+    # TODO remove this once the kernel module compression w/ dbginfo is fixed
+    find "$installdir/lib/modules" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;

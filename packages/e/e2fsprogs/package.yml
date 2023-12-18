@@ -1,6 +1,6 @@
 name       : e2fsprogs
 version    : 1.47.0
-release    : 22
+release    : 23
 source     :
     - https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v1.47.0/e2fsprogs-1.47.0.tar.xz : 144af53f2bbd921cef6f8bea88bb9faddca865da3fbc657cc9b4d2001097d5db
 homepage   : http://e2fsprogs.sourceforge.net
@@ -19,9 +19,11 @@ builddeps  :
     - pkgconfig32(uuid)
     - glibc-32bit-devel
     - libgcc-32bit
-patterns   :
-    - devel : [/usr/share/man/man3*]
 setup      : |
+    %patch -p1 -i $pkgfiles/0001-Stateless.patch
+
+    %patch -p1 -i $pkgfiles/0001-Don-t-run-ldconfig-on-make-install.patch
+
     %configure --with-root-prefix="" \
         --enable-elf-shlibs \
         --disable-libblkid \
@@ -31,9 +33,29 @@ setup      : |
 build      : |
     %make
 install    : |
+    if [ -n "${EMUL32BUILD+set}" ]; then
+        %make install-libs DESTDIR="$installdir"
+        exit 0
+    fi
     %make_install
-    %make install-libs DESTDIR="$installdir"
-    rm $installdir/sbin/fsck
+
+    # Duplicate file with util-linux
+    rm $installdir/usr/sbin/fsck
+    rm $installdir/usr/share/man/man8/fsck.8
+
+    # Stateless
+    rm -v $installdir/etc/e2scrub.conf
+    rmdir -v $installdir/etc
+
+    # Install compat links for usr-merge
+    for TOP in {bin,sbin}; do
+        install -D -d -m 00755 $installdir/$TOP
+        pushd $installdir/usr/$TOP
+        for FILE in *; do
+            ln -sv /usr/$TOP/$FILE $installdir/$TOP/$FILE
+        done
+        popd
+    done
 check      : |
     # Remove mmp since it fails on build server
     rm -rf tests/*mmp*

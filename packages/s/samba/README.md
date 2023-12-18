@@ -18,7 +18,7 @@ The Solus Samba build is intentionally quite bare-bones, with no support for Act
 
 This choice was made because Solus is targeted at home Desktop Users with the equivalent of workgroup file-sharing needs.
 
-As an aside, Solus comes with a [custom Samba configuration](https://getsol.us/articles/software/samba/en/) which is intentionally kept as simple as possible.
+As an aside, Solus comes with a [custom Samba configuration](https://help.getsol.us/docs/user/software/networking/samba) which is intentionally kept as simple as possible.
 
 
 ## How to determine internal Samba dependency requirements for a given tagged release

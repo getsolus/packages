@@ -1,0 +1,73 @@
+name       : miopen
+version    : 2.19.0
+release    : 2
+source     :
+    - https://github.com/ROCmSoftwarePlatform/MIOpen/archive/refs/tags/rocm-5.5.1.tar.gz : 2cd75071b8ee876c69a94f028b6c8a9346d6d2fde7d4b64e6d635f3b6c994262
+homepage   : https://github.com/ROCmSoftwarePlatform/MIOpen
+license    : MIT
+component  : programming.library
+summary    : AMD's Machine Intelligence Library
+description: |
+    MIOpen is AMD's library for high performance machine learning primitives.
+clang      : yes
+builddeps  :
+    - pkgconfig(bzip2)
+    - pkgconfig(nlohmann_json)
+    - pkgconfig(sqlite3)
+    - half
+    - libboost-devel
+    - miopengemm-devel
+    - rocblas-devel
+    - rocm-cmake
+    - rocm-hip-devel
+    - rocmlir-devel
+    # Takes too long to build, no proper release, hence not worth pursuing
+    # - composable-kernel-devel
+environment: |
+    declare -A rocm_vars
+    rocm_vars=(
+        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
+        ["DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
+        ["HIP_CLANG_PATH"]="/usr/bin"
+        ["HIP_COMPILER"]="clang"
+        ["HIP_LIB_PATH"]="/usr/lib64"
+        ["HIP_PATH"]="/usr"
+        ["HIP_PLATFORM"]="amd"
+        ["HIP_ROCCLR_HOME"]="/usr"
+        ["ROCM_PATH"]="/usr"
+        ["BUILD_FILE_REORG_BACKWARD_COMPATIBILITY"]="OFF"
+        ["HIPCC_VERBOSE"]="0"
+        ["CMAKE_POSITION_INDEPENDENT_CODE"]="ON"
+        # ["AMDGPU_TARGETS"]="gfx1030"
+        # ["HCC_AMDGPU_TARGETS"]="gfx1030"
+    )
+
+    for name in "${!rocm_vars[@]}"; do
+        export "$name"="${rocm_vars[$name]}";
+        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
+    done
+
+    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+setup      : |
+    sed -i "s|enable_testing()||" CMakeLists.txt
+    sed -i "s|add_subdirectory(doc)||" CMakeLists.txt
+    sed -i "s|add_subdirectory(test)||" CMakeLists.txt
+    sed -i "s|add_subdirectory(speedtests)||" CMakeLists.txt
+
+    %cmake_ninja -L $ROCM_CMAKE_FLAGS \
+                 -DBoost_USE_STATIC_LIBS=OFF \
+                 -DMIOPEN_TEST_ALL=OFF \
+                 -DMIOPEN_USE_COMGR=ON \
+                 -DMIOPEN_BACKEND=HIP \
+                 -DMIOPEN_USE_COMPOSABLEKERNEL=OFF \
+                 -DMIOPEN_USE_MIOPENGEMM=ON \
+                 -DMIOPEN_USE_MLIR=ON \
+                 -DMIOPEN_USE_MIOPENTENSILE=OFF \
+                 -DMIOPEN_USE_ROCBLAS=ON \
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+
+    mv $installdir/usr/lib $installdir/%libdir%
+    rm -r $installdir/usr/miopen

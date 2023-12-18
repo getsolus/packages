@@ -295,7 +295,10 @@ EOF
 publish() {
     set -euo pipefail
 
-    pushd ~/${MAINPAK}-rebuilds
+    read -p "Has this stack been pushed to main? If so, input 'y' to continue. " prompt
+    if [[ $prompt != "y" ]]; then
+        exit 1
+    fi
 
     # Download initial index
     INDEX_XZ_URL="https://cdn.getsol.us/repo/unstable/eopkg-index.xml.xz"
@@ -309,7 +312,10 @@ publish() {
         var=$((var+1))
         echo -e "${PROGRESS} > Publishing package" ${var} "out of" $(package_count) "${NC}"
 
-        TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py package.yml)
+        # Read the package.yml file from the commit itself.
+        SPECFILEREF=$(git show $(git rev-list -1 HEAD .):./package.yml > /tmp/tmp.yml)
+        TAG=$($(git rev-parse --show-toplevel)/common/Scripts/gettag.py /tmp/tmp.yml)
+        if [ -f "/tmp/tmp.yml" ]; then rm /tmp/tmp.yml; fi
 
         # Update index if changed (-z)
         curl -s -z /tmp/rebuilds-unstable-index.xml.xz $INDEX_XZ_URL -o /tmp/rebuilds-unstable-index.xml.xz
@@ -321,7 +327,7 @@ publish() {
         if [[ $(grep ${TAG} < /tmp/rebuilds-unstable-index.xml | wc -l) -eq 1 ]] ; then
             echo -e "${INFO} > ${TAG} already indexed in the repo, skipping. ${NC}"
         else
-            go-task publish
+            go-task republish
             echo -e "${INFO} > Waiting for ${i} to build and be indexed... ${NC}"
             sleep 30
             DISABLE_BUILD_SUCCESS_NOTIFY=1 go-task notify-complete
@@ -332,8 +338,6 @@ publish() {
     echo -e "${PROGRESS} > All published packages successfully indexed into the repo! ${NC}"
     notify-send "All rebuilds against ${MAINPAK} successfully indexed into the repo!" -t 0
     paplay /usr/share/sounds/freedesktop/stereo/complete.oga
-
-    popd
 }
 
 NUKE() {

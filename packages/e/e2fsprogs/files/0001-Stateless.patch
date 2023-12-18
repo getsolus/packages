@@ -1,0 +1,237 @@
+From 34276930e292f2f7ad3e91114f4ef24fee2614c7 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sun, 12 Nov 2023 17:36:37 -0600
+Subject: [PATCH] Stateless
+
+---
+ MCONFIG.in            |  1 +
+ configure             |  3 +++
+ configure.ac          |  2 ++
+ e2fsck/unix.c         |  7 +++++--
+ ext2ed/Makefile.in    |  4 ++--
+ lib/dirpaths.h.in     |  3 +++
+ misc/Makefile.in      | 36 ++++++++++++++++++------------------
+ misc/mke2fs.c         |  4 ++++
+ util/subst.conf.in    |  1 +
+ 10 files changed, 44 insertions(+), 22 deletions(-)
+ create mode 100644 .vscode/settings.json
+
+diff --git a/MCONFIG.in b/MCONFIG.in
+index 82c75a28..05b184ab 100644
+--- a/MCONFIG.in
++++ b/MCONFIG.in
+@@ -25,6 +25,7 @@ libdir = @libdir@
+ datadir= @datadir@
+ localedir = $(datadir)/locale
+ root_sysconfdir= @root_sysconfdir@
++confdir= @confdir@
+ includedir = @includedir@
+ mandir = @mandir@
+ man1dir = $(mandir)/man1
+diff --git a/configure b/configure
+index b0e8d1bf..494afb82 100755
+--- a/configure
++++ b/configure
+@@ -669,6 +669,7 @@ BUILD_CFLAGS
+ INCLUDES
+ DO_TEST_SUITE
+ LDFLAGS_STATIC
++confdir
+ root_sysconfdir
+ root_libdir
+ root_sbindir
+@@ -15005,6 +15006,8 @@ if test "$sysconfdir" != '${prefix}/etc'; then
+     { printf "%s\n" "$as_me:${as_lineno-$LINENO}: result: Setting root_sysconfdir to $root_sysconfdir" >&5
+ printf "%s\n" "Setting root_sysconfdir to $root_sysconfdir" >&6; }
+ fi
++confdir=$datadir/defaults/etc/e2fsprogs
++
+ 
+ 
+ 
+diff --git a/configure.ac b/configure.ac
+index 017a96ff..4bbbd424 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1669,11 +1669,13 @@ if test "$sysconfdir" != '${prefix}/etc'; then
+     root_sysconfdir=$sysconfdir
+     AC_MSG_RESULT([Setting root_sysconfdir to $root_sysconfdir])
+ fi
++confdir=$datadir/defaults/etc/e2fsprogs
+ AC_SUBST(root_prefix)
+ AC_SUBST(root_bindir)
+ AC_SUBST(root_sbindir)
+ AC_SUBST(root_libdir)
+ AC_SUBST(root_sysconfdir)
++AC_SUBST(confdir)
+ dnl
+ dnl Allow specification of the multiarch arch
+ dnl
+diff --git a/e2fsck/unix.c b/e2fsck/unix.c
+index e5b672a2..1d855e1f 100644
+--- a/e2fsck/unix.c
++++ b/e2fsck/unix.c
+@@ -805,6 +805,7 @@ static void syntax_err_report(const char *filename, long err, int line_num)
+ }
+ 
+ static const char *config_fn[] = { ROOT_SYSCONFDIR "/e2fsck.conf", 0 };
++static const char *config_default_fn[] = { DEFAULT_CONFDIR "e2fsck.conf", 0};
+ 
+ static errcode_t PRS(int argc, char *argv[], e2fsck_t *ret_ctx)
+ {
+@@ -1048,8 +1049,10 @@ static errcode_t PRS(int argc, char *argv[], e2fsck_t *ret_ctx)
+ 	if ((cp = getenv("E2FSCK_CONFIG")) != NULL)
+ 		config_fn[0] = cp;
+ 	profile_set_syntax_err_cb(syntax_err_report);
+-	profile_init(config_fn, &ctx->profile);
+-
++	retval = profile_init(config_fn, &ctx->profile);
++	if (retval == ENOENT) {
++		retval = profile_init(config_default_fn, &ctx->profile);
++	}
+ 	profile_get_boolean(ctx->profile, "options", "report_time", 0, 0,
+ 			    &c);
+ 	if (c)
+diff --git a/ext2ed/Makefile.in b/ext2ed/Makefile.in
+index e4724ca5..9a87a47d 100644
+--- a/ext2ed/Makefile.in
++++ b/ext2ed/Makefile.in
+@@ -72,10 +72,10 @@ clean::
+ 	-rmdir doc
+ 
+ install: ext2ed
+-	install -d $(root_sysconfdir)
++	install -d $(confdir)
+ 	install -m 755 ext2ed $(sbindir)
+ 	install -m 644 $(srcdir)/ext2.descriptors $(datadir)
+-	install -m 644 ext2ed.conf $(root_sysconfdir)
++	install -m 644 ext2ed.conf $(confdir)
+ 	install -m 644 ext2ed.8 $(man8dir)
+ 
+ # +++ Dependency line eater +++
+diff --git a/lib/dirpaths.h.in b/lib/dirpaths.h.in
+index 6ccb55be..e61cf22c 100644
+--- a/lib/dirpaths.h.in
++++ b/lib/dirpaths.h.in
+@@ -8,3 +8,6 @@
+ 
+ /* Where to find the mke2fs.conf and e2fsck.conf files */
+ #define ROOT_SYSCONFDIR		"@root_sysconfdir@"
++
++/* Where to find the default mke2fs.conf and e2fsck.conf files */
++#define DEFAULT_CONFDIR		"@datadir@/defaults/etc/e2fsprogs"
+diff --git a/misc/Makefile.in b/misc/Makefile.in
+index e5420bbd..e21da00e 100644
+--- a/misc/Makefile.in
++++ b/misc/Makefile.in
+@@ -551,12 +551,12 @@ filefrag.8: $(DEP_SUBSTITUTE) $(srcdir)/filefrag.8.in
+ 	$(Q) $(SUBSTITUTE_UPTIME) $(srcdir)/filefrag.8.in filefrag.8
+ 
+ installdirs:
+-	$(E) "	MKDIR_P $(sbindir) $(root_sbindir) $(bindir) $(man1dir) $(man8dir) $(libdir) $(root_sysconfdir)"
++	$(E) "	MKDIR_P $(sbindir) $(root_sbindir) $(bindir) $(man1dir) $(man8dir) $(libdir) $(confdir)"
+ 	$(Q) $(MKDIR_P) $(DESTDIR)$(sbindir) \
+ 		$(DESTDIR)$(root_sbindir) $(DESTDIR)$(bindir) \
+ 		$(DESTDIR)$(man1dir) $(DESTDIR)$(man8dir) \
+ 		$(DESTDIR)$(man1dir) $(DESTDIR)$(man5dir) \
+-		$(DESTDIR)$(libdir) $(DESTDIR)/$(root_sysconfdir)
++		$(DESTDIR)$(libdir) $(DESTDIR)/$(confdir)
+ 
+ install: all $(SMANPAGES) $(UMANPAGES) installdirs
+ 	$(Q) for i in $(SPROGS); do \
+@@ -622,33 +622,33 @@ install: all $(SMANPAGES) $(UMANPAGES) installdirs
+ 		(cd $(DESTDIR)$(man5dir); \
+ 			$(LN) $(LINK_INSTALL_FLAGS) ext4.5 $$i.5); \
+ 	done
+-	$(Q) if test -f $(DESTDIR)$(root_sysconfdir)/mke2fs.conf; then \
+-		if cmp -s $(DESTDIR)$(root_sysconfdir)/mke2fs.conf \
++	$(Q) if test -f $(DESTDIR)$(confdir)/mke2fs.conf; then \
++		if cmp -s $(DESTDIR)$(confdir)/mke2fs.conf \
+ 			mke2fs.conf; then \
+ 			true; \
+ 		else \
+-			if grep -q ext4dev $(DESTDIR)$(root_sysconfdir)/mke2fs.conf ; then \
+-				$(ES) "	INSTALL_DATA $(root_sysconfdir)/mke2fs.conf.e2fsprogs-new"; \
++			if grep -q ext4dev $(DESTDIR)$(confdir)/mke2fs.conf ; then \
++				$(ES) "	INSTALL_DATA $(confdir)/mke2fs.conf.e2fsprogs-new"; \
+ 				$(INSTALL_DATA) mke2fs.conf \
+-					$(DESTDIR)$(root_sysconfdir)/mke2fs.conf.e2fsprogs-new; \
+-				echo "Warning: installing mke2fs.conf in $(DESTDIR)$(root_sysconfdir)/mke2fs.conf.e2fsprogs-new"; \
+-				echo "Check to see if you need to update your $(root_sysconfdir)/mke2fs.conf"; \
++					$(DESTDIR)$(confdir)/mke2fs.conf.e2fsprogs-new; \
++				echo "Warning: installing mke2fs.conf in $(DESTDIR)$(confdir)/mke2fs.conf.e2fsprogs-new"; \
++				echo "Check to see if you need to update your $(confdir)/mke2fs.conf"; \
+ 			else \
+-				$(ES) "	INSTALL_DATA $(root_sysconfdir)/mke2fs.conf"; \
+-				mv $(DESTDIR)$(root_sysconfdir)/mke2fs.conf \
+-				   $(DESTDIR)$(root_sysconfdir)/mke2fs.conf.e2fsprogs-old; \
++				$(ES) "	INSTALL_DATA $(confdir)/mke2fs.conf"; \
++				mv $(DESTDIR)$(confdir)/mke2fs.conf \
++				   $(DESTDIR)$(confdir)/mke2fs.conf.e2fsprogs-old; \
+ 				$(INSTALL_DATA) mke2fs.conf \
+-					$(DESTDIR)$(root_sysconfdir)/mke2fs.conf; \
++					$(DESTDIR)$(confdir)/mke2fs.conf; \
+ 				echo "Your mke2fs.conf is too old.  Backing up old version in"; \
+-				echo "$(DESTDIR)$(root_sysconfdir)/mke2fs.conf.e2fsprogs-old.  Please check to see"; \
++				echo "$(DESTDIR)$(confdir)/mke2fs.conf.e2fsprogs-old.  Please check to see"; \
+ 				echo "if you have any local customizations that you wish to preserve."; \
+ 			fi; \
+ 			echo " "; \
+ 		fi; \
+ 	else \
+-		$(ES) "	INSTALL_DATA $(root_sysconfdir)/mke2fs.conf"; \
++		$(ES) "	INSTALL_DATA $(confdir)/mke2fs.conf"; \
+ 		$(INSTALL_DATA) mke2fs.conf \
+-			$(DESTDIR)$(root_sysconfdir)/mke2fs.conf; \
++			$(DESTDIR)$(confdir)/mke2fs.conf; \
+ 	fi
+ 
+ install-strip: install
+@@ -700,8 +700,8 @@ uninstall:
+ 		$(ES) "	LINK $$i.5"; \
+ 		$(RM) -f $(DESTDIR)$(man5dir)/$$i.5; \
+ 	done
+-	if cmp -s mke2fs.conf $(DESTDIR)/$(root_sysconfdir)/mke2fs.conf; then \
+-		$(RM) $(DESTDIR)/$(root_sysconfdir)/mke2fs.conf; \
++	if cmp -s mke2fs.conf $(DESTDIR)/$(confdir)/mke2fs.conf; then \
++		$(RM) $(DESTDIR)/$(confdir)/mke2fs.conf; \
+ 	fi
+ 
+ clean::
+diff --git a/misc/mke2fs.c b/misc/mke2fs.c
+index 4a9c1b09..4cb42b00 100644
+--- a/misc/mke2fs.c
++++ b/misc/mke2fs.c
+@@ -1219,6 +1219,7 @@ static void syntax_err_report(const char *filename, long err, int line_num)
+ }
+ 
+ static const char *config_fn[] = { ROOT_SYSCONFDIR "/mke2fs.conf", 0 };
++static const char *config_default_fn[] = { DEFAULT_CONFDIR "/mke2fs.conf", 0};
+ 
+ static void edit_feature(const char *str, __u32 *compat_array)
+ {
+@@ -1644,6 +1645,9 @@ static void PRS(int argc, char *argv[])
+ 		config_fn[0] = tmp;
+ 	profile_set_syntax_err_cb(syntax_err_report);
+ 	retval = profile_init(config_fn, &profile);
++	if (retval == ENOENT) {
++		retval = profile_init(config_default_fn, &profile);
++	}
+ 	if (retval == ENOENT) {
+ 		retval = profile_init(default_files, &profile);
+ 		if (retval)
+diff --git a/util/subst.conf.in b/util/subst.conf.in
+index 0da45541..78b4b700 100644
+--- a/util/subst.conf.in
++++ b/util/subst.conf.in
+@@ -11,6 +11,7 @@ SIZEOF_SHORT		@SIZEOF_SHORT@
+ datarootdir		@datarootdir@
+ datadir			@datadir@
+ root_sysconfdir		@root_sysconfdir@
++confdir			@confdir@
+ $datarootdir		@datarootdir@
+ $root_prefix		@root_prefix@
+ $prefix			@prefix@
+-- 
+2.42.0
+

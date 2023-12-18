@@ -11,7 +11,7 @@ def install():
         shelltools.chmod(path, mode=mode)
 
     # Install everything
-    pisitools.insinto("/", "root/*")
+    pisitools.insinto("/", "*")
 
     for dire in ["/tmp", "/var/tmp", "/dev", "/usr/lib64", "/lib64", "/proc", "/sys", "/run/lock", "/root", "/home", "/run", "/media"]:
         pisitools.dodir(dire)

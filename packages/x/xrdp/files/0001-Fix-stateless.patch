@@ -1,0 +1,507 @@
+From 1144265a31d740b8ba39b169b0f03ad925ba733e Mon Sep 17 00:00:00 2001
+From: Arjan van de Ven <arjan@linux.intel.com>
+Date: Tue, 10 Jul 2018 02:24:16 +0000
+Subject: [PATCH] Fix stateless
+
+Signed-off-by: Patrick McCarty <patrick.mccarty@intel.com>
+Signed-off-by: Mark D Horn <mark.d.horn@intel.com>
+---
+ common/os_calls.c        | 30 +++++++++++++++++++
+ common/os_calls.h        |  1 +
+ common/string_calls.c    | 45 ++++++++++++++++++++++++++++
+ common/string_calls.h    |  2 ++
+ libxrdp/libxrdp.c        |  2 +-
+ libxrdp/xrdp_sec.c       |  4 +--
+ sesman/chansrv/chansrv.c |  5 ++--
+ sesman/config.c          | 11 +++++++
+ sesman/sesman.c          |  2 +-
+ xrdp/lang.c              |  6 ++--
+ xrdp/xrdp.c              | 65 +++++++++++++++++++++-------------------
+ xrdp/xrdp_mm.c           |  2 +-
+ 12 files changed, 135 insertions(+), 40 deletions(-)
+
+diff --git a/common/os_calls.c b/common/os_calls.c
+index 1e4f6b18..fe78bdea 100644
+--- a/common/os_calls.c
++++ b/common/os_calls.c
+@@ -3470,6 +3470,36 @@ g_mirror_memcpy(void *dst, const void *src, int len)
+     return 0;
+ }
+ 
++void g_snprintf_config(char *dest, int size, const char *fmt, ...)
++{
++    char *user_fmtd = alloca(size);
++    va_list ap;
++    int err;
++
++    va_start(ap, fmt);
++    err = vsnprintf(user_fmtd, size, fmt, ap);
++    va_end(ap);
++    if (err >= size)
++        goto out;
++
++    if (snprintf(dest, size, XRDP_CFG_PATH"/%s", user_fmtd) >= size)
++        goto out;
++    if (!access(dest, R_OK))
++        return;
++
++    if (snprintf(dest, size, "/usr/share/defaults/xrdp/%s", user_fmtd) >= size)
++        goto out;
++    if (!access(dest, R_OK))
++        return;
++
++    snprintf(dest, size, XRDP_CFG_PATH"/%s", user_fmtd);
++    return;
++
++out:
++    fprintf(stderr, "Buffer exceeds given size, aborting");
++    abort();
++}
++
+ /*****************************************************************************/
+ int
+ g_tcp4_socket(void)
+diff --git a/common/os_calls.h b/common/os_calls.h
+index 5763019b..a8c2d905 100644
+--- a/common/os_calls.h
++++ b/common/os_calls.h
+@@ -182,6 +182,7 @@ int      g_save_to_bmp(const char *filename, char *data, int stride_bytes,
+ void    *g_shmat(int shmid);
+ int      g_shmdt(const void *shmaddr);
+ int      g_gethostname(char *name, int len);
++void     g_snprintf_config(char *dest, int size, const char *fmt, ...) printflike(3, 4);
+ int      g_mirror_memcpy(void *dst, const void *src, int len);
+ int      g_tcp4_socket(void);
+ int      g_tcp4_bind_address(int sck, const char *port, const char *address);
+diff --git a/common/string_calls.c b/common/string_calls.c
+index 18f54512..9b576c03 100644
+--- a/common/string_calls.c
++++ b/common/string_calls.c
+@@ -25,6 +25,7 @@
+ #include <strings.h>
+ #include <stdlib.h>
+ #include <ctype.h>
++#include <unistd.h>
+ 
+ 
+ #include "log.h"
+@@ -1055,3 +1056,47 @@ g_str_to_bitmask(const char *str, const struct bitmask_string bitdefs[],
+     return mask;
+ }
+ 
++char *
++g_strdupcat(const char *in1, const char *in2)
++{
++    int len;
++    char *p;
++
++    len = g_strlen(in1) + g_strlen(in2);
++    p = (char *)g_malloc(len + 1, 0);
++    if (p != NULL)
++    {
++        p = g_strcpy(p, in1);
++        p = g_strncat(p, in2, len);
++    }
++
++    return p;
++}
++
++char *
++g_strdup_config(const char *in)
++{
++    char *xrdp_ini;
++
++    if (in == 0)
++    {
++        return 0;
++    }
++
++    /* Check the built default first */
++    xrdp_ini = g_strdupcat(XRDP_CFG_PATH, in);
++    if (!access(xrdp_ini, R_OK))
++        return xrdp_ini;
++
++    g_free(xrdp_ini);
++    /* Check the Clear Linux OS default */
++    xrdp_ini = g_strdupcat("/usr/share/defaults/xrdp", in);
++    if (!access(xrdp_ini, R_OK))
++        return xrdp_ini;
++
++    g_free(xrdp_ini);
++    /* Fallback to the built default */
++    xrdp_ini = g_strdupcat(XRDP_CFG_PATH, in);
++
++    return xrdp_ini;
++}
+diff --git a/common/string_calls.h b/common/string_calls.h
+index 21fd74e5..f5205981 100644
+--- a/common/string_calls.h
++++ b/common/string_calls.h
+@@ -221,4 +221,6 @@ char    *g_strstr(const char *haystack, const char *needle);
+ int      g_mbstowcs(twchar *dest, const char *src, int n);
+ int      g_wcstombs(char *dest, const twchar *src, int n);
+ int      g_strtrim(char *str, int trim_flags);
++char    *g_strdupcat(const char *in1, const char *in2);
++char    *g_strdup_config(const char *in);
+ #endif
+diff --git a/libxrdp/libxrdp.c b/libxrdp/libxrdp.c
+index 637dff02..cc64d1a3 100644
+--- a/libxrdp/libxrdp.c
++++ b/libxrdp/libxrdp.c
+@@ -47,7 +47,7 @@ libxrdp_init(tbus id, struct trans *trans, const char *xrdp_ini)
+     }
+     else
+     {
+-        session->xrdp_ini = g_strdup(XRDP_CFG_PATH "/xrdp.ini");
++        session->xrdp_ini = g_strdup_config("/xrdp.ini");
+     }
+     session->rdp = xrdp_rdp_create(session, trans);
+     session->orders = xrdp_orders_create(session, (struct xrdp_rdp *)session->rdp);
+diff --git a/libxrdp/xrdp_sec.c b/libxrdp/xrdp_sec.c
+index 29c2222b..1e8a3990 100644
+--- a/libxrdp/xrdp_sec.c
++++ b/libxrdp/xrdp_sec.c
+@@ -419,7 +419,7 @@ xrdp_load_keyboard_layout(struct xrdp_client_info *client_info)
+         client_info->keyboard_subtype = 1;
+     }
+ 
+-    g_snprintf(keyboard_cfg_file, 255, "%s/xrdp_keyboard.ini", XRDP_CFG_PATH);
++    g_snprintf_config(keyboard_cfg_file, 255, "xrdp_keyboard.ini");
+     LOG(LOG_LEVEL_DEBUG, "keyboard_cfg_file %s", keyboard_cfg_file);
+ 
+     fd = g_file_open(keyboard_cfg_file);
+@@ -2862,7 +2862,7 @@ xrdp_sec_incoming(struct xrdp_sec *self)
+             items->auto_free = 1;
+             values = list_create();
+             values->auto_free = 1;
+-            g_snprintf(key_file, 255, "%s/rsakeys.ini", XRDP_CFG_PATH);
++            g_snprintf_config(key_file, 255, "rsakeys.ini");
+ 
+             if (file_by_name_read_section(key_file, "keys", items, values) != 0)
+             {
+diff --git a/sesman/chansrv/chansrv.c b/sesman/chansrv/chansrv.c
+index ef3960ed..f269fe65 100644
+--- a/sesman/chansrv/chansrv.c
++++ b/sesman/chansrv/chansrv.c
+@@ -67,6 +67,7 @@ int g_rdpsnd_chan_id = -1;  /* rdpsnd  */
+ int g_rdpdr_chan_id = -1;   /* rdpdr   */
+ int g_rail_chan_id = -1;    /* rail    */
+ 
++const char *config_path;
+ char *g_exec_name;
+ tbus g_exec_event = 0;
+ tbus g_exec_mutex;
+@@ -1580,6 +1581,7 @@ main_cleanup(void)
+         tc_sem_delete(g_exec_sem);
+     }
+     log_end();
++    g_free((char*)config_path);
+     config_free(g_cfg);
+     g_deinit(); /* os_calls */
+     return 0;
+@@ -1671,7 +1673,6 @@ main(int argc, char **argv)
+     tbus waiters[4];
+     int pid = 0;
+     char text[256];
+-    const char *config_path;
+     char log_path[256];
+     const char *display_text;
+     char log_file[256];
+@@ -1706,7 +1707,7 @@ main(int argc, char **argv)
+     /*
+      * The user is unable at present to override the sysadmin-provided
+      * sesman.ini location */
+-    config_path = XRDP_CFG_PATH "/sesman.ini";
++    config_path = g_strdup_config("/sesman.ini");
+     if ((g_cfg = config_read(0, config_path)) == NULL)
+     {
+         main_cleanup();
+diff --git a/sesman/config.c b/sesman/config.c
+index 44636c60..f6fd1e4d 100644
+--- a/sesman/config.c
++++ b/sesman/config.c
+@@ -35,6 +35,7 @@
+ #include "log.h"
+ #include "string_calls.h"
+ #include "chansrv/chansrv_common.h"
++#include <unistd.h>
+ 
+ /***************************************************************************//**
+  *
+@@ -133,8 +134,18 @@ config_read_globals(int file, struct config_sesman *cf, struct list *param_n,
+     {
+         /* sizeof operator returns string length including null terminator  */
+         length = sizeof(XRDP_CFG_PATH) + g_strlen(cf->default_wm) + 1; /* '/' */
++        if (sizeof("/usr/share/defaults/xrdp") > sizeof(XRDP_CFG_PATH) )
++            length = sizeof("/usr/share/defaults/xrdp") + g_strlen(cf->default_wm) + 1; /* '/' */
++
+         buf = (char *)g_malloc(length, 0);
+         g_sprintf(buf, "%s/%s", XRDP_CFG_PATH, cf->default_wm);
++        if (access(buf, R_OK))
++        {
++            g_free(buf);
++            buf = (char *)g_malloc(length, 0);
++            g_sprintf(buf, "%s/%s", "/usr/share/defaults/xrdp", cf->default_wm);
++        }
++
+         g_free(cf->default_wm);
+         cf->default_wm = g_strdup(buf);
+         g_free(buf);
+diff --git a/sesman/sesman.c b/sesman/sesman.c
+index 1155154f..d9ae6bf9 100644
+--- a/sesman/sesman.c
++++ b/sesman/sesman.c
+@@ -659,7 +659,7 @@ main(int argc, char **argv)
+ 
+     g_init("xrdp-sesman");
+     g_snprintf(pid_file, 255, "%s/xrdp-sesman.pid", XRDP_PID_PATH);
+-    g_snprintf(default_sesman_ini, 255, "%s/sesman.ini", XRDP_CFG_PATH);
++    g_snprintf_config(default_sesman_ini, 255, "sesman.ini");
+ 
+     startup_params.sesman_ini = default_sesman_ini;
+ 
+diff --git a/xrdp/lang.c b/xrdp/lang.c
+index e4c18077..4361f1bb 100644
+--- a/xrdp/lang.c
++++ b/xrdp/lang.c
+@@ -239,21 +239,21 @@ get_keymaps(int keylayout, struct xrdp_keymap *keymap)
+     filename = (char *)g_malloc(256, 0);
+ 
+     /* check if there is a keymap file e.g. km-e00100411.ini */
+-    g_snprintf(filename, 255, "%s/km-%08x.ini", XRDP_CFG_PATH, keylayout);
++    g_snprintf_config(filename, 255, "km-%08x.ini", keylayout);
+ 
+     /* if the file does not exist, use only lower 16 bits instead */
+     if (!g_file_exist(filename))
+     {
+         LOG(LOG_LEVEL_WARNING, "Cannot find keymap file %s", filename);
+         /* e.g. km-00000411.ini */
+-        g_snprintf(filename, 255, "%s/km-%08x.ini", XRDP_CFG_PATH, basic_key_layout);
++        g_snprintf_config(filename, 255, "km-%08x.ini", basic_key_layout);
+     }
+ 
+     /* finally, use 'en-us' */
+     if (!g_file_exist(filename))
+     {
+         LOG(LOG_LEVEL_WARNING, "Cannot find keymap file %s", filename);
+-        g_snprintf(filename, 255, "%s/km-00000409.ini", XRDP_CFG_PATH);
++        g_snprintf_config(filename, 255, "km-00000409.ini");
+     }
+ 
+     if (g_file_exist(filename))
+diff --git a/xrdp/xrdp.c b/xrdp/xrdp.c
+index 60d805d2..07b01c4d 100644
+--- a/xrdp/xrdp.c
++++ b/xrdp/xrdp.c
+@@ -364,7 +364,11 @@ xrdp_process_params(int argc, char **argv,
+         else if (nocase_matches(option, "-c", "--config", NULL))
+         {
+             index++;
+-            startup_params->xrdp_ini = value;
++            if (startup_params->xrdp_ini != NULL)
++            {
++                g_free((char*)(startup_params->xrdp_ini));
++            }
++            startup_params->xrdp_ini = g_strdup(value);
+         }
+         else /* unknown option */
+         {
+@@ -384,7 +388,7 @@ xrdp_sanity_check(void)
+ {
+     int intval = 1;
+     int host_be;
+-    const char *key_file = XRDP_CFG_PATH "/rsakeys.ini";
++    const char *key_file;
+ 
+     /* check compiled endian with actual endian */
+     host_be = !((int)(*(unsigned char *)(&intval)));
+@@ -429,15 +433,29 @@ xrdp_sanity_check(void)
+         return 1;
+     }
+ 
++    key_file = g_strdup_config("/rsakeys.ini");
+     if (!g_file_exist(key_file))
+     {
+         g_writeln("File %s is missing, create it using xrdp-keygen", key_file);
++        g_free((char*)key_file);
+         return 1;
+     }
++    g_free((char*)key_file);
+ 
+     return 0;
+ }
+ 
++void
++g_main_cleanup(int in_val, const char *p)
++{
++    if (p != NULL) {
++        g_free((char*)p);
++    }
++
++    g_deinit();
++    g_exit(in_val);
++}
++
+ /*****************************************************************************/
+ int
+ main(int argc, char **argv)
+@@ -463,7 +481,7 @@ main(int argc, char **argv)
+     g_init("xrdp");
+     ssl_init();
+ 
+-    startup_params.xrdp_ini = XRDP_CFG_PATH "/xrdp.ini";
++    startup_params.xrdp_ini = g_strdup_config("/xrdp.ini");
+ 
+     errored_argc = xrdp_process_params(argc, argv, &startup_params);
+     if (errored_argc > 0)
+@@ -474,8 +492,7 @@ main(int argc, char **argv)
+         g_writeln("%s", "");
+ 
+         g_writeln("Unknown option: %s", argv[errored_argc]);
+-        g_deinit();
+-        g_exit(1);
++        g_main_cleanup(1, startup_params.xrdp_ini);
+     }
+ 
+     if (startup_params.help)
+@@ -484,22 +501,19 @@ main(int argc, char **argv)
+         g_writeln("%s", "");
+         print_help();
+ 
+-        g_deinit();
+-        g_exit(0);
++        g_main_cleanup(0, startup_params.xrdp_ini);
+     }
+ 
+     if (startup_params.version)
+     {
+         print_version();
+-        g_deinit();
+-        g_exit(0);
++        g_main_cleanup(0, startup_params.xrdp_ini);
+     }
+ 
+     if (xrdp_sanity_check() != 0)
+     {
+         g_writeln("Fatal error occurred, exiting");
+-        g_deinit();
+-        g_exit(1);
++        g_main_cleanup(1, startup_params.xrdp_ini);
+     }
+ 
+     if (startup_params.kill)
+@@ -532,8 +546,7 @@ main(int argc, char **argv)
+             g_file_close(fd);
+         }
+ 
+-        g_deinit();
+-        g_exit(0);
++        g_main_cleanup(0, startup_params.xrdp_ini);
+     }
+ 
+     /* starting logging subsystem */
+@@ -560,8 +573,7 @@ main(int argc, char **argv)
+                 break;
+         }
+ 
+-        g_deinit();
+-        g_exit(1);
++        g_main_cleanup(1, startup_params.xrdp_ini);
+     }
+ 
+ 
+@@ -571,8 +583,7 @@ main(int argc, char **argv)
+         LOG(LOG_LEVEL_ALWAYS, "It looks like xrdp is already running.");
+         LOG(LOG_LEVEL_ALWAYS, "If not, delete %s and try again.", pid_file);
+         log_end();
+-        g_deinit();
+-        g_exit(1);
++        g_main_cleanup(1, startup_params.xrdp_ini);
+     }
+ 
+     daemon = !startup_params.no_daemon;
+@@ -592,8 +603,7 @@ main(int argc, char **argv)
+             LOG(LOG_LEVEL_ALWAYS,
+                 "running in daemon mode with no access to pid files, quitting");
+             log_end();
+-            g_deinit();
+-            g_exit(1);
++            g_main_cleanup(1, startup_params.xrdp_ini);
+         }
+ 
+         if (g_file_write(fd, "0", 1) == -1)
+@@ -601,8 +611,7 @@ main(int argc, char **argv)
+             LOG(LOG_LEVEL_ALWAYS,
+                 "running in daemon mode with no access to pid files, quitting");
+             log_end();
+-            g_deinit();
+-            g_exit(1);
++            g_main_cleanup(1, startup_params.xrdp_ini);
+         }
+ 
+         g_file_close(fd);
+@@ -617,10 +626,9 @@ main(int argc, char **argv)
+             LOG(LOG_LEVEL_ALWAYS, "Failed to start xrdp daemon, "
+                 "possibly address already in use.");
+             log_end();
+-            g_deinit();
+             /* must exit with failure status,
+                or systemd cannot detect xrdp daemon couldn't start properly */
+-            g_exit(1);
++            g_main_cleanup(1, startup_params.xrdp_ini);
+         }
+         /* start of daemonizing code */
+         pid = g_fork();
+@@ -629,16 +637,14 @@ main(int argc, char **argv)
+         {
+             LOG(LOG_LEVEL_ALWAYS, "problem forking [%s]", g_get_strerror());
+             log_end();
+-            g_deinit();
+-            g_exit(1);
++            g_main_cleanup(1, startup_params.xrdp_ini);
+         }
+ 
+         if (0 != pid)
+         {
+             /* exit, this is the main process */
+             log_end();
+-            g_deinit();
+-            g_exit(0);
++            g_main_cleanup(0, startup_params.xrdp_ini);
+         }
+ 
+         g_sleep(1000);
+@@ -721,15 +727,14 @@ main(int argc, char **argv)
+     }
+ 
+     log_end();
+-    g_deinit();
+ 
+     if (exit_status == 0)
+     {
+-        g_exit(0);
++        g_main_cleanup(0, startup_params.xrdp_ini);
+     }
+     else
+     {
+-        g_exit(1);
++        g_main_cleanup(1, startup_params.xrdp_ini);
+     }
+ 
+     return 0;
+diff --git a/xrdp/xrdp_mm.c b/xrdp/xrdp_mm.c
+index c27c2341..e11f4b56 100644
+--- a/xrdp/xrdp_mm.c
++++ b/xrdp/xrdp_mm.c
+@@ -1718,7 +1718,7 @@ xrdp_mm_get_sesman_port(char *port, int port_bytes)
+     /* default to port 3350 */
+     g_strncpy(port, "3350", port_bytes - 1);
+     /* see if port is in sesman.ini file */
+-    g_snprintf(cfg_file, 255, "%s/sesman.ini", XRDP_CFG_PATH);
++    g_snprintf_config(cfg_file, 255, "sesman.ini");
+     fd = g_file_open(cfg_file);
+ 
+     if (fd >= 0)
+-- 
+2.43.0
+

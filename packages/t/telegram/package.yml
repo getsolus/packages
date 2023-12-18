@@ -1,20 +1,20 @@
 name       : telegram
-version    : 4.8.4
-release    : 186
+version    : 4.12.2
+release    : 191
 source     :
-    - https://github.com/telegramdesktop/tdesktop/releases/download/v4.8.4/tdesktop-4.8.4-full.tar.gz : 4328296df07557786e1b9cf22f6675200dbdf29c75d2efeb635c6b7f3f951e8d
-    - git|https://github.com/desktop-app/tg_owt.git : dcb5069ff76bd293e86928804208737e6cee2ccc
-    - git|https://gitlab.xiph.org/xiph/rnnoise.git : 7f449bf8bd3b933891d12c30112268c4090e4d59
+    - https://github.com/telegramdesktop/tdesktop/releases/download/v4.12.1/tdesktop-4.12.1-full.tar.gz : 91bf46227ab18b64c69488ce898b9c7dde25e18d99c7380589922e736d6f03f4
+    - git|https://github.com/desktop-app/tg_owt.git : 3bb3d757681e6cc5135aec6529a753dc3dcdcfb9
 homepage   : https://desktop.telegram.org/
 license    : GPL-3.0-or-later
 component  : network.im
 summary    : Telegram Desktop messaging app
 description: |
-    Telegram is a messaging app with a focus on speed and security, it’s super fast, simple and free.
+    Telegram is a messaging app with a focus on speed and security, it's super fast, simple and free.
 optimize   :
     - function-sections
-    - icf-safe
-    - lto
+    # Temporarily disabled due to Clang 16 build issue
+    # - icf-safe
+    # - thin-lto
 builddeps  :
     - pkgconfig(Qt6Core5Compat)
     - pkgconfig(Qt6Svg)
@@ -27,6 +27,7 @@ builddeps  :
     - pkgconfig(hunspell)
     - pkgconfig(jemalloc)
     - pkgconfig(libavcodec)
+    - pkgconfig(libavif)
     - pkgconfig(libevent)
     - pkgconfig(libjpeg)
     - pkgconfig(liblz4)
@@ -34,10 +35,11 @@ builddeps  :
     - pkgconfig(libpulse)
     - pkgconfig(libxxhash)
     # TODO Fix minizip-ng compat
-    # - minizip-ng-devel
+    # - pkgconfig(minizip)
     - pkgconfig(openal)
     - pkgconfig(opus)
     - pkgconfig(protobuf) # For the bundles cdl3 library.
+    - pkgconfig(rnnoise)
     - pkgconfig(vpx)
     - pkgconfig(wayland-server)
     - pkgconfig(xcb-keysyms)
@@ -55,29 +57,25 @@ builddeps  :
     - yasm
 rundeps    :
     - qt6-imageformats
+# Temporarily disabled due to Clang 16 build issue
+# clang      : yes
 setup      : |
     cp -r $sources/tg_owt.git tg_owt
     pushd tg_owt
-        %patch -p1 -i $pkgfiles/cstdint.patch
+        %patch -p1 -i $pkgfiles/tg_owt-clang12.patch
         %cmake_ninja -DTG_OWT_DLOPEN_PIPEWIRE=OFF
         %ninja_build
     popd
 
-    cp -r $sources/rnnoise.git rnnoise
-    pushd rnnoise
-        %autogen \
-            --disable-doc \
-            --disable-examples \
-            --disable-shared \
-            --libdir=$PWD/installed/lib \
-            --prefix=$PWD/installed
-        %make
-        %make_install DESTDIR=/
-    popd
+    # For some reason they didn't publish source for 4.12.2
+    %patch -p1 -i $pkgfiles/v4.12.1...v4.12.2.patch
 
-    %patch -p1 -i $pkgfiles/cstdint2.patch
-    export PKG_CONFIG_PATH="$PKG_CONFIG_PATH:$workdir/rnnoise/installed/lib/pkgconfig"
+    # Building with -O2 and any variant of LTO seems to cause segfaults during notifications. -O2 is the default for RelWithDebInfo so
+    # we need to set the cmake build to None and add the flags manually. It's really weird that -O3 works fine and -O2 doesn't...
+    export CXXFLAGS="$CXXFLAGS -O3 -DNDEBUG"
+
     %cmake_ninja \
+        -DCMAKE_BUILD_TYPE=None \
         -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON \
         -DDESKTOP_APP_DISABLE_JEMALLOC=ON \
         -DTDESKTOP_API_HASH=8562eb11c58f218ac08ee12c32e07ece \

@@ -1,0 +1,117 @@
+From: Diego Escalante Urrelo <diegoe@gnome.org>
+Date: Thu, 23 Jul 2020 13:11:51 -0500
+Subject: wl: Fix get/set values for tx_power
+
+The wl driver seems to be using an internal "qdbm" unit for the
+"qtxpower" registry, where hardware power is read, and naively using
+that value around the get/set cfg80211 functions.
+
+This 'qdBm' unit is simply (dBm * 4) and defaults to "23 *4" in
+`wl_linux.c`. This equivalency is confirmed in the brcmfmac kernel
+driver, which seems to be a cleaned up version of this one.
+
+This commit fixes getting and setting the txpower using regular
+utilities like `iwconfig` or `iw`.
+---
+ src/wl/sys/wl_cfg80211_hybrid.c | 26 +++++++++++++-------------
+ src/wl/sys/wl_linux.c           |  4 ++++
+ 2 files changed, 17 insertions(+), 13 deletions(-)
+
+diff --git a/src/wl/sys/wl_cfg80211_hybrid.c b/src/wl/sys/wl_cfg80211_hybrid.c
+index e81389f..fd2430e 100644
+--- a/src/wl/sys/wl_cfg80211_hybrid.c
++++ b/src/wl/sys/wl_cfg80211_hybrid.c
+@@ -89,13 +89,13 @@ static s32 wl_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev, u
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ static s32
+ wl_cfg80211_set_tx_power(struct wiphy *wiphy, struct wireless_dev *wdev,
+-                         enum nl80211_tx_power_setting type, s32 dbm);
++                         enum nl80211_tx_power_setting type, s32 mbm);
+ #elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)
+ static s32 wl_cfg80211_set_tx_power(struct wiphy *wiphy,
+-           enum nl80211_tx_power_setting type, s32 dbm);
++           enum nl80211_tx_power_setting type, s32 mbm);
+ #else
+ static s32 wl_cfg80211_set_tx_power(struct wiphy *wiphy,
+-           enum tx_power_setting type, s32 dbm);
++           enum tx_power_setting type, s32 mbm);
+ #endif
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+@@ -1080,24 +1080,25 @@ wl_cfg80211_disconnect(struct wiphy *wiphy, struct net_device *dev, u16 reason_c
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 8, 0)
+ static s32
+ wl_cfg80211_set_tx_power(struct wiphy *wiphy, struct wireless_dev *wdev,
+-                         enum nl80211_tx_power_setting type, s32 dbm)
++                         enum nl80211_tx_power_setting type, s32 mbm)
+ #elif LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 36)
+ static s32
+-wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum nl80211_tx_power_setting type, s32 dbm)
++wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum nl80211_tx_power_setting type, s32 mbm)
+ #else
+ #define NL80211_TX_POWER_AUTOMATIC TX_POWER_AUTOMATIC
+ #define NL80211_TX_POWER_LIMITED TX_POWER_LIMITED
+ #define NL80211_TX_POWER_FIXED TX_POWER_FIXED
+ static s32
+-wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum tx_power_setting type, s32 dbm)
++wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum tx_power_setting type, s32 mbm)
+ #endif
+ {
+ 
+ 	struct wl_cfg80211_priv *wl = wiphy_to_wl(wiphy);
+ 	struct net_device *ndev = wl_to_ndev(wl);
+-	u16 txpwrmw;
+ 	s32 err = 0;
+ 	s32 disable = 0;
++	s32 dbm = MBM_TO_DBM(mbm);
++	s32 qdbm = dbm * 4;
+ 
+ 	switch (type) {
+ 	case NL80211_TX_POWER_AUTOMATIC:
+@@ -1116,6 +1117,9 @@ wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum tx_power_setting type, s32 db
+ 		break;
+ 	}
+ 
++	qdbm = (qdbm > 127) ? 127 : qdbm;
++	qdbm |= WL_TXPWR_OVERRIDE;
++
+ 	disable = WL_RADIO_SW_DISABLE << 16;
+ 	disable = htod32(disable);
+ 	err = wl_dev_ioctl(ndev, WLC_SET_RADIO, &disable, sizeof(disable));
+@@ -1124,11 +1128,7 @@ wl_cfg80211_set_tx_power(struct wiphy *wiphy, enum tx_power_setting type, s32 db
+ 		return err;
+ 	}
+ 
+-	if (dbm > 0xffff)
+-		txpwrmw = 0xffff;
+-	else
+-		txpwrmw = (u16) dbm;
+-	err = wl_dev_intvar_set(ndev, "qtxpower", (s32) (bcm_mw_to_qdbm(txpwrmw)));
++	err = wl_dev_intvar_set(ndev, "qtxpower", qdbm);
+ 	if (err) {
+ 		WL_ERR(("qtxpower error (%d)\n", err));
+ 		return err;
+@@ -1156,7 +1156,7 @@ static s32 wl_cfg80211_get_tx_power(struct wiphy *wiphy, s32 *dbm)
+ 		return err;
+ 	}
+ 	result = (u8) (txpwrdbm & ~WL_TXPWR_OVERRIDE);
+-	*dbm = (s32) bcm_qdbm_to_mw(result);
++	*dbm = (s32) result / 4;
+ 
+ 	return err;
+ }
+diff --git a/src/wl/sys/wl_linux.c b/src/wl/sys/wl_linux.c
+index cc01d2b..4f5e43a 100644
+--- a/src/wl/sys/wl_linux.c
++++ b/src/wl/sys/wl_linux.c
+@@ -628,6 +628,10 @@ wl_attach(uint16 vendor, uint16 device, ulong regs,
+ 
+ 	wlc_iovar_setint(wl->wlc, "scan_passive_time", 170);
+ 
++	/* NOTICE: The driver's `qtxpower` option takes values from 0 to
++	 * 127, which correspond to (dBm * 4). This seems to be a half-done
++	 * implementation of their own API. The brcmfmac kernel driver
++	 * confirms this. */
+ 	wlc_iovar_setint(wl->wlc, "qtxpower", 23 * 4);
+ 
+ #ifdef BCMDBG
