@@ -36,17 +36,11 @@ MOZ_PROGRAM="$MOZ_DIST_BIN/$MOZ_FIREFOX_FILE"
 MOZ_LAUNCHER="$MOZ_DIST_BIN/run-mozilla.sh"
 
 ##
-## Enable Wayland backend?
+## Wayland is now enabled by default as of Firefox 121, but let's still allow users to opt out via MOZ_DISABLE_WAYLAND
+## If the user already has MOZ_ENABLE_WAYLAND set don't clobber it
 ##
-if ! [ $MOZ_DISABLE_WAYLAND ] && [ "$WAYLAND_DISPLAY" ]; then
-  if [ "$XDG_CURRENT_DESKTOP" == "GNOME" ]; then
-    export MOZ_ENABLE_WAYLAND=1
-  fi
-##  Enable Wayland on KDE/Sway
-##
-  if [ "$XDG_SESSION_TYPE" == "wayland" ]; then
-    export MOZ_ENABLE_WAYLAND=1
-  fi
+if [ $MOZ_DISABLE_WAYLAND ] && [ -z ${MOZ_ENABLE_WAYLAND+x} ]; then
+  export MOZ_ENABLE_WAYLAND=0
 fi
 
 ##
