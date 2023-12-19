@@ -1,9 +1,9 @@
 name       : glibc
 version    : '2.38'
-release    : 98
+release    : 99
 source     :
     # release/2.38/master
-    - git|git://sourceware.org/git/glibc.git : bf5aa419cbf545d2cd09dc097e518033d6e4df5e
+    - git|git://sourceware.org/git/glibc.git : d37c2b20a4787463d192b32041c3406c2bd91de0
 homepage   : https://www.gnu.org/software/libc/
 license    : GPL-3.0-or-later
 summary    :
@@ -38,6 +38,9 @@ setup      : |
 
     # Stateless /etc/nsswitch.conf
     %patch -p1 -i $pkgfiles/stateless/0001-Stateless-nsswitch.conf.patch
+
+    # Stateless other modules (/etc/rpc)
+    %patch -p1 -i $pkgfiles/stateless/0001-Stateless-NSS.patch
 
     # Broken 64-bit unity games
     # https://bugzilla.redhat.com/show_bug.cgi?id=1440287
@@ -99,6 +102,7 @@ setup      : |
            --enable-cet \
            --enable-kernel=5.10 \
            --enable-stack-protector=strong \
+           --enable-systemtap \
            --prefix=/usr \
            --mandir=/usr/share/man \
            --infodir=/usr/share/info \
@@ -155,14 +159,25 @@ install    : |
         %make_install install_root=$installdir
 
         if [[ -z "${AVX2BUILD}" ]]; then
-            %make_install install_root=$installdir localedata/install-locales
+            %make_install install_root=$installdir localedata/install-locale-files
+
+            # Hardlink everything to save space
+            pushd $installdir/usr/lib64/locale/
+            hardlink -c ../locale
+            # Convert some of the hardlinks to symlinks in case we split out the additional locales (C.utf8 must stay in the glibc package)
+            for r in LC_CTYPE LC_MEASUREMENT LC_PAPER; do
+                for f in $(find eo syr *_* -samefile C.utf8/$r); do
+                    rm $f && ln -s "../C.utf8/$r" $f
+                done
+            done
+            popd
 
             if [[ -f $installdir/etc/ld.so.cache ]]; then
                 rm -v $installdir/etc/ld.so.cache
             fi
 
             if [[ -f $installdir/etc/localetime ]]; then
-                rm -v $installdir/etc/localtime
+                rm -v $installdir/etc/localetime
             fi
 
             if [[ -d $installdir/usr/share/zoneinfo ]]; then
@@ -180,12 +195,15 @@ install    : |
             ln -sv /usr/sbin/ldconfig $installdir/sbin/ldconfig
             ln -sv /usr/sbin/sln $installdir/sbin/sln
 
-            # TODO Rebuild this with --enable-systemtap once it's added to the repo
-            # This is a vendored copy from the 4.9 systemtap package, it should be kept in sync with the systemtap version
+            # This is a vendored copy from the 5.0 systemtap package, it should be kept in sync with the systemtap version
             install -Dm00644 $pkgfiles/systemtap/{sdt.h,sdt-config.h} -t $installdir/usr/include/sys
 
             # Install stateless ld.so.conf
             install -Dm00644 $pkgfiles/ld.so.conf $installdir/usr/share/defaults/etc/ld.so.conf
+
+            # More stateless
+            mv $installdir/etc/rpc $installdir/usr/share/defaults/etc/
+            rmdir -v $installdir/etc
 
             # iconv cache file
             # LD_LIBRARY_PATH hacks to get this working, fixed in 2.36.
@@ -205,3 +223,12 @@ install    : |
             rm -rfv $installdir/%libdir%/${nuke}
         done
     fi
+
+    # None of these are needed on Solus, but could be added back by user demand (though in a stateless way)
+    # libnss_db is particularly problematic for statelessness due to /var/db/Makefile
+    rm -fv $installdir/%libdir%/libnss_db.so* \
+           $installdir/%libdir%/libnss_hesiod.so* \
+           $installdir/usr/bin/makedb \
+           $installdir/var/db/Makefile
+    # Cleanup
+    find $installdir -type d -empty -print -delete
