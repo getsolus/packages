@@ -1,6 +1,6 @@
 name       : virtualbox
 version    : 7.0.12
-release    : 291
+release    : 292
 source     :
     - https://download.virtualbox.org/virtualbox/7.0.12/VirtualBox-7.0.12.tar.bz2 : d76634c6ccf62503726a5aeae6c78a3462474c51a0ebe4942591ccc2d939890a
     - https://download.virtualbox.org/virtualbox/7.0.12/VBoxGuestAdditions_7.0.12.iso : b37f6aabe5a32e8b96ccca01f37fb49f4fd06674f1b29bc8fe0f423ead37b917
@@ -12,6 +12,7 @@ component  :
     - current : virt
     - guest : virt
     - guest-common : virt
+    - guest-current : virt
     - guest-additions-iso : virt
 summary    :
     - VirtualBox host modules for the linux-lts kernel
@@ -20,6 +21,7 @@ summary    :
     - devel : Development components for VirtualBox
     - guest : VirtualBox guest additions for the linux-lts kernel
     - guest-common : Common components for the VirtualBox guest packages
+    - guest-current : VirtualBox guest additions for the linux-current kernel
     - guest-additions-iso : The official VirtualBox Guest Additions ISO image
 description: |
     VirtualBox is a free powerful open source solution for running other x86 and x86_64 operating systems virtually on your computer.
@@ -84,6 +86,9 @@ rundeps    :
     - guest :
         - linux-lts
         - virtualbox-guest-common
+    - guest-current :
+        - linux-current
+        - virtualbox-guest-common
     - guest-common :
         - libxcomposite
         - libxdamage
@@ -99,7 +104,8 @@ patterns   :
     - current : /lib/modules/*.current/extra
     - guest :
         - /lib/modules/*.lts/misc
-        - /sbin
+    - guest-current :
+        - /lib/modules/*.current/misc
     - guest-common :
         - /usr/sbin
         - /usr/bin/VBoxClient
@@ -120,7 +126,7 @@ setup      : |
     %apply_patches
 
     # Ensure we don't ever use bundled libraries
-    rm -rf src/libs/{libpng-*,libxml2-*,libxslt-*,zlib-*,boost-*}
+    rm -rvf src/libs/{libpng-*,libxml2-*,libxslt-*,zlib-*,boost-*}
 
     cp $pkgfiles/LocalConfig.kmk .
     echo "VBOX_GCC_OPT=$CXXFLAGS" >> LocalConfig.kmk
@@ -144,10 +150,12 @@ build      : |
 
     ##### guest modules #####
     cd additions
-    cp -a src "%kernel_version_lts%"
-    pushd "%kernel_version_lts%"
-        %make all KERN_VER=%kernel_version_lts%
-    popd
+    for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
+        cp -a src ${kern}
+        pushd  ${kern}
+            %make all KERN_VER=${kern}
+        popd
+    done
 install    : |
     ##### Host #####
     cd out/linux.amd64/release/bin
@@ -220,7 +228,7 @@ install    : |
 
     ##### Guest #####
     cd additions
-    install -Dm00755 mount.vboxsf -t $installdir/sbin
+    install -Dm00755 mount.vboxsf -t $installdir/usr/sbin
     install -Dm00755 VBoxService -t $installdir/usr/sbin
     install -m00755 VBoxClient VBoxControl -t $installdir/usr/bin
     install -Dm00755 $workdir/src/VBox/Additions/x11/Installer/98vboxadd-xclient $installdir/usr/bin/VBoxClient-all
@@ -228,6 +236,12 @@ install    : |
     install -Dm00644 $workdir/src/VBox/Additions/x11/Installer/vboxclient.desktop $installdir/usr/share/xdg/autostart/vboxclient.desktop
 
     install -Dm00755 pam_vbox.so -t $installdir/%libdir%/security
+
+    # current kernel modules
+    pushd %kernel_version_current%
+        install -dm00755 $installdir/lib/modules/%kernel_version_current%/misc
+        install -m00644 *.ko $installdir/lib/modules/%kernel_version_current%/misc
+    popd
 
     # lts kernel modules
     pushd %kernel_version_lts%
