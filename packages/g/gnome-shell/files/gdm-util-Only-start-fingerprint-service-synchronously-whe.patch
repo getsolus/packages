@@ -1,23 +1,58 @@
+From: =?utf-8?b?Ik1hcmNvIFRyZXZpc2FuIChUcmV2acOxbyki?= <mail@3v1n0.net>
+Date: Tue, 1 Mar 2022 11:57:20 +0100
+Subject: gdm/util: Only start fingerprint service synchronously when it's
+ default
+
+On ShellUserVerifier construction we used to start fprintd in a sync
+fashion all the times, however in case the daemon had startup failures
+or was hanging for whatever reason (like due to devices probing, given
+that fprintd synchronously wait for them all to be initialized) we used
+to just fail, leaving gdm or the lockscreen inusable.
+
+While this could be prevented with a try/catch statement, there's no
+much point to wait for fprintd if that's not the default authentication
+service, and so:
+ - If we use gdm-fingerprint as default auth method, use a sync call to
+   initialize it and in case of failures, just continue with fallback
+   authentication mechanism (password)
+
+ - Otherwise, asynchronously initialize fprintd and continue with the
+   ShellUserVerifier without fingerprint support until we got a reply.
+   In case the service fails to deliver us a result, we don't give up
+   but we will try doing that at each authentication via
+   _checkForFingerprintReader().
+   In case all works properly, as per the previous commit, once the
+   initialization is done, we'll start the fingerprint PAM gdm service.
+
+Fixes #5168
+
+Bug-Ubuntu: https://bugs.launchpad.net/ubuntu/+source/gnome-shell/+bug/1962566
+Bug-GNOME: https://gitlab.gnome.org/GNOME/gnome-shell/-/issues/5168
+Origin: https://gitlab.gnome.org/GNOME/gnome-shell/-/merge_requests/2267
+---
+ js/gdm/util.js | 129 +++++++++++++++++++++++++++++++++++++++++++++------------
+ 1 file changed, 102 insertions(+), 27 deletions(-)
+
 diff --git a/js/gdm/util.js b/js/gdm/util.js
-index 89ad5449..3697ecdc 100644
+index 89ad544..3697ecd 100644
 --- a/js/gdm/util.js
 +++ b/js/gdm/util.js
 @@ -43,6 +43,7 @@ export const DISABLE_USER_LIST_KEY = 'disable-user-list';
-
+ 
  // Give user 48ms to read each character of a PAM message
  const USER_READ_TIME = 48;
 +const FINGERPRINT_SERVICE_PROXY_TIMEOUT = 5000;
  const FINGERPRINT_ERROR_TIMEOUT_WAIT = 15;
-
+ 
  /**
 @@ -108,16 +109,50 @@ export class ShellUserVerifier extends Signals.EventEmitter {
          this._preemptingService = null;
-
+ 
          this._settings = new Gio.Settings({schema_id: LOGIN_SCREEN_SCHEMA});
 -        this._settings.connect('changed',
 -            this._updateDefaultService.bind(this));
 -        this._updateDefaultService();
-
+ 
 -        this._fprintManager = new FprintManagerProxy(Gio.DBus.system,
 -            'net.reactivated.Fprint',
 -            '/net/reactivated/Fprint/Manager',
@@ -68,27 +103,27 @@ index 89ad5449..3697ecdc 100644
 +            this._updateDefaultServiceWithFallback();
 +        }
          this._smartcardManager = SmartcardManager.getSmartcardManager();
-
+ 
          // We check for smartcards right away, since an inserted smartcard
 @@ -136,6 +171,7 @@ export class ShellUserVerifier extends Signals.EventEmitter {
          this.reauthenticating = false;
-
+ 
          this._failCounter = 0;
 +        this._startedServices = new Set();
          this._unavailableServices = new Set();
-
+ 
          this._credentialManagers = {};
 @@ -225,6 +261,7 @@ export class ShellUserVerifier extends Signals.EventEmitter {
-
+ 
          this._clearUserVerifier();
          this._clearMessageQueue();
 +        this._startedServices.clear();
      }
-
+ 
      destroy() {
 @@ -345,27 +382,52 @@ export class ShellUserVerifier extends Signals.EventEmitter {
      }
-
+ 
      async _checkForFingerprintReader() {
 -        this._fingerprintReaderType = FingerprintReaderType.NONE;
 -
@@ -99,7 +134,7 @@ index 89ad5449..3697ecdc 100644
 +            this._updateDefaultServiceWithFallback();
              return;
          }
-
+ 
 +        if (this._fingerprintReaderType !== FingerprintReaderType.NONE)
 +            return;
 +
@@ -140,7 +175,7 @@ index 89ad5449..3697ecdc 100644
 +                logError(e);
 +        }
 +    }
-
+ 
 -            this._fingerprintReaderType = fprintDeviceType === 'swipe'
 -                ? FingerprintReaderType.SWIPE
 -                : FingerprintReaderType.PRESS;
@@ -153,7 +188,7 @@ index 89ad5449..3697ecdc 100644
 +        if (this._fingerprintReaderType === undefined)
 +            throw new Error(`Unexpected fingerprint device type '${fprintDeviceType}'`);
      }
-
+ 
      _onCredentialManagerAuthenticated(credentialManager, _token) {
 @@ -466,6 +528,7 @@ export class ShellUserVerifier extends Signals.EventEmitter {
              'problem', this._onProblem.bind(this),
@@ -171,16 +206,16 @@ index 89ad5449..3697ecdc 100644
 +
 +    _updateDefaultServiceWithFallback() {
 +        this._updateDefaultService();
-
+ 
          if (!this._defaultService) {
              log('no authentication service is enabled, using password authentication');
 @@ -557,11 +624,14 @@ export class ShellUserVerifier extends Signals.EventEmitter {
-
+ 
      _beginVerification() {
          this._startService(this._getForegroundService());
 +        this._maybeStartFingerprintVerification();
 +    }
-
+ 
 +    async _maybeStartFingerprintVerification() {
          if (this._userName &&
              this._fingerprintReaderType !== FingerprintReaderType.NONE &&
@@ -188,7 +223,7 @@ index 89ad5449..3697ecdc 100644
 -            this._startService(FINGERPRINT_SERVICE_NAME);
 +            await this._startService(FINGERPRINT_SERVICE_NAME);
      }
-
+ 
      _onChoiceListQuery(client, serviceName, promptMessage, list) {
 @@ -654,8 +724,9 @@ export class ShellUserVerifier extends Signals.EventEmitter {
      _onReset() {
@@ -198,13 +233,13 @@ index 89ad5449..3697ecdc 100644
          this._unavailableServices.clear();
 -        this._updateDefaultService();
 +        this._updateDefaultServiceWithFallback();
-
+ 
          this.emit('reset');
      }
 @@ -736,6 +807,10 @@ export class ShellUserVerifier extends Signals.EventEmitter {
              this._queueMessage(serviceName, errorMessage, MessageType.ERROR);
      }
-
+ 
 +    _onConversationStarted(client, serviceName) {
 +        this._startedServices.add(serviceName);
 +    }
@@ -212,6 +247,3 @@ index 89ad5449..3697ecdc 100644
      _onConversationStopped(client, serviceName) {
          // If the login failed with the preauthenticated oVirt credentials
          // then discard the credentials and revert to default authentication
---
-cgit v1.2.3
-
