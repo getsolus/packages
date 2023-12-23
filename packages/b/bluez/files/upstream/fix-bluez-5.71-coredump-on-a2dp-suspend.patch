@@ -1,0 +1,53 @@
+From: Vlad Pruteanu <vlad.pruteanu@nxp.com>
+To: linux-bluetooth@vger.kernel.org
+Cc: claudia.rosu@nxp.com, mihai-octavian.urzica@nxp.com,
+	silviu.barbulescu@nxp.com, iulia.tanasescu@nxp.com,
+	andrei.istodorescu@nxp.com, luiz.dentz@gmail.com,
+	Vlad Pruteanu <vlad.pruteanu@nxp.com>
+Subject: [PATCH 1/1] transport: Check if transport is bcast before it's cast to bap_transport
+Date: Tue, 19 Dec 2023 14:49:16 +0200	[thread overview]
+Message-ID: <20231219124916.44173-2-vlad.pruteanu@nxp.com> (raw)
+In-Reply-To: <20231219124916.44173-1-vlad.pruteanu@nxp.com>
+
+Currently, when a transport is released it is cast to bap_transport without
+checking if the transport is actually a broadcast one. Then, based on this
+cast it is released. Problems may occur with transports that are not
+broadcast, but are still cast to bap_transport. This commit fixes this
+problem.
+---
+ profiles/audio/transport.c | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/profiles/audio/transport.c b/profiles/audio/transport.c
+index e2073451c..555da99a8 100644
+--- a/profiles/audio/transport.c
++++ b/profiles/audio/transport.c
+@@ -643,7 +643,6 @@ static DBusMessage *release(DBusConnection *conn, DBusMessage *msg,
+ {
+ 	struct media_transport *transport = data;
+ 	struct media_owner *owner = transport->owner;
+-	struct bap_transport *bap = transport->data;
+ 	const char *sender;
+ 	struct media_request *req;
+ 	guint id;
+@@ -675,9 +674,17 @@ static DBusMessage *release(DBusConnection *conn, DBusMessage *msg,
+ 	req = media_request_create(msg, id);
+ 	media_owner_add(owner, req);
+ 
+-	if (bt_bap_stream_get_type(bap->stream) ==
+-			BT_BAP_STREAM_TYPE_BCAST) {
+-		bap_disable_complete(bap->stream, 0x00, 0x00, owner);
++	if (!strcmp(media_endpoint_get_uuid(transport->endpoint),
++					BAA_SERVICE_UUID)
++		|| !strcmp(media_endpoint_get_uuid(transport->endpoint),
++						BCAA_SERVICE_UUID)) {
++
++		struct bap_transport *bap = transport->data;
++
++		if (bt_bap_stream_get_type(bap->stream) ==
++				BT_BAP_STREAM_TYPE_BCAST) {
++			bap_disable_complete(bap->stream, 0x00, 0x00, owner);
++		}
+ 	}
+ 
+ 	return NULL;
