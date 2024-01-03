@@ -1,71 +1,59 @@
 name       : rocprofiler
-version    : 5.5.1
-release    : 1
+version    : 6.0.0
+release    : 2
 source     :
-    - https://github.com/ROCm-Developer-Tools/rocprofiler/archive/refs/tags/rocm-5.5.1.tar.gz : f5dbece5c205e37383fed4a2bd6042ff1c11f11f64dfbf65d7e23c0af6889a5a
-    - https://github.com/ROCm-Developer-Tools/roctracer/archive/refs/tags/rocm-5.5.1.tar.gz#roctracer-5.5.1.tar.gz : 3afc31ebfdb14b0365185ca6b9326a83b1503a94a51d910f5ce7ced192d8c133
+    - https://github.com/ROCm-Developer-Tools/rocprofiler/archive/refs/tags/rocm-6.0.0.tar.gz : 6aca327a6ba302b5957002e55ac640dd185d51a354da3859e957448a5fc36b14
+    - https://github.com/ROCm-Developer-Tools/roctracer/archive/refs/tags/rocm-6.0.0.tar.gz#roctracer-6.0.0.tar.gz : 941166a0363c5689bfec118d54e986c43fb1ec8cbf18d95721d9a824bd52c0f8
 homepage   : https://github.com/ROCm-Developer-Tools/rocprofiler
 license    : MIT
 component  : programming.library
 summary    : ROCm profiler library with perf-counters and derived metrics
 description: |
     Profiling with metrics and traces based on perfcounters (PMC) and traces (SPM). Implementation is based on AqlProfile HSA extension.
-clang      : yes
 builddeps  :
     - pkgconfig(libhsakmt)
-    # - pkgconfig(numa) # Can't disable tests...
+    - pkgconfig(numa)
     - pkgconfig(libdrm_amdgpu)
     - pkgconfig(libelf)
     - pkgconfig(libdw)
-    # - pkgconfig(gtest) # Can't disable tests...
     - rocm-cmake
-    - rocm-hip-devel
+    - rocm-core-devel
+    - rocm-hip
     - rocprim
     - hsa-amd-aqlprofile-devel
-    # - git
+    # TODO(GZGavinZhao): build plugins too
+    # - python-barectf
     - python-lxml
     - python-cppheaderparser
     - python-ply
 environment: |
-    declare -A rocm_vars
-    rocm_vars=(
-        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["HIP_CLANG_PATH"]="/usr/bin"
-        ["HIP_COMPILER"]="clang"
-        ["HIP_LIB_PATH"]="/usr/lib64"
-        ["HIP_PATH"]="/usr"
-        ["HIP_PLATFORM"]="amd"
-        ["HIP_ROCCLR_HOME"]="/usr"
-        ["ROCM_PATH"]="/usr"
-        ["BUILD_FILE_REORG_BACKWARD_COMPATIBILITY"]="OFF"
-        ["HIPCC_VERBOSE"]="0"
-        # ["AMDGPU_TARGETS"]="gfx1030"
-        # ["GPU_TARGETS"]="gfx1030"
-        # ["HCC_AMDGPU_TARGETS"]="gfx1030"
-    )
-
-    for name in "${!rocm_vars[@]}"; do
-        export "$name"="${rocm_vars[$name]}";
-        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
-    done
-
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
 
-    export ROCM_ROOT_DIR=%PREFIX%
+    export ROCM_PATH=/usr
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+
     export ROCTRACER_DIR=$sources/roctracer-rocm-%version%
 setup      : |
+    %patch -p1 -i $pkgfiles/prevent-target-conflicts.diff
+
     tar xf $sources/roctracer-%version%.tar.gz -C $sources
 
     sed -i "s/add_subdirectory(plugin)//" CMakeLists.txt
-    sed -i "s/add_subdirectory(tests)//" CMakeLists.txt
-    sed -i "s/add_subdirectory(samples)//" CMakeLists.txt
-    %cmake_ninja -L $ROCM_CMAKE_FLAGS \
-                 -DCMAKE_CXX_COMPILER=/usr/bin/hipcc \
-                 -DPROF_API_HEADER_PATH="$ROCTRACER_DIR/inc/ext" \
+    sed -i 's|set(ROCPROFILER_BUILD_CI ON)||' CMakeLists.txt
+    sed -i 's|set(ROCPROFILER_BUILD_TESTS ON)||' CMakeLists.txt
+    %cmake_ninja -L \
+      -DCMAKE_C_COMPILER=hipcc \
+      -DCMAKE_CXX_COMPILER=hipcc \
+      -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
+      -DROCM_SYMLINK_LIBS=OFF \
+      -DPROF_API_HEADER_PATH="$ROCTRACER_DIR/inc/ext" \
+      -DROCPROFILER_ENABLE_CLANG_TIDY=OFF \
+      -DROCPROFILER_BUILD_TESTS=OFF \
+      -DROCPROFILER_BUILD_SAMPLES=OFF \
+      -DROCPROFILER_BUILD_CODECOV=OFF \
+      -DAMDGPU_TARGETS="%AMDGPUTARGETS%"
 build      : |
     %ninja_build
 install    : |
     %ninja_install
-
-    rm -rf $installdir/usr/rocprofiler
