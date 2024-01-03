@@ -1,0 +1,121 @@
+name       : rocm-clr
+version    : 6.0.0
+release    : 6
+source     :
+    - https://github.com/ROCm/clr/archive/refs/tags/rocm-6.0.0.tar.gz : 798b55b5b5fb90dd19db54f136d8d8e1da9ae1e408d5b12b896101d635f97e50
+    - https://github.com/ROCm/HIP/archive/refs/tags/rocm-6.0.0.tar.gz#HIP-6.0.0.tar.gz : 0d575788e0b731124a8489a36652014a165b9ebab92d5456ec3c976e062f3a82
+    - https://github.com/ROCm/roctracer/archive/refs/tags/rocm-6.0.0.tar.gz#roctracer-6.0.0.tar.gz : 941166a0363c5689bfec118d54e986c43fb1ec8cbf18d95721d9a824bd52c0f8
+homepage   : https://github.com/ROCm/clr
+license    : MIT
+component  : programming.library
+summary    : AMD Common Language Runtime for HIP and OpenCL
+description: |
+    AMD Common Language Runtime contains source code for AMD's HIP and OpenCL compute languages runtimes.
+builddeps  :
+    - pkgconfig(OpenCL)
+    - pkgconfig(d3d)
+    - pkgconfig(gl)
+    - pkgconfig(libhsakmt)
+    - pkgconfig(numa)
+    - pkgconfig(x11-xcb)
+    - python-cppheaderparser
+    - rocm-cmake
+    - rocm-compilersupport-devel
+    - rocm-device-libs-devel
+    - rocm-hipcc
+    - rocm-llvm
+    - rocm-runtime-devel
+rundeps    :
+    - ^rocm-hip:
+      - rocm-clr
+      - rocm-device-libs-devel
+      - rocm-compilersupport-devel
+      - rocm-info
+      - rocm-llvm
+      - rocm-runtime-devel
+      - rocm-smi-devel
+    - ^rocm-opencl:
+      - rocm-clr
+patterns   :
+    - ^rocm-hip:
+      - /usr/bin/hip*
+      - /usr/bin/roc-*
+      - /usr/include/hip*
+      - /usr/lib64/cmake/hip*
+      - /usr/lib64/libamdhip64.so
+      - /usr/lib64/libhiprtc.so
+      - /usr/lib64/libhiprtc-builtins.so
+    - ^rocm-opencl:
+      - /usr/include/rocm-opencl
+      - /usr/lib64/libamdocl64.so
+      - /usr/lib64/libcltrace.so
+environment: |
+    export ROCM_PATH=/usr
+    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
+    export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+
+    export HIP_DIR="$sources/HIP-rocm-%version%"
+    export ROCTRACER_DIR="$sources/roctracer-rocm-%version%"
+
+    export GCC_IGNORE_WERROR=1
+setup      : |
+    pushd $sources
+        tar -xf $sources/roctracer-%version%.tar.gz
+        tar -xf $sources/HIP-%version%.tar.gz
+    popd
+
+    pushd rocclr
+        # # Enable experimental pre vega platforms
+        # %patch -p1 -i $pkgfiles/0001-enable-gfx800.patch
+        # Better ISA compatibility
+        %patch -p1 -i $pkgfiles/0022-improve-rocclr-isa-compatibility-check.patch
+    popd
+
+    pushd opencl
+        # Add soname to amdocl and cltrace:
+        # Upstream doesn't want this because they don't guarentee ABI.
+        # Just use the package version. SOVERSION can be major.minor as patch releases
+        # are unlikely to break anything.
+        echo "set_target_properties(amdocl PROPERTIES VERSION %version% SOVERSION $(v=%version%;echo ${v%%.*}))" \
+            >> amdocl/CMakeLists.txt
+        echo "libamdocl64.so.%{rocm_release}" > config/amdocl64.icd
+        echo "set_target_properties(cltrace PROPERTIES VERSION %version% SOVERSION $(v=%version%;echo ${v%%.*}))" \
+            >> tools/cltrace/CMakeLists.txt
+    popd
+
+    pushd hipamd
+        %patch -p1 -i $pkgfiles/0023-extend-hip-isa-compatibility-check.patch
+    popd
+
+    # We're not Windows!!!
+    sed -i 's|install(PROGRAMS ${HIPCC_BIN_DIR}/hipcc.bat DESTINATION bin)||' hipamd/CMakeLists.txt
+    sed -i 's|install(PROGRAMS ${HIPCC_BIN_DIR}/hipconfig.bat DESTINATION bin)||' hipamd/CMakeLists.txt
+
+    %cmake_ninja -L \
+      -DROCM_PATH=$ROCM_PATH \
+      -DHIP_COMMON_DIR=$HIP_DIR \
+      -DHIPCC_BIN_DIR=$ROCM_PATH/bin \
+      -DCLR_BUILD_HIP=ON \
+      -DCLR_BUILD_OCL=ON \
+      -DBUILD_ICD=OFF \
+      -DOpenGL_GL_PREFERENCE=GLVND \
+      -DPROF_API_HEADER_PATH=$ROCTRACER_DIR/inc/ext \
+      -DBUILD_TESTS=OFF
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+
+    install -dm00644 $installdir/usr/share/OpenCL/vendors
+    echo "libamdocl64.so.6" >> $installdir/usr/share/OpenCL/vendors/amdocl64.icd
+
+    # Avoid file conflicts with opencl-headers package:
+    install -dm00644 $installdir/usr/include/rocm-opencl
+    mv $installdir/usr/include/CL $installdir/usr/include/rocm-opencl/CL
+
+    # Avoid file conflicts with clinfo package:
+    mv $installdir/usr/bin/clinfo $installdir/usr/bin/rocm-clinfo
+
+    # Remove licenses
+    rm -r $installdir/usr/share/doc
