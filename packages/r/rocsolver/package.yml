@@ -1,60 +1,40 @@
 name       : rocsolver
-version    : 5.5.1
-release    : 1
+version    : 3.24.0
+release    : 2
 source     :
-    - https://github.com/ROCmSoftwarePlatform/rocSOLVER/archive/refs/tags/rocm-5.5.1.tar.gz : 8bf843e42d2e89203ea5fdb6e6082cea90da8d02920ab4c09bcc2b6f69909760
+    - https://github.com/ROCm/rocSOLVER/archive/refs/tags/rocm-6.0.0.tar.gz : 5fcaba96f3efafc2ecc3f4ec104095d96545c16e1b9f95410bd571cb0fc643ae
 homepage   : https://github.com/ROCmSoftwarePlatform/rocSOLVER
 license    : MIT
 component  : programming.library
 summary    : Next generation LAPACK implementation for ROCm platform
 description: |
     rocSOLVER is a work-in-progress implementation of a subset of LAPACK functionality on the ROCm platform.
-clang      : yes
 builddeps  :
     - pkgconfig(fmt)
     - rocblas-devel
-    - rocminfo
+    - rocsparse-devel
     - rocm-cmake
-    - rocm-hip-devel
+    - rocm-hip
+    - mold
 environment: |
-    declare -A rocm_vars
-    rocm_vars=(
-        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["HIP_CLANG_PATH"]="/usr/bin"
-        ["HIP_COMPILER"]="clang"
-        ["HIP_LIB_PATH"]="/usr/lib64"
-        ["HIP_PATH"]="/usr"
-        ["HIP_PLATFORM"]="amd"
-        ["HIP_ROCCLR_HOME"]="/usr"
-        ["ROCM_PATH"]="/usr"
-        ["BUILD_FILE_REORG_BACKWARD_COMPATIBILITY"]="OFF"
-        ["HIPCC_VERBOSE"]="0"
-        ["CMAKE_POSITION_INDEPENDENT_CODE"]="ON"
-        # ["AMDGPU_TARGETS"]="gfx1030"
-        # ["HCC_AMDGPU_TARGETS"]="gfx1030"
-    )
+    export CFLAGS="$CFLAGS -fuse-ld=mold"
+    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none} -fuse-ld=mold"
+    export LDFLAGS="${LDFLAGS/-Wl,--copy-dt-needed-entries /}"
 
-    for name in "${!rocm_vars[@]}"; do
-        export "$name"="${rocm_vars[$name]}";
-        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
-    done
-
-    # Enabling debug causes relocation out of range error
-    export CXXFLAGS="${CXXFLAGS/ -g2/}"
-    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+    export ROCM_PATH=/usr
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
 setup      : |
     # Embed libfmt so that packagers don't need to waste time rebuilding this
     # chonker when libfmt is updated.
-    # I don't know why RelWithDbgInfo causes relocation out of range error, as
-    # documented here: https://github.com/ROCmSoftwarePlatform/composable_kernel/issues/789
-    %cmake_ninja -DCMAKE_BUILD_TYPE=Release $ROCM_CMAKE_FLAGS \
-                 -DROCSOLVER_EMBED_FMT=ON \
+    %cmake_ninja -L \
+      -DCMAKE_C_COMPILER=hipcc \
+      -DCMAKE_CXX_COMPILER=hipcc \
+      -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
+      -DROCM_SYMLINK_LIBS=OFF \
+      -DROCSOLVER_EMBED_FMT=ON \
+      -DAMDGPU_TARGETS="%AMDGPUTARGETS%"
 build      : |
-    # One job can consume up to 4GB of memory, on average it's about 2GB
-    %ninja_build -j$(((%YJOBS%/2)))
+    %ninja_build
 install    : |
     %ninja_install
-
-    mv $installdir/usr/lib $installdir/%libdir%
-    rm -r $installdir/usr/rocsolver
