@@ -1,0 +1,96 @@
+name       : rocm-llvm
+version    : 6.0.0
+release    : 1
+source     :
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.0.0.tar.gz : c673708d413d60ca8606ee75c77e9871b6953c59029c987b92f2f6e85f683626
+homepage   : https://github.com/ROCm/llvm-project
+license    : Apache-2.0-with-LLVM-exception
+summary    : ROCm's patched LLVM
+component  : programming.devel
+libsplit   : no
+description: |
+    The LLVM package contains a collection of modular and reusable compiler and toolchain technologies. The Low Level Virtual Machine (LLVM) Core libraries provide a modern source and target-independent optimizer, along with code generation support for many popular CPUs (as well as some less common ones!). These libraries are built around a well specified code representation known as the LLVM intermediate representation ("LLVM IR").
+clang      : yes
+builddeps  :
+    - pkgconfig(libdrm_amdgpu)
+    - pkgconfig(libzstd)
+    - pkgconfig(numa)
+rundeps    :
+    - zstd-devel
+environment: |
+    # Decontaminate build environment
+    unset LDFLAGS
+    unset LD_AS_NEEDED
+    unset CFLAGS
+    unset CXXFLAGS
+
+    export _PROJECTS="clang;clang-tools-extra;lld;llvm"
+    export _RUNTIMES="compiler-rt"
+    export _TARGETS="X86;AMDGPU;NVPTX"
+
+    # Set common build options here
+    export CMAKE_COMMON_OPTIONS="
+        -DCMAKE_SKIP_RPATH=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=%libdir%/llvm-rocm \
+        -DCLANG_DEFAULT_LINKER=lld \
+        -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
+        -DCLANG_DEFAULT_PIE_ON_LINUX=ON \
+        -DENABLE_EXPERIMENTAL_NEW_PASS_MANAGER=ON \
+        -DLLVM_INSTALL_UTILS=OFF \
+        -DLLVM_INCLUDE_TESTS=OFF \
+        -DLLVM_BINUTILS_INCDIR=/usr/include \
+        -DLLVM_CONFIG=%libdir%/llvm-rocm/bin/llvm-config
+        -DLLVM_ENABLE_FFI=ON \
+        -DLLVM_ENABLE_ZLIB=ON \
+        -DLLVM_ENABLE_ZSTD=ON \
+        -DLLVM_ENABLE_RTTI=ON \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
+        -DLLVM_ENABLE_BINDINGS=OFF \
+        -DENABLE_LINKER_BUILD_ID=ON \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_BUILD_LLVM_DYLIB=OFF \
+        -DLLVM_LINK_LLVM_DYLIB=OFF \
+        -DCLANG_LINK_CLANG_DYLIB=OFF"
+
+    # Used by everything except emul32 build
+    export CMAKE_X86_64_OPTIONS="
+         -DLLVM_DEFAULT_TARGET_TRIPLE=%HOST% \
+         -DLLVM_TARGET_ARCH=x86_64 \
+         -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
+         -DLIB_SUFFIX=%LIBSUFFIX%"
+# TODO(GZGavinZhao): cleanup when rebuilding/rebootstrapping against ROCm device
+# libs to build openmp/mlir
+setup      : |
+    # Just annoying.
+    %patch -p1 -i $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
+    # Support solus, it's triplet, etc.
+    %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
+    # Allow us to force ignore -Werror
+    %patch -p1 -i $pkgfiles/ignore-werror.patch
+
+    # Patch cfe for Solus specific options
+    pushd clang
+        %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
+    popd
+
+    # # Pull lld in line with binutils linkers for consistency
+    # pushd lld
+    #     %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
+    #     %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
+    # popd
+
+    %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
+                 $CMAKE_COMMON_OPTIONS \
+                 -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
+                 -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
+                 -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
+                 -DLLVM_BUILD_DOCS=OFF \
+                 # -DCMAKE_CXX_LINK_FLAGS="-lzstd -lz" \
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
+
+    cp -TRv $installdir/usr/lib64/llvm-rocm/lib $installdir/usr/lib64/llvm-rocm/lib64
+    rm -rf $installdir/usr/lib64/llvm-rocm/lib
