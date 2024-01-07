@@ -1,8 +1,8 @@
 name       : ldc
-version    : 1.34.0
-release    : 61
+version    : 1.36.0
+release    : 62
 source     :
-    - git|https://github.com/ldc-developers/ldc.git : v1.34.0
+    - git|https://github.com/ldc-developers/ldc.git : v1.36.0
 homepage   : https://github.com/ldc-developers/ldc
 license    :
     - Apache-2.0
@@ -18,21 +18,18 @@ patterns   :
         - /usr/lib64/*.so.*
     - /
 builddeps  :
+    - pkgconfig(LLVMSPIRVLib)
     - dmd
-    - spirv-llvm-translator-15-devel
-    - llvm-clang-15-devel
+    - llvm-bolt
 rundeps    :
     - ldc-libs
 environment: |
-    export CMAKE_PREFIX_PATH=$(llvm-config-15 --prefix)
-
-    if [[ " ${PATH[*]} " =~ "ccache" ]]; then
-        export CMAKE_C_COMPILER_LAUNCHER=ccache
-        export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-    fi
+    unset LDFLAGS # bc we need manual linking off
 setup      : |
     %patch -p1 -i $pkgfiles/stateless.patch
+    %patch -p1 -i $pkgfiles/extra-dflags.patch
 
+    # Build basic compiler for bootstrap
     mkdir bootstrap && pushd bootstrap
     cmake -G Ninja .. \
         -DCMAKE_BUILD_TYPE=Release \
@@ -43,6 +40,9 @@ setup      : |
     ninja install %JOBS%
     popd
 build      : |
+    export LLVM_PROFILE_FILE="$workdir/%p.profraw"
+
+    # Instrumented compiler & collect profiling data
     %cmake_ninja \
         -DLIB_SUFFIX=64 \
         -DBUILD_SHARED_LIBS=BOTH \
@@ -51,9 +51,38 @@ build      : |
         -DSYSCONF_INSTALL_DIR=/usr/share/defaults/etc \
         -DLDC_WITH_LLD=OFF \
         -DD_COMPILER=$workdir/ldc-bootstrap/bin/ldmd2 \
-        -DADDITIONAL_DEFAULT_LDC_SWITCHES="\"-link-defaultlib-shared\""
+        -DEXTRA_CXXFLAGS="-fprofile-generate -mllvm -vp-counters-per-site=1.5" \
+        -DEXTRA_DFLAGS_LDC="-fprofile-generate -vp-counters-per-site=1.5" \
+        -DCMAKE_EXE_LINKER_FLAGS="-fprofile-generate" \
+        -DLDC_LINK_MANUALLY=OFF
+    %ninja_build
+
+    # ldc bootstrapping itself provides enough profiling data - no need for dedicated workload
+    $workdir/ldc-bootstrap/bin/ldc-profdata merge --output=merged.profdata *.profraw
+    rm -fr $workdir/solusBuildDir
+
+    # Build optimized compiler with collected profile data
+    %cmake_ninja \
+        -DLIB_SUFFIX=64 \
+        -DBUILD_SHARED_LIBS=BOTH \
+        -DBUILD_LTO_LIBS=ON \
+        -DINCLUDE_INSTALL_DIR=/usr/include/dlang/ldc \
+        -DSYSCONF_INSTALL_DIR=/usr/share/defaults/etc \
+        -DLDC_WITH_LLD=OFF \
+        -DD_COMPILER=$workdir/ldc-bootstrap/bin/ldmd2 \
+        -DD_COMPILER_FLAGS="-O -linker=lld -release -flto=full" \
+        -DEXTRA_CXXFLAGS="-fprofile-use=$workdir/merged.profdata" \
+        -DEXTRA_DFLAGS_LDC="-flto=full -fprofile-use=$workdir/merged.profdata" \
+        -DLDC_LINK_MANUALLY=OFF \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-q"
     %ninja_build
 install    : |
+    # BOLT for ~10% faster compiling times
+    %bolt_instr $workdir/solusBuildDir/bin/ldc2
+    %ninja_build all-test-runners
+    %bolt_merge $workdir/solusBuildDir/bin/ldc2
+    %bolt_opt $workdir/solusBuildDir/bin/ldc2
+
     %ninja_install
 # Takes an age
 #check      : |
