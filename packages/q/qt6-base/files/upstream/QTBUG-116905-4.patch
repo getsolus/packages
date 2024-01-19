@@ -1,0 +1,1186 @@
+From 705118a554083161b6fe54aaf37a04ddca844f48 Mon Sep 17 00:00:00 2001
+From: David Faure <david.faure@kdab.com>
+Date: Thu, 7 Dec 2023 11:38:38 +0100
+Subject: [PATCH] QMimeDatabase: collect glob patterns from all locations
+
+A QMimeTypePrivate used to belong to a single provider, which would
+provide the complete data for it.
+But since the redesign in commit 7a5644d6481a3c1a741677, each provider
+represents is a single mime directory, and the merging happens at the
+QMimeDatabase level. So we need a QMimeType[Private] to be just a name
+(a "request" for information about this mimetype) and the information
+for that mimetype is retrieved on demand by querying the providers
+and either stopping at the first one (e.g. for icons) or merging
+the data from all of them (e.g. for glob patterns).
+
+The XML provider was using QMimeTypePrivate as data storage,
+give it its own struct QMimeTypeXMLData for that purpose instead.
+
+Task-number: QTBUG-116905
+Change-Id: Ia0e0d94aa899720dc0b908f40c25317473005af4
+(cherry picked from commit 4e9944e6c8a456353d243ab268cb0f01ff006faa)
+Reviewed-by: Thiago Macieira <thiago.macieira@intel.com>
+---
+ src/corelib/mimetypes/qmimedatabase.cpp       |  83 +++++----
+ src/corelib/mimetypes/qmimedatabase_p.h       |   9 +-
+ src/corelib/mimetypes/qmimeprovider.cpp       | 168 ++++++++++--------
+ src/corelib/mimetypes/qmimeprovider_p.h       |  56 +++---
+ src/corelib/mimetypes/qmimetype.cpp           |  64 ++-----
+ src/corelib/mimetypes/qmimetype_p.h           |  39 +---
+ src/corelib/mimetypes/qmimetypeparser.cpp     |  20 ++-
+ src/corelib/mimetypes/qmimetypeparser_p.h     |  21 ++-
+ .../mimetypes/qmimedatabase/add-extension.xml |   7 +
+ .../qmimedatabase-cache/CMakeLists.txt        |   1 +
+ .../qmimedatabase-xml/CMakeLists.txt          |   1 +
+ .../qmimedatabase/tst_qmimedatabase.cpp       |   6 +
+ .../mimetypes/qmimetype/tst_qmimetype.cpp     | 111 +-----------
+ 13 files changed, 258 insertions(+), 328 deletions(-)
+ create mode 100644 tests/auto/corelib/mimetypes/qmimedatabase/add-extension.xml
+
+diff --git a/src/corelib/mimetypes/qmimedatabase.cpp b/src/corelib/mimetypes/qmimedatabase.cpp
+index f2786f3723c..a549cd3acf8 100644
+--- a/src/corelib/mimetypes/qmimedatabase.cpp
++++ b/src/corelib/mimetypes/qmimedatabase.cpp
+@@ -191,9 +191,8 @@ QMimeType QMimeDatabasePrivate::mimeTypeForName(const QString &nameOrAlias)
+ {
+     const QString mimeName = resolveAlias(nameOrAlias);
+     for (const auto &provider : providers()) {
+-        QMimeType mime = provider->mimeTypeForName(mimeName);
+-        if (mime.isValid())
+-            return mime;
++        if (provider->knowsMimeType(mimeName))
++            return QMimeType(QMimeTypePrivate(mimeName));
+     }
+     return {};
+ }
+@@ -218,54 +217,54 @@ QMimeGlobMatchResult QMimeDatabasePrivate::findByFileName(const QString &fileNam
+     return result;
+ }
+ 
+-void QMimeDatabasePrivate::loadMimeTypePrivate(QMimeTypePrivate &mimePrivate)
++QMimeTypePrivate::LocaleHash QMimeDatabasePrivate::localeComments(const QString &name)
+ {
+     QMutexLocker locker(&mutex);
+-    if (mimePrivate.name.isEmpty())
+-        return; // invalid mimetype
+-    if (!mimePrivate.loaded) { // XML provider sets loaded=true, binary provider does this on demand
+-        Q_ASSERT(mimePrivate.fromCache);
+-        bool found = false;
+-        for (const auto &provider : providers()) {
+-            if (provider->loadMimeTypePrivate(mimePrivate)) {
+-                found = true;
+-                break;
+-            }
+-        }
+-        if (!found) {
+-            const QString file = mimePrivate.name + ".xml"_L1;
+-            qWarning() << "No file found for" << file << ", even though update-mime-info said it would exist.\n"
+-                          "Either it was just removed, or the directory doesn't have executable permission..."
+-                       << locateMimeDirectories();
+-        }
+-        mimePrivate.loaded = true;
++    for (const auto &provider : providers()) {
++        auto comments = provider->localeComments(name);
++        if (!comments.isEmpty())
++            return comments; // maybe we want to merge in comments from more global providers, in
++                             // case of more translations?
+     }
++    return {};
+ }
+ 
+-void QMimeDatabasePrivate::loadGenericIcon(QMimeTypePrivate &mimePrivate)
++QStringList QMimeDatabasePrivate::globPatterns(const QString &name)
+ {
+     QMutexLocker locker(&mutex);
+-    if (mimePrivate.fromCache) {
+-        mimePrivate.genericIconName.clear();
+-        for (const auto &provider : providers()) {
+-            provider->loadGenericIcon(mimePrivate);
+-            if (!mimePrivate.genericIconName.isEmpty())
+-                break;
+-        }
++    QStringList patterns;
++    const auto &providerList = providers();
++    // reverse iteration because we start from most global, add up, clear if delete-all, and add up
++    // again.
++    for (auto rit = providerList.rbegin(); rit != providerList.rend(); ++rit) {
++        auto *provider = rit->get();
++        if (provider->hasGlobDeleteAll(name))
++            patterns.clear();
++        patterns += provider->globPatterns(name);
+     }
++    return patterns;
+ }
+ 
+-void QMimeDatabasePrivate::loadIcon(QMimeTypePrivate &mimePrivate)
++QString QMimeDatabasePrivate::genericIcon(const QString &name)
+ {
+     QMutexLocker locker(&mutex);
+-    if (mimePrivate.fromCache) {
+-        mimePrivate.iconName.clear();
+-        for (const auto &provider : providers()) {
+-            provider->loadIcon(mimePrivate);
+-            if (!mimePrivate.iconName.isEmpty())
+-                break;
+-        }
++    for (const auto &provider : providers()) {
++        QString genericIconName = provider->genericIcon(name);
++        if (!genericIconName.isEmpty())
++            return genericIconName;
+     }
++    return {};
++}
++
++QString QMimeDatabasePrivate::icon(const QString &name)
++{
++    QMutexLocker locker(&mutex);
++    for (const auto &provider : providers()) {
++        QString iconName = provider->icon(name);
++        if (!iconName.isEmpty())
++            return iconName;
++    }
++    return {};
+ }
+ 
+ QString QMimeDatabasePrivate::fallbackParent(const QString &mimeTypeName) const
+@@ -346,12 +345,12 @@ QMimeType QMimeDatabasePrivate::findByData(const QByteArray &data, int *accuracy
+     }
+ 
+     *accuracyPtr = 0;
+-    QMimeType candidate;
++    QString candidate;
+     for (const auto &provider : providers())
+-        provider->findByMagic(data, accuracyPtr, candidate);
++        provider->findByMagic(data, accuracyPtr, &candidate);
+ 
+-    if (candidate.isValid())
+-        return candidate;
++    if (!candidate.isEmpty())
++        return QMimeType(QMimeTypePrivate(candidate));
+ 
+     if (isTextFile(data)) {
+         *accuracyPtr = 5;
+diff --git a/src/corelib/mimetypes/qmimedatabase_p.h b/src/corelib/mimetypes/qmimedatabase_p.h
+index 96981ba3fe1..cb28f0b7910 100644
+--- a/src/corelib/mimetypes/qmimedatabase_p.h
++++ b/src/corelib/mimetypes/qmimedatabase_p.h
+@@ -66,9 +66,10 @@ public:
+     QMimeGlobMatchResult findByFileName(const QString &fileName);
+ 
+     // API for QMimeType. Takes care of locking the mutex.
+-    void loadMimeTypePrivate(QMimeTypePrivate &mimePrivate);
+-    void loadGenericIcon(QMimeTypePrivate &mimePrivate);
+-    void loadIcon(QMimeTypePrivate &mimePrivate);
++    QMimeTypePrivate::LocaleHash localeComments(const QString &name);
++    QStringList globPatterns(const QString &name);
++    QString genericIcon(const QString &name);
++    QString icon(const QString &name);
+     QStringList mimeParents(const QString &mimeName);
+     QStringList listAliases(const QString &mimeName);
+     bool mimeInherits(const QString &mime, const QString &parent);
+@@ -81,7 +82,7 @@ private:
+     QString fallbackParent(const QString &mimeTypeName) const;
+ 
+     const QString m_defaultMimeType;
+-    mutable Providers m_providers;
++    mutable Providers m_providers; // most local first, most global last
+     QElapsedTimer m_lastCheck;
+ 
+ public:
+diff --git a/src/corelib/mimetypes/qmimeprovider.cpp b/src/corelib/mimetypes/qmimeprovider.cpp
+index 586a0c64373..8c97c4f16bc 100644
+--- a/src/corelib/mimetypes/qmimeprovider.cpp
++++ b/src/corelib/mimetypes/qmimeprovider.cpp
+@@ -186,25 +186,11 @@ void QMimeBinaryProvider::ensureLoaded()
+         m_cacheFile.reset();
+ }
+ 
+-static QMimeType mimeTypeForNameUnchecked(const QString &name)
+-{
+-    QMimeTypePrivate data;
+-    data.name = name;
+-    data.fromCache = true;
+-    // The rest is retrieved on demand.
+-    // comment and globPatterns: in loadMimeTypePrivate
+-    // iconName: in loadIcon
+-    // genericIconName: in loadGenericIcon
+-    return QMimeType(data);
+-}
+-
+-QMimeType QMimeBinaryProvider::mimeTypeForName(const QString &name)
++bool QMimeBinaryProvider::knowsMimeType(const QString &name)
+ {
+     if (!m_mimetypeListLoaded)
+         loadMimeTypeList();
+-    if (!m_mimetypeNames.contains(name))
+-        return QMimeType(); // unknown mimetype
+-    return mimeTypeForNameUnchecked(name);
++    return m_mimetypeNames.contains(name);
+ }
+ 
+ void QMimeBinaryProvider::addFileNameMatches(const QString &fileName, QMimeGlobMatchResult &result)
+@@ -354,7 +340,7 @@ bool QMimeBinaryProvider::matchMagicRule(QMimeBinaryProvider::CacheFile *cacheFi
+     return false;
+ }
+ 
+-void QMimeBinaryProvider::findByMagic(const QByteArray &data, int *accuracyPtr, QMimeType &candidate)
++void QMimeBinaryProvider::findByMagic(const QByteArray &data, int *accuracyPtr, QString *candidate)
+ {
+     const int magicListOffset = m_cacheFile->getUint32(PosMagicListOffset);
+     const int numMatches = m_cacheFile->getUint32(magicListOffset);
+@@ -371,7 +357,7 @@ void QMimeBinaryProvider::findByMagic(const QByteArray &data, int *accuracyPtr,
+             *accuracyPtr = m_cacheFile->getUint32(off);
+             // Return the first match. We have no rules for conflicting magic data...
+             // (mime.cache itself is sorted, but what about local overrides with a lower prio?)
+-            candidate = mimeTypeForNameUnchecked(QLatin1StringView(mimeType));
++            *candidate = QString::fromLatin1(mimeType);
+             return;
+         }
+     }
+@@ -479,35 +465,63 @@ void QMimeBinaryProvider::addAllMimeTypes(QList<QMimeType> &result)
+     if (result.isEmpty()) {
+         result.reserve(m_mimetypeNames.size());
+         for (const QString &name : std::as_const(m_mimetypeNames))
+-            result.append(mimeTypeForNameUnchecked(name));
++            result.append(QMimeType(QMimeTypePrivate(name)));
+     } else {
+         for (const QString &name : std::as_const(m_mimetypeNames))
+             if (std::find_if(result.constBegin(), result.constEnd(), [name](const QMimeType &mime) -> bool { return mime.name() == name; })
+                     == result.constEnd())
+-                result.append(mimeTypeForNameUnchecked(name));
++                result.append(QMimeType(QMimeTypePrivate(name)));
+     }
+ }
+ 
+-bool QMimeBinaryProvider::loadMimeTypePrivate(QMimeTypePrivate &data)
++QMimeTypePrivate::LocaleHash QMimeBinaryProvider::localeComments(const QString &name)
+ {
+-#if QT_CONFIG(xmlstreamreader)
+-    if (data.loaded)
+-        return true;
++    MimeTypeExtraMap::const_iterator it = loadMimeTypeExtra(name);
++    if (it != m_mimetypeExtra.constEnd()) {
++        const MimeTypeExtra &e = it.value();
++        return e.localeComments;
++    }
++    return {};
++}
+ 
+-    auto it = m_mimetypeExtra.constFind(data.name);
++bool QMimeBinaryProvider::hasGlobDeleteAll(const QString &name)
++{
++    MimeTypeExtraMap::const_iterator it = loadMimeTypeExtra(name);
++    if (it != m_mimetypeExtra.constEnd()) {
++        const MimeTypeExtra &e = it.value();
++        return e.hasGlobDeleteAll;
++    }
++    return {};
++}
++
++QStringList QMimeBinaryProvider::globPatterns(const QString &name)
++{
++    MimeTypeExtraMap::const_iterator it = loadMimeTypeExtra(name);
++    if (it != m_mimetypeExtra.constEnd()) {
++        const MimeTypeExtra &e = it.value();
++        return e.globPatterns;
++    }
++    return {};
++}
++
++QMimeBinaryProvider::MimeTypeExtraMap::const_iterator
++QMimeBinaryProvider::loadMimeTypeExtra(const QString &mimeName)
++{
++#if QT_CONFIG(xmlstreamreader)
++    auto it = m_mimetypeExtra.constFind(mimeName);
+     if (it == m_mimetypeExtra.constEnd()) {
+         // load comment and globPatterns
+ 
+         // shared-mime-info since 1.3 lowercases the xml files
+-        QString mimeFile = m_directory + u'/' + data.name.toLower() + ".xml"_L1;
++        QString mimeFile = m_directory + u'/' + mimeName.toLower() + ".xml"_L1;
+         if (!QFile::exists(mimeFile))
+-            mimeFile = m_directory + u'/' + data.name + ".xml"_L1; // pre-1.3
++            mimeFile = m_directory + u'/' + mimeName + ".xml"_L1; // pre-1.3
+ 
+         QFile qfile(mimeFile);
+         if (!qfile.open(QFile::ReadOnly))
+-            return false;
++            return m_mimetypeExtra.constEnd();
+ 
+-        auto insertIt = m_mimetypeExtra.insert(data.name, MimeTypeExtra{});
++        auto insertIt = m_mimetypeExtra.insert(mimeName, MimeTypeExtra{});
+         it = insertIt;
+         MimeTypeExtra &extra = insertIt.value();
+         QString mainPattern;
+@@ -515,13 +529,13 @@ bool QMimeBinaryProvider::loadMimeTypePrivate(QMimeTypePrivate &data)
+         QXmlStreamReader xml(&qfile);
+         if (xml.readNextStartElement()) {
+             if (xml.name() != "mime-type"_L1) {
+-                return false;
++                return m_mimetypeExtra.constEnd();
+             }
+             const auto name = xml.attributes().value("type"_L1);
+             if (name.isEmpty())
+-                return false;
+-            if (name.compare(data.name, Qt::CaseInsensitive))
+-                qWarning() << "Got name" << name << "in file" << mimeFile << "expected" << data.name;
++                return m_mimetypeExtra.constEnd();
++            if (name.compare(mimeName, Qt::CaseInsensitive))
++                qWarning() << "Got name" << name << "in file" << mimeFile << "expected" << mimeName;
+ 
+             while (xml.readNextStartElement()) {
+                 const auto tag = xml.name();
+@@ -534,8 +548,7 @@ bool QMimeBinaryProvider::loadMimeTypePrivate(QMimeTypePrivate &data)
+                     extra.localeComments.insert(lang, text);
+                     continue; // we called readElementText, so we're at the EndElement already.
+                 } else if (tag == "glob-deleteall"_L1) { // as written out by shared-mime-info >= 0.70
+-                    extra.globPatterns.clear();
+-                    mainPattern.clear();
++                    extra.hasGlobDeleteAll = true;
+                 } else if (tag == "glob"_L1) { // as written out by shared-mime-info >= 0.70
+                     const QString pattern = xml.attributes().value("pattern"_L1).toString();
+                     if (mainPattern.isEmpty() && pattern.startsWith(u'*')) {
+@@ -557,14 +570,11 @@ bool QMimeBinaryProvider::loadMimeTypePrivate(QMimeTypePrivate &data)
+             extra.globPatterns.prepend(mainPattern);
+         }
+     }
+-    const MimeTypeExtra &e = it.value();
+-    data.localeComments = e.localeComments;
+-    data.globPatterns = e.globPatterns;
+-    return true;
++    return it;
+ #else
+-    Q_UNUSED(data);
++    Q_UNUSED(mimeName);
+     qWarning("Cannot load mime type since QXmlStreamReader is not available.");
+-    return false;
++    return m_mimetypeExtra.constEnd();
+ #endif // feature xmlstreamreader
+ }
+ 
+@@ -594,22 +604,16 @@ QLatin1StringView QMimeBinaryProvider::iconForMime(CacheFile *cacheFile, int pos
+     return QLatin1StringView();
+ }
+ 
+-void QMimeBinaryProvider::loadIcon(QMimeTypePrivate &data)
++QString QMimeBinaryProvider::icon(const QString &name)
+ {
+-    const QByteArray inputMime = data.name.toLatin1();
+-    const QLatin1StringView icon = iconForMime(m_cacheFile.get(), PosIconsListOffset, inputMime);
+-    if (!icon.isEmpty()) {
+-        data.iconName = icon;
+-    }
++    const QByteArray inputMime = name.toLatin1();
++    return iconForMime(m_cacheFile.get(), PosIconsListOffset, inputMime);
+ }
+ 
+-void QMimeBinaryProvider::loadGenericIcon(QMimeTypePrivate &data)
++QString QMimeBinaryProvider::genericIcon(const QString &name)
+ {
+-    const QByteArray inputMime = data.name.toLatin1();
+-    const QLatin1StringView icon = iconForMime(m_cacheFile.get(), PosGenericIconsListOffset, inputMime);
+-    if (!icon.isEmpty()) {
+-        data.genericIconName = icon;
+-    }
++    const QByteArray inputMime = name.toLatin1();
++    return iconForMime(m_cacheFile.get(), PosGenericIconsListOffset, inputMime);
+ }
+ 
+ ////
+@@ -694,9 +698,9 @@ bool QMimeXMLProvider::isInternalDatabase() const
+ #endif
+ }
+ 
+-QMimeType QMimeXMLProvider::mimeTypeForName(const QString &name)
++bool QMimeXMLProvider::knowsMimeType(const QString &name)
+ {
+-    return m_nameMimeTypeMap.value(name);
++    return m_nameMimeTypeMap.contains(name);
+ }
+ 
+ void QMimeXMLProvider::addFileNameMatches(const QString &fileName, QMimeGlobMatchResult &result)
+@@ -704,22 +708,17 @@ void QMimeXMLProvider::addFileNameMatches(const QString &fileName, QMimeGlobMatc
+     m_mimeTypeGlobs.matchingGlobs(fileName, result);
+ }
+ 
+-void QMimeXMLProvider::findByMagic(const QByteArray &data, int *accuracyPtr, QMimeType &candidate)
++void QMimeXMLProvider::findByMagic(const QByteArray &data, int *accuracyPtr, QString *candidate)
+ {
+-    QString candidateName;
+-    bool foundOne = false;
+     for (const QMimeMagicRuleMatcher &matcher : std::as_const(m_magicMatchers)) {
+         if (matcher.matches(data)) {
+             const int priority = matcher.priority();
+             if (priority > *accuracyPtr) {
+                 *accuracyPtr = priority;
+-                candidateName = matcher.mimetype();
+-                foundOne = true;
++                *candidate = matcher.mimetype();
+             }
+         }
+     }
+-    if (foundOne)
+-        candidate = mimeTypeForName(candidateName);
+ }
+ 
+ void QMimeXMLProvider::ensureLoaded()
+@@ -749,6 +748,31 @@ void QMimeXMLProvider::ensureLoaded()
+         load(file);
+ }
+ 
++QMimeTypePrivate::LocaleHash QMimeXMLProvider::localeComments(const QString &name)
++{
++    return m_nameMimeTypeMap.value(name).localeComments;
++}
++
++bool QMimeXMLProvider::hasGlobDeleteAll(const QString &name)
++{
++    return m_nameMimeTypeMap.value(name).hasGlobDeleteAll;
++}
++
++QStringList QMimeXMLProvider::globPatterns(const QString &name)
++{
++    return m_nameMimeTypeMap.value(name).globPatterns;
++}
++
++QString QMimeXMLProvider::icon(const QString &name)
++{
++    return m_nameMimeTypeMap.value(name).iconName;
++}
++
++QString QMimeXMLProvider::genericIcon(const QString &name)
++{
++    return m_nameMimeTypeMap.value(name).genericIconName;
++}
++
+ void QMimeXMLProvider::load(const QString &fileName)
+ {
+     QString errorMessage;
+@@ -790,14 +814,11 @@ void QMimeXMLProvider::addGlobPattern(const QMimeGlobPattern &glob)
+     m_mimeTypeGlobs.addGlob(glob);
+ }
+ 
+-void QMimeXMLProvider::addMimeType(const QMimeType &mt)
++void QMimeXMLProvider::addMimeType(const QMimeTypeXMLData &mt)
+ {
+-    Q_ASSERT(!mt.d.data()->fromCache);
+-
+-    QString name = mt.name();
+-    if (mt.d->hasGlobDeleteAll)
+-        appendIfNew(m_mimeTypesWithDeletedGlobs, name);
+-    m_nameMimeTypeMap.insert(mt.name(), mt);
++    if (mt.hasGlobDeleteAll)
++        appendIfNew(m_mimeTypesWithDeletedGlobs, mt.name);
++    m_nameMimeTypeMap.insert(mt.name, mt);
+ }
+ 
+ /*
+@@ -813,7 +834,7 @@ void QMimeXMLProvider::excludeMimeTypeGlobs(const QStringList &toExclude)
+     for (const auto &mt : toExclude) {
+         auto it = m_nameMimeTypeMap.find(mt);
+         if (it != m_nameMimeTypeMap.end())
+-            it->d->globPatterns.clear();
++            it->globPatterns.clear();
+         m_mimeTypeGlobs.removeMimeType(mt);
+     }
+ }
+@@ -853,13 +874,16 @@ void QMimeXMLProvider::addAlias(const QString &alias, const QString &name)
+ void QMimeXMLProvider::addAllMimeTypes(QList<QMimeType> &result)
+ {
+     if (result.isEmpty()) { // fast path
+-        result = m_nameMimeTypeMap.values();
++        for (auto it = m_nameMimeTypeMap.constBegin(), end = m_nameMimeTypeMap.constEnd();
++             it != end; ++it) {
++            result.append(QMimeType(QMimeTypePrivate(it.value().name)));
++        }
+     } else {
+         for (auto it = m_nameMimeTypeMap.constBegin(), end = m_nameMimeTypeMap.constEnd() ; it != end ; ++it) {
+             const QString newMime = it.key();
+             if (std::find_if(result.constBegin(), result.constEnd(), [newMime](const QMimeType &mime) -> bool { return mime.name() == newMime; })
+                     == result.constEnd())
+-                result.append(it.value());
++                result.append(QMimeType(QMimeTypePrivate(it.value().name)));
+         }
+     }
+ }
+diff --git a/src/corelib/mimetypes/qmimeprovider_p.h b/src/corelib/mimetypes/qmimeprovider_p.h
+index e498cf8c399..755737eaafa 100644
+--- a/src/corelib/mimetypes/qmimeprovider_p.h
++++ b/src/corelib/mimetypes/qmimeprovider_p.h
+@@ -28,6 +28,7 @@ QT_REQUIRE_CONFIG(mimetype);
+ QT_BEGIN_NAMESPACE
+ 
+ class QMimeMagicRuleMatcher;
++class QMimeTypeXMLData;
+ 
+ class QMimeProviderBase
+ {
+@@ -39,18 +40,20 @@ public:
+ 
+     virtual bool isValid() = 0;
+     virtual bool isInternalDatabase() const = 0;
+-    virtual QMimeType mimeTypeForName(const QString &name) = 0;
++    virtual bool knowsMimeType(const QString &name) = 0;
+     virtual void addFileNameMatches(const QString &fileName, QMimeGlobMatchResult &result) = 0;
+     virtual void addParents(const QString &mime, QStringList &result) = 0;
+     virtual QString resolveAlias(const QString &name) = 0;
+     virtual void addAliases(const QString &name, QStringList &result) = 0;
+-    virtual void findByMagic(const QByteArray &data, int *accuracyPtr, QMimeType &candidate) = 0;
++    virtual void findByMagic(const QByteArray &data, int *accuracyPtr, QString *candidate) = 0;
+     virtual void addAllMimeTypes(QList<QMimeType> &result) = 0;
+-    virtual bool loadMimeTypePrivate(QMimeTypePrivate &) { return false; }
+-    virtual void loadIcon(QMimeTypePrivate &) {}
+-    virtual void loadGenericIcon(QMimeTypePrivate &) {}
+-    virtual void ensureLoaded() {}
+-    virtual void excludeMimeTypeGlobs(const QStringList &) {}
++    virtual QMimeTypePrivate::LocaleHash localeComments(const QString &name) = 0;
++    virtual bool hasGlobDeleteAll(const QString &name) = 0;
++    virtual QStringList globPatterns(const QString &name) = 0;
++    virtual QString icon(const QString &name) = 0;
++    virtual QString genericIcon(const QString &name) = 0;
++    virtual void ensureLoaded() { }
++    virtual void excludeMimeTypeGlobs(const QStringList &) { }
+ 
+     QString directory() const { return m_directory; }
+ 
+@@ -60,9 +63,9 @@ public:
+     /*
+         MimeTypes with "glob-deleteall" tags are handled differently by each provider
+         sub-class:
+-        - QMimeBinaryProvider parses glob-deleteall tags lazily, i.e. only when loadMimeTypePrivate()
++        - QMimeBinaryProvider parses glob-deleteall tags lazily, i.e. only when hasGlobDeleteAll()
+           is called, and clears the glob patterns associated with mimetypes that have this tag
+-        - QMimeXMLProvider parses glob-deleteall from the the start, i.e. when a XML file is
++        - QMimeXMLProvider parses glob-deleteall from the start, i.e. when a XML file is
+           parsed with QMimeTypeParser
+ 
+         The two lists below are used to let both provider types (XML and Binary) communicate
+@@ -95,16 +98,18 @@ public:
+ 
+     bool isValid() override;
+     bool isInternalDatabase() const override;
+-    QMimeType mimeTypeForName(const QString &name) override;
++    bool knowsMimeType(const QString &name) override;
+     void addFileNameMatches(const QString &fileName, QMimeGlobMatchResult &result) override;
+     void addParents(const QString &mime, QStringList &result) override;
+     QString resolveAlias(const QString &name) override;
+     void addAliases(const QString &name, QStringList &result) override;
+-    void findByMagic(const QByteArray &data, int *accuracyPtr, QMimeType &candidate) override;
++    void findByMagic(const QByteArray &data, int *accuracyPtr, QString *candidate) override;
+     void addAllMimeTypes(QList<QMimeType> &result) override;
+-    bool loadMimeTypePrivate(QMimeTypePrivate &) override;
+-    void loadIcon(QMimeTypePrivate &) override;
+-    void loadGenericIcon(QMimeTypePrivate &) override;
++    QMimeTypePrivate::LocaleHash localeComments(const QString &name) override;
++    bool hasGlobDeleteAll(const QString &name) override;
++    QStringList globPatterns(const QString &name) override;
++    QString icon(const QString &name) override;
++    QString genericIcon(const QString &name) override;
+     void ensureLoaded() override;
+     void excludeMimeTypeGlobs(const QStringList &toExclude) override;
+ 
+@@ -116,8 +121,9 @@ private:
+     bool matchSuffixTree(QMimeGlobMatchResult &result, CacheFile *cacheFile, int numEntries,
+                          int firstOffset, const QString &fileName, qsizetype charPos,
+                          bool caseSensitiveCheck);
+-    bool matchMagicRule(CacheFile *cacheFile, int numMatchlets, int firstOffset, const QByteArray &data);
+     bool isMimeTypeGlobsExcluded(const char *name);
++    bool matchMagicRule(CacheFile *cacheFile, int numMatchlets, int firstOffset,
++                        const QByteArray &data);
+     QLatin1StringView iconForMime(CacheFile *cacheFile, int posListOffset, const QByteArray &inputMime);
+     void loadMimeTypeList();
+     bool checkCacheChanged();
+@@ -128,11 +134,14 @@ private:
+     bool m_mimetypeListLoaded;
+     struct MimeTypeExtra
+     {
+-        // Both retrieved on demand in loadMimeTypePrivate
+         QHash<QString, QString> localeComments;
+         QStringList globPatterns;
++        bool hasGlobDeleteAll = false;
+     };
+-    QMap<QString, MimeTypeExtra> m_mimetypeExtra;
++    using MimeTypeExtraMap = QMap<QString, MimeTypeExtra>;
++    MimeTypeExtraMap m_mimetypeExtra;
++
++    MimeTypeExtraMap::const_iterator loadMimeTypeExtra(const QString &mimeName);
+ };
+ 
+ /*
+@@ -153,19 +162,24 @@ public:
+ 
+     bool isValid() override;
+     bool isInternalDatabase() const override;
+-    QMimeType mimeTypeForName(const QString &name) override;
++    bool knowsMimeType(const QString &name) override;
+     void addFileNameMatches(const QString &fileName, QMimeGlobMatchResult &result) override;
+     void addParents(const QString &mime, QStringList &result) override;
+     QString resolveAlias(const QString &name) override;
+     void addAliases(const QString &name, QStringList &result) override;
+-    void findByMagic(const QByteArray &data, int *accuracyPtr, QMimeType &candidate) override;
++    void findByMagic(const QByteArray &data, int *accuracyPtr, QString *candidate) override;
+     void addAllMimeTypes(QList<QMimeType> &result) override;
+     void ensureLoaded() override;
++    QMimeTypePrivate::LocaleHash localeComments(const QString &name) override;
++    bool hasGlobDeleteAll(const QString &name) override;
++    QStringList globPatterns(const QString &name) override;
++    QString icon(const QString &name) override;
++    QString genericIcon(const QString &name) override;
+ 
+     bool load(const QString &fileName, QString *errorMessage);
+ 
+     // Called by the mimetype xml parser
+-    void addMimeType(const QMimeType &mt);
++    void addMimeType(const QMimeTypeXMLData &mt);
+     void excludeMimeTypeGlobs(const QStringList &toExclude) override;
+     void addGlobPattern(const QMimeGlobPattern &glob);
+     void addParent(const QString &child, const QString &parent);
+@@ -176,7 +190,7 @@ private:
+     void load(const QString &fileName);
+     void load(const char *data, qsizetype len);
+ 
+-    typedef QHash<QString, QMimeType> NameMimeTypeMap;
++    typedef QHash<QString, QMimeTypeXMLData> NameMimeTypeMap;
+     NameMimeTypeMap m_nameMimeTypeMap;
+ 
+     typedef QHash<QString, QString> AliasHash;
+diff --git a/src/corelib/mimetypes/qmimetype.cpp b/src/corelib/mimetypes/qmimetype.cpp
+index 94df48c6959..1563fc56415 100644
+--- a/src/corelib/mimetypes/qmimetype.cpp
++++ b/src/corelib/mimetypes/qmimetype.cpp
+@@ -6,9 +6,6 @@
+ 
+ #include "qmimetype_p.h"
+ #include "qmimedatabase_p.h"
+-#include "qmimeprovider_p.h"
+-
+-#include "qmimeglobpattern_p.h"
+ 
+ #include <QtCore/QDebug>
+ #include <QtCore/QLocale>
+@@ -20,33 +17,6 @@ QT_BEGIN_NAMESPACE
+ 
+ using namespace Qt::StringLiterals;
+ 
+-QMimeTypePrivate::QMimeTypePrivate()
+-    : loaded(false), fromCache(false)
+-{}
+-
+-QMimeTypePrivate::QMimeTypePrivate(const QMimeType &other)
+-      : loaded(other.d->loaded),
+-        name(other.d->name),
+-        localeComments(other.d->localeComments),
+-        genericIconName(other.d->genericIconName),
+-        iconName(other.d->iconName),
+-        globPatterns(other.d->globPatterns)
+-{}
+-
+-void QMimeTypePrivate::clear()
+-{
+-    name.clear();
+-    localeComments.clear();
+-    genericIconName.clear();
+-    iconName.clear();
+-    globPatterns.clear();
+-}
+-
+-void QMimeTypePrivate::addGlobPattern(const QString &pattern)
+-{
+-    globPatterns.append(pattern);
+-}
+-
+ /*!
+     \class QMimeType
+     \inmodule QtCore
+@@ -219,7 +189,7 @@ QString QMimeType::name() const
+  */
+ QString QMimeType::comment() const
+ {
+-    QMimeDatabasePrivate::instance()->loadMimeTypePrivate(const_cast<QMimeTypePrivate&>(*d));
++    const auto localeComments = QMimeDatabasePrivate::instance()->localeComments(d->name);
+ 
+     QStringList languageList = QLocale().uiLanguages();
+     qsizetype defaultIndex = languageList.indexOf(u"en-US"_s);
+@@ -244,13 +214,13 @@ QString QMimeType::comment() const
+             // uiLanguages() uses '-' as separator, MIME database uses '_'
+         const QString lang
+             = language == "C"_L1 ? u"en_US"_s : QString(language).replace(u'-', u'_');
+-        QString comm = d->localeComments.value(lang);
++        QString comm = localeComments.value(lang);
+         if (!comm.isEmpty())
+             return comm;
+         const qsizetype cut = lang.indexOf(u'_');
+         // If "de_CH" is missing, check for "de" (and similar):
+         if (cut != -1) {
+-            comm = d->localeComments.value(lang.left(cut));
++            comm = localeComments.value(lang.left(cut));
+             if (!comm.isEmpty())
+                 return comm;
+         }
+@@ -276,8 +246,8 @@ QString QMimeType::comment() const
+  */
+ QString QMimeType::genericIconName() const
+ {
+-    QMimeDatabasePrivate::instance()->loadGenericIcon(const_cast<QMimeTypePrivate&>(*d));
+-    if (d->genericIconName.isEmpty()) {
++    QString genericIconName = QMimeDatabasePrivate::instance()->genericIcon(d->name);
++    if (genericIconName.isEmpty()) {
+         // From the spec:
+         // If the generic icon name is empty (not specified by the mimetype definition)
+         // then the mimetype is used to generate the generic icon by using the top-level
+@@ -290,7 +260,7 @@ QString QMimeType::genericIconName() const
+             groupRef = groupRef.left(slashindex);
+         return groupRef + "-x-generic"_L1;
+     }
+-    return d->genericIconName;
++    return genericIconName;
+ }
+ 
+ static QString make_default_icon_name_from_mimetype_name(QString iconName)
+@@ -312,11 +282,11 @@ static QString make_default_icon_name_from_mimetype_name(QString iconName)
+  */
+ QString QMimeType::iconName() const
+ {
+-    QMimeDatabasePrivate::instance()->loadIcon(const_cast<QMimeTypePrivate&>(*d));
+-    if (d->iconName.isEmpty()) {
++    QString iconName = QMimeDatabasePrivate::instance()->icon(d->name);
++    if (iconName.isEmpty()) {
+         return make_default_icon_name_from_mimetype_name(name());
+     }
+-    return d->iconName;
++    return iconName;
+ }
+ 
+ /*!
+@@ -328,8 +298,7 @@ QString QMimeType::iconName() const
+  */
+ QStringList QMimeType::globPatterns() const
+ {
+-    QMimeDatabasePrivate::instance()->loadMimeTypePrivate(const_cast<QMimeTypePrivate&>(*d));
+-    return d->globPatterns;
++    return QMimeDatabasePrivate::instance()->globPatterns(d->name);
+ }
+ 
+ /*!
+@@ -426,10 +395,11 @@ QStringList QMimeType::aliases() const
+  */
+ QStringList QMimeType::suffixes() const
+ {
+-    QMimeDatabasePrivate::instance()->loadMimeTypePrivate(const_cast<QMimeTypePrivate&>(*d));
++    const QStringList patterns = globPatterns();
+ 
+     QStringList result;
+-    for (const QString &pattern : std::as_const(d->globPatterns)) {
++    result.reserve(patterns.size());
++    for (const QString &pattern : patterns) {
+         // Not a simple suffix if it looks like: README or *. or *.* or *.JP*G or *.JP?
+         if (pattern.startsWith("*."_L1) &&
+             pattern.size() > 2 &&
+@@ -469,15 +439,15 @@ QString QMimeType::preferredSuffix() const
+ */
+ QString QMimeType::filterString() const
+ {
+-    QMimeDatabasePrivate::instance()->loadMimeTypePrivate(const_cast<QMimeTypePrivate&>(*d));
++    const QStringList patterns = globPatterns();
+     QString filter;
+ 
+-    if (!d->globPatterns.empty()) {
++    if (!patterns.empty()) {
+         filter += comment() + " ("_L1;
+-        for (int i = 0; i < d->globPatterns.size(); ++i) {
++        for (int i = 0; i < patterns.size(); ++i) {
+             if (i != 0)
+                 filter += u' ';
+-            filter += d->globPatterns.at(i);
++            filter += patterns.at(i);
+         }
+         filter +=  u')';
+     }
+diff --git a/src/corelib/mimetypes/qmimetype_p.h b/src/corelib/mimetypes/qmimetype_p.h
+index 7b5ed77f40a..b6040098a99 100644
+--- a/src/corelib/mimetypes/qmimetype_p.h
++++ b/src/corelib/mimetypes/qmimetype_p.h
+@@ -16,13 +16,14 @@
+ //
+ 
+ #include <QtCore/private/qglobal_p.h>
+-#include "qmimetype.h"
++#include <QtCore/qshareddata.h>
+ 
+ QT_REQUIRE_CONFIG(mimetype);
+ 
+ #include <QtCore/qhash.h>
+ #include <QtCore/qstringlist.h>
+ 
++class QMimeBinaryProvider;
+ QT_BEGIN_NAMESPACE
+ 
+ class Q_AUTOTEST_EXPORT QMimeTypePrivate : public QSharedData
+@@ -30,42 +31,12 @@ class Q_AUTOTEST_EXPORT QMimeTypePrivate : public QSharedData
+ public:
+     typedef QHash<QString, QString> LocaleHash;
+ 
+-    QMimeTypePrivate();
+-    explicit QMimeTypePrivate(const QMimeType &other);
++    QMimeTypePrivate() { }
++    explicit QMimeTypePrivate(const QString &name) : name(name) { }
+ 
+-    void clear();
+-
+-    void addGlobPattern(const QString &pattern);
+-
+-    bool loaded; // QSharedData leaves a 4 byte gap, so don't put 8 byte members first
+-    bool fromCache; // true if this comes from the binary provider
+-    bool hasGlobDeleteAll = false; // true if the mimetype has a glob-deleteall tag
+     QString name;
+-    LocaleHash localeComments;
+-    QString genericIconName;
+-    QString iconName;
+-    QStringList globPatterns;
+ };
+ 
+ QT_END_NAMESPACE
+ 
+-#define QMIMETYPE_BUILDER_FROM_RVALUE_REFS \
+-    QT_BEGIN_NAMESPACE \
+-    static QMimeType buildQMimeType ( \
+-                         QString &&name, \
+-                         QString &&genericIconName, \
+-                         QString &&iconName, \
+-                         QStringList &&globPatterns \
+-                     ) \
+-    { \
+-        QMimeTypePrivate qMimeTypeData; \
+-        qMimeTypeData.loaded = true; \
+-        qMimeTypeData.name = std::move(name); \
+-        qMimeTypeData.genericIconName = std::move(genericIconName); \
+-        qMimeTypeData.iconName = std::move(iconName); \
+-        qMimeTypeData.globPatterns = std::move(globPatterns); \
+-        return QMimeType(qMimeTypeData); \
+-    } \
+-    QT_END_NAMESPACE
+-
+-#endif   // QMIMETYPE_P_H
++#endif // QMIMETYPE_P_H
+diff --git a/src/corelib/mimetypes/qmimetypeparser.cpp b/src/corelib/mimetypes/qmimetypeparser.cpp
+index 66cbc32b5c8..3f1e53b25d1 100644
+--- a/src/corelib/mimetypes/qmimetypeparser.cpp
++++ b/src/corelib/mimetypes/qmimetypeparser.cpp
+@@ -165,8 +165,7 @@ static CreateMagicMatchRuleResult createMagicMatchRule(const QXmlStreamAttribute
+ bool QMimeTypeParserBase::parse(QIODevice *dev, const QString &fileName, QString *errorMessage)
+ {
+ #if QT_CONFIG(xmlstreamreader)
+-    QMimeTypePrivate data;
+-    data.loaded = true;
++    QMimeTypeXMLData data;
+     int priority = 50;
+     QStack<QMimeMagicRule *> currentRules; // stack for the nesting of rules
+     QList<QMimeMagicRule> rules; // toplevel rules
+@@ -273,7 +272,7 @@ bool QMimeTypeParserBase::parse(QIODevice *dev, const QString &fileName, QString
+         {
+             const auto elementName = reader.name();
+             if (elementName == QLatin1StringView(mimeTypeTagC)) {
+-                if (!process(QMimeType(data), errorMessage))
++                if (!process(data, errorMessage))
+                     return false;
+                 data.clear();
+             } else if (elementName == QLatin1StringView(matchTagC)) {
+@@ -314,4 +313,19 @@ bool QMimeTypeParserBase::parse(QIODevice *dev, const QString &fileName, QString
+ #endif // feature xmlstreamreader
+ }
+ 
++void QMimeTypeXMLData::clear()
++{
++    hasGlobDeleteAll = false;
++    name.clear();
++    localeComments.clear();
++    genericIconName.clear();
++    iconName.clear();
++    globPatterns.clear();
++}
++
++void QMimeTypeXMLData::addGlobPattern(const QString &pattern)
++{
++    globPatterns.append(pattern);
++}
++
+ QT_END_NAMESPACE
+diff --git a/src/corelib/mimetypes/qmimetypeparser_p.h b/src/corelib/mimetypes/qmimetypeparser_p.h
+index c9698e149f8..d4266ffcc03 100644
+--- a/src/corelib/mimetypes/qmimetypeparser_p.h
++++ b/src/corelib/mimetypes/qmimetypeparser_p.h
+@@ -16,7 +16,7 @@
+ // We mean it.
+ //
+ 
+-#include "qmimedatabase_p.h"
++#include <QtCore/qtconfigmacros.h>
+ 
+ QT_REQUIRE_CONFIG(mimetype);
+ 
+@@ -24,6 +24,21 @@ QT_REQUIRE_CONFIG(mimetype);
+ 
+ QT_BEGIN_NAMESPACE
+ 
++class QMimeTypeXMLData
++{
++public:
++    void clear();
++
++    void addGlobPattern(const QString &pattern);
++
++    bool hasGlobDeleteAll = false; // true if the mimetype has a glob-deleteall tag
++    QString name;
++    QMimeTypePrivate::LocaleHash localeComments;
++    QString genericIconName; // TODO move to a struct that's specific to the XML provider
++    QString iconName; // TODO move to a struct that's specific to the XML provider
++    QStringList globPatterns;
++};
++
+ class QIODevice;
+ 
+ class QMimeTypeParserBase
+@@ -39,7 +54,7 @@ public:
+     static bool parseNumber(QStringView n, int *target, QString *errorMessage);
+ 
+ protected:
+-    virtual bool process(const QMimeType &t, QString *errorMessage) = 0;
++    virtual bool process(const QMimeTypeXMLData &t, QString *errorMessage) = 0;
+     virtual bool process(const QMimeGlobPattern &t, QString *errorMessage) = 0;
+     virtual void processParent(const QString &child, const QString &parent) = 0;
+     virtual void processAlias(const QString &alias, const QString &name) = 0;
+@@ -73,7 +88,7 @@ public:
+     explicit QMimeTypeParser(QMimeXMLProvider &provider) : m_provider(provider) {}
+ 
+ protected:
+-    inline bool process(const QMimeType &t, QString *) override
++    inline bool process(const QMimeTypeXMLData &t, QString *) override
+     { m_provider.addMimeType(t); return true; }
+ 
+     inline bool process(const QMimeGlobPattern &glob, QString *) override
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/add-extension.xml b/tests/auto/corelib/mimetypes/qmimedatabase/add-extension.xml
+new file mode 100644
+index 00000000000..c4141e0f707
+--- /dev/null
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/add-extension.xml
+@@ -0,0 +1,7 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
++  <mime-type type="image/jpeg">
++    <glob pattern="*.jnewext"/>
++    <comment>JPEG Image</comment>
++  </mime-type>
++</mime-info>
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+index c2642456faf..e5ad5fd3117 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+@@ -25,6 +25,7 @@ qt_internal_add_test(tst_qmimedatabase-cache
+ #)
+ set(testdata_resource_files
+     "../circular-inheritance.xml"
++    "../add-extension.xml"
+     "../invalid-magic1.xml"
+     "../invalid-magic2.xml"
+     "../invalid-magic3.xml"
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+index b21324aeb4b..50db02abfee 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+@@ -25,6 +25,7 @@ qt_internal_add_test(tst_qmimedatabase-xml
+ #)
+ set(testdata_resource_files
+     "../circular-inheritance.xml"
++    "../add-extension.xml"
+     "../invalid-magic1.xml"
+     "../invalid-magic2.xml"
+     "../invalid-magic3.xml"
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+index 31c5e701dac..b1e9f51a25e 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+@@ -38,6 +38,7 @@ static const std::array additionalGlobalMimeFiles = {
+ };
+ 
+ static const std::array additionalLocalMimeFiles = {
++    "add-extension.xml", // adds *.jnewext to image/jpeg
+     "yast2-metapackage-handler-mimetypes.xml",
+     "qml-again.xml",
+     "text-x-objcsrc.xml",
+@@ -1232,6 +1233,11 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+         QCOMPARE(mimes.at(0).name(), u"video/webm");
+     }
+ 
++    // QTBUG-116905: globPatterns() should merge all locations
++    // add-extension.xml adds *.jnewext
++    const QStringList expectedJpegPatterns{ "*.jpg", "*.jpeg", "*.jpe", "*.jnewext" };
++    QCOMPARE(db.mimeTypeForName(QStringLiteral("image/jpeg")).globPatterns(), expectedJpegPatterns);
++
+     // Now that we have two directories with mime definitions, check that everything still works
+     inheritance();
+     if (QTest::currentTestFailed())
+diff --git a/tests/auto/corelib/mimetypes/qmimetype/tst_qmimetype.cpp b/tests/auto/corelib/mimetypes/qmimetype/tst_qmimetype.cpp
+index fda12298fe6..50183ca4e0b 100644
+--- a/tests/auto/corelib/mimetypes/qmimetype/tst_qmimetype.cpp
++++ b/tests/auto/corelib/mimetypes/qmimetype/tst_qmimetype.cpp
+@@ -21,7 +21,6 @@ private slots:
+     void name();
+     void genericIconName();
+     void iconName();
+-    void suffixes();
+     void gadget();
+ };
+ 
+@@ -36,52 +35,15 @@ void tst_qmimetype::initTestCase()
+ 
+ static QString qMimeTypeName()
+ {
+-    static const QString result ("No name of the MIME type");
++    static const QString result("group/fake-mime");
+     return result;
+ }
+ 
+-static QString qMimeTypeGenericIconName()
+-{
+-    static const QString result ("No file name of an icon image that represents the MIME type");
+-    return result;
+-}
+-
+-static QString qMimeTypeIconName()
+-{
+-    static const QString result ("No file name of an icon image that represents the MIME type");
+-    return result;
+-}
+-
+-static QStringList buildQMimeTypeFilenameExtensions()
+-{
+-    QStringList result;
+-    result << QString::fromLatin1("*.png");
+-    return result;
+-}
+-
+-static QStringList qMimeTypeGlobPatterns()
+-{
+-    static const QStringList result (buildQMimeTypeFilenameExtensions());
+-    return result;
+-}
+-
+-// ------------------------------------------------------------------------------------------------
+-
+-QMIMETYPE_BUILDER_FROM_RVALUE_REFS
+-
+ // ------------------------------------------------------------------------------------------------
+ 
+ void tst_qmimetype::isValid()
+ {
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
+-
++    QMimeType instantiatedQMimeType{ QMimeTypePrivate(qMimeTypeName()) };
+     QVERIFY(instantiatedQMimeType.isValid());
+ 
+     QMimeType otherQMimeType (instantiatedQMimeType);
+@@ -98,23 +60,8 @@ void tst_qmimetype::isValid()
+ 
+ void tst_qmimetype::name()
+ {
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
+-
+-    QMimeType otherQMimeType (
+-                  buildQMimeType (
+-                      QString(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
++    QMimeType instantiatedQMimeType{ QMimeTypePrivate(qMimeTypeName()) };
++    QMimeType otherQMimeType{ QMimeTypePrivate(QString()) };
+ 
+     // Verify that the Name is part of the equality test:
+     QCOMPARE(instantiatedQMimeType.name(), qMimeTypeName());
+@@ -127,63 +74,23 @@ void tst_qmimetype::name()
+ 
+ void tst_qmimetype::genericIconName()
+ {
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
+-
+-    QCOMPARE(instantiatedQMimeType.genericIconName(), qMimeTypeGenericIconName());
++    const QMimeType instantiatedQMimeType{ QMimeTypePrivate(qMimeTypeName()) };
++    QCOMPARE(instantiatedQMimeType.genericIconName(), "group-x-generic");
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+ 
+ void tst_qmimetype::iconName()
+ {
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
+-
+-    QCOMPARE(instantiatedQMimeType.iconName(), qMimeTypeIconName());
+-}
+-
+-// ------------------------------------------------------------------------------------------------
+-
+-void tst_qmimetype::suffixes()
+-{
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
+-
+-    QCOMPARE(instantiatedQMimeType.globPatterns(), qMimeTypeGlobPatterns());
+-    QCOMPARE(instantiatedQMimeType.suffixes(), QStringList() << QString::fromLatin1("png"));
++    const QMimeType instantiatedQMimeType{ QMimeTypePrivate(qMimeTypeName()) };
++    QCOMPARE(instantiatedQMimeType.iconName(), "group-fake-mime");
+ }
+ 
+ // ------------------------------------------------------------------------------------------------
+ 
+ void tst_qmimetype::gadget()
+ {
+-    QMimeType instantiatedQMimeType (
+-                  buildQMimeType (
+-                      qMimeTypeName(),
+-                      qMimeTypeGenericIconName(),
+-                      qMimeTypeIconName(),
+-                      qMimeTypeGlobPatterns()
+-                  )
+-              );
++    QMimeType instantiatedQMimeType = QMimeDatabase().mimeTypeForName("text/plain");
+ 
+     const QMetaObject *metaObject = &instantiatedQMimeType.staticMetaObject;
+ 
+-- 
+GitLab
+

@@ -1,0 +1,215 @@
+From 37cff48a2753ce63eadbdb86945511cc155cade9 Mon Sep 17 00:00:00 2001
+From: David Faure <david.faure@kdab.com>
+Date: Mon, 11 Sep 2023 16:25:29 +0200
+Subject: [PATCH] tst_qmimedatabase: move local override to the specific test
+ method
+
+When running tst_qmimedatabase with the full shared-mime-info test suite
+(which unfortunately requires local setup so this is easy to overlook),
+we need *.webm to still be associated with video/webm.
+
+So to test glob-deleteall, do that in installNewLocalMimeType(), with
+other similar tests.
+
+This however unearthed the following bug: the handling of glob-deleteall
+is only correct when the local dir has no binary cache. It's broken
+when using a binary cache. Added a QEXPECT_FAIL for now because this is
+going to be fixed as part of a major redesign, coming up.
+I also found out that neither xdgmime nor gio do this correctly...
+
+Change-Id: Ib075fcdb792f60a859f23db8c2d7e1c6524f9050
+(cherry picked from commit 994311a66bd31983bec5d75d87f5e03f53f14def)
+Reviewed-by: Thiago Macieira <thiago.macieira@intel.com>
+---
+ .../qmimedatabase-cache/CMakeLists.txt        |  1 +
+ .../qmimedatabase-xml/CMakeLists.txt          |  1 +
+ .../qmimedatabase/tst_qmimedatabase.cpp       | 66 +++++++++++--------
+ .../qmimedatabase/tst_qmimedatabase.h         |  2 +-
+ .../packages => }/webm-glob-deleteall.xml     |  0
+ 5 files changed, 41 insertions(+), 29 deletions(-)
+ rename tests/auto/corelib/mimetypes/qmimedatabase/{mimetypes-override/mime/packages => }/webm-glob-deleteall.xml (100%)
+
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+index 2900a5635f3..c2642456faf 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+@@ -35,6 +35,7 @@ set(testdata_resource_files
+     "../test.qml"
+     "../text-x-objcsrc.xml"
+     "../text-plain-subclass.xml"
++    "../webm-glob-deleteall.xml"
+     "../yast2-metapackage-handler-mimetypes.xml"
+ )
+ 
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+index ee16c13dd7e..b21324aeb4b 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+@@ -35,6 +35,7 @@ set(testdata_resource_files
+     "../test.qml"
+     "../text-x-objcsrc.xml"
+     "../text-plain-subclass.xml"
++    "../webm-glob-deleteall.xml"
+     "../yast2-metapackage-handler-mimetypes.xml"
+ )
+ 
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+index ae1a2038ca4..31c5e701dac 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+@@ -47,6 +47,7 @@ static const std::array additionalLocalMimeFiles = {
+     "invalid-magic3.xml",
+     "magic-and-hierarchy.xml",
+     "circular-inheritance.xml",
++    "webm-glob-deleteall.xml",
+ };
+ 
+ static const auto s_resourcePrefix = ":/qt-project.org/qmime/"_L1;
+@@ -138,9 +139,7 @@ void tst_QMimeDatabase::initTestCase()
+     const QString globalPackageDir = m_globalXdgDir + QStringLiteral("/mime/packages");
+     QVERIFY(here.mkpath(globalPackageDir));
+ 
+-    QString overrideDir = QFINDTESTDATA("mimetypes-override/");
+-    QByteArray env = QFile::encodeName(overrideDir) + ':' + QFile::encodeName(m_globalXdgDir);
+-    qputenv("XDG_DATA_DIRS", env);
++    qputenv("XDG_DATA_DIRS", QFile::encodeName(m_globalXdgDir));
+     qDebug() << "\nGlobal XDG_DATA_DIRS: " << m_globalXdgDir;
+ 
+     const QString freeDesktopXml = QStringLiteral("freedesktop.org.xml");
+@@ -322,24 +321,6 @@ void tst_QMimeDatabase::mimeTypesForFileName()
+     QCOMPARE(mimeNames, expectedMimeTypes);
+ }
+ 
+-void tst_QMimeDatabase::mimeTypesForFileName_glob_deleteall()
+-{
+-#if !defined(USE_XDG_DATA_DIRS)
+-    QSKIP("This test requires XDG_DATA_DIRS");
+-#endif
+-
+-    QMimeDatabase mdb;
+-    QList<QMimeType> mimes = mdb.mimeTypesForFileName(u"foo.webm"_s);
+-
+-    // "*.webm" glob pattern is deleted with "glob-deleteall"
+-    QVERIFY2(mimes.isEmpty(), qPrintable(mimeTypeNames(mimes).join(u',')));
+-    mimes = mdb.mimeTypesForFileName(u"foo.videowebm"_s);
+-    QCOMPARE(mimes.size(), 1);
+-    QCOMPARE(mimes.at(0).globPatterns(), QStringList{"*.videowebm"});
+-    // Custom "*.videowebm" pattern is used instead
+-    QCOMPARE(mimes.at(0).name(), u"video/webm");
+-}
+-
+ void tst_QMimeDatabase::inheritance()
+ {
+     QMimeDatabase db;
+@@ -1165,11 +1146,26 @@ void tst_QMimeDatabase::installNewGlobalMimeType()
+ #endif // QT_CONFIG(process)
+ }
+ 
++void tst_QMimeDatabase::installNewLocalMimeType_data()
++{
++    QTest::addColumn<bool>("useLocalBinaryCache");
++
++    // Test mixing the providers:
++    // * m_isUsingCacheProvider is about the global directory.
++    // ** when true, we'll test both for the local directory.
++    // ** when false, we can't, because QT_NO_MIME_CACHE is set, so it's XML+XML only
++
++#if QT_CONFIG(process)
++    if (m_isUsingCacheProvider)
++        QTest::newRow("with_binary_cache") << true;
++#endif
++    QTest::newRow("without_binary_cache") << false;
++}
++
+ void tst_QMimeDatabase::installNewLocalMimeType()
+ {
+-#if !QT_CONFIG(process)
+-    QSKIP("This test requires QProcess support");
+-#else
++    QFETCH(bool, useLocalBinaryCache);
++
+     qmime_secondsBetweenChecks = 0;
+ 
+     QMimeDatabase db;
+@@ -1183,13 +1179,13 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+ 
+     copyFiles(additionalLocalMimeFiles, destDir);
+     QVERIFY(!QTest::currentTestFailed());
+-    if (m_isUsingCacheProvider && !waitAndRunUpdateMimeDatabase(m_localMimeDir)) {
++    if (useLocalBinaryCache && !waitAndRunUpdateMimeDatabase(m_localMimeDir)) {
+         const QString skipWarning = QStringLiteral("shared-mime-info not found, skipping mime.cache test (")
+                                     + QDir::toNativeSeparators(m_localMimeDir) + QLatin1Char(')');
+         QSKIP(qPrintable(skipWarning));
+     }
+ 
+-    if (!m_isUsingCacheProvider)
++    if (!useLocalBinaryCache)
+         ignoreInvalidMimetypeWarnings(m_localMimeDir);
+ 
+     QVERIFY(db.mimeTypeForName(QLatin1String("text/x-suse-ymp")).isValid());
+@@ -1221,6 +1217,21 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+     QCOMPARE(db.mimeTypeForFile(qmlTestFile).name(),
+              QString::fromLatin1("text/x-qml"));
+ 
++    { // QTBUG-101755
++        QList<QMimeType> mimes = db.mimeTypesForFileName(u"foo.webm"_s);
++        // "*.webm" glob pattern is deleted with "glob-deleteall"
++        if (m_isUsingCacheProvider && useLocalBinaryCache)
++            QEXPECT_FAIL("with_binary_cache",
++                         "BUG, glob-deleteall isn't handled correctly between binary providers",
++                         Continue);
++        QVERIFY2(mimes.isEmpty(), qPrintable(mimeTypeNames(mimes).join(u',')));
++        mimes = db.mimeTypesForFileName(u"foo.videowebm"_s);
++        QCOMPARE(mimes.size(), 1);
++        QCOMPARE(mimes.at(0).globPatterns(), QStringList{ "*.videowebm" });
++        // Custom "*.videowebm" pattern is used instead
++        QCOMPARE(mimes.at(0).name(), u"video/webm");
++    }
++
+     // Now that we have two directories with mime definitions, check that everything still works
+     inheritance();
+     if (QTest::currentTestFailed())
+@@ -1249,7 +1260,7 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+     // Now test removing local mimetypes
+     for (int i = 1 ; i <= 3 ; ++i)
+         QFile::remove(destDir + QStringLiteral("invalid-magic%1.xml").arg(i));
+-    if (m_isUsingCacheProvider && !waitAndRunUpdateMimeDatabase(m_localMimeDir))
++    if (useLocalBinaryCache && !waitAndRunUpdateMimeDatabase(m_localMimeDir))
+         QSKIP("shared-mime-info not found, skipping mime.cache test");
+     QVERIFY(!db.mimeTypeForName(QLatin1String("text/invalid-magic1")).isValid()); // deleted
+     QVERIFY(db.mimeTypeForName(QLatin1String("text/x-suse-ymp")).isValid()); // still present
+@@ -1264,7 +1275,6 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+     QCOMPARE(db.mimeTypeForFile(QLatin1String("foo.ymu"), QMimeDatabase::MatchExtension).name(),
+              QString::fromLatin1("application/octet-stream"));
+     QVERIFY(!db.mimeTypeForName(QLatin1String("text/x-suse-ymp")).isValid());
+-#endif // QT_CONFIG(process)
+ }
+ 
+ QTEST_GUILESS_MAIN(tst_QMimeDatabase)
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.h b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.h
+index adca5ffc144..c08179bb2fd 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.h
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.h
+@@ -25,7 +25,6 @@ private slots:
+     void mimeTypeForFileName();
+     void mimeTypesForFileName_data();
+     void mimeTypesForFileName();
+-    void mimeTypesForFileName_glob_deleteall();
+     void inheritance();
+     void aliases();
+     void listAliases_data();
+@@ -63,6 +62,7 @@ private slots:
+     //
+ 
+     void installNewGlobalMimeType();
++    void installNewLocalMimeType_data();
+     void installNewLocalMimeType();
+ 
+ private:
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/mimetypes-override/mime/packages/webm-glob-deleteall.xml b/tests/auto/corelib/mimetypes/qmimedatabase/webm-glob-deleteall.xml
+similarity index 100%
+rename from tests/auto/corelib/mimetypes/qmimedatabase/mimetypes-override/mime/packages/webm-glob-deleteall.xml
+rename to tests/auto/corelib/mimetypes/qmimedatabase/webm-glob-deleteall.xml
+-- 
+GitLab
+

@@ -1,0 +1,217 @@
+From 6bc35430f95e24a7b39e81d07c04b11a1ecc705a Mon Sep 17 00:00:00 2001
+From: David Faure <david.faure@kdab.com>
+Date: Tue, 12 Sep 2023 18:34:24 +0200
+Subject: [PATCH] tst_qmimedatabase: separate xml files for Global and Local
+ tests
+
+For historic reasons, the test had a single list of override xml files
+to copy first into the global dir, and then into the local dir.
+But glob-deleteall only makes sense in the local dir (as per the MIME
+spec). Having two definitions for the same mimetype in the same dir
+is undefined behavior, so the test was working by chance only, and
+my upcoming refactoring/fixes caught that.
+
+Change-Id: I4717683b4b3f9ba69f1fd815669460789700e877
+(cherry picked from commit 251ab925fe8e3dfbc8a8e5f9ed999777d3f6af99)
+Reviewed-by: Thiago Macieira <thiago.macieira@intel.com>
+---
+ .../qmimedatabase-cache/CMakeLists.txt        |  1 +
+ .../qmimedatabase-xml/CMakeLists.txt          |  1 +
+ .../qmimedatabase/tst_qmimedatabase.cpp       | 91 ++++++++++---------
+ 3 files changed, 51 insertions(+), 42 deletions(-)
+
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+index bf4a73545cd..2900a5635f3 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-cache/CMakeLists.txt
+@@ -14,6 +14,7 @@ qt_internal_add_test(tst_qmimedatabase-cache
+         ../tst_qmimedatabase.h
+         tst_qmimedatabase-cache.cpp
+     LIBRARIES
++        Qt::CorePrivate
+         Qt::Concurrent
+ )
+ 
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+index 287ad0b4cf7..ee16c13dd7e 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/qmimedatabase-xml/CMakeLists.txt
+@@ -15,6 +15,7 @@ qt_internal_add_test(tst_qmimedatabase-xml
+         tst_qmimedatabase-xml.cpp
+     LIBRARIES
+         Qt::Concurrent
++        Qt::CorePrivate
+ )
+ 
+ # Resources:
+diff --git a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+index b67304bde86..ae1a2038ca4 100644
+--- a/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
++++ b/tests/auto/corelib/mimetypes/qmimedatabase/tst_qmimedatabase.cpp
+@@ -20,6 +20,7 @@
+ #include <QtCore/QTemporaryDir>
+ #include <QtCore/QTextStream>
+ #include <QtConcurrent/QtConcurrentRun>
++#include <private/qspan_p.h>
+ 
+ #include <QTest>
+ #include <QBuffer>
+@@ -30,16 +31,23 @@
+ 
+ using namespace Qt::StringLiterals;
+ 
+-static const char *const additionalMimeFiles[] = { "yast2-metapackage-handler-mimetypes.xml",
+-                                                   "qml-again.xml",
+-                                                   "text-x-objcsrc.xml",
+-                                                   "text-plain-subclass.xml",
+-                                                   "invalid-magic1.xml",
+-                                                   "invalid-magic2.xml",
+-                                                   "invalid-magic3.xml",
+-                                                   "magic-and-hierarchy.xml",
+-                                                   "circular-inheritance.xml",
+-                                                   0 };
++static const std::array additionalGlobalMimeFiles = {
++    "yast2-metapackage-handler-mimetypes.xml",
++    "qml-again.xml",
++    "magic-and-hierarchy.xml",
++};
++
++static const std::array additionalLocalMimeFiles = {
++    "yast2-metapackage-handler-mimetypes.xml",
++    "qml-again.xml",
++    "text-x-objcsrc.xml",
++    "text-plain-subclass.xml",
++    "invalid-magic1.xml",
++    "invalid-magic2.xml",
++    "invalid-magic3.xml",
++    "magic-and-hierarchy.xml",
++    "circular-inheritance.xml",
++};
+ 
+ static const auto s_resourcePrefix = ":/qt-project.org/qmime/"_L1;
+ static const auto s_inodeMimetype = "inode/directory"_L1;
+@@ -119,7 +127,6 @@ void tst_QMimeDatabase::initTestCase()
+     if (QDir(m_localMimeDir).exists()) {
+         QVERIFY2(QDir(m_localMimeDir).removeRecursively(), qPrintable(m_localMimeDir + ": " + qt_error_string()));
+     }
+-    QString errorMessage;
+ 
+ #ifdef USE_XDG_DATA_DIRS
+     // Create a temporary "global" XDG data dir for later use
+@@ -139,6 +146,7 @@ void tst_QMimeDatabase::initTestCase()
+     const QString freeDesktopXml = QStringLiteral("freedesktop.org.xml");
+     const QString xmlFileName = s_resourcePrefix + "packages/"_L1 + freeDesktopXml;
+     const QString xmlTargetFileName = globalPackageDir + QLatin1Char('/') + freeDesktopXml;
++    QString errorMessage;
+     QVERIFY2(copyResourceFile(xmlFileName, xmlTargetFileName, &errorMessage), qPrintable(errorMessage));
+ #endif
+ 
+@@ -146,14 +154,6 @@ void tst_QMimeDatabase::initTestCase()
+     if (m_testSuite.isEmpty())
+         qWarning("%s", qPrintable(testSuiteWarning()));
+ 
+-    errorMessage = QString::fromLatin1("Cannot find '%1'");
+-    for (uint i = 0; i < sizeof additionalMimeFiles / sizeof additionalMimeFiles[0] - 1; i++) {
+-        const QString resourceFilePath = s_resourcePrefix + QLatin1String(additionalMimeFiles[i]);
+-        QVERIFY2(QFile::exists(resourceFilePath), qPrintable(errorMessage.arg(resourceFilePath)));
+-        m_additionalMimeFileNames.append(QLatin1String(additionalMimeFiles[i]));
+-        m_additionalMimeFilePaths.append(resourceFilePath);
+-    }
+-
+     initTestCaseInternal();
+     m_isUsingCacheProvider = !qEnvironmentVariableIsSet("QT_NO_MIME_CACHE");
+ }
+@@ -1074,6 +1074,30 @@ QT_BEGIN_NAMESPACE
+ extern Q_CORE_EXPORT int qmime_secondsBetweenChecks; // see qmimeprovider.cpp
+ QT_END_NAMESPACE
+ 
++void copyFiles(const QSpan<const char *const> &additionalMimeFiles, const QString &destDir)
++{
++    const QString notFoundErrorMessage = QString::fromLatin1("Cannot find '%1'");
++    for (const char *mimeFile : additionalMimeFiles) {
++        const QString resourceFilePath = s_resourcePrefix + QLatin1String(mimeFile);
++        QVERIFY2(QFile::exists(resourceFilePath),
++                 qPrintable(notFoundErrorMessage.arg(resourceFilePath)));
++
++        const QString destFile = destDir + QLatin1String(mimeFile);
++        QFile::remove(destFile);
++        QString errorMessage;
++        QVERIFY2(copyResourceFile(resourceFilePath, destFile, &errorMessage),
++                 qPrintable(errorMessage));
++    }
++}
++
++void deleteFiles(const QSpan<const char *const> &additionalMimeFiles, const QString &destDir)
++{
++    for (const char *mimeFile : additionalMimeFiles) {
++        const QString destFile = destDir + QLatin1String(mimeFile);
++        QFile::remove(destFile);
++    }
++}
++
+ void tst_QMimeDatabase::installNewGlobalMimeType()
+ {
+ #if !defined(USE_XDG_DATA_DIRS)
+@@ -1093,18 +1117,11 @@ void tst_QMimeDatabase::installNewGlobalMimeType()
+     if (!QFileInfo(destDir).isDir())
+         QVERIFY(QDir(m_globalXdgDir).mkpath(destDir));
+ 
+-    QString errorMessage;
+-    for (int i = 0; i < m_additionalMimeFileNames.size(); ++i) {
+-        const QString destFile = destDir + m_additionalMimeFileNames.at(i);
+-        QFile::remove(destFile);
+-        QVERIFY2(copyResourceFile(m_additionalMimeFilePaths.at(i), destFile, &errorMessage), qPrintable(errorMessage));
+-    }
++    copyFiles(additionalGlobalMimeFiles, destDir);
++    QVERIFY(!QTest::currentTestFailed());
+     if (m_isUsingCacheProvider && !waitAndRunUpdateMimeDatabase(mimeDir))
+         QSKIP("shared-mime-info not found, skipping mime.cache test");
+ 
+-    if (!m_isUsingCacheProvider)
+-        ignoreInvalidMimetypeWarnings(mimeDir);
+-
+     QCOMPARE(db.mimeTypeForFile(QLatin1String("foo.ymu"), QMimeDatabase::MatchExtension).name(),
+              QString::fromLatin1("text/x-SuSE-ymu"));
+     QVERIFY(db.mimeTypeForName(QLatin1String("text/x-suse-ymp")).isValid());
+@@ -1118,12 +1135,6 @@ void tst_QMimeDatabase::installNewGlobalMimeType()
+     QCOMPARE(db.mimeTypeForFile(qmlTestFile).name(),
+              QString::fromLatin1("text/x-qml"));
+ 
+-    {
+-        QMimeType objcsrc = db.mimeTypeForName(QStringLiteral("text/x-objcsrc"));
+-        QVERIFY(objcsrc.isValid());
+-        QCOMPARE(objcsrc.globPatterns(), QStringList());
+-    }
+-
+     const QString fooTestFile = s_resourcePrefix + "magic-and-hierarchy.foo"_L1;
+     QCOMPARE(db.mimeTypeForFile(fooTestFile).name(), QString::fromLatin1("application/foo"));
+ 
+@@ -1145,8 +1156,7 @@ void tst_QMimeDatabase::installNewGlobalMimeType()
+     }
+ 
+     // Now test removing the mimetype definitions again
+-    for (int i = 0; i < m_additionalMimeFileNames.size(); ++i)
+-        QFile::remove(destDir + m_additionalMimeFileNames.at(i));
++    deleteFiles(additionalGlobalMimeFiles, destDir);
+     if (m_isUsingCacheProvider && !waitAndRunUpdateMimeDatabase(mimeDir))
+         QSKIP("shared-mime-info not found, skipping mime.cache test");
+     QCOMPARE(db.mimeTypeForFile(QLatin1String("foo.ymu"), QMimeDatabase::MatchExtension).name(),
+@@ -1170,12 +1180,9 @@ void tst_QMimeDatabase::installNewLocalMimeType()
+ 
+     const QString destDir = m_localMimeDir + QLatin1String("/packages/");
+     QVERIFY(QDir().mkpath(destDir));
+-    QString errorMessage;
+-    for (int i = 0; i < m_additionalMimeFileNames.size(); ++i) {
+-        const QString destFile = destDir + m_additionalMimeFileNames.at(i);
+-        QFile::remove(destFile);
+-        QVERIFY2(copyResourceFile(m_additionalMimeFilePaths.at(i), destFile, &errorMessage), qPrintable(errorMessage));
+-    }
++
++    copyFiles(additionalLocalMimeFiles, destDir);
++    QVERIFY(!QTest::currentTestFailed());
+     if (m_isUsingCacheProvider && !waitAndRunUpdateMimeDatabase(m_localMimeDir)) {
+         const QString skipWarning = QStringLiteral("shared-mime-info not found, skipping mime.cache test (")
+                                     + QDir::toNativeSeparators(m_localMimeDir) + QLatin1Char(')');
+-- 
+GitLab
+
