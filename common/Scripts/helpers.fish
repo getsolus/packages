@@ -19,6 +19,11 @@ function gotopkg -a package -d "Go to a package directory"
     cd (__solus_toplevel)/packages/*/$package
 end
 
+function reindex-localrepo -d "Re-index the local repo and update eopkg's cache"
+    sudo eopkg index --skip-signing /var/lib/solbuild/local/ --output /var/lib/solbuild/local/eopkg-index.xml && \
+    sudo eopkg update-repo
+end
+
 function whatprovides -a library -d "Show packages that provide a certain library"
     path basename (path dirname (grep $library (__solus_toplevel)/packages/*/*/abi_libs))
 end
