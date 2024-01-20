@@ -22,6 +22,12 @@ function gotopkg() {
     cd $(git rev-parse --show-toplevel)/packages/*/$1
 }
 
+# Re-index the local repo and update eopkg's cache
+function reindex-localrepo() {
+    sudo eopkg index --skip-signing /var/lib/solbuild/local/ --output /var/lib/solbuild/local/eopkg-index.xml && \
+    sudo eopkg update-repo
+}
+
 # What provides a lib
 function whatprovides() {
     grep $1 $(git rev-parse --show-toplevel)/packages/*/*/abi_libs
