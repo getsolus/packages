@@ -116,10 +116,15 @@ class Commit(Listable):
 
     @property
     def package(self) -> str:
+        if ':' not in self.msg:
+            return '<unknown>'
+
         return self.msg.split(':', 2)[0].strip()
 
     @property
     def change(self) -> str:
+        if ':' not in self.msg:
+            return self.msg.strip()
         return self.msg.split(':', 2)[1].strip()
 
     @property
