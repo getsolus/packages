@@ -1,0 +1,137 @@
+From 85bccda2f1c63a1b151b4ff2bde9e9818e95415a Mon Sep 17 00:00:00 2001
+From: Fredrik Mellbin <fredrik.mellbin@gmail.com>
+Date: Thu, 28 Sep 2023 23:05:31 +0200
+Subject: [PATCH] Use new channel layout api, probably requires ffmpeg 5.1.x at
+ least now
+
+---
+ src/avisynth/avssources.cpp |  1 -
+ src/core/audiosource.cpp    | 28 +++++++++++++++++++---------
+ src/core/indexing.cpp       |  8 ++++----
+ src/core/utils.cpp          | 17 ++++++++++++-----
+ 4 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/src/avisynth/avssources.cpp b/src/avisynth/avssources.cpp
+index 5240511e5..573c3d913 100644
+--- a/src/avisynth/avssources.cpp
++++ b/src/avisynth/avssources.cpp
+@@ -664,7 +664,6 @@ AvisynthAudioSource::AvisynthAudioSource(const char *SourceFile, int Track, FFMS
+     VI.audio_samples_per_second = AP->SampleRate;
+     VI.SetChannelMask(true, AP->ChannelLayout);
+ 
+-    // casting to int should be safe; none of the channel constants are greater than INT_MAX
+     Env->SetVar(Env->Sprintf("%s%s", VarPrefix, "FFCHANNEL_LAYOUT"), static_cast<int>(AP->ChannelLayout));
+ 
+     Env->SetGlobalVar("FFVAR_PREFIX", VarPrefix);
+diff --git a/src/core/audiosource.cpp b/src/core/audiosource.cpp
+index f9718a105..3dac6ce82 100644
+--- a/src/core/audiosource.cpp
++++ b/src/core/audiosource.cpp
+@@ -203,6 +203,16 @@ void FFMS_AudioSource::CacheBeginning() {
+     --CacheNoDelete;
+ }
+ 
++static int PopCount(int64_t v) {
++    int c = 0;
++    for (size_t i = 0; i < 64; i++) {
++        if (v & 1)
++            c++;
++        v >>= 1;
++    }
++    return c;
++}
++
+ void FFMS_AudioSource::SetOutputFormat(FFMS_ResampleOptions const& opt) {
+     if (opt.SampleRate != AP.SampleRate)
+         throw FFMS_Exception(FFMS_ERROR_RESAMPLING, FFMS_ERROR_UNSUPPORTED,
+@@ -214,7 +224,7 @@ void FFMS_AudioSource::SetOutputFormat(FFMS_ResampleOptions const& opt) {
+     OpenFile();
+     avcodec_flush_buffers(CodecContext);
+ 
+-    BytesPerSample = av_get_bytes_per_sample(static_cast<AVSampleFormat>(opt.SampleFormat)) * av_get_channel_layout_nb_channels(opt.ChannelLayout);
++    BytesPerSample = av_get_bytes_per_sample(static_cast<AVSampleFormat>(opt.SampleFormat)) * PopCount(opt.ChannelLayout);
+     NeedsResample =
+         opt.SampleFormat != (int)CodecContext->sample_fmt ||
+         opt.SampleRate != AP.SampleRate ||
+@@ -223,15 +233,15 @@ void FFMS_AudioSource::SetOutputFormat(FFMS_ResampleOptions const& opt) {
+ 
+     if (!NeedsResample) return;
+ 
+-    FFResampleContext newContext{ swr_alloc() };
+-    SetOptions(opt, newContext.get(), resample_options);
+-    av_opt_set_int(newContext.get(), "in_sample_rate", AP.SampleRate, 0);
+-    av_opt_set_int(newContext.get(), "in_sample_fmt", CodecContext->sample_fmt, 0);
+-    av_opt_set_int(newContext.get(), "in_channel_layout", AP.ChannelLayout, 0);
++    SwrContext *rawCtx = swr_alloc();
+ 
+-    av_opt_set_int(newContext.get(), "out_sample_rate", opt.SampleRate, 0);
+-    av_opt_set_channel_layout(newContext.get(), "out_channel_layout", opt.ChannelLayout, 0);
+-    av_opt_set_sample_fmt(newContext.get(), "out_sample_fmt", (AVSampleFormat)opt.SampleFormat, 0);
++    AVChannelLayout ChLayoutOut = { AV_CHANNEL_ORDER_NATIVE, PopCount(opt.ChannelLayout), static_cast<uint64_t>(opt.ChannelLayout) };
++    AVChannelLayout ChLayoutIn = { AV_CHANNEL_ORDER_NATIVE, PopCount(AP.ChannelLayout), static_cast<uint64_t>(AP.ChannelLayout) };
++    swr_alloc_set_opts2(&rawCtx, &ChLayoutOut, (AVSampleFormat)opt.SampleFormat, opt.SampleRate, &ChLayoutIn, CodecContext->sample_fmt, AP.SampleRate, 0, nullptr);
++
++    FFResampleContext newContext{ rawCtx };
++
++    SetOptions(opt, newContext.get(), resample_options);
+ 
+     if (swr_init(newContext.get()))
+         throw FFMS_Exception(FFMS_ERROR_RESAMPLING, FFMS_ERROR_UNKNOWN,
+diff --git a/src/core/indexing.cpp b/src/core/indexing.cpp
+index 5b816484a..00d24ef54 100644
+--- a/src/core/indexing.cpp
++++ b/src/core/indexing.cpp
+@@ -344,14 +344,14 @@ void FFMS_Indexer::CheckAudioProperties(int Track, AVCodecContext *Context) {
+         FFMS_AudioProperties &AP = LastAudioProperties[Track];
+         AP.SampleRate = Context->sample_rate;
+         AP.SampleFormat = Context->sample_fmt;
+-        AP.Channels = Context->channels;
++        AP.Channels = Context->ch_layout.nb_channels;
+     } else if (it->second.SampleRate != Context->sample_rate ||
+         it->second.SampleFormat != Context->sample_fmt ||
+-        it->second.Channels != Context->channels) {
+-        std::ostringstream buf;
++        it->second.Channels != Context->ch_layout.nb_channels) {
++        std::ostringstream buf; // fixme, dodgy comparison and maybe wrong since it skips layout comp
+         buf <<
+             "Audio format change detected. This is currently unsupported."
+-            << " Channels: " << it->second.Channels << " -> " << Context->channels << ";"
++            << " Channels: " << it->second.Channels << " -> " << Context->ch_layout.nb_channels << ";"
+             << " Sample rate: " << it->second.SampleRate << " -> " << Context->sample_rate << ";"
+             << " Sample format: " << av_get_sample_fmt_name((AVSampleFormat)it->second.SampleFormat) << " -> "
+             << av_get_sample_fmt_name(Context->sample_fmt);
+diff --git a/src/core/utils.cpp b/src/core/utils.cpp
+index 4e7cae2f8..8a3a519d9 100644
+--- a/src/core/utils.cpp
++++ b/src/core/utils.cpp
+@@ -65,8 +65,18 @@ void ClearErrorInfo(FFMS_ErrorInfo *ErrorInfo) {
+ void FillAP(FFMS_AudioProperties &AP, AVCodecContext *CTX, FFMS_Track &Frames) {
+     AP.SampleFormat = static_cast<FFMS_SampleFormat>(av_get_packed_sample_fmt(CTX->sample_fmt));
+     AP.BitsPerSample = av_get_bytes_per_sample(CTX->sample_fmt) * 8;
+-    AP.Channels = CTX->channels;
+-    AP.ChannelLayout = CTX->channel_layout;
++    AP.Channels = CTX->ch_layout.nb_channels;
++
++    if (CTX->ch_layout.order == AV_CHANNEL_ORDER_NATIVE) {
++        AP.ChannelLayout = CTX->ch_layout.u.mask;
++    } else if (CTX->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
++        AVChannelLayout ch = {};
++        av_channel_layout_default(&ch, CTX->ch_layout.nb_channels);
++        AP.ChannelLayout = ch.u.mask;
++    } else {
++        throw FFMS_Exception(FFMS_ERROR_DECODING, FFMS_ERROR_UNSUPPORTED, "Ambisonics and custom channel orders not supported");
++    }
++
+     AP.SampleRate = CTX->sample_rate;
+     if (!Frames.empty()) {
+         AP.NumSamples = (Frames.back()).SampleStart + (Frames.back()).SampleCount;
+@@ -74,9 +84,6 @@ void FillAP(FFMS_AudioProperties &AP, AVCodecContext *CTX, FFMS_Track &Frames) {
+         AP.LastTime = ((Frames.back().PTS * Frames.TB.Num) / (double)Frames.TB.Den) / 1000;
+         AP.LastEndTime = (((Frames.back().PTS + Frames.LastDuration) * Frames.TB.Num) / (double)Frames.TB.Den) / 1000;
+     }
+-
+-    if (AP.ChannelLayout == 0)
+-        AP.ChannelLayout = av_get_default_channel_layout(AP.Channels);
+ }
+ 
+ void LAVFOpenFile(const char *SourceFile, AVFormatContext *&FormatContext, int Track, const std::map<std::string, std::string> &LAVFOpts) {
