@@ -1,9 +1,13 @@
 name       : krita
-version    : 5.1.5
-release    : 88
+version    : 5.2.2
+release    : 89
 source     :
-    - https://download.kde.org/stable/krita/5.1.5/krita-5.1.5.tar.xz : 45eac209a3c4ac285ca223e1978d35694cdca31b0075e596ad252d6619f04249
-    - https://github.com/amyspark/gmic/releases/download/v3.1.5.1/gmic-3.1.5.1-patched.tar.xz : de329a14bb58ea96252d807f89d64e4821ffbb9e29375860bb5e1dff31c44635
+    - https://download.kde.org/stable/krita/5.2.2/krita-5.2.2.tar.xz : 41515784d65b5bf12919df909f7406dc90f37076587b8c459ef2abd569a71adb
+    - https://github.com/amyspark/gmic/releases/download/v3.2.4.1/gmic-3.2.4.1-patched.tar.xz#gmic-patched.tar.xz : 06659fe05f7735827a93d637de2267512efb28bb0d55ce573495fecb59172604
+    # Vendored build deps. Should always be on the latest version
+    - https://github.com/arximboldi/immer/archive/refs/tags/v0.8.1.tar.gz#immer.tar.gz : de8411c84830864604bb685dc8f2e3c0dbdc40b95b2f6726092f7dcc85e75209
+    - https://github.com/arximboldi/zug/archive/refs/tags/v0.1.1.tar.gz#zug.tar.gz : 1b9c8f962e40baa6f0c6af35f957444850063d550078a3ebd0227727b8ef193c
+    - https://github.com/arximboldi/lager/archive/refs/tags/v0.1.1.tar.gz#lager.tar.gz : 9e4743c3fe2c95c1653c3fd088a2200108f09d758725697831852dc91d15d174
 homepage   : https://krita.org
 license    : GPL-3.0-or-later
 component  : multimedia.graphics
@@ -19,12 +23,15 @@ builddeps  :
     - pkgconfig(Qt5Quick)
     - pkgconfig(Qt5Svg)
     - pkgconfig(Qt5X11Extras)
+    - pkgconfig(catch2)
     - pkgconfig(eigen3)
     - pkgconfig(exiv2)
     - pkgconfig(fftw3)
+    - pkgconfig(fribidi)
     - pkgconfig(gsl)
     - pkgconfig(kseexpr)
     - pkgconfig(libheif)
+    - pkgconfig(libjxl)
     - pkgconfig(libmypaint)
     - pkgconfig(libopenjp2)
     - pkgconfig(libpng)
@@ -32,10 +39,13 @@ builddeps  :
     - pkgconfig(libssh)
     - pkgconfig(libtiff-4)
     - pkgconfig(libturbojpeg)
+    - pkgconfig(libunibreak)
     - pkgconfig(libwebp)
+    - pkgconfig(mlt++-7)
     - pkgconfig(poppler-qt5)
     - pkgconfig(python3)
     - pkgconfig(quazip1-qt5)
+    - pkgconfig(sdl2)
     - pkgconfig(xcb-atom)
     - pkgconfig(xcb-keysyms)
     - pkgconfig(xi)
@@ -53,36 +63,74 @@ builddeps  :
     - kwidgetsaddons-devel
     - kwindowsystem-devel
     - libboost-devel
+    - libkdcraw-devel
     - python-sip
     - python3-qt5
     - subversion
     - vc
+    # TODO package xsimd
 rundeps    :
     - breeze
     - ffmpeg
     - python3-qt5
 setup      : |
-    tar -xf $sources/gmic-3.1.5.1-patched.tar.xz -C .
+    mkdir gmic-patched
+    tar -xf $sources/gmic-patched.tar.xz -C gmic-patched  --strip-components 1
+
+    ## Krita is the only thing that currently uses these, and they're headers-only libs. Let's just build them here rather than having extra packages
+    libs_prefix="/sollibs"
+    mkdir zug
+    tar -xf $sources/zug.tar.gz -C zug --strip-components 1
+    cmake -Dzug_BUILD_EXAMPLES=FALSE \
+          -Dzug_BUILD_DOCS=FALSE \
+          -B zug-build -S zug
+    DESTDIR=$(pwd) cmake --install zug-build --prefix $libs_prefix
+
+    mkdir immer
+    tar -xf $sources/immer.tar.gz -C immer --strip-components 1
+    cmake -Dimmer_BUILD_DOCS=FALSE \
+          -Dimmer_BUILD_EXAMPLES=FALSE \
+          -Dimmer_BUILD_EXTRAS=FALSE \
+          -B immer-build -S immer
+    DESTDIR=$(pwd) cmake --install immer-build --prefix $libs_prefix
+
+    mkdir lager
+    tar -xf $sources/lager.tar.gz -C lager --strip-components 1
+    cmake -Dlager_BUILD_EXAMPLES=FALSE \
+          -Dlager_BUILD_DEBUGGER_EXAMPLES=FALSE \
+          -Dlager_BUILD_DOCS=FALSE \
+          -DCMAKE_PREFIX_PATH="$(pwd)/$libs_prefix" \
+          -B lager-build -S lager
+    DESTDIR=$(pwd) cmake --install lager-build --prefix $libs_prefix
+
+    # Now onto krita, finally
+    %patch -p1 -i $pkgfiles/libjxl-0.9-1.patch
+    %patch -p1 -i $pkgfiles/libjxl-0.9-2.patch
+    %patch -p1 -i $pkgfiles/libjxl-0.9-3.patch
 
     %cmake_ninja -DBUILD_TESTING=OFF \
                  -DENABLE_UPDATERS=OFF \
                  -DFETCH_TRANSLATIONS=ON \
                  -DBUILD_KRITA_QT_DESIGNER_PLUGINS=ON \
-                 -DKDE_INSTALL_CONFDIR=/usr/share/defaults/krita
+                 -DKDE_INSTALL_CONFDIR=/usr/share/defaults/krita \
+                 -DCMAKE_PREFIX_PATH="$(pwd)/$libs_prefix"
 build      : |
     %ninja_build
 install    : |
     %ninja_install
-    rm -rf $installdir/usr/share/applications/krita*.desktop
+    rm -rfv $installdir/usr/share/applications/krita*.desktop
 
-    pushd gmic-3.1.5.1-patched/gmic-qt
+    pushd gmic-patched/gmic-qt
     %cmake_ninja -DCMAKE_PREFIX_PATH=$installdir/usr \
                  -DENABLE_LTO=ON \
                  -DENABLE_SYSTEM_GMIC=ON \
                  -DGMIC_QT_HOST=krita-plugin
     %ninja_build
     %ninja_install
-    rm -rf $installdir/usr/share/gmic
+    rm -rfv $installdir/usr/share/gmic
     popd
+
+    # No need for headers
+    rm -rfv $installdir/usr/include
 
     %qml_cache
