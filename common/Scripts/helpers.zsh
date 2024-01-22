@@ -23,7 +23,7 @@ function gotopkg() {
 }
 
 # Re-index the local repo and update eopkg's cache
-function reindex-localrepo() {
+function localrepo_reindex() {
     sudo eopkg index --skip-signing /var/lib/solbuild/local/ --output /var/lib/solbuild/local/eopkg-index.xml && \
     sudo eopkg update-repo
 }
