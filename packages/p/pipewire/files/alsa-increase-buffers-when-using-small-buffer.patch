@@ -1,0 +1,71 @@
+From 6ee48f056297becff6b369c38f9f06658ab87875 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 22 Jan 2024 12:10:51 +0100
+Subject: [PATCH] alsa: increase buffers when using small buffer
+
+We can increase the MAX_LATENCY again if we increase the amount of
+buffers when we are using a small buffer.
+
+Normally we ask for 4 * quantum-limit as the buffer. This should be good
+to use 1 buffer and quantum-limit as the quantum with enough headroom
+to not run out of buffers.
+
+If we are however using less buffer-frames we need to be careful and
+allocate an extra buffer. Imagine using a buffer of 4096 frames, we can
+support a quantum of up to 2048 frames if we use 2 buffers.
+
+See #3744
+---
+ spa/plugins/alsa/alsa-pcm-sink.c | 8 +++++++-
+ spa/plugins/alsa/alsa-pcm.c      | 2 +-
+ 2 files changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/spa/plugins/alsa/alsa-pcm-sink.c b/spa/plugins/alsa/alsa-pcm-sink.c
+index aa8105ab1a..2d59512275 100644
+--- a/spa/plugins/alsa/alsa-pcm-sink.c
++++ b/spa/plugins/alsa/alsa-pcm-sink.c
+@@ -458,14 +458,19 @@ impl_node_port_enum_params(void *object, int seq,
+ 		break;
+ 
+ 	case SPA_PARAM_Buffers:
++	{
++		uint32_t min_buffers;
++
+ 		if (!this->have_format)
+ 			return -EIO;
+ 		if (result.index > 0)
+ 			return 0;
+ 
++		min_buffers = (this->quantum_limit * 4 * this->frame_scale) > this->buffer_frames ?  2 : 1;
++
+ 		param = spa_pod_builder_add_object(&b.b,
+ 			SPA_TYPE_OBJECT_ParamBuffers, id,
+-			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(1, 1, MAX_BUFFERS),
++			SPA_PARAM_BUFFERS_buffers, SPA_POD_CHOICE_RANGE_Int(min_buffers, min_buffers, MAX_BUFFERS),
+ 			SPA_PARAM_BUFFERS_blocks,  SPA_POD_Int(this->blocks),
+ 			SPA_PARAM_BUFFERS_size,    SPA_POD_CHOICE_RANGE_Int(
+ 							this->quantum_limit * this->frame_size * this->frame_scale,
+@@ -473,6 +478,7 @@ impl_node_port_enum_params(void *object, int seq,
+ 							INT32_MAX),
+ 			SPA_PARAM_BUFFERS_stride,  SPA_POD_Int(this->frame_size));
+ 		break;
++	}
+ 
+ 	case SPA_PARAM_Meta:
+ 		switch (result.index) {
+diff --git a/spa/plugins/alsa/alsa-pcm.c b/spa/plugins/alsa/alsa-pcm.c
+index e69206d447..5756c4b586 100644
+--- a/spa/plugins/alsa/alsa-pcm.c
++++ b/spa/plugins/alsa/alsa-pcm.c
+@@ -3535,7 +3535,7 @@ void spa_alsa_emit_node_info(struct state *state, bool full)
+ 		items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_DRIVER, "true");
+ 		if (state->have_format) {
+ 			snprintf(latency, sizeof(latency), "%lu/%d",
+-					state->buffer_frames / (4 * state->frame_scale), state->rate);
++					state->buffer_frames / (2 * state->frame_scale), state->rate);
+ 			items[n_items++] = SPA_DICT_ITEM_INIT(SPA_KEY_NODE_MAX_LATENCY, latency);
+ 			snprintf(period, sizeof(period), "%lu", state->period_frames);
+ 			items[n_items++] = SPA_DICT_ITEM_INIT("api.alsa.period-size", period);
+-- 
+GitLab
+
