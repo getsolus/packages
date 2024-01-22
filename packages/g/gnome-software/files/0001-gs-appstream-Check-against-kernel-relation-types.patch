@@ -1,0 +1,124 @@
+From 093ec562fdbe9df6863ec8e4c5756a3dbd2588cc Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Tue, 24 Oct 2023 20:02:28 +0100
+Subject: [PATCH 1/1] gs-appstream: Check against kernel relation types
+
+https://www.freedesktop.org/software/appstream/docs/chap-Metadata.html#tag-relations-kernel
+
+Check appstream entries against kernel relation types. If the relation
+is unsatisfied and the app is not installed then prevent showing the app
+page.
+
+I would have much rather have set the `GS_APP_QUIRK_HIDE_EVERYWHERE`
+quirk, however, the existing code for checking relation types is only
+executed after the app page has already loaded, and, rebasing the code
+is currently out of my wheelhouse. Therefore, add a new quirk
+`GS_APP_QUIRK_UNSUPPORTED_KERNEL` to handle this use case.
+
+SOLUS DOWNSTREAM PATCH ONLY.
+---
+ lib/gs-app.h          |  2 ++
+ lib/gs-appstream.c    | 34 ++++++++++++++++++++++++++++++++++
+ src/gs-details-page.c | 13 +++++++++++++
+ 3 files changed, 49 insertions(+)
+
+diff --git a/lib/gs-app.h b/lib/gs-app.h
+index 6f4a7d3ba..c4487b3bf 100644
+--- a/lib/gs-app.h
++++ b/lib/gs-app.h
+@@ -136,6 +136,7 @@ typedef enum {
+  * @GS_APP_QUIRK_HIDE_EVERYWHERE:	The app should not be shown anywhere (it’s blocklisted)
+  * @GS_APP_QUIRK_DO_NOT_AUTO_UPDATE:	The app should not be automatically updated
+  * @GS_APP_QUIRK_DEVELOPMENT_SOURCE:	The app is from a development source (Since: 43)
++ * @GS_APP_QUIRK_UNSUPPORTED_KERNEL:	The app will not work with the current kernel (Solus downstream patch only)
+  *
+  * The application attributes.
+  **/
+@@ -160,6 +161,7 @@ typedef enum {
+ 	GS_APP_QUIRK_HIDE_EVERYWHERE	= 1 << 16,	/* Since: 3.36 */
+ 	GS_APP_QUIRK_DO_NOT_AUTO_UPDATE	= 1 << 17,	/* Since: 3.36 */
+ 	GS_APP_QUIRK_DEVELOPMENT_SOURCE	= 1 << 18,	/* Since: 43 */
++	GS_APP_QUIRK_UNSUPPORTED_KERNEL	= 1 << 19,	/* Solus downstream patch only */
+ 	GS_APP_QUIRK_LAST  /*< skip >*/
+ } GsAppQuirk;
+ 
+diff --git a/lib/gs-appstream.c b/lib/gs-appstream.c
+index 29d97129b..b5f3ccf94 100644
+--- a/lib/gs-appstream.c
++++ b/lib/gs-appstream.c
+@@ -12,7 +12,9 @@
+ #include <gnome-software.h>
+ #include <locale.h>
+ 
++#include "gs-app.h"
+ #include "gs-appstream.h"
++#include "libxmlb/xb-node.h"
+ 
+ #define	GS_APPSTREAM_MAX_SCREENSHOTS	5
+ 
+@@ -1029,6 +1031,38 @@ gs_appstream_refine_app_relation (GsApp           *app,
+ 				as_relation_set_display_side_kind (relation, (side != NULL) ? as_display_side_kind_from_string (side) : AS_DISPLAY_SIDE_KIND_SHORTEST);
+ 				as_relation_set_value_px (relation, xb_node_get_text_as_uint (child));
+ 			}
++		} else if (g_str_equal (item_kind, "kernel")) {
++			g_autoptr(AsSystemInfo) sysinfo = NULL;
++			g_autoptr(AsRelationCheckResult) rcr = NULL;
++			g_autoptr(GError) error_local = NULL;
++			const gchar *xml_kernel_version;
++			const gchar *xml_kernel_name;
++			const gchar *compare;
++
++			/* https://www.freedesktop.org/software/appstream/docs/chap-Metadata.html#tag-relations-kernel */
++			as_relation_set_item_kind (relation, AS_RELATION_ITEM_KIND_KERNEL);
++
++			compare = xb_node_get_attr (child, "compare");
++			xml_kernel_version = xb_node_get_attr (child, "version");
++			xml_kernel_name = xb_node_get_text (child);
++
++			as_relation_set_version (relation, (xml_kernel_version != NULL) ? xml_kernel_version : NULL);
++			as_relation_set_value_str (relation, (xml_kernel_name != NULL) ? xml_kernel_name : NULL);
++
++			as_relation_set_compare (relation, (compare != NULL) ? as_relation_compare_from_string (compare) : AS_RELATION_COMPARE_GE);
++
++			sysinfo = as_system_info_new ();
++			rcr = as_relation_is_satisfied (relation, sysinfo, NULL, &error_local);
++
++			if (as_relation_check_result_get_status (rcr) == AS_RELATION_STATUS_NOT_SATISFIED) {
++				/* We're already on the app page, this doesn't work as intended */
++				//gs_app_get_metadata_item (app, "GnomeSoftware::quirks::hide-everywhere");
++				//gs_app_add_quirk (app, GS_APP_QUIRK_HIDE_EVERYWHERE);
++				/* This will just result in an generic error when trying to load the page */
++				//gs_app_add_quirk (app, GS_APP_QUIRK_PARENTAL_FILTER);
++				/* Instead, add our own quirk as a hack instead of rebasing and doing all the UI work */
++				gs_app_add_quirk (app, GS_APP_QUIRK_UNSUPPORTED_KERNEL);
++			}
+ 		} else {
+ 			g_debug ("Relation type ‘%s’ not currently supported for %s; ignoring",
+ 				 item_kind, gs_app_get_id (app));
+diff --git a/src/gs-details-page.c b/src/gs-details-page.c
+index 1b5d8873a..5e888805e 100644
+--- a/src/gs-details-page.c
++++ b/src/gs-details-page.c
+@@ -1955,6 +1955,19 @@ gs_details_page_load_stage1_cb (GObject *source,
+ 		return;
+ 	}
+ 
++	/* Hide app on unsupported kernel. This is currently a bit of a hack as
++	 * GS_APP_QUIRK_HIDE_EVERYWHERE doesn't work on requires kernel filter
++	 * as the app page is already loaded. Would need some rebasing, hence, this. */
++	if (!gs_app_is_installed (self->app) &&
++	    gs_app_has_quirk (self->app, GS_APP_QUIRK_UNSUPPORTED_KERNEL)) {
++		g_autofree gchar *str = NULL;
++		const gchar *id = gs_app_get_id (self->app);
++		str = g_strdup_printf (_("This application is not supported on this kernel “%s”"), id == NULL ? gs_app_get_source_default (self->app) : id);
++		gtk_label_set_text (GTK_LABEL (self->label_failed), str);
++		gs_details_page_set_state (self, GS_DETAILS_PAGE_STATE_FAILED);
++		return;
++	}
++
+ 	/* do 2nd stage refine */
+ 	gs_details_page_load_stage2 (self, TRUE);
+ }
+-- 
+2.42.0
+
