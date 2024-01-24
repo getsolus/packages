@@ -14,7 +14,7 @@ image = "unstable-x86_64"
 remove_repos = ['Solus']
 add_repos = ['MAINPAK','Local','Solus']
 
-# Local repo for poppler rebuilds
+# Local repo for MAINPAK rebuilds
 # A local repo with automatic indexing
 [repo.MAINPAK]
 uri = "/var/lib/solbuild/local-MAINPAK"
