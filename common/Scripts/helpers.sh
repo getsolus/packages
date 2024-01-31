@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-# Primitive CVE searching
-function cvefuzzysearch() {
+# Primitive CPE search tool
+function cpesearch() {
     if [[ -z "$1" ]]; then
-        echo "usage: cvefuzzysearch <package-name>"
+        echo "usage: cpesearch <package-name>"
     else
         curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$1\"]}" | jq .
         
