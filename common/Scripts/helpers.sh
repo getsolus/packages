@@ -2,7 +2,7 @@
 
 # Primitive CPE search tool
 function cpesearch() {
-    if [[ -z "$1" ]]; then
+    if [[ -z "$1" || "$1" == "--help" || "$1" == "-h" ]]; then
         echo "usage: cpesearch <package-name>"
     else
         curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$1\"]}" | jq .
