@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 
+# Primitive CPE search tool
+function cpesearch() {
+    if [[ -z "$1" ]]; then
+        echo "usage: cpesearch <package-name>"
+    else
+        curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$1\"]}" | jq .
+        
+        echo "Verify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
+        echo "- CPE entries for software applications have the form 'cpe:2.3:a:\$VENDOR:\$PRODUCT'"
+    fi
+}
+
 # Goes to the root directory of the solus packages
 # git repository from anywhere on the filesystem.
 # This function will only work if this script is sourced
