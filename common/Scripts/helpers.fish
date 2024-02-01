@@ -7,6 +7,17 @@ function __solus_toplevel
     git rev-parse --show-toplevel
 end
 
+function cpesearch -d "Search for known CPE entries for a program or library"
+    if test "$argv[1]" = "--help"; or test "$argv[1]" = "-h"; or test (count $argv) -ne 1
+        echo "usage: cpesearch <package-name>"
+    else
+        curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$argv[1]\"]}" | jq .
+        
+        echo "Verify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
+        echo "- CPE entries for software applications have the form 'cpe:2.3:a:\$VENDOR:\$PRODUCT"        
+    end
+end
+
 function gotosoluspkgs -d "Go to the root of the Solus packages repository"
     cd (__solus_package_dir)
 end
