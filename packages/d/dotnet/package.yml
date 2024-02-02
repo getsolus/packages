@@ -1,0 +1,96 @@
+name       : dotnet
+version    : 8.0.1
+release    : 1
+source     :
+    - git|https://github.com/dotnet/dotnet.git : b27976e5a6850466ee5b4ce24f91ee93bef645f7
+homepage   : https://dot.net/core
+license    : MIT
+component  : programming.dotnet
+summary    : .NET is a free, open-source, cross-platform framework for building modern apps and cloud services.
+description: |
+    .NET is a free, open-source, cross-platform framework for building modern apps and cloud services.
+patterns   :
+    - sdk:
+        - /usr/lib/dotnet/templates
+        - /usr/lib/dotnet/sdk
+        - /usr/lib/dotnet/packs
+        - /usr/lib/dotnet/metadata
+        - /usr/lib/dotnet/sdk-manifests
+    - source-built-artifacts:
+        - /var/cache/dotnet/source-built-artifacts
+networking : yes
+libsplit   : no
+clang      : no # current clang version breaks the build. We can try again when llvm is updated
+strip      : no
+builddeps  :
+    - pkgconfig(icu-i18n)
+    - pkgconfig(krb5)
+    - pkgconfig(libcurl)
+    - pkgconfig(libssl)
+    - pkgconfig(libunwind)
+    - pkgconfig(lttng-ust)
+    - pkgconfig(zlib)
+    # - dotnet-sdk
+    # - dotnet-source-built-artifacts
+    - git
+    - lldb-devel
+    - ninja
+rundeps    :
+    - kerberos-devel
+    - libicu
+    - liblttng-ust
+    - libunwind-devel
+    - openssl-devel
+    - zlib-devel
+environment: |
+    to_remove=("-fstack-protector-strong" "-fstack-clash-protection")
+    for flag in "${to_remove[@]}"; do
+        CXXFLAGS="${CXXFLAGS//$flag/}"
+        CFLAGS="${CFLAGS//$flag/}"
+    done
+
+    CXXFLAGS="${CFLAGS/_FORTIFY_SOURCE=3/_FORTIFY_SOURCE=2} -Wno-error -Wall -DTRUE=1 -DFALSE=0"
+    CFLAGS="${CXXFLAGS/_FORTIFY_SOURCE=3/_FORTIFY_SOURCE=2} -Wno-error -Wall -DTRUE=1 -DFALSE=0"
+
+    # EXTRA_* flags are passed to the build system
+    export EXTRA_CFLAGS="$CFLAGS"
+    export EXTRA_CXXFLAGS="$CXXFLAGS"
+    export EXTRA_LDFLAGS="$LDFLAGS"
+    export VERBOSE=1
+    export MSBUILDDISABLENODEREUSE=1
+
+    # setting `version` (any case) clobbers the msbuild version target
+    export SOLUS_PKG_BUILD_VERSION=$version
+    unset CFLAGS CXXFLAGS LDFLAGS version
+setup      : |
+    %patch -p1 -i $pkgfiles/1005-default-opt-out-of-telemetry.patch
+
+    if [ -d /usr/lib/dotnet ]; then
+        cp -r /usr/lib/dotnet .dotnet
+    fi
+    if [ -d /var/cache/dotnet/source-built-artifacts ]; then
+        ln -sf /var/cache/dotnet/source-built-artifacts/Private.SourceBuilt.Artifacts.*.tar.gz prereqs/packages/archive/
+        ln -sf /var/cache/dotnet/source-built-artifacts/Private.SourceBuilt.Prebuilts.*.tar.gz prereqs/packages/archive/
+    fi
+build      : |
+    ./prep.sh
+    ./build.sh --clean-while-building --online \
+                -- \
+                /warnAsError:false \
+                /nodeReuse:false \
+                /p:ContinueOnPrebuiltBaselineError=true
+install    : |
+    install -dm 755 $installdir/var/cache/dotnet/source-built-artifacts
+    mv artifacts/x64/Release/Private.*.tar.gz $installdir/var/cache/dotnet/source-built-artifacts
+
+    install -dm 755 $installdir/usr/{bin,lib/dotnet,share/licenses/dotnet}
+    tar -xf artifacts/x64/Release/dotnet-sdk-*.tar.gz -C $installdir/usr/lib/dotnet
+    mv $installdir/usr/lib/dotnet/{LICENSE.txt,ThirdPartyNotices.txt} $installdir/usr/share/licenses/dotnet/
+
+    ln -sv /usr/lib/dotnet/dotnet $installdir/usr/bin/dotnet
+    ln -sv /usr/lib/dotnet/host/fxr/$SOLUS_PKG_BUILD_VERSION/libhostfxr.so $installdir/usr/lib/libhostfxr.so
+
+    # completions
+    install -Dm 644 src/sdk/scripts/register-completions.bash $installdir/usr/share/bash-completion/completions/dotnet
+    install -Dm 644 src/sdk/scripts/register-completions.zsh $installdir/usr/share/zsh/site-functions/_dotnet
+    # install -Dm 644 src/sdk/scripts/register-completions.ps1 $installdir/usr/local/share/powershell/Modules
