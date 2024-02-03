@@ -1,0 +1,83 @@
+From 831176f39a7f9e9832209737b9f5c23bc8158f56 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Fri, 2 Feb 2024 21:33:53 -0600
+Subject: [PATCH] Compress charmaps with zstd
+
+Taken from OpenMandriva. This saves a whole 1.1MB on user systems.
+
+---
+ Makerules                     |  1 +
+ locale/programs/charmap-dir.c |  9 +++++++--
+ localedata/Makefile           | 12 ++++++------
+ 3 files changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/Makerules b/Makerules
+index 00365bc58b..cff8a122f6 100644
+--- a/Makerules
++++ b/Makerules
+@@ -1325,6 +1325,7 @@ echo-headers:
+ %.bz2: %; bzip2 -9vk $<
+ %.gz: %; gzip -9vnc $< > $@.new && mv -f $@.new $@
+ %.xz: %; xz -9evk $<
++%.zst: %; zstd --ultra -22 --rm $<
+ 
+ # Common cleaning targets.
+ 
+diff --git a/locale/programs/charmap-dir.c b/locale/programs/charmap-dir.c
+index 36504f238d..66049ec2ca 100644
+--- a/locale/programs/charmap-dir.c
++++ b/locale/programs/charmap-dir.c
+@@ -224,12 +224,17 @@ charmap_open (const char *directory, const char *name)
+   if (stream != NULL)
+     return stream;
+ 
+-  memcpy (p, ".gz", 4);
++  memcpy (p, ".zst\0", 5);
++  stream = fopen_uncompressed (pathname, "zstd");
++  if (stream != NULL)
++    return stream;
++
++  memcpy (p, ".gz\0", 4);
+   stream = fopen_uncompressed (pathname, "gzip");
+   if (stream != NULL)
+     return stream;
+ 
+-  memcpy (p, ".bz2", 5);
++  memcpy (p, ".bz2\0", 5);
+   stream = fopen_uncompressed (pathname, "bzip2");
+   if (stream != NULL)
+     return stream;
+diff --git a/localedata/Makefile b/localedata/Makefile
+index 713e7aebad..8da9ebdeb5 100644
+--- a/localedata/Makefile
++++ b/localedata/Makefile
+@@ -276,7 +276,7 @@ install-others := $(addprefix $(inst_i18ndir)/, \
+ 			      $(locales))
+ else
+ install-others := $(addprefix $(inst_i18ndir)/, \
+-			      $(addsuffix .gz, $(charmaps)) \
++			      $(addsuffix .zst, $(charmaps)) \
+ 			      $(locales))
+ endif
+ 
+@@ -419,12 +419,12 @@ $(inst_i18ndir)/charmaps/%: charmaps/% $(+force)
+ 	rm -f $@
+ 	$(INSTALL_DATA) $< $@
+ else
+-# Install the charmap files in gzipped format.
+-$(inst_i18ndir)/charmaps/%.gz: charmaps/% $(+force)
++# Install the charmap files in zstd compressed format.
++$(inst_i18ndir)/charmaps/%.zst: charmaps/% $(+force)
+ 	$(make-target-directory)
+-	rm -f $(@:.gz=) $@
+-	$(INSTALL_DATA) $< $(@:.gz=)
+-	gzip -9n $(@:.gz=)
++	rm -f $(@:.zst=) $@
++	$(INSTALL_DATA) $< $(@:.zst=)
++	zstd --ultra -22 --rm $(@:.zst=)
+ endif
+ 
+ # Install the locale source files in the appropriate directory.
+-- 
+2.43.0
+
