@@ -1,25 +1,37 @@
 name       : curl
 version    : 8.6.0
-release    : 85
+release    : 86
 source     :
-    - https://github.com/curl/curl/releases/download/curl-8_6_0/curl-8.6.0.tar.gz : 9c6db808160015f30f3c656c0dec125feb9dc00753596bf858a272b5dd8dc398
-homepage   : https://curl.haxx.se
+    - https://github.com/curl/curl/releases/download/curl-8_6_0/curl-8.6.0.tar.gz#curl.tar.gz : 9c6db808160015f30f3c656c0dec125feb9dc00753596bf858a272b5dd8dc398
+extract    : no
+homepage   : https://curl.se
 license    : MIT
-component  : system.base
+component  :
+    - system.base
+    - gnutls : binary.compat
+    - gnutls-32bit : binary.compat
+summary    :
+    - Get a file from an HTTP, HTTPS or FTP server
+    - gnutls : GnuTLS version of curl
+    - gnutls-32bit : GnuTLS version of curl
+description:
+    - curl is a client to get files from servers using any of the supported protocols. The command is designed to work without user interaction or any kind of interactivity. curl offers a busload of useful tricks like proxy support, user authentication, ftp upload, HTTP post, file transfer resume and more.
+    - gnutls : This package provides binary compatibility only and enables the running of content expecting a GnuTLS version of curl. It is forbidden to build against it.
+    - gnutls-32bit : This package provides binary compatibility only and enables the running of content expecting a GnuTLS version of curl. It is forbidden to build against it.
 emul32     : yes
-summary    : Get a file from an HTTP, HTTPS or FTP server
-description: |
-    curl is a client to get files from servers using any of the supported protocols. The command is designed to work without user interaction or any kind of interactivity.  curl offers a busload of useful tricks like proxy support, user authentication, ftp upload, HTTP post, file transfer resume and more.
 builddeps  :
     - pkgconfig32(com_err)
+    - pkgconfig32(gnutls)
     - pkgconfig32(krb5)
+    - pkgconfig32(libbrotlidec)
+    - pkgconfig32(libidn2)
+    - pkgconfig32(libnghttp2)
     - pkgconfig32(libssh2)
     - pkgconfig32(libzstd)
     - pkgconfig32(openssl)
     - pkgconfig32(zlib)
-    - pkgconfig(libnghttp2)
     - groff
-    - openssh-server
+    - patchelf
 rundeps    :
     - devel :
         - kerberos-devel
@@ -28,27 +40,63 @@ rundeps    :
     - 32bit-devel :
         - kerberos-32bit-devel
         - libssh2-32bit-devel
+checkdeps  :
+    - openssh-server
 setup      : |
+    mkdir main gnutls
+    tar --strip-components=1 -xf $sources/curl.tar.gz -C main
+    tar --strip-components=1 -xf $sources/curl.tar.gz -C gnutls
+
+    common="\
+        --disable-static \
+        --enable-threaded-resolver \
+        --with-ca-path=/etc/ssl/certs"
+
+    pushd main
     cp $sources/errorcodes.pl tests/ && chmod +x tests/errorcodes.pl
-    %reconfigure --disable-static \
-                 --enable-threaded-resolver \
+    %reconfigure $common \
                  --without-gnutls \
                  --without-libpsl \
                  --enable-libcurl-option \
-                 --with-ca-path=/etc/ssl/certs \
                  --with-libssh2 \
                  --with-openssl \
                  --with-gssapi
+    popd
+
+    pushd gnutls
+    %reconfigure $common \
+                 --disable-libcurl-option \
+                 --with-gnutls \
+                 --without-libpsl
 build      : |
-    %make
-    %make -C scripts
+    %make -C main
+    %make -C main/scripts
+
+    %make -C gnutls/lib
 install    : |
-    %make_install
-    %make_install -C scripts
+    %make_install -C main
+    %make_install -C main/scripts
+
+    %make_install -C gnutls/lib DESTDIR=$workdir/gnutlsinst
+    pushd $workdir/gnutlsinst/%libdir%
+        # Forbid linking against curl-gnutls.
+        rm *.{la,so}
+        for lib in *; do
+            # Don't collide with OpenSSL-based curl.
+            gnuname=$(echo $lib | sed 's|libcurl|libcurl-gnutls|')
+            if [ -L $lib ]; then
+                patchelf --set-soname $gnuname $lib
+            fi
+            mv $lib $gnuname
+        done
+    popd
+    cp -a $workdir/gnutlsinst/* $installdir
 check      : |
     # ccache breaks some tests if enabled
     export CCACHE_DISABLE=1
 
-    %make -k check
+    %make -k check -C main
 patterns   :
     - devel : /usr/share/aclocal/libcurl.m4
+    - gnutls : /usr/lib64/libcurl-gnutls*
+    - gnutls-32bit : /usr/lib32/libcurl-gnutls*
