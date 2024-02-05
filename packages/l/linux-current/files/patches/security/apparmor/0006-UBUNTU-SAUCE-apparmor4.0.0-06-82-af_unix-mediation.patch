@@ -1,4 +1,4 @@
-From f07ace9b9b59b52bd708472a14567438cbb2588d Mon Sep 17 00:00:00 2001
+From 0d661f4391cdbd76014a4741bea94b81179e2ef9 Mon Sep 17 00:00:00 2001
 From: John Johansen <john.johansen@canonical.com>
 Date: Wed, 7 Sep 2022 12:46:30 -0700
 Subject: [PATCH 06/78] UBUNTU: SAUCE: apparmor4.0.0 [06/82]: af_unix mediation
@@ -13,7 +13,7 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
 Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
 ---
  security/apparmor/Makefile          |   2 +-
- security/apparmor/af_unix.c         | 702 ++++++++++++++++++++++++++++
+ security/apparmor/af_unix.c         | 700 ++++++++++++++++++++++++++++
  security/apparmor/apparmorfs.c      |   6 +
  security/apparmor/file.c            |  12 +-
  security/apparmor/include/af_unix.h | 121 +++++
@@ -24,7 +24,7 @@ Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
  security/apparmor/include/policy.h  |   7 +-
  security/apparmor/lsm.c             | 130 +++++-
  security/apparmor/net.c             |  68 ++-
- 12 files changed, 1046 insertions(+), 27 deletions(-)
+ 12 files changed, 1044 insertions(+), 27 deletions(-)
  create mode 100644 security/apparmor/af_unix.c
  create mode 100644 security/apparmor/include/af_unix.h
 
@@ -43,10 +43,10 @@ index b9c5879dd599..be51607f52b6 100644
  obj-$(CONFIG_SECURITY_APPARMOR_KUNIT_TEST) += apparmor_policy_unpack_test.o
 diff --git a/security/apparmor/af_unix.c b/security/apparmor/af_unix.c
 new file mode 100644
-index 000000000000..bd3897da74f9
+index 000000000000..cce8f69e38a0
 --- /dev/null
 +++ b/security/apparmor/af_unix.c
-@@ -0,0 +1,702 @@
+@@ -0,0 +1,700 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * AppArmor security module
@@ -672,13 +672,11 @@ index 000000000000..bd3897da74f9
 +		unix_state_lock(sk1);
 +		return;
 +	}
-+	if (sk1 < sk2) {
-+		unix_state_lock(sk1);
-+		unix_state_lock_nested(sk2);
-+	} else {
-+		unix_state_lock(sk2);
-+		unix_state_lock_nested(sk1);
-+	}
++	if (sk1 > sk2)
++		swap(sk1, sk2);
++
++	unix_state_lock(sk1);
++	unix_state_lock_nested(sk2, U_LOCK_SECOND);
 +}
 +
 +static void unix_state_double_unlock(struct sock *sk1, struct sock *sk2)
@@ -750,10 +748,10 @@ index 000000000000..bd3897da74f9
 +	return error;
 +}
 diff --git a/security/apparmor/apparmorfs.c b/security/apparmor/apparmorfs.c
-index 76ff0dc26542..4e8228c1d5f1 100644
+index df8dd3ea6dae..5ff0854be0ac 100644
 --- a/security/apparmor/apparmorfs.c
 +++ b/security/apparmor/apparmorfs.c
-@@ -2374,6 +2374,11 @@ static struct aa_sfs_entry aa_sfs_entry_ns[] = {
+@@ -2375,6 +2375,11 @@ static struct aa_sfs_entry aa_sfs_entry_ns[] = {
  	{ }
  };
  
@@ -765,7 +763,7 @@ index 76ff0dc26542..4e8228c1d5f1 100644
  static struct aa_sfs_entry aa_sfs_entry_query_label[] = {
  	AA_SFS_FILE_STRING("perms", "allow deny audit quiet"),
  	AA_SFS_FILE_BOOLEAN("data",		1),
-@@ -2398,6 +2403,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
+@@ -2399,6 +2404,7 @@ static struct aa_sfs_entry aa_sfs_entry_features[] = {
  	AA_SFS_DIR("caps",			aa_sfs_entry_caps),
  	AA_SFS_DIR("ptrace",			aa_sfs_entry_ptrace),
  	AA_SFS_DIR("signal",			aa_sfs_entry_signal),
@@ -1032,7 +1030,7 @@ index bdd8a7af1e18..62d9a255dfa6 100644
  }
  
 diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
-index 33738759c299..5bfe97ed8ed0 100644
+index e399ce8b53ec..bf2d6ac26558 100644
 --- a/security/apparmor/lsm.c
 +++ b/security/apparmor/lsm.c
 @@ -25,6 +25,7 @@
@@ -1043,7 +1041,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  #include "include/apparmor.h"
  #include "include/apparmorfs.h"
  #include "include/audit.h"
-@@ -897,6 +898,7 @@ static void apparmor_sk_free_security(struct sock *sk)
+@@ -896,6 +897,7 @@ static void apparmor_sk_free_security(struct sock *sk)
  	sk->sk_security = NULL;
  	aa_put_label(ctx->label);
  	aa_put_label(ctx->peer);
@@ -1051,7 +1049,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  	kfree(ctx);
  }
  
-@@ -916,6 +918,102 @@ static void apparmor_sk_clone_security(const struct sock *sk,
+@@ -915,6 +917,102 @@ static void apparmor_sk_clone_security(const struct sock *sk,
  	if (new->peer)
  		aa_put_label(new->peer);
  	new->peer = aa_get_label(ctx->peer);
@@ -1154,7 +1152,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  }
  
  /**
-@@ -1157,14 +1255,30 @@ static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
+@@ -1156,14 +1254,30 @@ static int apparmor_socket_sock_rcv_skb(struct sock *sk, struct sk_buff *skb)
  #endif
  
  
@@ -1188,7 +1186,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  }
  
  /**
-@@ -1182,7 +1296,7 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
+@@ -1181,7 +1295,7 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
  	struct aa_label *peer;
  
  	label = begin_current_label_crit_section();
@@ -1197,7 +1195,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  	if (IS_ERR(peer)) {
  		error = PTR_ERR(peer);
  		goto done;
-@@ -1193,7 +1307,7 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
+@@ -1192,7 +1306,7 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
  	/* don't include terminating \0 in slen, it breaks some apps */
  	if (slen < 0) {
  		error = -ENOMEM;
@@ -1206,7 +1204,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  	}
  	if (slen > len) {
  		error = -ERANGE;
-@@ -1205,6 +1319,9 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
+@@ -1204,6 +1318,9 @@ static int apparmor_socket_getpeersec_stream(struct socket *sock,
  done_len:
  	if (copy_to_sockptr(optlen, &slen, sizeof(slen)))
  		error = -EFAULT;
@@ -1216,7 +1214,7 @@ index 33738759c299..5bfe97ed8ed0 100644
  done:
  	end_current_label_crit_section(label);
  	kfree(name);
-@@ -1309,6 +1426,9 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
+@@ -1308,6 +1425,9 @@ static struct security_hook_list apparmor_hooks[] __ro_after_init = {
  	LSM_HOOK_INIT(sk_free_security, apparmor_sk_free_security),
  	LSM_HOOK_INIT(sk_clone_security, apparmor_sk_clone_security),
  
