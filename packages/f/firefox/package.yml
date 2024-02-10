@@ -1,6 +1,6 @@
 name       : firefox
 version    : '122.0.1'
-release    : 304
+release    : 305
 source     :
     - https://ftp.mozilla.org/pub/firefox/releases/122.0.1/source/firefox-122.0.1.source.tar.xz : 36f19c9a748eec2fd6d3a1594d0f1d7b715eaa1d9ed6d7eeda9db8478dcf36d6
     - https://sources.getsol.us/mozilla/firefox/firefox-122.0.1-langpacks.tar.zst : 4fab19bb68e8445330ba0d3adcdb180f7dfc6e4a67c7aae1401de4c6548c54bb
@@ -53,6 +53,7 @@ environment: |
     export MOZ_NOSPAM=1
     export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
     export MOZBUILD_STATE_PATH=$PWD
+    export MOZ_BUILD_DATE="$(date -u${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH} +%Y%m%d%H%M%S)"
 setup      : |
     %patch -p1 -i $pkgfiles/firefox-enable-vaapi.patch
     %patch -p1 -i $pkgfiles/bmo-1559213-Support-system-av1.patch
@@ -71,8 +72,7 @@ setup      : |
 build      : |
     # Set this to 0 if you want to create a release build, 1 if you're just doing builds locally for testing purposes
     # Note that you still need to do a full release build locally and test it before pushing it
-    # 2024-02-07: The xvfb-run part of the build is broken for an unknown reason when running on a system with a graphical display. Disable the full build temporarily
-    FULL_BUILD=1
+    FULL_BUILD=0
     if [ $FULL_BUILD -ne 0 ]; then
         ./mach build
     else
@@ -81,9 +81,21 @@ build      : |
         ./mach build
 
         # Package and run automated benchmarks for profiling
+        # Use software rendering (LIBGL_ALWAYS_SOFTWARE=true) everywhere to work around potential display issues
         ./mach package
-        LLVM_PROFDATA=llvm-profdata JARLOG_FILE="$PWD/jarlog" xvfb-run -s "-screen 0 1920x1080x24 -ac +extension GLX +render -noreset" \
-        ./mach python build/pgo/profileserver.py
+        JARLOG_FILE="$PWD/jarlog" \
+        LLVM_PROFDATA=llvm-profdata \
+        LIBGL_ALWAYS_SOFTWARE=true \
+        MOZ_REMOTE_SETTINGS_DEVTOOLS=1 \
+        XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)" \
+          xvfb-run -s "-screen 0 1920x1080x24 -nolisten local" \
+            ./mach python build/pgo/profileserver.py
+
+        stat -c "Profile data found (%s bytes)" merged.profdata
+        test -s merged.profdata
+
+        stat -c "Jar log found (%s bytes)" jarlog
+        test -s jarlog
 
         # Clean for rebuild
         ./mach clobber
