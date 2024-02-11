@@ -1,0 +1,64 @@
+From: Helmut Grohne <helmut@subdivi.de>
+Subject: backport support for /dev/fd/NN
+Origin: https://github.com/libfuse/libfuse/commit/64e11073b9347fcf9c6d1eea143763ba9e946f70
+Forwarded: not-needed
+
+This is a backport of 64e11073b9347fcf9c6d1eea143763ba9e946f70 ("Allow passing
+`/dev/fuse` file descriptor from parent process") and enables fuse 2.9 to
+perform the unprivileged part in much the same way as fuse >= 3.3 does. Since
+fuse changed significantly, this is a reimplementation of the original idea on
+the older code base.
+
+An alternative to applying this patch is porting users of this library to 3.x.
+In reality, progress has been slow and very many packages still use 2.x. While
+such porting is a good thing in principle, it also is a huge task when a
+relatively simple alternative is available.
+
+--- fuse-2.9.9.orig/lib/mount.c
++++ fuse-2.9.9/lib/mount.c
+@@ -575,6 +575,15 @@
+ 	return 0;
+ }
+ 
++static int parse_fuse_fd(const char *mountpoint)
++{
++	int fd = -1, len = 0;
++
++	if (mountpoint && sscanf(mountpoint, "/dev/fd/%u%n", &fd, &len) == 1 && len == strlen(mountpoint))
++		return fd;
++	return -1;
++}
++
+ int fuse_kern_mount(const char *mountpoint, struct fuse_args *args)
+ {
+ 	struct mount_opts mo;
+@@ -604,6 +613,15 @@
+ 	if (mo.mtab_opts &&  fuse_opt_add_opt(&mnt_opts, mo.mtab_opts) == -1)
+ 		goto out;
+ 
++	res = parse_fuse_fd(mountpoint);
++	if (res >= 0) {
++		if (fcntl(res, F_GETFD) == -1) {
++			fprintf(stderr, "fuse: Invalid filesystem /dev/fd/%u\n", res);
++			res = -1;
++		}
++		goto out;
++	}
++
+ 	res = fuse_mount_sys(mountpoint, &mo, mnt_opts);
+ 	if (res == -2) {
+ 		if (mo.fusermount_opts &&
+--- fuse-2.9.9.orig/lib/helper.c
++++ fuse-2.9.9/lib/helper.c
+@@ -105,7 +105,11 @@
+ 
+ 	case FUSE_OPT_KEY_NONOPT:
+ 		if (!hopts->mountpoint) {
++			int fd, len=0;
+ 			char mountpoint[PATH_MAX];
++			/* fuse_kern_mount matches /dev/fd/N */
++			if (sscanf(arg, "/dev/fd/%u%n", &fd, &len) == 1 && len == strlen(arg))
++				return fuse_opt_add_opt(&hopts->mountpoint, arg);
+ 			if (realpath(arg, mountpoint) == NULL) {
+ 				fprintf(stderr,
+ 					"fuse: bad mount point `%s': %s\n",
