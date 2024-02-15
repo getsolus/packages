@@ -8,6 +8,7 @@
 
 # Welcome
 
+- [Search the Bug Tracker](https://github.com/getsolus/packages/issues) to see if your bug / package request has an open issue already
 - [Report a Bug / Defect][Bug] - for problems with Solus or applications
 - [Request a Package][Package] - for submitting requests to package software
 - [Request a Package Update][Update] - for submitting requests to update packaged software
