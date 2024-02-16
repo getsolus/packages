@@ -36,6 +36,17 @@ tasks:
       - sh: test -f package.yml || test -f pspec.xml
         msg: Either `package.yml` or `pspec.xml` must exists in the current directory
 
+  # Refresh and initialise solbuild images
+  solbuild-init:
+    desc: |
+      Delete existing and download fresh solbuild images
+    cmds:
+      - sudo rm /var/lib/solbuild/images/*.img
+      - sudo solbuild init -p unstable-x86_64
+      - sudo solbuild update -p unstable-x86_64
+      - sudo solbuild init -p main-x86_64
+      - sudo solbuild update -p main-x86_64
+
   # Build packages
   build:
     desc: Build the current package against the unstable repo
@@ -48,6 +59,35 @@ tasks:
     cmds:
       - |
         sudo solbuild build {{ .SPECFILE }} -p {{ .PROFILE }} {{ .CLI_ARGS }}
+
+  build-local:
+    desc: "Build the current package against the unstable and the default local repo"
+    aliases: [local]
+    cmds:
+      # Ensure that we're always building against a fresh local repo index
+      - task: build-localindex
+      - task: build
+        vars:
+          PROFILE: 'local-unstable-x86_64'
+
+  build-localcp:
+    desc: "Build the current package against the unstable and the default local repo and forcibly copy .eopkgs to the default local repo."
+    aliases: [localcp]
+    cmds:
+      - task: build-local
+      - |
+        sudo cp -fv {{ .USER_WORKING_DIR }}/*.eopkg /var/lib/solbuild/local/
+      # Ensure that the freshly built package is picked up by the local repo index
+      - task: build-localindex
+
+  build-localindex:
+    desc: "Rebuild the local repo index if it exists."
+    aliases: [localindex]
+    cmds:
+      - |
+        [[ -d /var/lib/solbuild/local ]] && \
+        sudo eopkg index --skip-signing /var/lib/solbuild/local/ --output /var/lib/solbuild/local/eopkg-index.xml && \
+        sudo eopkg ur  # Force eopkg to pick up the new index
 
   build-stable:
     desc: Build the current package against the stable repo (do NOT use for official submissions!)
@@ -62,35 +102,6 @@ tasks:
         echo "                                                                          "
         echo "         Do NOT publish packages or Pull Requests built against -stable!!!"
         echo "=========================================================================="
-
-  build-local:
-    desc: "Build the current package against the unstable and the default local repo"
-    aliases: [local]
-    cmds:
-      # Ensure that we're always building against a fresh local repo index
-      - task: build-localindex
-      - task: build
-        vars:
-          PROFILE: 'local-unstable-x86_64'
-
-  build-localindex:
-    desc: "Rebuild the local repo index if it exists."
-    aliases: [localindex]
-    cmds:
-      - |
-        [[ -d /var/lib/solbuild/local ]] && \
-        sudo eopkg index --skip-signing /var/lib/solbuild/local/ --output /var/lib/solbuild/local/eopkg-index.xml && \
-        sudo eopkg ur  # Force eopkg to pick up the new index
-
-  build-localcp:
-    desc: "Build the current package against the unstable and the default local repo and forcibly copy .eopkgs to the default local repo."
-    aliases: [localcp]
-    cmds:
-      - task: build-local
-      - |
-        sudo cp -fv {{ .USER_WORKING_DIR }}/*.eopkg /var/lib/solbuild/local/
-      # Ensure that the freshly built package is picked up by the local repo index
-      - task: build-localindex
 
   # Modify package recipes
   bump:
@@ -116,6 +127,20 @@ tasks:
       - |
         {{ .TASKFILE_DIR }}/common/Scripts/yconvert.py pspec.xml
 
+  cvecheck:
+    desc: Check package for CVEs
+    dir: '{{ .USER_WORKING_DIR }}'
+    cmds:
+      - cve-check-tool {{ .PSPECFILE }} -M {{ .TASKFILE_DIR }}/common/mapping -o report.html
+
+  notify-complete:
+    desc: Get a notification when the build has finished on the buildserver
+    dir: '{{ .USER_WORKING_DIR }}'
+    deps:
+      - package-file
+    cmds:
+      - "{{ .TASKFILE_DIR }}/common/Scripts/buildserver-notification.sh"
+
   pkgconfig:
     desc: |
       Find which package provides a given pkgconfig target.
@@ -137,20 +162,6 @@ tasks:
     cmds:
       - |
         /usr/share/ypkg/yupdate.py {{ .CLI_ARGS }}
-
-  cvecheck:
-    desc: Check package for CVEs
-    dir: '{{ .USER_WORKING_DIR }}'
-    cmds:
-      - cve-check-tool {{ .PSPECFILE }} -M {{ .TASKFILE_DIR }}/common/mapping -o report.html
-
-  notify-complete:
-    desc: Get a notification when the build has finished on the buildserver
-    dir: '{{ .USER_WORKING_DIR }}'
-    deps:
-      - package-file
-    cmds:
-      - "{{ .TASKFILE_DIR }}/common/Scripts/buildserver-notification.sh"
 
   # For staff and packagers with push access
   publish:
