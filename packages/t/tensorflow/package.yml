@@ -1,8 +1,9 @@
 name       : tensorflow
-version    : 2.10.1
-release    : 26
+version    : 2.15.0
+release    : 30
 source     :
-    - https://github.com/tensorflow/tensorflow/archive/refs/tags/v2.10.1.tar.gz : 622a92e22e6f3f4300ea43b3025a0b6122f1cc0e2d9233235e4c628c331a94a3
+    - https://github.com/tensorflow/tensorflow/archive/refs/tags/v2.15.0.tar.gz : 9cec5acb0ecf2d47b16891f8bc5bc6fbfdffe1700bdadc0d9ebe27ea34f0c220
+    - https://github.com/bazelbuild/bazel/releases/download/6.1.0/bazel_nojdk-6.1.0-linux-x86_64 : c14a7d2e4645ca288f16ca3e5466bbd300f9341aeab7ad7141eb28ac6651b3d8
 license    : Apache-2.0
 component  :
     - programming.python
@@ -15,7 +16,6 @@ description: |
     TensorFlow™ is an open source software library for high performance numerical computation using data flow graphs.
 networking : yes
 debug      : no
-ccache     : no
 patterns   :
     - c-api :
         - /usr/include
@@ -42,14 +42,17 @@ builddeps  :
     - giflib-devel
     - git
     - llvm-clang-devel
-    - lmdb-devel
+    - libxcrypt-compat
     - nasm
+    - openjdk-17 # for bundled bazel
+    - patchelf
     - pybind11
     - python-absl-py
     - python-astor
     - python-gast
     - python-keras-applications
     - python-keras-preprocessing
+    - python-installer
     - python-packaging
     - python-protobuf
     - python-requests
@@ -66,35 +69,51 @@ rundeps    :
     - python-gast
     - python-keras-applications
     - python-keras-preprocessing
+    - python-ml-dtypes
     - python-mock
     - python-opt-einsum
+    - python-packaging
     - python-tensorboard
     - python-termcolor
     - python-typing-extensions
     - python-wrapt
 clang      : yes
 environment: |
+    [ -z "$JAVA_HOME" ] && export JAVA_HOME=/usr/lib64/openjdk-17
+
+    # hard depend on working bazel version
+    install -Dm00755 $sources/bazel_nojdk-6.1.0-linux-x86_64 bazel/bazel
+    export PATH="$workdir/bazel:$PATH"
+    bazel --version
+
     export CC_OPT_FLAGS="-mtune=generic -march=x86-64 -g2 -O3"
+    export CLANG_COMPILER_PATH=/usr/lib64/ccache/bin/clang
     export PYTHON_BIN_PATH=/usr/bin/python3
+    export TF_CUDA_CLANG=0
+    export TF_CUDA_VERSION=0
+    export TF_CUDNN_VERSION=0
+    export TF_NCCL_VERSION=0
     export TF_DOWNLOAD_CLANG=0
+    export TF_ENABLE_MLIR=0
     export TF_ENABLE_XLA=0
     export TF_IGNORE_MAX_BAZEL_VERSION=1
     export TF_NEED_CUDA=0
+    export TF_NEED_CLANG=1
     export TF_NEED_OPENCL_SYCL=0
     export TF_NEED_ROCM=0
-    export TF_ENABLE_MLIR=0
+    export TF_NEED_TENSORRT=0
     export TF_SET_ANDROID_WORKSPACE=0
-    export TF_SYSTEM_LIBS="absl_py astor_archive com_google_protobuf curl cython double_conversion functools32_archive gast_archive gif hwloc libjpeg_turbo icu jsoncpp_git lmdb nasm org_sqlite png pybind11 six_archive snappy termcolor_archive typing_extensions_archive wrapt zlib"
+    export TF_PYTHON_VERSION=%python3_version%
+    export TF_SYSTEM_LIBS="curl,cython,gif,icu,libjpeg_turbo,nasm,png,zlib"
     export USE_DEFAULT_PYTHON_LIB_PATH=1
-setup      : |
-    %patch -p1 -i $pkgfiles/ftbfs-gcc-13.patch
+    export CLANG_IGNORE_WERROR=1
+    export GCC_IGNORE_WERROR=1
     ./configure
 build      : |
-    # https://github.com/bazelbuild/bazel/issues/15359
     bazel build \
         --config=opt \
         --config=noaws  --config=nogcp --config=nohdfs --config=nonccl \
-        --spawn_strategy=sandboxed \
+        --jobs=%YJOBS% \
         //tensorflow/tools/lib_package:libtensorflow \
         //tensorflow/tools/pip_package:build_pip_package
     mkdir -p tmp
