@@ -1,0 +1,224 @@
+From 0bcaf4328eb494328ea8bb23e1f6469bfe9c45fe Mon Sep 17 00:00:00 2001
+From: Ivor Wanders <ivor@iwanders.net>
+Date: Thu, 30 Nov 2023 20:20:24 -0500
+Subject: [PATCH 15/39] hwmon: add fan speed monitoring driver for Surface
+ devices
+
+Adds a driver that provides read only access to the fan speed for Microsoft
+Surface Pro devices. The fan speed is always regulated by the EC and cannot
+be influenced directly.
+
+Signed-off-by: Ivor Wanders <ivor@iwanders.net>
+Link: https://github.com/linux-surface/kernel/pull/144
+Patchset: surface-sam
+---
+ Documentation/hwmon/index.rst       |  1 +
+ Documentation/hwmon/surface_fan.rst | 25 ++++++++
+ MAINTAINERS                         |  8 +++
+ drivers/hwmon/Kconfig               | 13 ++++
+ drivers/hwmon/Makefile              |  1 +
+ drivers/hwmon/surface_fan.c         | 93 +++++++++++++++++++++++++++++
+ 6 files changed, 141 insertions(+)
+ create mode 100644 Documentation/hwmon/surface_fan.rst
+ create mode 100644 drivers/hwmon/surface_fan.c
+
+diff --git a/Documentation/hwmon/index.rst b/Documentation/hwmon/index.rst
+index 88dadea85cfcd..266edff78972d 100644
+--- a/Documentation/hwmon/index.rst
++++ b/Documentation/hwmon/index.rst
+@@ -202,6 +202,7 @@ Hardware Monitoring Kernel Drivers
+    smsc47m1
+    sparx5-temp
+    stpddc60
++   surface_fan
+    sy7636a-hwmon
+    tc654
+    tc74
+diff --git a/Documentation/hwmon/surface_fan.rst b/Documentation/hwmon/surface_fan.rst
+new file mode 100644
+index 0000000000000..07942574c4f0c
+--- /dev/null
++++ b/Documentation/hwmon/surface_fan.rst
+@@ -0,0 +1,25 @@
++.. SPDX-License-Identifier: GPL-2.0-or-later
++
++Kernel driver surface_fan
++=========================
++
++Supported Devices:
++
++  * Microsoft Surface Pro 9
++
++Author: Ivor Wanders <ivor@iwanders.net>
++
++Description
++-----------
++
++This provides monitoring of the fan found in some Microsoft Surface Pro devices,
++like the Surface Pro 9. The fan is always controlled by the onboard controller.
++
++Sysfs interface
++---------------
++
++======================= ======= =========================================
++Name                    Perm    Description
++======================= ======= =========================================
++``fan1_input``          RO      Current fan speed in RPM.
++======================= ======= =========================================
+diff --git a/MAINTAINERS b/MAINTAINERS
+index dd5de540ec0b5..63c3f93279277 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -14203,6 +14203,14 @@ F:	Documentation/driver-api/surface_aggregator/clients/dtx.rst
+ F:	drivers/platform/surface/surface_dtx.c
+ F:	include/uapi/linux/surface_aggregator/dtx.h
+ 
++MICROSOFT SURFACE SENSOR FAN DRIVER
++M:	Maximilian Luz <luzmaximilian@gmail.com>
++M:	Ivor Wanders <ivor@iwanders.net>
++L:	linux-hwmon@vger.kernel.org
++S:	Maintained
++F:	Documentation/hwmon/surface_fan.rst
++F:	drivers/hwmon/surface_fan.c
++
+ MICROSOFT SURFACE GPE LID SUPPORT DRIVER
+ M:	Maximilian Luz <luzmaximilian@gmail.com>
+ L:	platform-driver-x86@vger.kernel.org
+diff --git a/drivers/hwmon/Kconfig b/drivers/hwmon/Kconfig
+index ec38c88921589..b5267a2fbe5f3 100644
+--- a/drivers/hwmon/Kconfig
++++ b/drivers/hwmon/Kconfig
+@@ -1961,6 +1961,19 @@ config SENSORS_SFCTEMP
+ 	  This driver can also be built as a module.  If so, the module
+ 	  will be called sfctemp.
+ 
++config SENSORS_SURFACE_FAN
++	tristate "Surface Fan Driver"
++	depends on SURFACE_AGGREGATOR
++	help
++	  Driver that provides monitoring of the fan on Surface Pro devices that
++	  have a fan, like the Surface Pro 9.
++
++	  This makes the fan's current speed accessible through the hwmon
++	  system. It does not provide control over the fan, the firmware is
++	  responsible for that, this driver merely provides monitoring.
++
++	  Select M or Y here, if you want to be able to read the fan's speed.
++
+ config SENSORS_ADC128D818
+ 	tristate "Texas Instruments ADC128D818"
+ 	depends on I2C
+diff --git a/drivers/hwmon/Makefile b/drivers/hwmon/Makefile
+index 4ac9452b54304..208f7345f296e 100644
+--- a/drivers/hwmon/Makefile
++++ b/drivers/hwmon/Makefile
+@@ -198,6 +198,7 @@ obj-$(CONFIG_SENSORS_SMSC47M1)	+= smsc47m1.o
+ obj-$(CONFIG_SENSORS_SMSC47M192)+= smsc47m192.o
+ obj-$(CONFIG_SENSORS_SPARX5)	+= sparx5-temp.o
+ obj-$(CONFIG_SENSORS_STTS751)	+= stts751.o
++obj-$(CONFIG_SENSORS_SURFACE_FAN)+= surface_fan.o
+ obj-$(CONFIG_SENSORS_SY7636A)	+= sy7636a-hwmon.o
+ obj-$(CONFIG_SENSORS_AMC6821)	+= amc6821.o
+ obj-$(CONFIG_SENSORS_TC74)	+= tc74.o
+diff --git a/drivers/hwmon/surface_fan.c b/drivers/hwmon/surface_fan.c
+new file mode 100644
+index 0000000000000..7c2e3ae3eb40e
+--- /dev/null
++++ b/drivers/hwmon/surface_fan.c
+@@ -0,0 +1,93 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Surface Fan driver for Surface System Aggregator Module. It provides access
++ * to the fan's rpm through the hwmon system.
++ *
++ * Copyright (C) 2023 Ivor Wanders <ivor@iwanders.net>
++ */
++
++#include <linux/hwmon.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/surface_aggregator/device.h>
++#include <linux/types.h>
++
++// SSAM
++SSAM_DEFINE_SYNC_REQUEST_CL_R(__ssam_fan_rpm_get, __le16, {
++	.target_category = SSAM_SSH_TC_FAN,
++	.command_id      = 0x01,
++});
++
++// hwmon
++umode_t surface_fan_hwmon_is_visible(const void *drvdata,
++				     enum hwmon_sensor_types type, u32 attr,
++				     int channel)
++{
++	return 0444;
++}
++
++static int surface_fan_hwmon_read(struct device *dev,
++				  enum hwmon_sensor_types type, u32 attr,
++				  int channel, long *val)
++{
++	struct ssam_device *sdev = dev_get_drvdata(dev);
++	int ret;
++	__le16 value;
++
++	ret = __ssam_fan_rpm_get(sdev, &value);
++	if (ret)
++		return ret;
++
++	*val = le16_to_cpu(value);
++
++	return ret;
++}
++
++static const struct hwmon_channel_info *const surface_fan_info[] = {
++	HWMON_CHANNEL_INFO(fan, HWMON_F_INPUT),
++	NULL
++};
++
++static const struct hwmon_ops surface_fan_hwmon_ops = {
++	.is_visible = surface_fan_hwmon_is_visible,
++	.read = surface_fan_hwmon_read,
++};
++
++static const struct hwmon_chip_info surface_fan_chip_info = {
++	.ops = &surface_fan_hwmon_ops,
++	.info = surface_fan_info,
++};
++
++static int surface_fan_probe(struct ssam_device *sdev)
++{
++	struct device *hdev;
++
++	hdev = devm_hwmon_device_register_with_info(&sdev->dev,
++						    "surface_fan", sdev,
++						    &surface_fan_chip_info,
++						    NULL);
++	if (IS_ERR(hdev))
++		return PTR_ERR(hdev);
++
++	return 0;
++}
++
++static const struct ssam_device_id ssam_fan_match[] = {
++	{ SSAM_SDEV(FAN, SAM, 0x01, 0x01) },
++	{},
++};
++MODULE_DEVICE_TABLE(ssam, ssam_fan_match);
++
++static struct ssam_device_driver surface_fan = {
++	.probe = surface_fan_probe,
++	.match_table = ssam_fan_match,
++	.driver = {
++		.name = "surface_fan",
++		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
++	},
++};
++module_ssam_device_driver(surface_fan);
++
++MODULE_AUTHOR("Ivor Wanders <ivor@iwanders.net>");
++MODULE_DESCRIPTION("Fan Driver for Surface System Aggregator Module");
++MODULE_LICENSE("GPL");
+-- 
+2.43.0
+

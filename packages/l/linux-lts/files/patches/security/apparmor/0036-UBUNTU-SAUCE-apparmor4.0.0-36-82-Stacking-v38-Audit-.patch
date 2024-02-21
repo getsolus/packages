@@ -1,0 +1,101 @@
+From 74a1e61b0a7102c6ba8dc12adc7033503f43691e Mon Sep 17 00:00:00 2001
+From: Casey Schaufler <casey@schaufler-ca.com>
+Date: Mon, 27 Jun 2022 13:56:35 -0700
+Subject: [PATCH 36/78] UBUNTU: SAUCE: apparmor4.0.0 [36/82]: Stacking v38:
+ Audit: Keep multiple LSM data in audit_names
+
+BugLink: https://bugs.launchpad.net/bugs/2028253
+
+Replace the osid field in the audit_names structure
+with a lsmblob structure. This accommodates the use
+of an lsmblob in security_audit_rule_match() and
+security_inode_getsecid().
+
+Signed-off-by: Casey Schaufler <casey@schaufler-ca.com>
+Acked-by: Paul Moore <paul@paul-moore.com>
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+(cherry picked from https://gitlab.com/jjohansen/apparmor-kernel)
+Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
+---
+ kernel/audit.h   |  2 +-
+ kernel/auditsc.c | 22 ++++++++--------------
+ 2 files changed, 9 insertions(+), 15 deletions(-)
+
+diff --git a/kernel/audit.h b/kernel/audit.h
+index 8c118ba59a38..4e009d97b4f0 100644
+--- a/kernel/audit.h
++++ b/kernel/audit.h
+@@ -82,7 +82,7 @@ struct audit_names {
+ 	kuid_t			uid;
+ 	kgid_t			gid;
+ 	dev_t			rdev;
+-	u32			osid;
++	struct lsmblob		lsmblob;
+ 	struct audit_cap_data	fcap;
+ 	unsigned int		fcap_ver;
+ 	unsigned char		type;		/* record type */
+diff --git a/kernel/auditsc.c b/kernel/auditsc.c
+index de213985fab1..68f3bac05bca 100644
+--- a/kernel/auditsc.c
++++ b/kernel/auditsc.c
+@@ -703,17 +703,16 @@ static int audit_filter_rules(struct task_struct *tsk,
+ 					 * lsmblob, which happens later in
+ 					 * this patch set.
+ 					 */
+-					lsmblob_init(&blob, name->osid);
+ 					result = security_audit_rule_match(
+-								&blob,
++								&name->lsmblob,
+ 								f->type,
+ 								f->op,
+ 								&f->lsm_rules);
+ 				} else if (ctx) {
+ 					list_for_each_entry(n, &ctx->names_list, list) {
+-						lsmblob_init(&blob, n->osid);
+ 						if (security_audit_rule_match(
+-							&blob, f->type, f->op,
++							&n->lsmblob,
++							f->type, f->op,
+ 							&f->lsm_rules)) {
+ 							++result;
+ 							break;
+@@ -1568,13 +1567,12 @@ static void audit_log_name(struct audit_context *context, struct audit_names *n,
+ 				 from_kgid(&init_user_ns, n->gid),
+ 				 MAJOR(n->rdev),
+ 				 MINOR(n->rdev));
+-	if (n->osid != 0) {
+-		struct lsmblob blob;
++	if (lsmblob_is_set(&n->lsmblob)) {
+ 		struct lsmcontext lsmctx;
+ 
+-		lsmblob_init(&blob, n->osid);
+-		if (security_secid_to_secctx(&blob, &lsmctx, LSMBLOB_FIRST)) {
+-			audit_log_format(ab, " osid=%u", n->osid);
++		if (security_secid_to_secctx(&n->lsmblob, &lsmctx,
++					     LSMBLOB_FIRST)) {
++			audit_log_format(ab, " osid=?");
+ 			if (call_panic)
+ 				*call_panic = 2;
+ 		} else {
+@@ -2282,17 +2280,13 @@ static void audit_copy_inode(struct audit_names *name,
+ 			     const struct dentry *dentry,
+ 			     struct inode *inode, unsigned int flags)
+ {
+-	struct lsmblob blob;
+-
+ 	name->ino   = inode->i_ino;
+ 	name->dev   = inode->i_sb->s_dev;
+ 	name->mode  = inode->i_mode;
+ 	name->uid   = inode->i_uid;
+ 	name->gid   = inode->i_gid;
+ 	name->rdev  = inode->i_rdev;
+-	security_inode_getsecid(inode, &blob);
+-	/* scaffolding until osid is updated */
+-	name->osid = lsmblob_first(&blob);
++	security_inode_getsecid(inode, &name->lsmblob);
+ 	if (flags & AUDIT_INODE_NOEVAL) {
+ 		name->fcap_ver = -1;
+ 		return;
+-- 
+2.43.0
+

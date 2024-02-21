@@ -1,8 +1,8 @@
 name       : linux-lts
-version    : 5.15.148
-release    : 233
+version    : 6.6.17
+release    : 234
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-5.15.148.tar.xz : c48575c97fd9f4767cbe50a13b1b2b40ee42830aba3182fabd35a03259a6e5d8
+    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.17.tar.xz : ee7650996ba75aa29fe66f309b413097f249a03e7001f2a41128c7c95205226a
 license    : GPL-2.0-only
 component  :
     - kernel.image
@@ -21,6 +21,7 @@ builddeps  :
     - btrfs-progs
     - cpio
     - dracut
+    - font-terminus-console
     - intel-microcode
     - kbd
     - libfido2
@@ -94,8 +95,8 @@ install    : |
     install -D -d -m 00755 $installdir/lib/modules/$kversion
     %make ARCH=x86_64 INSTALL_MOD_PATH=$installdir/ modules_install KERNELRELEASE=$kversion mod-fw= DEPMOD=/bin/true
 
-    # Remove broken links
-    rm -v $installdir/lib/modules/${kversion}/{source,build}
+    # Remove broken link
+    rm -v $installdir/lib/modules/${kversion}/build
 
     # Mark this as the default LTS kernel
     ln -sv $kernID.${version}-${release} $installdir/usr/lib/kernel/default-lts
@@ -118,11 +119,11 @@ install    : |
     # Store vendor initrd within the kernel package, prevent mangling from fakeroot
     # 2021-01-20: Force early KMS for everything except Nouveau (this will not work with Nvidia propretary)
     LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
-        --kmoddir dracut-modules/lib/modules/${kversion} \
-        --kver $kversion --add "bash systemd lvm dm rescue fido2 tpm2-tss virtiofs" \
+        --kmoddir dracut-modules/lib/modules/${kversion} --kver $kversion \
+        --add "bash systemd lvm dm rescue resume fido2 tpm2-tss virtiofs" --omit "nvmf" \
         --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
-        --add-drivers "amdgpu hyperv_drm i915 qxl radeon virtio-gpu" \
-        --include $pkgfiles/systemd/timeouts.conf /usr/lib64/systemd/system.conf.d/timeouts.conf \
+        --add-drivers "amdgpu hyperv_drm i915 qxl radeon simpledrm virtio-gpu" \
+        --include $pkgfiles/initrd/timeouts.conf /usr/lib/systemd/system.conf.d/timeouts.conf \
         $installdir/usr/lib/kernel/initrd-$kernID.${version}-${release}
 
     # Sign with our MOK if we have the secureboot-keys submodule checked out.
@@ -135,15 +136,16 @@ install    : |
 
     # Install the headers
     tgtDir="/usr/src/linux-headers-$kversion"
-    dstDir="$installdir/$tgtDir"
+    export dstDir="$installdir/$tgtDir"
     install -D -d -m 00755 $dstDir
     find . -path './include/*' -prune -o -path './scripts/*' -prune -o -path './Documentation/*' -prune -o -type f \( -name 'Makefile*' -o -name 'Kconfig*' -o -name 'Kbuild*' -o -name '*.sh' -o -name '*.pl' -o -name '*.lds' \) -print | cpio -pVd --preserve-modification-time $dstDir/
 
     # Necessary for out of tree modules
-    for h in "drivers/media/dvb-frontends" "drivers/media/tuners" "drivers/media/platform"; do
+    for h in "drivers/media/dvb-frontends" "drivers/media/tuners"; do
         install -D -d -m 00755 $dstDir/$h
         cp -a $h/*.h $dstDir/$h
     done
+    find drivers/media/platform/ -type f -name "*.h" | xargs -i sh -c 'install -D -d -m 00755 $dstDir/$(dirname {}); cp -a {} $dstDir/{}'
 
     # For a full headers pkg
     for p in "include" "scripts" "Documentation"; do
