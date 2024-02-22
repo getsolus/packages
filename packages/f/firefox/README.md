@@ -1,5 +1,7 @@
 ## Updating Firefox
 
+Please note **only Solus staff** can update this package.
+
 Bump the release:
 
 `go-task bump`
