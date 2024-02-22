@@ -50,7 +50,14 @@ tar --sort=name \
 
 rm -fr ff_lang_pack
 
+# Getting sha256sum's
+echo "Getting sha256sum for new firefox source tarball"
+wget ${RELURL}/${VER}/source/firefox-${VER}.source.tar.xz
+SOURCE_SHASUM=$(sha256sum firefox-${VER}.source.tar.xz)
 SHASUM=$(sha256sum firefox-${VER}-langpacks.tar.zst)
+
 echo ""
+echo "${VER}/source/firefox-${VER}.source.tar.xz : ${SOURCE_SHASUM%% *}"
 echo "firefox-${VER}-langpacks.tar.zst : ${SHASUM%% *}"
 
+rm firefox-${VER}.source.tar.xz
