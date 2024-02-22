@@ -54,7 +54,14 @@ tar --sort=name \
 
 rm -rf thunderbird_langpacks
 
+# Getting sha256sum's
+echo "Getting sha256sum for new thunderbird source tarball"
+wget ${RELURL}/${VER}/source/thunderbird-${VER}.source.tar.xz
+SOURCE_SHASUM=$(sha256sum thunderbird-${VER}.source.tar.xz)
 SHASUM=$(sha256sum thunderbird-${VER}-langpacks.tar.zst)
+
 echo ""
+echo "${VER}/source/thunderbird-${VER}.source.tar.xz : ${SOURCE_SHASUM%% *}"
 echo "thunderbird-${VER}-langpacks.tar.zst : ${SHASUM%% *}"
 
+rm thunderbird-${VER}.source.tar.xz
