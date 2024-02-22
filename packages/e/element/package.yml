@@ -1,6 +1,6 @@
 name       : element
 version    : 1.11.57
-release    : 161
+release    : 162
 homepage   : https://element.io/
 source     :
     - git|https://github.com/vector-im/element-desktop.git : v1.11.57
@@ -33,8 +33,8 @@ builddeps  :
     - libxcrypt-compat
     - yarn
 rundeps    :
-    - nodejs
     - libsecret
+    - nodejs
     - sqlcipher
 setup      : |
     # Copy element-web to the build directory
@@ -44,9 +44,18 @@ setup      : |
     jq '.update_base_url = null | .posthog = null | .show_labs_settings = true' \
         element.io/release/config.json > config.json
 
+    tmp=$(mktemp)
+    # Create an unpacked distribution, allowing us to more easily see changes to shipped files
+    jq ".build.linux.asar = false" package.json > "$tmp" && mv "$tmp" package.json
+    # Save some build time by not building a packaged .tar.gz or .deb
+    jq ".build.linux.target = [\"dir\"]" package.json > "$tmp" && mv "$tmp" package.json
+
+    # Ensure that autolaunch files specify the direct path to the wrapper script
+    %patch -p1 -i $pkgfiles/autolaunch.patch
+
     # Perform yarn install on both
-    yarn install
-    yarn --cwd element-web install
+    yarn install --frozen-lockfile --network-timeout 180000
+    yarn --cwd element-web install --frozen-lockfile --network-timeout 180000
 build      : |
     # Build element-web
     yarn --cwd element-web build
@@ -54,15 +63,29 @@ build      : |
     # Build element-desktop
     yarn run build:native
     yarn run build
+
+    # Cleanup some things we don't need to reduce package size
+    pushd dist/linux-unpacked
+    find . -type f -name "*.js.map" -print0 | xargs -0 -n1 rm -v
+    find . -type f -name "*.ts.map" -print0 | xargs -0 -n1 rm -v
+    find . -type f -name "*.ts" -print0 | xargs -0 -n1 rm -v
+    rm -rfv resources/app/node_modules/*/src/{keytar,matrix-seshat,sprintf-js}
+    # Cleanup empty folders
+    find . -type d -empty -delete -print
+    popd
 install    : |
-    install -dm00644 $installdir/usr/bin
-    install -dm00644 $installdir/usr/share/element
-    cp -Rv dist/linux-unpacked/* $installdir/usr/share/element
-    cp -Rv element-web/webapp $installdir/usr/share/element/resources/
-    ln -sv ../share/element/element-desktop $installdir/usr/bin/element-desktop
+    # Installdir for Element
+    element_installdir=$installdir/usr/share/element
+
+    install -dm00644 $element_installdir
+    cp -Rv dist/linux-unpacked/* $element_installdir
+    cp -Rv element-web/webapp $element_installdir/resources/
+
+    # Wrapper script
+    install -Dm00755 $pkgfiles/electron-desktop.sh $installdir/usr/bin/element-desktop
 
     # Install configuration
-    install -Dm00644 config.json $installdir/usr/share/element/resources/webapp/
+    install -Dm00644 config.json $element_installdir/resources/webapp/
 
     # Install Icons
     for icon_size in 16 24 48 64 96 128 256 512
@@ -72,8 +95,14 @@ install    : |
         ln -s element-desktop.png $installdir/usr/share/icons/hicolor/${icon_size}x${icon_size}/apps/element.png
     done
 
+    # Fix Wayland appid
+    package_json=$element_installdir/resources/app/package.json
+    tmp=$(mktemp)
+    jq ".desktopName = \"Element.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
+    chmod 644 $package_json
+
     # Desktop File
     install -Dm00644 $pkgfiles/Element.desktop $installdir/usr/share/applications/Element.desktop
 
     # appstream data
-    install -Dm00644 $pkgfiles/element.metainfo.xml $installdir/usr/share/metainfo/element.appdata.xml
+    install -Dm00644 $pkgfiles/element.appdata.xml $installdir/usr/share/metainfo/element.appdata.xml
