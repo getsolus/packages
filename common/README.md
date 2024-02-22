@@ -52,13 +52,12 @@ See `man solbuild` for further details.
 
 ## Notes on `yabi`
 
-Says Bryan:
+This tool is not used directly anymore. It is kept as a useful example of how to use abi-wizard and explode eopkgs from go.
 
-Alright, there seems to be some miscommunication about what yabi can and can't do and I'm getting a little annoyed at having to explain this over an over in different places.
+Historical information from DataDrake, note that `ypkg3` is deprecated.
 
 1. `yabi` can and will mark libraries as missing if it cannot find them on your system.
 2. `yabi` can and will mark libraries as missing if it cannot find matches for symbols inside the library. I haven't had a chance to make the errors more verbose, so you'll have to use your judgment.
 3. It's OK to submit patches with UNKNOWN in abi_used_libs or abi_used_symbols. If you are updating a package and it's not part of a local stack upgrade, you probably have everything installed on your machine and it will work fine.
 4. `yabi` does not run inside the chroot so it won't see files from packages getting installed from your local repo. This won't be getting fixed until `ypkg3` handles ABI stuff inside the chroot. And that's perfectly fine as the point of yabi is to make sure we have the new abi_used_symbols files. If a symbol has an unknown library, it's still at least recorded and a `grep` will find it and any additional information over what `abireport` can tell us, which is still an improvement.
 5. I intentionally made it so that `yabi` would update the ABI reports even if libraries are marked as missing. This is to work around (4). If you think it's a bug, please check against (1) and (2).
-6. Please file bugs against `yabi` on Phab -- `abi-wizard` issues should NOT be used for `yabi`.
