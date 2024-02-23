@@ -1,0 +1,101 @@
+From 7e61113f95fc97bbee0da3ae6ebe03d975d39e73 Mon Sep 17 00:00:00 2001
+From: John Johansen <john.johansen@canonical.com>
+Date: Sun, 23 Oct 2022 04:03:50 -0700
+Subject: [PATCH 05/78] UBUNTU: SAUCE: apparmor4.0.0 [05/82]: Add sysctls for
+ additional controls of unpriv userns restrictions
+
+BugLink: https://bugs.launchpad.net/bugs/2028253
+
+Add apparmor_restrict_unprivileged_userns_force
+  To force old policies that don't support user namespace restrictions
+  to apply them anyways.
+
+Add apparmor_restrict_unprivileged_userns_complain
+  To cause user namespace restrictions to complain instead of fail.
+  This will work on both profiles and unconfined.
+
+Signed-off-by: John Johansen <john.johansen@canonical.com>
+
+fixup userns
+
+(cherry picked from https://gitlab.com/jjohansen/apparmor-kernel)
+Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
+---
+ security/apparmor/include/policy.h |  2 ++
+ security/apparmor/lsm.c            | 14 ++++++++++++++
+ security/apparmor/policy.c         |  2 ++
+ security/apparmor/task.c           |  4 +++-
+ 4 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/security/apparmor/include/policy.h b/security/apparmor/include/policy.h
+index 7cda078cb941..bdd8a7af1e18 100644
+--- a/security/apparmor/include/policy.h
++++ b/security/apparmor/include/policy.h
+@@ -35,6 +35,8 @@ struct aa_ns;
+ 
+ extern int unprivileged_userns_apparmor_policy;
+ extern int unprivileged_userns_restricted;
++extern int unprivileged_userns_restricted_force;
++extern int unprivileged_userns_restricted_complain;
+ 
+ extern const char *const aa_profile_mode_names[];
+ #define APPARMOR_MODE_NAMES_MAX_INDEX 4
+diff --git a/security/apparmor/lsm.c b/security/apparmor/lsm.c
+index 60f7adc21c26..e399ce8b53ec 100644
+--- a/security/apparmor/lsm.c
++++ b/security/apparmor/lsm.c
+@@ -1844,6 +1844,20 @@ static struct ctl_table apparmor_sysctl_table[] = {
+ 		.mode           = 0600,
+ 		.proc_handler   = apparmor_dointvec,
+ 	},
++	{
++		.procname       = "apparmor_restrict_unprivileged_userns_force",
++		.data           = &unprivileged_userns_restricted_force,
++		.maxlen         = sizeof(int),
++		.mode           = 0600,
++		.proc_handler   = apparmor_dointvec,
++	},
++	{
++		.procname       = "apparmor_restrict_unprivileged_userns_complain",
++		.data           = &unprivileged_userns_restricted_complain,
++		.maxlen         = sizeof(int),
++		.mode           = 0600,
++		.proc_handler   = apparmor_dointvec,
++	},
+ #endif /* CONFIG_USER_NS */
+ 	{ }
+ };
+diff --git a/security/apparmor/policy.c b/security/apparmor/policy.c
+index 42b53f5648b1..7014d44c6106 100644
+--- a/security/apparmor/policy.c
++++ b/security/apparmor/policy.c
+@@ -89,6 +89,8 @@
+ 
+ int unprivileged_userns_apparmor_policy = 1;
+ int unprivileged_userns_restricted = IS_ENABLED(CONFIG_SECURITY_APPARMOR_RESTRICT_USERNS);
++int unprivileged_userns_restricted_force;
++int unprivileged_userns_restricted_complain;
+ 
+ const char *const aa_profile_mode_names[] = {
+ 	"enforce",
+diff --git a/security/apparmor/task.c b/security/apparmor/task.c
+index 38e114a2746a..6009c7722920 100644
+--- a/security/apparmor/task.c
++++ b/security/apparmor/task.c
+@@ -337,10 +337,12 @@ int aa_profile_ns_perm(struct aa_profile *profile,
+ 		aa_state_t state;
+ 
+ 		state = RULE_MEDIATES(rules, ad->class);
+-		if (!state)
++		if (!state && !unprivileged_userns_restricted_force)
+ 			/* TODO: add flag to complain about unmediated */
+ 			return 0;
+ 		perms = *aa_lookup_perms(&rules->policy, state);
++		if (unprivileged_userns_restricted_complain)
++			perms.complain = ALL_PERMS_MASK;
+ 	}
+ 
+ 	aa_apply_modes_to_perms(profile, &perms);
+-- 
+2.43.0
+
