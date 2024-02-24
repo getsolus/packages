@@ -180,6 +180,7 @@ if __name__ == '__main__':
     parser.add_argument('after', type=str, help='Show builds after this date')
     parser.add_argument('before', type=str, help='Show builds before this date')
     parser.add_argument('--format', '-f', type=str, choices=['md', 'tty'], default='tty')
+    parser.add_argument('--sort', '-s', action='store_true', help='Sort packages in lexically ascending order')
 
     cli_args = parser.parse_args()
     start = parse_date(cli_args.after)
@@ -196,7 +197,8 @@ if __name__ == '__main__':
         case 'commits':
             items = git.commits(start, end)
 
-    items = sorted(items, key=lambda item: (item.package, item.date))
+    if cli_args.sort:
+        items = sorted(items, key=lambda item: (item.package, item.date))
 
     match cli_args.format:
         case 'tty':
