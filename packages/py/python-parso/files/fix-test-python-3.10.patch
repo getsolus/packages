@@ -1,0 +1,181 @@
+From cf5969d7a109798adbf9538d70e92138f077d700 Mon Sep 17 00:00:00 2001
+From: Jochen Sprickerhof <git@jochen.sprickerhof.de>
+Date: Sun, 4 Dec 2022 13:29:25 +0100
+Subject: [PATCH] Fix unit tests in Python 3.10 (Closes: #192)
+
+---
+ parso/python/errors.py     | 51 ++++++++++++++++++++++++++++++--------
+ test/test_python_errors.py | 23 +++++++++++++++++
+ 2 files changed, 64 insertions(+), 10 deletions(-)
+
+diff --git a/parso/python/errors.py b/parso/python/errors.py
+index 5da046a..09c5047 100644
+--- a/parso/python/errors.py
++++ b/parso/python/errors.py
+@@ -1,5 +1,6 @@
+ # -*- coding: utf-8 -*-
+ import codecs
++import sys
+ import warnings
+ import re
+ from contextlib import contextmanager
+@@ -33,7 +34,10 @@ def _get_rhs_name(node, version):
+                 return "literal"
+             else:
+                 if second.children[1] == ":" or second.children[0] == "**":
+-                    return "dict display"
++                    if version < (3, 10):
++                        return "dict display"
++                    else:
++                        return "dict literal"
+                 else:
+                     return "set display"
+         elif (
+@@ -47,7 +51,10 @@ def _get_rhs_name(node, version):
+         elif first == "[":
+             return "list"
+         elif first == "{" and second == "}":
+-            return "dict display"
++            if version < (3, 10):
++                return "dict display"
++            else:
++                return "dict literal"
+         elif first == "{" and len(node.children) > 2:
+             return "set display"
+     elif type_ == "keyword":
+@@ -58,7 +65,10 @@ def _get_rhs_name(node, version):
+         else:
+             return str(node.value)
+     elif type_ == "operator" and node.value == "...":
+-        return "Ellipsis"
++        if version < (3, 10):
++            return "Ellipsis"
++        else:
++            return "ellipsis"
+     elif type_ == "comparison":
+         return "comparison"
+     elif type_ in ("string", "number", "strings"):
+@@ -83,7 +93,10 @@ def _get_rhs_name(node, version):
+         or "_test" in type_
+         or type_ in ("term", "factor")
+     ):
+-        return "operator"
++        if version < (3, 10):
++            return "operator"
++        else:
++            return "expression"
+     elif type_ == "star_expr":
+         return "starred"
+     elif type_ == "testlist_star_expr":
+@@ -610,7 +623,10 @@ def is_issue(self, leaf):
+ 
+ @ErrorFinder.register_rule(type='string')
+ class _StringChecks(SyntaxRule):
+-    message = "bytes can only contain ASCII literal characters."
++    if sys.version_info < (3, 10):
++        message = "bytes can only contain ASCII literal characters."
++    else:
++        message = "bytes can only contain ASCII literal characters"
+ 
+     def is_issue(self, leaf):
+         string_prefix = leaf.string_prefix.lower()
+@@ -1043,14 +1059,20 @@ def _check_assignment(self, node, is_deletion=False, is_namedexpr=False, is_aug_
+                         error = 'literal'
+                     else:
+                         if second.children[1] == ':':
+-                            error = 'dict display'
++                            if self._normalizer.version < (3, 10):
++                                error = 'dict display'
++                            else:
++                                error = 'dict literal'
+                         else:
+                             error = 'set display'
+                 elif first == "{" and second == "}":
+                     if self._normalizer.version < (3, 8):
+                         error = 'literal'
+                     else:
+-                        error = "dict display"
++                        if self._normalizer.version < (3, 10):
++                            error = "dict display"
++                        else:
++                            error = "dict literal"
+                 elif first == "{" and len(node.children) > 2:
+                     if self._normalizer.version < (3, 8):
+                         error = 'literal'
+@@ -1083,7 +1105,10 @@ def _check_assignment(self, node, is_deletion=False, is_namedexpr=False, is_aug_
+                 error = str(node.value)
+         elif type_ == 'operator':
+             if node.value == '...':
+-                error = 'Ellipsis'
++                if self._normalizer.version < (3, 10):
++                    error = 'Ellipsis'
++                else:
++                    error = 'ellipsis'
+         elif type_ == 'comparison':
+             error = 'comparison'
+         elif type_ in ('string', 'number', 'strings'):
+@@ -1098,7 +1123,10 @@ def _check_assignment(self, node, is_deletion=False, is_namedexpr=False, is_aug_
+             if node.children[0] == 'await':
+                 error = 'await expression'
+             elif node.children[-2] == '**':
+-                error = 'operator'
++                if self._normalizer.version < (3, 10):
++                    error = 'operator'
++                else:
++                    error = 'expression'
+             else:
+                 # Has a trailer
+                 trailer = node.children[-1]
+@@ -1120,7 +1148,10 @@ def _check_assignment(self, node, is_deletion=False, is_namedexpr=False, is_aug_
+         elif ('expr' in type_ and type_ != 'star_expr'  # is a substring
+               or '_test' in type_
+               or type_ in ('term', 'factor')):
+-            error = 'operator'
++            if self._normalizer.version < (3, 10):
++                error = 'operator'
++            else:
++                error = 'expression'
+         elif type_ == "star_expr":
+             if is_deletion:
+                 if self._normalizer.version >= (3, 9):
+diff --git a/test/test_python_errors.py b/test/test_python_errors.py
+index adf5f06..9686d14 100644
+--- a/test/test_python_errors.py
++++ b/test/test_python_errors.py
+@@ -1,6 +1,7 @@
+ """
+ Testing if parso finds syntax errors and indentation errors.
+ """
++import re
+ import sys
+ import warnings
+ 
+@@ -136,6 +137,28 @@ def _get_actual_exception(code):
+         wanted = 'SyntaxError: invalid syntax'
+     elif wanted == "SyntaxError: f-string: single '}' is not allowed":
+         wanted = 'SyntaxError: invalid syntax'
++    elif "Maybe you meant '==' instead of '='?" in wanted:
++        wanted = wanted.removesuffix(" here. Maybe you meant '==' instead of '='?")
++    elif re.match(
++        r"SyntaxError: unterminated string literal \(detected at line \d+\)", wanted
++    ):
++        wanted = "SyntaxError: EOL while scanning string literal"
++    elif re.match(
++        r"SyntaxError: unterminated triple-quoted string literal \(detected at line \d+\)",
++        wanted,
++    ):
++        wanted = 'SyntaxError: EOF while scanning triple-quoted string literal'
++    elif wanted == 'SyntaxError: cannot use starred expression here':
++        wanted = "SyntaxError: can't use starred expression here"
++    elif wanted == 'SyntaxError: f-string: cannot use starred expression here':
++        wanted = "SyntaxError: f-string: can't use starred expression here"
++    elif re.match(
++        r"IndentationError: expected an indented block after '[^']*' statement on line \d",
++        wanted,
++    ):
++        wanted = 'IndentationError: expected an indented block'
++    elif wanted == 'SyntaxError: unterminated string literal':
++        wanted = 'SyntaxError: EOL while scanning string literal'
+     return [wanted], line_nr
+ 
+ 
