@@ -20,7 +20,6 @@ BEGIN {
         'Getopt::Long',
         'Pod::Usage',
         'ExtUtils::Installed',
-        'XML::Simple'
         );
 
     for my $module ( @import_modules ) {
