@@ -3,24 +3,17 @@
 # ABSTRACT: Find and return all unique package names in input file with highest version string
 # PODNAME: get_unique_updates.pl
 
-use Modern::Perl;
-
 use FindBin;
 use lib "$FindBin::RealBin/lib";
-use GetUniqueLines;
-
-use Getopt::Long;
-use Pod::Usage;
 
 BEGIN {
     # First, check if all the required modules have
     # been installed inthe system this script will run on.
     my @import_modules = (
-        'FindBin',
         'Modern::Perl',
         'Getopt::Long',
         'Pod::Usage',
-        'ExtUtils::Installed',
+        'ExtUtils::Installed'
         );
 
     for my $module ( @import_modules ) {
@@ -29,15 +22,21 @@ BEGIN {
           # problems finding module
         #   say "Cant find $module";
           print qq{
-          $module does not seem to be installed in this system. Please install the module and try again.\n
-          First install cpanm with
-            curl -L https://cpanmin.us | perl - --sudo App::cpanminus\n
-          Then install the missing module like so:
-            sudo cpanm $module};
+Perl module $module does not seem to be installed in this system. Please install it and try again.\n
+First install cpanm with
+  curl -L https://cpanmin.us | perl - --sudo App::cpanminus\n
+Then install the missing module like so:
+  sudo cpanm $module
+};
             exit 1;
         }
     }
 }
+
+use Modern::Perl;
+use GetUniqueLines;
+use Getopt::Long;
+use Pod::Usage;
 
 my $successful_parse = GetOptions(
    'help|?'        => \my $help,
