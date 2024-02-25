@@ -17,6 +17,7 @@ BEGIN {
     # been installed inthe system this script will run on.
     my @import_modules = (
         'FindBin',
+        'Modern::Perl',
         'Getopt::Long',
         'Pod::Usage',
         'ExtUtils::Installed',
