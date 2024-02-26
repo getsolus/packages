@@ -6,4 +6,4 @@ Please keep this in mind when planning python3 stack upgrades.
 
 ## Currently supported python3 version in Nuitka
 
-As of ultimo February 2024, the latest fully supported version of Nuitka is Python 3.11.
+As of ultimo February 2024, the latest fully supported version of python3 in Nuitka is Python 3.11.
