@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Mon, 26 Feb 2024 18:12:55 -0600
+Subject: [PATCH] gamemodelist: Fix unreadable process maps
+
+Systemd commit [bf1b9ae487b65b1cb1639b222724fab95e508cf5](https://github.com/systemd/systemd/commit/bf1b9ae487b65b1cb1639b222724fab95e508cf5) (present in Systemd v254 and later) effectively broke gamemodelist as the process map for the `systemd --user` process became unreadable. After this change gamemodelist would exit with an error like the following:
+
+```
+awk: fatal: cannot open file `/proc/2281/maps' for reading: Permission denied
+```
+
+To work around this let's add a hook to the awk statement to skip any files that can't be read.
+
+Closes FeralInteractive/gamemode#456
+---
+ data/gamemodelist | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/data/gamemodelist b/data/gamemodelist
+index c34eb08..392c369 100755
+--- a/data/gamemodelist
++++ b/data/gamemodelist
+@@ -28,5 +28,5 @@ if [ ! -d /proc ]; then
+ fi
+ 
+ find /proc -maxdepth 2 -type f -user "${USER}" -readable -name maps -exec \
+-  awk -- '$0 ~ /libgamemodeauto\.so\.0/ {pid=FILENAME; gsub("[^0-9]", "", pid); print pid;nextfile}' {} + \
++  awk -- 'BEGINFILE { if (ERRNO) nextfile } $0 ~ /libgamemodeauto\.so\.0/ {pid=FILENAME; gsub("[^0-9]", "", pid); print pid;nextfile}' {} + \
+   | xargs | xargs -I{} -- ps -o pid,ppid,user,ni,psr,comm --pid '{}'
