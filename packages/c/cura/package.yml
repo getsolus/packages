@@ -1,8 +1,9 @@
 name       : cura
-version    : 4.13.1
-release    : 31
+version    : 5.4.0
+release    : 32
 source     :
-    - https://github.com/Ultimaker/Cura/archive/refs/tags/4.13.1.tar.gz : bda67f620a6245d0ddfbf6df7c2dcfdec88be152dfb7290ae06d8dcb35c4459c
+    - https://github.com/Ultimaker/Cura/archive/refs/tags/5.4.0.tar.gz : 0be74be2c3e7b41974bec13a9e1cb596fa747e7925987d7670c9f4832cba6f49
+homepage   : https://ultimaker.com/en/products/cura-software
 license    : LGPL-3.0-or-later
 component  : office
 summary    : 3D printer / slicing control software
@@ -11,29 +12,62 @@ description: |
 
     Cura prepares your model for 3D printing. For novices, it makes it easy to get great results. For experts, there are over 200 settings to adjust to your needs. As it's open source, our community helps enrich it even more.
 builddeps  :
-    - pkgconfig(Qt5Quick)
-    - pkgconfig(python3)
-    - libsavitar-devel
-    - python-uranium
-    - python-pynest2d
-    - python-requests
+    - pkgconfig(Qt6Quick)
+    - dos2unix
 checkdeps  :
-    - python-pytest
-rundeps    :
     - curaengine
+    - desktop-file-utils
     - fdm-materials
-    - libsavitar
     - python-certifi
     - python-keyring
     - python-pynest2d
     - python-pyserial
+    - python-pytest
+    - python-qt6
     - python-requests
+    - python-savitar
+    - python-trimesh
+    - python-uranium
+    - python-zeroconf
+rundeps    :
+    - curaengine
+    - fdm-materials
+    - python-certifi
+    - python-keyring
+    - python-pynest2d
+    - python-pyserial
+    - python-qt6
+    - python-requests
+    - python-savitar
     - python-trimesh
     - python-uranium
     - python-zeroconf
 setup      : |
-    %patch -p1 -i $pkgfiles/aad4180.patch
+    mkdir cmake
+    cp -a $pkgfiles/mod_bundled_packages_json.py $pkgfiles/CuraPluginInstall.cmake $pkgfiles/CuraTests.cmake cmake/
+
+    rm CMakeLists.txt
+
+    cp -a $pkgfiles/CMakeLists.txt $pkgfiles/com.ultimaker.cura.desktop.in $pkgfiles/com.ultimaker.cura.appdata.xml .
+    cp -a $pkgfiles/CuraVersion.py.in cura
+
+    # Wrong end of line encoding
+    dos2unix docs/How_to_use_the_flame_graph_profiler.md
+
+    # Wrong shebang
+    sed -i '1s=^#!/usr/bin/\(python\|env python\)3*=#!/usr/bin/python3=' cura_app.py
+
+    # Skip forced loading SentryLogger to avoid an error on startup
     %patch -p1 -i $pkgfiles/028e7f7.patch
+
+    # Fix asserts for called once in Python 3.12
+    %patch -p1 -i $pkgfiles/16103.patch
+
+    # Avoid "KeyError: material_name" crash
+    %patch -p1 -i $pkgfiles/17642.patch
+
+    # Remove blank QML file; it was moved into Uranium
+    rm resources/qml/ToolTip.qml
 
     # see https://github.com/Ultimaker/Cura/issues/5142
     %cmake_ninja \
@@ -41,14 +75,30 @@ setup      : |
         -DCURA_CLOUD_API_VERSION=1 \
         -DCURA_CLOUD_API_ROOT="https://api.ultimaker.com" \
         -DCURA_CLOUD_ACCOUNT_API_ROOT="https://account.ultimaker.com" \
-        -DCURA_SDK_VERSION=6.0.0
+        -DLIB_SUFFIX:STR=
 build      : |
     %ninja_build
 install    : |
     %ninja_install
 
+    # Sanitize the location of locale files
+    pushd $installdir/usr/share
+    mv cura/resources/i18n locale
+    ln -s ../../locale cura/resources/i18n
+    rm locale/*/*.po
+    popd
+
+    # Unbundle fonts
+    rm -rf $installdir/usr/share/cura/resources/themes/cura-light/fonts/
+    ln -s /usr/share/fonts/open-sans/ $installdir/usr/share/cura/resources/themes/cura-light/fonts
+
+    # Remove failing plugins
+    rm -rf $installdir/usr/lib/cura/plugins/{SentryLogger,UFPReader,UFPWriter}
+
     # for better performances
-    %qml_cache
+    %qml6_cache
     %python3_compile
-#check      : |
-#    %python3_test py.test3 -v
+check      : |
+    %python3_test py.test3 -v
+
+    desktop-file-validate $installdir/usr/share/applications/com.ultimaker.cura.desktop
