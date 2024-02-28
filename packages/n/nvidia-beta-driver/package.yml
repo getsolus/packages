@@ -1,6 +1,6 @@
 name       : nvidia-beta-driver
 version    : 550.54.14
-release    : 256
+release    : 257
 source     :
     - https://us.download.nvidia.com/XFree86/Linux-x86_64/550.54.14/NVIDIA-Linux-x86_64-550.54.14.run : 8c497ff1cfc7c310fb875149bc30faa4fd26d2237b2cba6cd2e8b0780157cfe3
 extract    : no
@@ -50,8 +50,12 @@ conflicts  :
 patterns   :
     - common : /*
     - 32bit : /usr/lib32
-    - main : /lib/modules/*.lts
-    - current : /lib/modules/*.current
+    - main :
+        - /lib/modules/*.lts
+        - /usr/lib64/kernel/initrd-com.solus-project.lts.*
+    - current :
+        - /lib/modules/*.current
+        - /usr/lib64/kernel/initrd-com.solus-project.current.*
 strip      : no
 debug      : no
 builddeps  :
@@ -130,6 +134,9 @@ install    : |
 
     redo_libs $installdir/usr/lib{32,64}/lib*.so.%version%
 
+    # GSP Firmware
+    install -Dm644 -t "$installdir/lib/firmware/nvidia/$version/" firmware/*.bin
+
     # Move vdpau into the final position
     install -D -d -m 00755 $installdir/usr/lib{32,64}/vdpau
     mv -v $installdir/%libdir%/libvdpau* $installdir/%libdir%/vdpau/.
@@ -144,11 +151,11 @@ install    : |
     install -m 00644 nvoptix.bin $installdir/usr/share/nvidia/
 
     # Vulkan
-    install -D -m 00644 nvidia_icd.json $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    install -Dm644 nvidia_icd.json $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    install -Dm644 nvidia_layers.json $installdir/usr/share/vulkan/implicit_layer.d/nvidia_layers.json
     sed -e 's@__NV_VK_ICD__@libGLX_nvidia.so.0@' -i $installdir/usr/share/vulkan/icd.d/10_nvidia.json
 
-    # EGL
-    install -D -m 00644 10_nvidia_wayland.json $installdir/usr/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+    # EGL/GBM
     install -D -m 00644 15_nvidia_gbm.json $installdir/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json
 
     # GBM
@@ -170,20 +177,19 @@ install    : |
     install -m 00644 *nvngx.dll $installdir/%libdir%/nvidia/wine/.
 
     # Blacklist nouveau
-    install -D -d -m 00755 $installdir/usr/lib/modprobe.d
-    echo "blacklist nouveau" > $installdir/usr/lib/modprobe.d/nvidia.conf
+    install -D -d -m 00755 $installdir/usr/lib64/modprobe.d
+    echo "blacklist nouveau" > $installdir/usr/lib64/modprobe.d/nvidia.conf
 
     # Init
     install -D -m 00644 nvidia-persistenced-init/systemd/nvidia-persistenced.service.template \
-                           $installdir/usr/lib/systemd/system/nvidia-persistenced.service
-    sed -e 's@__USER__@nvidia-persistenced@' -i $installdir/usr/lib/systemd/system/nvidia-persistenced.service
+                           $installdir/usr/lib64/systemd/system/nvidia-persistenced.service
+    sed -e 's@__USER__@nvidia-persistenced@' -i $installdir/usr/lib64/systemd/system/nvidia-persistenced.service
 
     # Additional files
-    install -D -m 00644 $pkgfiles/71-nvidia.rules $installdir/%libdir%/udev/rules.d/71-nvidia.rules
+    install -D -m 00644 $pkgfiles/nvidia.rules $installdir/%libdir%/udev/rules.d/60-nvidia.rules
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.tmpfiles $installdir/%libdir%/tmpfiles.d/nvidia-glx-driver.conf
     install -D -m 00644 $pkgfiles/nvidia-glx-driver.sysusers $installdir/%libdir%/sysusers.d/nvidia-glx-driver.conf
-    install -D -m 00755 $pkgfiles/create-uvm-dev-node $installdir/sbin/create-uvm-dev-node
-    install -D -m 00644 $pkgfiles/cmdline-nvidia.conf $installdir/usr/lib/kernel/cmdline.d/40_nvidia.conf
+    install -D -m 00644 $pkgfiles/cmdline-nvidia.conf $installdir/usr/lib64/kernel/cmdline.d/40_nvidia.conf
 
     # new PM stuff
     install -Dm00644 systemd/system/*.service -t $installdir/%libdir%/systemd/system
@@ -209,5 +215,46 @@ install    : |
     install -d $installdir/%libdir%/nvidia/modules
     mv $installdir/usr/lib64/libglxserver_nvidia.so* $installdir/%libdir%/nvidia/modules/
 
-    # Compress modules with zstd
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+    # Generate per-kernel initrd with embedded nvidia kernel drivers
+    ### NOTE THIS IS A GIANT TODO AND SUPPORT FOR THIS IS NOT YET IMPLEMENTED IN CLR-BOOT-MANAGER
+    ### DO NOT COPY THIS SECTION INTO THE OTHER NVIDIA DRIVERS UNTIL THAT'S DONE
+    shopt -s extglob
+    for i in current lts; do
+        mkdir init-$i && pushd init-$i
+        # Copy from what we have in the installdir already
+        cp -ra $installdir/* .
+        # cleanup, don't need anything besides the modules for the chosen kernel
+        rm -rfv usr sbin lib/firmware
+        rm -rv lib/modules/!(*.$i)
+        # Strip the debug symobls (we can get them from the normal kernel modules).
+        # Don't compress the kernel modules here so that the final archive is slightly smaller
+        find . -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+
+        # We need this because we can't share path inodes
+        mkdir nvidia && pushd nvidia
+        find ../. -name '*.ko' -print -exec mv {} . \;
+        popd
+        rm -rf lib
+        # Create the initrd
+        find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
+
+        # TODO Sign it
+        popd
+    done
+
+    # Install it (do it here so that we don't copy this again during the second loop of the above for)
+    kernel_current=%kernel_version_current%
+    current_string="${kernel_current/.current}"
+    install -Dm00644 $workdir/initrd-current $installdir/usr/lib64/kernel/initrd-com.solus-project.current.$current_string.nvidia
+    kernel_lts=%kernel_version_lts%
+    lts_string="${kernel_lts/.lts}"
+    install -Dm00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
+
+    # Generate single initrd (to be shared between current and lts) with the GSP firmware
+    mkdir -p init-firmware/nvidia-firmware && pushd init-firmware
+    cp -ra $installdir/lib/firmware/nvidia/ nvidia-firmware/
+    find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
+    install -Dm00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd-com.solus-project.nvidia-firmware
+
+    # Compress modules with zstd. TODO fix this so that we're able to capture the debug symbols (needs ypkg changes)
+    find "$installdir" -name '*.ko' -exec strip --strip-unneeded {} \; -exec zstd -19 {} \; -exec rm -v {} \;
