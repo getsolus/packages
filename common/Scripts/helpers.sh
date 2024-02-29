@@ -2,13 +2,20 @@
 
 # Primitive CPE search tool
 function cpesearch() {
-    if [[ -z "$1" || "$1" == "--help" || "$1" == "-h" ]]; then
-        echo "usage: cpesearch <package-name>"
-    else
+    function search() {
         curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$1\"]}" | jq .
-        
+
         echo "Verify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
         echo "- CPE entries for software applications have the form 'cpe:2.3:a:\$VENDOR:\$PRODUCT'"
+    }
+
+    if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+        echo "usage: cpesearch <package-name>"
+    elif [[ $# -eq 0 ]]; then
+        echo "Warning: No paramaters passed, using current directory name. Pass --help to see usage"
+        search "$(basename "$(pwd)")"
+    else
+        search "$1"
     fi
 }
 
