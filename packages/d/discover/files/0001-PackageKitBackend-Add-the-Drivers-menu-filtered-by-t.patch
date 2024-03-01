@@ -1,0 +1,160 @@
+From cc71ca40c556151cd3aa24a0182913789effc319 Mon Sep 17 00:00:00 2001
+From: Fabio Forni <development@redaril.me>
+Date: Tue, 13 Feb 2024 11:32:28 +0100
+Subject: [PATCH] PackageKitBackend: Add the "Drivers" menu, filtered by the
+ "Drivers" Category
+
+---
+ .../AppPackageKitResource.cpp                 | 41 +++++++++++++++++--
+ .../PackageKitBackend/AppPackageKitResource.h |  2 +
+ .../PackageKitBackend/PackageKitBackend.cpp   | 15 ++++++-
+ .../packagekit-backend-categories.xml         | 20 +++++++++
+ 4 files changed, 73 insertions(+), 5 deletions(-)
+
+diff --git a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
+index 2ea8362..4200802 100644
+--- a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
++++ b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
+@@ -13,12 +13,14 @@
+ #include <AppStreamQt5/image.h>
+ #include <AppStreamQt5/release.h>
+ #include <AppStreamQt5/screenshot.h>
++#include <AppStreamQt5/systeminfo.h>
+ #include <AppStreamQt5/version.h>
+ #else
+ #include <AppStreamQt/icon.h>
+ #include <AppStreamQt/image.h>
+ #include <AppStreamQt/release.h>
+ #include <AppStreamQt/screenshot.h>
++#include <AppStreamQt/systeminfo.h>
+ #include <AppStreamQt/version.h>
+ #endif
+ 
+@@ -113,14 +115,40 @@ QStringList AppPackageKitResource::mimetypes() const
+ 
+ static constexpr auto s_addonKinds = {AppStream::Component::KindAddon, AppStream::Component::KindCodec};
+ 
++static bool hasDeviceModaliases(const AppStream::Component &comp)
++{
++    const auto mods = comp.provided(AppStream::Provided::KindModalias);
++    auto sys = AppStream::SystemInfo();
++    for (const auto &mod : mods.items()) {
++        if (sys.hasDeviceMatchingModalias(mod)) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ QStringList AppPackageKitResource::categories()
+ {
+-    auto cats = m_appdata.categories();
+-    if (!kContainsValue(s_addonKinds, m_appdata.kind()))
+-        cats.append(QStringLiteral("Application"));
+-    return cats;
++    switch (m_appdata.kind()) {
++    case AppStream::Component::KindDriver: {
++        auto cats = QStringList();
++        cats.reserve(2);
++        cats.append(QStringLiteral("Drivers"));
++        if (hasDeviceModaliases(m_appdata)) {
++          cats.append(QStringLiteral("ThisDeviceDrivers"));
++        }
++        return cats;
++    }
++    default: {
++        auto cats = m_appdata.categories();
++        if (!kContainsValue(s_addonKinds, m_appdata.kind()))
++            cats.append(QStringLiteral("Application"));
++        return cats;
++    }
++    }
+ }
+ 
++
+ QString AppPackageKitResource::comment()
+ {
+     const auto summary = m_appdata.summary();
+@@ -305,3 +333,8 @@ uint AppPackageKitResource::contentRatingMinimumAge() const
+ {
+     return AppStreamUtils::contentRatingMinimumAge(m_appdata);
+ }
++
++AppStream::Component AppPackageKitResource::component() const
++{
++    return m_appdata;
++}
+\ No newline at end of file
+diff --git a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.h b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.h
+index d5bb808..986fde1 100644
+--- a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.h
++++ b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.h
+@@ -50,6 +50,8 @@ public:
+     ContentIntensity contentRatingIntensity() const override;
+     uint contentRatingMinimumAge() const override;
+ 
++    AppStream::Component component() const;
++
+ private:
+     const AppStream::Component m_appdata;
+     mutable QString m_name;
+diff --git a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+index 186cb30..0548d3e 100644
+--- a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
++++ b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+@@ -735,7 +735,20 @@ ResultsStream *PackageKitBackend::search(const AbstractResourcesBackend::Filters
+ #endif
+ #if ASQ_CHECK_VERSION(0, 15, 6)
+             } else if (filter.category) {
+-                components = AppStreamUtils::componentsByCategories(m_appdata.get(), filter.category, AppStream::Bundle::KindUnknown);
++                if (filter.category->involvedCategories()[0] == QStringLiteral("Drivers")
++                    || filter.category->involvedCategories()[0] == QStringLiteral("ThisDeviceDrivers")) {
++                    for (auto &resource : m_packages.packages) {
++                        auto resourceCast = qobject_cast<AppPackageKitResource *>(resource);
++                        if (resourceCast == nullptr) {
++                            continue;
++                        }
++                        if (resourceCast->categories().contains(filter.category->involvedCategories()[0])) {
++                            components.append(resourceCast->component());
++                        }
++                    }
++                } else {
++                    components = AppStreamUtils::componentsByCategories(m_appdata.get(), filter.category, AppStream::Bundle::KindUnknown);
++                }
+ #endif
+             } else {
+ #if ASQ_CHECK_VERSION(1, 0, 0)
+diff --git a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
+index ff1a922..7a20277 100644
+--- a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
++++ b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
+@@ -548,6 +548,26 @@
+       </Or>
+     </Include>
+   </Menu>
++
++  <Menu>
++    <Name>Hardware Drivers</Name>
++    <Icon>cpu</Icon>
++    <Include>
++      <And>
++        <Category>Drivers</Category>
++      </And>
++    </Include>
++    <Menu>
++      <Name>Drivers For This Device</Name>
++      <Icon>cpu</Icon>
++      <Include>
++        <And>
++          <Category>ThisDeviceDrivers</Category>
++        </And>
++      </Include>
++    </Menu>
++  </Menu>
++
+   <Menu>
+     <Name>Plasma Addons</Name>
+     <Icon>plasma</Icon>
+-- 
+2.43.0
+
