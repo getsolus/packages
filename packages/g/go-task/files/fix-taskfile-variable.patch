@@ -1,0 +1,95 @@
+From a28d273f5f45e262ac4b15fe9ad36c6f6eebadfd Mon Sep 17 00:00:00 2001
+From: Pete Davison <pd93.uk@outlook.com>
+Date: Sat, 10 Feb 2024 23:50:39 +0000
+Subject: [PATCH] feat: taskfile special variable
+
+---
+ docs/docs/api_reference.md    |  1 +
+ internal/compiler/compiler.go | 16 +++-------------
+ taskfile/ast/task.go          |  2 --
+ taskfile/reader.go            |  1 -
+ 4 files changed, 4 insertions(+), 16 deletions(-)
+
+diff --git a/docs/docs/api_reference.md b/docs/docs/api_reference.md
+index a53b7cf6d..53b9f3ac6 100644
+--- a/docs/docs/api_reference.md
++++ b/docs/docs/api_reference.md
+@@ -130,6 +130,7 @@ There are some special variables that is available on the templating system:
+ | `TASK`             | The name of the current task.                                                                                                                            |
+ | `ROOT_TASKFILE`    | The absolute path of the root Taskfile.                                                                                                                  |
+ | `ROOT_DIR`         | The absolute path of the root Taskfile directory.                                                                                                        |
++| `TASKFILE`         | The absolute path of the included Taskfile.                                                                                                              |
+ | `TASKFILE_DIR`     | The absolute path of the included Taskfile directory.                                                                                                    |
+ | `USER_WORKING_DIR` | The absolute path of the directory `task` was called from.                                                                                               |
+ | `CHECKSUM`         | The checksum of the files listed in `sources`. Only available within the `status` prop and if method is set to `checksum`.                               |
+diff --git a/internal/compiler/compiler.go b/internal/compiler/compiler.go
+index 376495f12..ec10c2455 100644
+--- a/internal/compiler/compiler.go
++++ b/internal/compiler/compiler.go
+@@ -5,6 +5,7 @@ import (
+ 	"context"
+ 	"encoding/json"
+ 	"fmt"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 
+@@ -208,24 +209,13 @@ func (c *Compiler) ResetCache() {
+ }
+ 
+ func (c *Compiler) getSpecialVars(t *ast.Task) (map[string]string, error) {
+-	taskfileDir, err := c.getTaskfileDir(t)
+-	if err != nil {
+-		return nil, err
+-	}
+-
+ 	return map[string]string{
+ 		"TASK":             t.Task,
+ 		"ROOT_TASKFILE":    filepathext.SmartJoin(c.Dir, c.Entrypoint),
+ 		"ROOT_DIR":         c.Dir,
+-		"TASKFILE_DIR":     taskfileDir,
++		"TASKFILE":         t.Location.Taskfile,
++		"TASKFILE_DIR":     filepath.Dir(t.Location.Taskfile),
+ 		"USER_WORKING_DIR": c.UserWorkingDir,
+ 		"TASK_VERSION":     version.GetVersion(),
+ 	}, nil
+ }
+-
+-func (c *Compiler) getTaskfileDir(t *ast.Task) (string, error) {
+-	if t.IncludedTaskfile != nil {
+-		return t.IncludedTaskfile.FullDirPath()
+-	}
+-	return c.Dir, nil
+-}
+diff --git a/taskfile/ast/task.go b/taskfile/ast/task.go
+index 049cdc6b8..7b2ea589a 100644
+--- a/taskfile/ast/task.go
++++ b/taskfile/ast/task.go
+@@ -40,7 +40,6 @@ type Task struct {
+ 	Run                  string
+ 	IncludeVars          *Vars
+ 	IncludedTaskfileVars *Vars
+-	IncludedTaskfile     *Include
+ 	Platforms            []*Platform
+ 	Location             *Location
+ 	Watch                bool
+@@ -207,7 +206,6 @@ func (t *Task) DeepCopy() *Task {
+ 		Run:                  t.Run,
+ 		IncludeVars:          t.IncludeVars.DeepCopy(),
+ 		IncludedTaskfileVars: t.IncludedTaskfileVars.DeepCopy(),
+-		IncludedTaskfile:     t.IncludedTaskfile.DeepCopy(),
+ 		Platforms:            deepcopy.Slice(t.Platforms),
+ 		Location:             t.Location.DeepCopy(),
+ 		Requires:             t.Requires.DeepCopy(),
+diff --git a/taskfile/reader.go b/taskfile/reader.go
+index c8ca8bdf6..92127a35d 100644
+--- a/taskfile/reader.go
++++ b/taskfile/reader.go
+@@ -136,7 +136,6 @@ func Read(
+ 					}
+ 					task.IncludeVars.Merge(include.Vars)
+ 					task.IncludedTaskfileVars = includedTaskfile.Vars
+-					task.IncludedTaskfile = &include
+ 				}
+ 			}
+ 
