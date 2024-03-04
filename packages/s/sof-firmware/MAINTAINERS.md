@@ -2,3 +2,4 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Tracey Clark
   - Email: traceyc.dev@tlcnet.info
+  - Matrix: @traceyc:matrix.org
