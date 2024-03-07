@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os.path
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence
 from urllib import request
 
 
@@ -38,6 +40,59 @@ class Listable:
         raise NotImplementedError
 
 
+class GitHubCommit:
+    @staticmethod
+    def get(ref: str) -> 'GitHubCommit':
+        cached = GitHubCommit.__get_cache(ref)
+        if cached is not None:
+            return cached
+
+        return GitHubCommit.__get_gh_cli(ref)
+
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data = data
+
+    @property
+    def author(self) -> str:
+        author = self._data.get('author')
+        if author is not None:
+            return str(author.get('login', 'Unknown'))
+
+        return str(self._data['commit']['author']['name'])
+
+    @staticmethod
+    def __tempfile(ref: str) -> str:
+        dir = os.path.join(tempfile.gettempdir(), '_solus_worklog')
+        os.makedirs(dir, exist_ok=True, mode=0o700)
+
+        return os.path.join(dir, ref + '.json')
+
+    @staticmethod
+    def __get_cache(ref: str) -> Optional['GitHubCommit']:
+        file = GitHubCommit.__tempfile(ref)
+        if not os.path.exists(file):
+            return None
+
+        with open(file, 'rb') as f:
+            return GitHubCommit(json.loads(f.read()))
+
+    @staticmethod
+    def __store_cache(ref: str, commit: str) -> None:
+        with open(os.path.join(GitHubCommit.__tempfile(ref)), 'w') as fh:
+            fh.write(commit)
+
+    @staticmethod
+    def __get_gh_cli(ref: str) -> 'GitHubCommit':
+        res = subprocess.run(['gh', 'api', f'repos/getsolus/packages/commits/{ref}'],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            raise ValueError(f'GitHub API returned non-zero exit: {res.stderr}')
+
+        GitHubCommit.__store_cache(ref, res.stdout)
+
+        return GitHubCommit(json.loads(res.stdout))
+
+
 @dataclass
 class Build(Listable):
     id: int
@@ -64,12 +119,65 @@ class Build(Listable):
         return datetime.fromisoformat(self.finished).astimezone(timezone.utc)
 
     def to_md(self) -> str:
-        return f'[{self.pkg} {self.version}-{self.release}]({self.tag_url})'
+        return f'[{self.pkg} {self.v}]({self.tag_url})'
 
     def to_tty(self) -> str:
-        return (f'{TTY.Green}{self.pkg}{TTY.Reset} {self.version}-{self.release} ' +
+        return (f'{TTY.Green}{self.pkg}{TTY.Reset} {self.v} ' +
                 f'{TTY.Blue}[{self.builder}]{TTY.Reset} ' +
                 TTY.url('[🡕]', self.tag_url))
+
+    @property
+    def v(self) -> str:
+        return f'{self.version}-{self.release}'
+
+    def commit(self) -> GitHubCommit:
+        return GitHubCommit.get(self.ref)
+
+
+class Update(Listable):
+    """
+    Update represents a package update.
+    It includes information from one or more builds.
+    """
+
+    def __init__(self, *builds: Build):
+        self.builds = list(builds)
+
+    def append(self, build: Build) -> None:
+        self.builds.append(build)
+
+    @property
+    def last(self) -> Build:
+        return max(self.builds, key=lambda b: b.date)
+
+    @property
+    def date(self) -> datetime:
+        return self.last.date
+
+    @property
+    def package(self) -> str:
+        return self.last.package
+
+    @property
+    def v(self) -> str:
+        return self.last.v
+
+    @property
+    def _successful_builds(self) -> Iterable[Build]:
+        return [build for build in self.builds if build.status == "OK"]
+
+    def to_tty(self) -> str:
+        authors = [TTY.url(f'@{build.commit().author}', build.tag_url)
+                   for build in self._successful_builds]
+
+        return (f'{TTY.Green}{self.package}{TTY.Reset} {self.v} ' +
+                f'{TTY.Blue}[{", ".join(authors)}]{TTY.Reset}')
+
+    def to_md(self) -> str:
+        authors = [f'[@{build.commit().author}]({build.tag_url})'
+                   for build in self._successful_builds]
+
+        return f'**{self.package}** was updated to **{self.v}** ({", ".join(authors)})'
 
 
 class Builds:
@@ -88,11 +196,22 @@ class Builds:
     def packages(self) -> List[Build]:
         return list({b.pkg: b for b in self.all}.values())
 
+    def updates(self, start: datetime, end: datetime) -> List[Update]:
+        updates: Dict[str, Update] = {}
+
+        for build in self._filter(self.all, start, end):
+            if build.status != "OK":
+                continue
+
+            if build.package in updates:
+                updates[build.package].append(build)
+            else:
+                updates[build.package] = Update(build)
+
+        return list(updates.values())
+
     def during(self, start: datetime, end: datetime) -> List[Build]:
         return self._filter(self.all, start, end)
-
-    def updates(self, start: datetime, end: datetime) -> List[Build]:
-        return self._filter(self.packages, start, end)
 
     @staticmethod
     def _filter(builds: List[Build], start: datetime, end: datetime) -> List[Build]:
