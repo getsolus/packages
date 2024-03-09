@@ -1,8 +1,8 @@
 name       : pytorch
-version    : 2.1.1
-release    : 28
+version    : 2.2.0
+release    : 29
 source     :
-    - https://github.com/pytorch/pytorch/releases/download/v2.1.1/pytorch-v2.1.1.tar.gz : 1aa2aacced3c60c935d05f6d80232f8e99cdcb09eb51ceea697857b90c98d3fa
+    - https://github.com/pytorch/pytorch/releases/download/v2.2.0/pytorch-v2.2.0.tar.gz : e12d18c3dbb12d7ae2f61f5ab9a21023e3dd179d67ed87279ef96600b9ac08c5
 homepage   : https://pytorch.org/
 license    : BSD-3-Clause
 component  :
@@ -33,7 +33,6 @@ builddeps  :
     - pkgconfig(ompi)
     - pkgconfig(openblas)
     - pkgconfig(opencv4)
-    - pkgconfig(openssl-1.1)
     - pkgconfig(protobuf)
     - pkgconfig(python3)
     - pkgconfig(rocksdb)
@@ -44,8 +43,10 @@ builddeps  :
     - lmdb-devel
     - numpy
     # - onednn-devel # FIXME: If you have more RAM than I do please test if you don't get a ZIP64 Extensions requirement
+    - openssl-11-devel
     - pybind11
     - python-typing-extensions
+    - python-six
     - pyyaml
     - vulkan-headers
 
@@ -54,13 +55,13 @@ builddeps  :
     - pkgconfig(libhsakmt)
     - rocm-core-devel
     - rocm-cmake
-    - rocm-hip-devel
+    - rocm-hip
     - hipblas-devel
     - hipcub
     - hipfft-devel
     - hipsolver-devel
     - hipsparse-devel
-    - hipmagma-devel
+    # - hipmagma-devel
     - miopen-devel
     - miopengemm-devel
     - rccl-devel
@@ -92,13 +93,13 @@ rundeps    :
         - libtorch
         # ROCm packages
         - rocm-core-devel
-        - rocm-hip-devel
+        - rocm-hip
         - hipblas-devel
         - hipcub
         - hipfft-devel
         - hipsolver-devel
         - hipsparse-devel
-        - hipmagma-devel
+        # - hipmagma-devel
         - miopen-devel
         - miopengemm-devel
         - rccl-devel
@@ -119,12 +120,15 @@ environment: |
     export PYTHON_BIN_PATH=/usr/bin/python3
     export USE_DEFAULT_PYTHON_LIB_PATH=1
 
+    # USE_CCACHE=0 allows us to handle caching by ourselves, in particular
+    # allowing us to cache HIP compilations with sccache.
     export BLAS=OpenBLAS \
         BUILD_BINARY=1 \
         BUILD_CAFFE2=1 \
         BUILD_CUSTOM_PROTOBUF=0 \
         BUILD_TEST=0 \
         HAVE_SOVERSION=1 \
+        USE_CCACHE=0 \
         USE_CUDA=0 \
         USE_DISTRIBUTED=1 \
         USE_FBGEMM=0 \
@@ -135,13 +139,14 @@ environment: |
         USE_LEVELDB=1 \
         USE_LAPACK=1 \
         USE_LMDB=1 \
-        USE_MAGMA=1 \
+        USE_MAGMA=0 \
         USE_MKLDNN=0 \
         USE_BLAS=1 \
         USE_OPENCV=1 \
         USE_ROCM=1 \
         USE_REDIS=1 \
         USE_ROCKSDB=1 \
+        USE_SCCACHE=0 \
         USE_TBB=1 \
         USE_VULKAN=1 \
         USE_ZMQ=1 \
@@ -154,8 +159,15 @@ environment: |
 
     export ROCM_PATH=/usr
     export HIP_PATH=/usr
+    export HIP_COMPILER=clang
+    export HIP_RUNTIME=amd
+    export HIP_ROCCLR_HOME=/usr/lib64/llvm-rocm
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export HIP_CXX_COMPILER=/usr/bin/hipcc
     export DEVICE_LIB_PATH="/usr/lib64/amdgcn/bitcode"
-    export PYTORCH_ROCM_ARCH="gfx803;gfx900;gfx906:xnack-;gfx908:xnack-;gfx90a:xnack+;gfx90a:xnack-;gfx1010;gfx1012;gfx1030;gfx1100;gfx1101;gfx1102"
+    export PYTORCH_ROCM_ARCH="%AMDGPUTARGETS%"
+    export HIP_CLANG_LAUNCHER=/usr/bin/sccache
+    export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=4"
 
     # Needs llvm in order to find system zstd
     export CMAKE_MODULE_PATH="/usr/lib64/cmake/hip;/usr/lib64/cmake/llvm"
@@ -163,6 +175,10 @@ environment: |
     # Cannot compile C code with clang due to https://github.com/pytorch/pytorch/issues/103222
     export CC=gcc
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+    # Too noisy
+    export CFLAGS+=" -w"
+    export CXXFLAGS+=" -w"
+    export HIPCC_COMPILE_FLAGS_APPEND+=" -w"
 
     # Set it in case your computer starts chocking horribly
     # export MAX_JOBS=$((%YJOBS%/4))
@@ -180,6 +196,26 @@ setup      : |
 
     # They forgot to include iostream and some other standard libraries
     sed -i 's|<fstream>|<bits/stdc++.h>|' binaries/dump_operator_names.cc 
+
+    # Backports from ROCm 6.0
+    # %patch -p1 -i $pkgfiles/fully-disable-rocm-kernel-asserts.patch
+    %patch -p1 -i $pkgfiles/rocm-6.0.patch
+
+    # The CMake option HIP_CXX_COMPILER is set by default to CMAKE_CXX_COMPILER
+    # by HIP, so we have to cheeze this option to CMake using PyTorch existing
+    # code for setting the CUDA compiler. This will also work when PyTorch
+    # decides to switch to native HIP support in CMake.
+    sed -i 's|CUDA_NVCC_EXECUTABLE|HIP_CXX_COMPILER|' tools/setup_helpers/cmake.py
+    sed -i 's|CMAKE_CUDA_COMPILER|HIP_CXX_COMPILER|' tools/setup_helpers/cmake.py
+    sed -i 's|CUDACXX|HIPCXX|' tools/setup_helpers/cmake.py
+
+    # __HIP_PLATFORM_HCC__ no longer recognized in ROCm 6
+    sed -i 's|__HIP_PLATFORM_HCC__|__HIP_PLATFORM_AMD__|g' \
+        cmake/Dependencies.cmake \
+        torch/CMakeLists.txt \
+        torch/utils/cpp_extension.py \
+        caffe2/CMakeLists.txt \
+        aten/src/ATen/native/cuda/layer_norm_kernel.cu \
 
     python3 ./tools/amd_build/build_amd.py
 
