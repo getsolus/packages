@@ -1,0 +1,202 @@
+From e0a93830d0ea0c71ab649b7e68af0238bd48eb10 Mon Sep 17 00:00:00 2001
+From: Harald Sitter <sitter@kde.org>
+Date: Thu, 17 Dec 2020 13:45:07 +0100
+Subject: [PATCH] port from deprecated kjs to qjsengine
+
+for kf6 todo https://phabricator.kde.org/T11604
+
+kjs is deprecated and we want to move away from it. this ports to
+qjsengine which does what we need for krename just fine and is also
+supported in qt6 still
+
+all use cases of the js plugin still seem to work fine. variable
+definition, function definition and using either in the replacement.
+same for the implicit global variables.
+---
+ CMakeLists.txt       |  2 +-
+ src/CMakeLists.txt   |  2 +-
+ src/scriptplugin.cpp | 55 ++++++++++++++------------------------------
+ src/scriptplugin.h   |  6 +++--
+ 4 files changed, 23 insertions(+), 42 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2b39e18..e1673e1 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -17,7 +17,7 @@ include(FeatureSummary)
+ include(KDECompilerSettings NO_POLICY_SCOPE)
+ include(FeatureSummary)
+ 
+-find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
++find_package(Qt5 REQUIRED COMPONENTS Core Widgets Qml)
+ find_package(KF5 REQUIRED COMPONENTS
+     Completion
+     Config
+@@ -27,7 +28,6 @@ find_package(KF5 ${KF5_MIN_VERSION} REQUIRED COMPONENTS
+     IconThemes
+     ItemViews
+     JobWidgets
+-    JS
+     KIO
+     Service
+     WidgetsAddons
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 3f262b3..bee7378 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -128,9 +128,9 @@ target_link_libraries(krename
+     KF5::KIOCore
+     KF5::KIOFileWidgets
+     KF5::I18n
+-    KF5::JSApi
+     KF5::IconThemes
+     Qt5::Widgets
++    Qt5::Qml
+ )
+ if(TAGLIB_FOUND)
+     target_link_libraries(krename
+diff --git a/src/scriptplugin.cpp b/src/scriptplugin.cpp
+index d7f7125..651e656 100644
+--- a/src/scriptplugin.cpp
++++ b/src/scriptplugin.cpp
+@@ -18,8 +18,7 @@
+ #include <QTextStream>
+ #include <QVariant>
+ #include <QFileDialog>
+-
+-#include <kjs/kjsinterpreter.h>
++#include <QDebug>
+ 
+ #include "ui_scriptplugindialog.h"
+ #include "ui_scriptpluginwidget.h"
+@@ -46,7 +45,6 @@ ScriptPlugin::ScriptPlugin(PluginLoader *loader)
+ {
+     m_name = i18n("JavaScript Plugin");
+     m_icon = "applications-development";
+-    m_interpreter = new KJSInterpreter();
+     m_menu   = new QMenu();
+     m_widget = new Ui::ScriptPluginWidget();
+ 
+@@ -65,7 +63,6 @@ ScriptPlugin::~ScriptPlugin()
+ {
+     delete m_widget;
+     delete m_menu;
+-    delete m_interpreter;
+ }
+ 
+ QString ScriptPlugin::processFile(BatchRenamer *b, int index,
+@@ -90,13 +87,13 @@ QString ScriptPlugin::processFile(BatchRenamer *b, int index,
+         // Make sure definitions are executed first
+         script = definitions + '\n' + script;
+ 
+-        KJSResult result = m_interpreter->evaluate(script, nullptr);
+-        if (result.isException()) {
+-            qDebug("JavaScript Error: %s", result.errorMessage().toUtf8().data());
++        const QJSValue result = m_engine.evaluate(script);
++        if (result.isError()) {
++            qDebug() << "JavaScript Error:" << result.toString();
+             return QString();
+         }
+ 
+-        return result.value().toString(m_interpreter->globalContext());
++        return result.toString();
+     }
+ 
+     return QString();
+@@ -144,21 +141,11 @@ void ScriptPlugin::createUI(QWidget *parent) const
+ void ScriptPlugin::initKRenameVars(const KRenameFile &file, int index)
+ {
+     // KRename definitions
+-    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-            ScriptPlugin::s_pszVarNameIndex,
+-            index);
+-    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-            ScriptPlugin::s_pszVarNameUrl,
+-            file.srcUrl().url());
+-    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-            ScriptPlugin::s_pszVarNameFilename,
+-            file.srcFilename());
+-    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-            ScriptPlugin::s_pszVarNameExtension,
+-            file.srcExtension());
+-    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-            ScriptPlugin::s_pszVarNameDirectory,
+-            file.srcDirectory());
++    m_engine.globalObject().setProperty(ScriptPlugin::s_pszVarNameIndex, index);
++    m_engine.globalObject().setProperty(ScriptPlugin::s_pszVarNameUrl, file.srcUrl().url());
++    m_engine.globalObject().setProperty(ScriptPlugin::s_pszVarNameFilename, file.srcFilename());
++    m_engine.globalObject().setProperty(ScriptPlugin::s_pszVarNameExtension, file.srcExtension());
++    m_engine.globalObject().setProperty(ScriptPlugin::s_pszVarNameDirectory, file.srcDirectory());
+ 
+     // User definitions, set them only on first file
+     if (index != 0) {
+@@ -178,21 +165,16 @@ void ScriptPlugin::initKRenameVars(const KRenameFile &file, int index)
+                 switch (eVarType) {
+                 default:
+                 case eVarType_String:
+-                    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-                            name, value.toUtf8().data());
++                    m_engine.globalObject().setProperty(name, value);
+                     break;
+                 case eVarType_Int:
+-                    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-                            name, value.toInt());
++                    m_engine.globalObject().setProperty(name, value.toInt());
+                     break;
+                 case eVarType_Double:
+-                    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-                            name, value.toDouble());
++                    m_engine.globalObject().setProperty(name, value.toDouble());
+                     break;
+                 case eVarType_Bool:
+-                    m_interpreter->globalObject().setProperty(m_interpreter->globalContext(),
+-                            name,
+-                            (value.toLower() == "true" ? true : false));
++                    m_engine.globalObject().setProperty(name, (value.toLower() == "true" ? true : false));
+                     break;
+ 
+                 }
+@@ -233,12 +215,9 @@ void ScriptPlugin::slotAdd()
+         // Build a Java script statement
+         QString script = name + " = " + value + ';';
+ 
+-        KJSInterpreter interpreter;
+-        KJSResult result = m_interpreter->evaluate(script, nullptr);
+-        if (result.isException()) {
+-            KMessageBox::error(m_parent,
+-                               i18n("A JavaScript error has occurred: ") +
+-                               result.errorMessage(), this->name());
++        const QJSValue result = m_engine.evaluate(script);
++        if (result.isError()) {
++            KMessageBox::error(m_parent, i18n("A JavaScript error has occurred: ") + result.toString(), this->name());
+         } else {
+             QTreeWidgetItem *item = new QTreeWidgetItem();
+             item->setText(0, name);
+diff --git a/src/scriptplugin.h b/src/scriptplugin.h
+index 367310b..f91e79b 100644
+--- a/src/scriptplugin.h
++++ b/src/scriptplugin.h
+@@ -7,9 +7,10 @@
+ 
+ #include "plugin.h"
+ 
++#include <QJSEngine>
++
+ class QMenu;
+ 
+-class KJSInterpreter;
+ class KRenameFile;
+ 
+ namespace Ui
+@@ -171,7 +173,7 @@ private:
+ 
+     QStringList         m_keys;
+     QStringList         m_help;
+-    KJSInterpreter     *m_interpreter;
++    QJSEngine           m_engine;
+     QWidget            *m_parent;
+     QMenu              *m_menu;
+ 
+-- 
+GitLab
+
