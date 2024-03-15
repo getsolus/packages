@@ -9,24 +9,9 @@ This packages a compiled binary of eopkg, including all its dependencies (except
 5. ***Do not use this if you don't know what you're doing.***
 
 ## Steps for testing
-1. Check out the `eopkg4-bin` branch of this repository (`getsolus/packages`).
-2. Test PackageKit first.
-	1. Go to the packagekit package (`gotopkg packagekit`).
-	2. Build packagekit and copy it to your local repo (`go-task localcp`
-	3. Install the new packagekit package *before* you do anything with eopkg4-bin
-	4. Test some PackageKit operations (with pkcon, Discover, or Gnome Software) and report your test results in the [eopkg4-bin testing issue](https://github.com/getsolus/packages/issues/1316). The PackageKit package in this PR is patched to work with the existing eopkg3 backend until eopkg4-bin is installed, and switch to the compiled backend at runtime. We need to validate that this works before landing the PR.
-5. Test eopkg4-bin.
-	1. Go to the eopkg4-bin package (`gotopkg eopkg4-bin`)
-	2. Build the package using your local repository (`go-task local`)
-	3. Install the resulting `.eopkg`
-	4. The compiled eopkg binary can now be run as `eopkg4-bin`, and PackageKit should switch automatically to using the new compiled backend.
-5. Make yourself familiar with how to tell which backend is in use by PackageKit. Switch back and forth a couple times to make sure it's working. Note caveat 3 as you do this.
-6. Report your test results in the [eopkg4-bin testing issue](https://github.com/getsolus/packages/issues/1316).
-7. Report any issues with the package itself (building, etc.) [on the draft PR](https://github.com/getsolus/packages/pull/1305).
+1. Report your test results in the [eopkg4-bin testing issue](https://github.com/getsolus/packages/issues/1316).
 
-## Validating that PackageKit is actually switching backends
-1. Once you've installed the PRed PackageKit package, but without eopkg4-bin installed, run `sudo /usr/lib/packagekit/packagekitd -v`. This will start the packagekit daemon and show you all of its logs. 
-2. Check the packagekitd logs for an instance of this line: `using spawn filename /usr/share/PackageKit/helpers/eopkg/eopkgBackend.py`. The extension `.py` indicates that PackageKit is accessing the Python2 backend.
-3. Install `eopkg4-bin` per above testing instructions.
-4. Run `sudo /usr/lib/packagekit/packagekitd -v` again. 
-5. Check the log for an instance of this line: `using spawn filename /usr/share/PackageKit/helpers/eopkg/eopkgBackend.bin`. The extension `.bin` indicates that PackageKit is using the compiled python3 backend.
+## Validating that PackageKit is using the correct backend
+1. Run `sudo /usr/lib/packagekit/packagekitd -v`. This will start the packagekit daemon and show you all of its logs.
+2. If the packagekitd log contains this line, you are using the eopkg3 (Python 2) backend: `using spawn filename /usr/share/PackageKit/helpers/eopkg/eopkgBackend.py`. Note the extension `.py`.
+3. If the packagekitd log contains this line, you are using the nuitka-compiled eopkg4 (Python 3) backend: `using spawn filename /usr/share/PackageKit/helpers/eopkg/eopkgBackend.bin`. Note the extension `.bin`.
