@@ -19,10 +19,52 @@ class TTY:
     Yellow = '\033[33m'
     Blue = '\033[34m'
     White = '\033[97m'
+    DarkGrey = '\033[1;30m'
 
     @staticmethod
-    def url(name: str, ref: str) -> str:
+    def color(color: str, text: str) -> str:
+        return color + text + TTY.Reset
+
+    @staticmethod
+    def url(name: str, ref: str, alt: Optional[str] = None) -> str:
+        if alt is None:
+            alt = name
+
+        if TTY.legacy():
+            return alt
+
         return f'\033]8;;{ref}\033\\{name}\033]8;;\033\\'
+
+    @staticmethod
+    def legacy() -> bool:
+        return os.environ.get("TERM") == "linux"
+
+
+@dataclass
+class Symbol:
+    """
+    Symbol represents a symbol for a terminal.
+    It can have both a modern (eg: Emoji) and legacy (CP-437) representation.
+    """
+    modern: str
+    legacy: str
+
+    def __str__(self) -> str:
+        if TTY.legacy():
+            return self.legacy
+
+        return self.modern
+
+
+class Symbols:
+    """
+    Symbols is a symbol table defining named for both modern and legacy terminals.
+    """
+    link = Symbol('[🡕]', '[^]')
+    unclaimed = Symbol('⏳', '│∙│')
+    building = Symbol('🔄', '│»│')
+    ok = Symbol('✅', '│√│')
+    failed = Symbol('❌', '│x│')
 
 
 class Listable:
@@ -106,7 +148,25 @@ class Build(Listable):
     log_url: str
     status: str
     builder: str
+    created: Optional[str]
+    started: Optional[str]
     finished: Optional[str]
+    comment: Optional[str]
+
+    __status_colors = {
+        'UNCLAIMED': TTY.DarkGrey,
+        'CLAIMED': TTY.Blue,
+        'BUILDING': TTY.Blue,
+        'OK': TTY.Green,
+        'FAILED': TTY.Red,
+    }
+    __status_symbols = {
+        'UNCLAIMED': Symbols.unclaimed,
+        'CLAIMED': Symbols.building,
+        'BUILDING': Symbols.building,
+        'OK': Symbols.ok,
+        'FAILED': Symbols.failed,
+    }
 
     @property
     def package(self) -> str:
@@ -114,18 +174,24 @@ class Build(Listable):
 
     @property
     def date(self) -> datetime:
-        if self.finished is None:
-            return datetime.now(tz=timezone.utc)
-
-        return datetime.fromisoformat(self.finished).astimezone(timezone.utc)
+        return (self._finished or
+                self._started or
+                self._created or
+                datetime.now(tz=timezone.utc))
 
     def to_md(self) -> str:
         return f'[{self.pkg} {self.v}]({self.tag_url})'
 
     def to_tty(self) -> str:
-        return (f'{TTY.Green}{self.pkg}{TTY.Reset} {self.v} ' +
-                f'{TTY.Blue}[{self.builder}]{TTY.Reset} ' +
-                TTY.url('[🡕]', self.tag_url))
+        duration = f'({self.duration}) ' if self.duration else ''
+        comment = f' # {self.comment}' if self.comment else ''
+
+        return (TTY.color(self.status_color, f'{self.status_symbol} {self.package} ') +
+                f'{self.v} ' +
+                TTY.color(TTY.Blue, f'[{self.builder}] ') +
+                duration +
+                TTY.url(str(Symbols.link), self.tag_url, alt='') +
+                TTY.color(TTY.DarkGrey, comment))
 
     @property
     def v(self) -> str:
@@ -133,6 +199,46 @@ class Build(Listable):
 
     def commit(self) -> GitHubCommit:
         return GitHubCommit.get(self.ref)
+
+    @staticmethod
+    def __parse_date(date: Optional[str]) -> Optional[datetime]:
+        if date is None:
+            return None
+
+        return datetime.fromisoformat(date).astimezone(timezone.utc)
+
+    @property
+    def _created(self) -> Optional[datetime]:
+        return self.__parse_date(self.created)
+
+    @property
+    def _started(self) -> Optional[datetime]:
+        return self.__parse_date(self.started)
+
+    @property
+    def _finished(self) -> Optional[datetime]:
+        return self.__parse_date(self.finished)
+
+    @property
+    def duration(self) -> Optional[str]:
+        if self._started is None or self._finished is None:
+            return None
+
+        return f'{round((self._finished - self._started).total_seconds())} s'
+
+    @property
+    def status_color(self) -> str:
+        if self.status in self.__status_colors:
+            return self.__status_colors[self.status]
+
+        raise ValueError(f'unknown status: {self.status}')
+
+    @property
+    def status_symbol(self) -> Symbol:
+        if self.status in self.__status_symbols:
+            return self.__status_symbols[self.status]
+
+        raise ValueError(f'unknown status: {self.status}')
 
 
 class Update(Listable):
@@ -198,9 +304,6 @@ class Builds:
         updates: Dict[str, Update] = {}
 
         for build in self._filter(self.all, start, end):
-            if build.status != "OK":
-                continue
-
             if build.package in updates:
                 updates[build.package].append(build)
             else:
@@ -213,7 +316,7 @@ class Builds:
 
     @staticmethod
     def _filter(builds: List[Build], start: datetime, end: datetime) -> List[Build]:
-        return list(filter(lambda b: start <= b.date <= end, builds))
+        return list(filter(lambda b: start < b.date <= end, builds))
 
 
 @dataclass
@@ -256,7 +359,7 @@ class Commit(Listable):
                 f'{self.date} '
                 f'{TTY.Green}{self.package}: {TTY.Reset}{self.change} '
                 f'{TTY.Blue}[{self.author}]{TTY.Reset} ' +
-                TTY.url('[🡕]', self.url))
+                TTY.url(str(Symbols.link), self.url, alt=''))
 
 
 class Git:
@@ -309,8 +412,13 @@ class Printer:
     def follow(self, kind: str, format: str) -> None:
         while True:
             self.end = datetime.now(timezone.utc)
-            self._print(self._items(kind), format)
-            self.start = self.end
+            items = self._items(kind)
+
+            self._print(items, format)
+
+            if len(items) > 0:
+                self.start = max([i.date for i in items])
+
             time.sleep(10)
 
     def _items(self, kind: str) -> Sequence[Listable]:
