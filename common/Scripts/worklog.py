@@ -5,6 +5,7 @@ import os.path
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -449,15 +450,48 @@ class Printer:
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('command', type=str, choices=['builds', 'updates', 'commits'])
-    parser.add_argument('after', type=str, help='Show builds after this date')
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            '''
+            examples:
+              List builds from the last week:
+                ./worklog.py builds '1 week ago' now
+
+              Follow builds from the build server as they happen:
+                ./worklog.py builds now --follow
+
+              List builds between 8:00 and 18:00 hours local time:
+                ./worklog.py builds 8:00 18:00
+
+              List builds between two ISO 8601 formatted dates in UTC:
+                ./worklog.py builds 2024-02-21T00:00:00Z 2024-02-28T00:00:00Z
+
+              Create a sorted list of package updates since the last sync in Markdown:
+                ./worklog.py updates 2024-03-14T02:08:07Z --sort --format=md
+
+              List commits to the packages repository in the last 24 hours:
+                ./worklog.py commits '1 days ago'
+            '''
+        ))
+    parser.add_argument('command', type=str, choices=['builds', 'updates', 'commits'],
+                        help='Type of output to show. '
+                             '`builds` shows the builds as produced by the build server, '
+                             '`updates` shows per-package updates based on the build server log and GitHub metadata, '
+                             '`commits` shows the commits from your local copy of the `packages` repository.')
+    parser.add_argument('after', type=str,
+                        help='Show builds after this date. '
+                             'The date can be specified in any format parsed by the `date` command.')
     parser.add_argument('before', type=str, nargs='?', default=datetime.now(timezone.utc).isoformat(),
-                        help='Show builds before this date. Defaults to `now`.')
-    parser.add_argument('--format', '-f', type=str, choices=['md', 'tty'], default='tty')
-    parser.add_argument('--sort', '-s', action='store_true', help='Sort packages in lexically ascending order')
+                        help='Show builds before this date. '
+                             'The date can be specified in any format parsed by the `date` command. '
+                             'Defaults to `now`.')
+    parser.add_argument('--format', '-f', type=str, choices=['md', 'tty'], default='tty',
+                        help='Output format: Terminal (`tty`) or Markdown (`md`). Defaults to `tty`.')
+    parser.add_argument('--sort', '-s', action='store_true',
+                        help='Sort packages in lexically ascending order.')
     parser.add_argument('--follow', '-F', action='store_true',
-                        help='Wait for and output new entries when they are created')
+                        help='Wait for and output new entries when they are created.')
 
     cli_args = parser.parse_args()
     printer = Printer(cli_args.after, cli_args.before)
