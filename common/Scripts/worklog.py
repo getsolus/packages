@@ -5,6 +5,7 @@ import os.path
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -186,11 +187,8 @@ class Builds:
 
     @property
     def all(self) -> List[Build]:
-        if self._builds is None:
-            with request.urlopen(self._url) as data:
-                self._builds = json.load(data, object_hook=lambda d: Build(**d))
-
-        return self._builds
+        with request.urlopen(self._url) as data:
+            return list(json.load(data, object_hook=lambda d: Build(**d)))
 
     @property
     def packages(self) -> List[Build]:
@@ -293,37 +291,70 @@ def parse_date(date: str) -> datetime:
     return datetime.fromisoformat(out.read().decode('utf8').strip())
 
 
+class Printer:
+    def __init__(self, after: str, before: str):
+        self.start = parse_date(after)
+        self.end = parse_date(before)
+        self.builds = Builds()
+        self.git = Git()
+
+    def print(self, kind: str, format: str, sort: bool = False) -> None:
+        items = self._items(kind)
+        if sort:
+            items = sorted(items, key=lambda item: (item.package, item.date))
+
+        print(f'{len(items)} {cli_args.command}:')
+        self._print(items, format)
+
+    def follow(self, kind: str, format: str) -> None:
+        while True:
+            self.end = datetime.now(timezone.utc)
+            self._print(self._items(kind), format)
+            self.start = self.end
+            time.sleep(10)
+
+    def _items(self, kind: str) -> Sequence[Listable]:
+        match kind:
+            case 'builds':
+                return self.builds.during(self.start, self.end)
+            case 'updates':
+                return self.builds.updates(self.start, self.end)
+            case 'commits':
+                return self.git.commits(self.start, self.end)
+            case _:
+                raise ValueError(f'unsupported log kind: {kind}')
+
+    @staticmethod
+    def _print(items: Sequence[Listable], fmt: str) -> None:
+        for item in items:
+            Printer._print_item(item, fmt)
+
+    @staticmethod
+    def _print_item(item: Listable, fmt: str) -> None:
+        match fmt:
+            case 'tty':
+                print(item.to_tty())
+            case 'md':
+                print(f'- {item.to_md()}')
+            case _:
+                raise ValueError(f'unsupported format: {fmt}')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('command', type=str, choices=['builds', 'updates', 'commits'])
     parser.add_argument('after', type=str, help='Show builds after this date')
-    parser.add_argument('before', type=str, help='Show builds before this date')
+    parser.add_argument('before', type=str, nargs='?', default=datetime.now(timezone.utc).isoformat(),
+                        help='Show builds before this date. Defaults to `now`.')
     parser.add_argument('--format', '-f', type=str, choices=['md', 'tty'], default='tty')
     parser.add_argument('--sort', '-s', action='store_true', help='Sort packages in lexically ascending order')
+    parser.add_argument('--follow', '-F', action='store_true',
+                        help='Wait for and output new entries when they are created')
 
     cli_args = parser.parse_args()
-    start = parse_date(cli_args.after)
-    end = parse_date(cli_args.before)
-    builds = Builds()
-    git = Git()
-    items: Sequence[Listable] = []
+    printer = Printer(cli_args.after, cli_args.before)
 
-    match cli_args.command:
-        case 'builds':
-            items = builds.during(start, end)
-        case 'updates':
-            items = builds.updates(start, end)
-        case 'commits':
-            items = git.commits(start, end)
-
-    if cli_args.sort:
-        items = sorted(items, key=lambda item: (item.package, item.date))
-
-    match cli_args.format:
-        case 'tty':
-            lines = [item.to_tty() for item in items]
-        case 'md':
-            lines = [f'- {item.to_md()}' for item in items]
-
-    print(f'{len(lines)} {cli_args.command}:')
-    print("\n".join(lines))
+    if cli_args.follow:
+        printer.follow(cli_args.command, cli_args.format)
+    else:
+        printer.print(cli_args.command, cli_args.format, cli_args.sort)
