@@ -7,6 +7,7 @@ You should update the following too:
 
 QT Minor Update (eg 5.15.7 -> 5.15.8):
 * python-qtwebengine (Apparently no longer developed, just give it a rebuild)
+* qadwaitadecorations
 * qtstyleplugins
 * akonadi
 * skrooge
