@@ -1,0 +1,81 @@
+diff --git a/src/gst/gstpipewireformat.c b/src/gst/gstpipewireformat.c
+index 6e71b4855ad5a9237c0cdf9265c01888788f650d..b4ec24f23be93eb5d38d729064b9a0ac5b432583 100644
+--- a/src/gst/gstpipewireformat.c
++++ b/src/gst/gstpipewireformat.c
+@@ -1176,3 +1176,43 @@ gst_caps_from_format (const struct spa_pod *format)
+   }
+   return res;
+ }
++
++static gboolean
++filter_dmabuf_caps (GstCapsFeatures *features,
++                    GstStructure    *structure,
++                    gpointer         user_data)
++{
++  const GValue *value;
++  const char *v;
++
++  if (!gst_caps_features_contains (features, GST_CAPS_FEATURE_MEMORY_DMABUF))
++    return TRUE;
++
++  if (!(value = gst_structure_get_value (structure, "format")) ||
++      !(v = get_nth_string (value, 0)))
++    return FALSE;
++
++#ifdef HAVE_GSTREAMER_DMA_DRM
++  {
++    int idx;
++
++    idx = gst_video_format_from_string (v);
++    if (idx == GST_VIDEO_FORMAT_UNKNOWN)
++      return FALSE;
++
++    if (idx == GST_VIDEO_FORMAT_DMA_DRM &&
++        !gst_structure_get_value (structure, "drm-format"))
++      return FALSE;
++  }
++#endif
++
++  return TRUE;
++}
++
++GstCaps *
++gst_caps_sanitize (GstCaps *caps)
++{
++  caps = gst_caps_make_writable (caps);
++  gst_caps_filter_and_map_in_place (caps, filter_dmabuf_caps, NULL);
++  return caps;
++}
+diff --git a/src/gst/gstpipewireformat.h b/src/gst/gstpipewireformat.h
+index abd45c4e9bbbeb2cfa6080e23187585d42f71541..ca76b70c2f06aaf67e0d78d038af5e6cdff07c00 100644
+--- a/src/gst/gstpipewireformat.h
++++ b/src/gst/gstpipewireformat.h
+@@ -15,6 +15,8 @@ GPtrArray *      gst_caps_to_format_all  (GstCaps *caps);
+ 
+ GstCaps *        gst_caps_from_format    (const struct spa_pod *format);
+ 
++GstCaps *        gst_caps_sanitize       (GstCaps *caps);
++
+ G_END_DECLS
+ 
+ #endif
+diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
+index 71e376aea06273abc9b0df87b487a131e8257e9f..f72ca20fb91314fd5d191ec2936350e894673e60 100644
+--- a/src/gst/gstpipewiresrc.c
++++ b/src/gst/gstpipewiresrc.c
+@@ -844,10 +844,14 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
+     /* no peer, work with our own caps then */
+     caps = thiscaps;
+   }
++
++  GST_DEBUG_OBJECT (basesrc, "have common caps: %" GST_PTR_FORMAT, caps);
++  gst_caps_sanitize (caps);
++
+   if (caps == NULL || gst_caps_is_empty (caps))
+     goto no_common_caps;
+ 
+-  GST_DEBUG_OBJECT (basesrc, "have common caps: %" GST_PTR_FORMAT, caps);
++  GST_DEBUG_OBJECT (basesrc, "have common caps (sanitized): %" GST_PTR_FORMAT, caps);
+ 
+   /* open a connection with these caps */
+   possible = gst_caps_to_format_all (caps);
