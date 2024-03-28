@@ -1,0 +1,149 @@
+From b76414d1767bdfbfd03d4c77f79dedafbcea4cd4 Mon Sep 17 00:00:00 2001
+From: David Given <dg@cowlark.com>
+Date: Sat, 26 Jun 2021 00:17:02 +0200
+Subject: [PATCH] Make Lua 5.4 work again with a standardised bit32 subset. [Adjusted by Thomas S.]
+
+---
+ build.lua             | 1 +
+ src/c/bit32.c         | 61 +++++++++++++++++++++++++++++++++++++++++++
+ src/c/globals.h       |  2 ++
+ src/c/lua.c           |  5 +---
+ src/lua/_prologue.lua | 14 ----------
+ 5 files changed, 80 insertions(+), 20 deletions(-)
+ create mode 100644 src/c/bit32.c
+
+diff --git a/build.lua b/build.lua
+index a7e69da..927b5ce 100644
+--- a/build.lua
++++ b/build.lua
+@@ -225,6 +225,7 @@ function build_wordgrinder_binary(exe, luapackage, frontend, buildstyle)
+     srcfile("src/c/lua.c")
+     srcfile("src/c/word.c")
+     srcfile("src/c/screen.c")
++    srcfile("src/c/bit32.c")
+     srcfile(OBJDIR.."/luascripts.c")
+ 
+     -- Additional optional libraries
+
+
+diff --git a/src/c/bit32.c b/src/c/bit32.c
+new file mode 100644
+index 00000000..1e96c065
+--- /dev/null
++++ b/src/c/bit32.c
+@@ -0,0 +1,61 @@
++/* © 2021 David Given.
++ * WordGrinder is licensed under the MIT open source license. See the COPYING
++ * file in this distribution for the full text.
++ */
++
++#include "globals.h"
++
++/* Lua 5.4 actually has built-in bit operators. Unfortunately we can't use them in our code
++ * because the Lua 5.1-5.3 parsers error out if they see them! So we provide our own bit
++ * library instead. If we ever manage to switch to requiring Lua 5.4, we can get rid of
++ * this. */
++
++static int band(lua_State* L)
++{
++	lua_Integer a = luaL_checkinteger(L, 1);
++	lua_Integer b = luaL_checkinteger(L, 2);
++	lua_pushinteger(L, a & b);
++	return 1;
++}
++
++static int bor(lua_State* L)
++{
++	lua_Integer a = luaL_checkinteger(L, 1);
++	lua_Integer b = luaL_checkinteger(L, 2);
++	lua_pushinteger(L, a | b);
++	return 1;
++}
++
++static int bxor(lua_State* L)
++{
++	lua_Integer a = luaL_checkinteger(L, 1);
++	lua_Integer b = luaL_checkinteger(L, 2);
++	lua_pushinteger(L, a ^ b);
++	return 1;
++}
++
++static int btest(lua_State* L)
++{
++	lua_Integer a = luaL_checkinteger(L, 1);
++	lua_Integer b = luaL_checkinteger(L, 2);
++	lua_pushboolean(L, a & b);
++	return 1;
++}
++
++void bit32_init(lua_State* L)
++{
++	const static luaL_Reg funcs[] =
++	{
++		{ "band",   band },
++		{ "bor",    bor },
++		{ "bxor",   bxor },
++		{ "btest",  btest },
++		{ NULL,     NULL }
++	};
++
++    lua_newtable(L);
++    luaL_setfuncs(L, funcs, 0);
++    lua_pushvalue(L, -1);
++    lua_setglobal(L, "bit32");
++}
++
+diff --git a/src/c/globals.h b/src/c/globals.h
+index cbe8b135..e83b2636 100644
+--- a/src/c/globals.h
++++ b/src/c/globals.h
+@@ -78,6 +78,8 @@ extern void luaL_setfuncs(lua_State *L, const luaL_Reg *l, int nup);
+ #define lua_pushglobaltable(L) lua_pushvalue(L, LUA_GLOBALSINDEX)
+ #endif
+ 
++extern void bit32_init(lua_State* L);
++
+ #define forceinteger(L, offset) (int)lua_tonumber(L, offset)
+ #define forcedouble(L, offset) (double)lua_tonumber(L, offset)
+ 
+diff --git a/src/c/lua.c b/src/c/lua.c
+index 710a0fe9..593d13d4 100644
+--- a/src/c/lua.c
++++ b/src/c/lua.c
+@@ -74,10 +74,7 @@ void script_init(void)
+ {
+ 	L = luaL_newstate();
+ 	luaL_openlibs(L);
+-
+-#if LUA_VERSION_NUM == 501
+-	luaopen_bit(L);
+-#endif
++	bit32_init(L);
+ 
+ 	atexit(script_deinit);
+ 
+diff --git a/src/lua/_prologue.lua b/src/lua/_prologue.lua
+index ed6d6e6d..e49a9768 100644
+--- a/src/lua/_prologue.lua
++++ b/src/lua/_prologue.lua
+@@ -16,20 +16,6 @@ if jit then
+ 		";/usr/lib/x86_64-linux-gnu/lua/5.1/?.so;/usr/lib/lua/5.1/?.so;/usr/local/lib/lua/5.1/loadall.so"
+ end
+ 
+--- Bit library fallbacks. (LuaJIT vs Lua 5.2 incompatibilities.)
+-
+-if not bit32 then
+-	bit32 =
+-	{
+-		bxor = bit.bxor,
+-		band = bit.band,
+-		bor = bit.bor,
+-		btest = function(a, b)
+-			return bit.band(a, b) ~= 0
+-		end
+-	}
+-end
+-
+ -- Make sure that reads of undefined global variables fail. Note: this will
+ -- prevent us from storing nil in a global.
+ 
