@@ -22,6 +22,55 @@ def in_ci() -> bool:
     return os.environ.get('CI') == 'true'
 
 
+class PackageYML:
+    """Represents a Package YML file."""
+
+    def __init__(self, stream: Any):
+        self._data = dict(yaml.safe_load(stream))
+
+    @property
+    def name(self) -> str:
+        return str(self._data['name'])
+
+    @property
+    def version(self) -> str:
+        return str(self._data['version'])
+
+    @property
+    def release(self) -> int:
+        return int(self._data['release'])
+
+    @property
+    def homepage(self) -> Optional[str]:
+        return self._data.get('homepage')
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+
+class PspecXML:
+    """Represents a Pspec XML file."""
+
+    def __init__(self, data: str):
+        self._xml = ElementTree.fromstring(data)
+
+    @property
+    def release(self) -> int:
+        return int(self._xml.findall('.//Update')[0].attrib['release'])
+
+    @property
+    def homepage(self) -> Optional[str]:
+        xml_homepage_element = self._xml.find('.//Homepage')
+        if xml_homepage_element is not None:
+            return xml_homepage_element.text
+
+        return None
+
+    @property
+    def files(self) -> List[str]:
+        return [str(element.text) for element in self._xml.findall('.//Path')]
+
+
 @dataclass
 class FreezeConfig:
     start: Optional[datetime]
@@ -228,12 +277,22 @@ class PullRequestCheck:
     def _open(self, path: str) -> TextIO:
         return open(self._path(path), 'r')
 
-    def load_package_yml(self, file: str) -> Dict[str, Any]:
-        with self._open(file) as f:
-            return dict(yaml.safe_load(f))
+    def _read(self, path: str) -> str:
+        with self._open(path) as f:
+            return str(f.read())
 
-    def load_package_yml_from_commit(self, ref: str, file: str) -> Dict[str, Any]:
-        return dict(yaml.safe_load(self.git.file_from_commit(ref, file)))
+    def load_package_yml(self, file: str) -> PackageYML:
+        with self._open(file) as f:
+            return PackageYML(f)
+
+    def load_package_yml_from_commit(self, ref: str, file: str) -> PackageYML:
+        return PackageYML(self.git.file_from_commit(ref, file))
+
+    def load_pspec_xml(self, file: str) -> PspecXML:
+        return PspecXML(self._read(file))
+
+    def load_pspec_xml_from_commit(self, ref: str, file: str) -> PspecXML:
+        return PspecXML(self.git.file_from_commit(ref, file))
 
     def file_line(self, file: str, expr: str) -> Optional[int]:
         with self._open(file) as f:
@@ -352,13 +411,13 @@ class PackageBumped(PullRequestCheck):
 
         try:
             old = self.load_package_yml_from_commit(base, file)
-            if int(old['release']) + 1 != int(new['release']):
+            if old.release + 1 != new.release:
                 return Result(level=self._level, file=file, message=self._msg)
 
             return None
         except Exception as e:
             if 'exists on disk, but not in' in str(e):
-                if int(new['release']) != 1:
+                if new.release != 1:
                     return Result(level=self._level, file=file, message=self._msg_new)
 
                 return None
@@ -442,9 +501,7 @@ class PackageVersion(PullRequestCheck):
                 if not self._check_version(path)]
 
     def _check_version(self, path: str) -> bool:
-        version = self.load_package_yml(path)['version']
-
-        return isinstance(version, str)
+        return isinstance(self.load_package_yml(path).version, str)
 
 
 class Patch(PullRequestCheck):
@@ -481,7 +538,7 @@ class SPDXLicense(PullRequestCheck):
                 for r in self._validate_spdx(f) if r]
 
     def _validate_spdx(self, file: str) -> List[Optional[Result]]:
-        license = self.load_package_yml(file)['license']
+        license = self.load_package_yml(file).get('license')
         if isinstance(license, list):
             return [self._validate_license(file, id) for id in license]
 
@@ -551,26 +608,16 @@ class Pspec(PullRequestCheck):
                 if not self._check_consistent(path)]
 
     def _check_consistent(self, package_dir: str) -> bool:
-        xml = ElementTree.parse(self._xml_file(package_dir))
-        xml_release = int(xml.findall('.//Update')[0].attrib['release'])
-        xml_homepage: str = ''
-        xml_homepage_element = xml.find('.//Homepage')
+        xml = self._xml_file(package_dir)
+        yml = self._yml_file(package_dir)
 
-        if xml_homepage_element is not None:
-            xml_homepage = xml_homepage_element.text or ''
+        return bool(yml.release == xml.release and yml.homepage == xml.homepage)
 
-        with open(self._yml_file(package_dir), 'r') as f:
-            yml = yaml.safe_load(f)
-            yml_release = yml.get('release', '')
-            yml_homepage = yml.get('homepage', '')
+    def _yml_file(self, package_dir: str) -> PackageYML:
+        return self.load_package_yml(os.path.join(package_dir, 'package.yml'))
 
-        return bool(yml_release == xml_release and yml_homepage == xml_homepage)
-
-    def _yml_file(self, package_dir: str) -> str:
-        return self._path(os.path.join(package_dir, 'package.yml'))
-
-    def _xml_file(self, package_dir: str) -> str:
-        return self._path(os.path.join(package_dir, 'pspec_x86_64.xml'))
+    def _xml_file(self, package_dir: str) -> PspecXML:
+        return self.load_pspec_xml(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
 class SystemDependencies(PullRequestCheck):
@@ -588,7 +635,7 @@ class SystemDependencies(PullRequestCheck):
         return self._validate_deps(pkg) if self._components_match(pkg_components) else []
 
     def _package_components(self, pkg: str) -> List[str]:
-        return self._unwrap_component(self.load_package_yml(self.package_yml_path(pkg))['component'])
+        return self._unwrap_component(self.load_package_yml(self.package_yml_path(pkg)).get('component'))
 
     def _unwrap_component(self, component: Any) -> List[str]:
         if isinstance(component, dict):
@@ -646,9 +693,9 @@ class SummaryGenerator(PullRequestCheck):
         if package is None:
             return None
 
-        return f"{package['name']}-{package['version']}-{package['release']}"
+        return f"{package.name}-{package.version}-{package.release}"
 
-    def _commit_package_yaml(self, ref: str) -> Optional[Dict[str, Any]]:
+    def _commit_package_yaml(self, ref: str) -> Optional[PackageYML]:
         files = [f for f in self.git.files_in_commit(ref) if os.path.basename(f) == 'package.yml']
         if len(files) == 0:
             return None
