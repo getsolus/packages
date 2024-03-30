@@ -10,11 +10,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 from urllib import request
 from xml.etree import ElementTree
 
 import yaml
+
+"""Package is either a Package YML file or Pspec XML file."""
+Package = Union['PackageYML', 'PspecXML']
 
 
 def in_ci() -> bool:
@@ -398,27 +401,35 @@ class Homepage(PullRequestCheck):
 class PackageBumped(PullRequestCheck):
     _msg = 'Package release is not incremented by 1'
     _msg_new = 'Package release is not 1'
-    _level = Level.WARNING
 
     def run(self) -> List[Result]:
         results = [self._check_commit(self.base or 'HEAD', file)
-                   for file in self.package_files]
+                   for file in self.files]
 
         return [result for result in results if result is not None]
 
     def _check_commit(self, base: str, file: str) -> Optional[Result]:
-        new = self.load_package_yml(file)
+        match os.path.basename(file):
+            case 'package.yml':
+                return self._check(base, file, PackageYML, Level.WARNING)
+            case 'pspec_x86_64.xml':
+                return self._check(base, file, PspecXML, Level.ERROR)
+            case _:
+                return None
+
+    def _check(self, base: str, file: str, loader: Callable[[str], Package], level: Level) -> Optional[Result]:
+        new = loader(self._read(file))
 
         try:
-            old = self.load_package_yml_from_commit(base, file)
+            old = loader(self.git.file_from_commit(base, file))
             if old.release + 1 != new.release:
-                return Result(level=self._level, file=file, message=self._msg)
+                return Result(level=level, file=file, message=self._msg)
 
             return None
         except Exception as e:
             if 'exists on disk, but not in' in str(e):
                 if new.release != 1:
-                    return Result(level=self._level, file=file, message=self._msg_new)
+                    return Result(level=level, file=file, message=self._msg_new)
 
                 return None
 
