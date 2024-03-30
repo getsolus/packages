@@ -2,9 +2,11 @@
 import argparse
 import glob
 import json
+import logging
 import os.path
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -13,6 +15,11 @@ from urllib import request
 from xml.etree import ElementTree
 
 import yaml
+
+
+def in_ci() -> bool:
+    """Returns true if running in GitHub Actions or GitLab CI."""
+    return os.environ.get('CI') == 'true'
 
 
 @dataclass
@@ -89,12 +96,48 @@ class Git:
         return self.run_lines('diff', '--name-only', '--diff-filter=AM')
 
 
+class LogFormatter(logging.Formatter):
+    fmt = '\033[0m \033[94m%(pathname)s:%(lineno)d:\033[0m %(message)s'
+    formatters = {
+        logging.DEBUG: logging.Formatter('\033[1;30mDBG' + fmt),
+        logging.INFO: logging.Formatter('\033[34mINF' + fmt),
+        logging.WARNING: logging.Formatter('\033[33mWRN' + fmt),
+        logging.ERROR: logging.Formatter('\033[31mERR' + fmt),
+        logging.CRITICAL: logging.Formatter('\033[31mCRI' + fmt),
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        return self.formatters[record.levelno].format(record)
+
+    @staticmethod
+    def handler() -> logging.Handler:
+        handler = logging.StreamHandler(sys.stderr)
+        handler.setLevel(logging.DEBUG)
+        handler.setFormatter(LogFormatter())
+
+        return handler
+
+
 class Level(str, Enum):
     __str__ = Enum.__str__
     DEBUG = 'debug'
     NOTICE = 'notice'
     ERROR = 'error'
     WARNING = 'warning'
+
+    @property
+    def log_level(self) -> int:
+        match self:
+            case Level.DEBUG:
+                return logging.DEBUG
+            case Level.NOTICE:
+                return logging.INFO
+            case Level.WARNING:
+                return logging.WARNING
+            case Level.ERROR:
+                return logging.ERROR
+            case _:
+                return 0
 
 
 @dataclass
@@ -109,7 +152,14 @@ class Result:
     endLine: Optional[int] = None
 
     def __str__(self) -> str:
-        return f'::{self.level}{self._meta}::{self._message}'
+        return f'::{self.level.value}{self._meta}::{self._message}'
+
+    def log(self) -> None:
+        if in_ci():
+            print(str(self))
+            return
+
+        logging.getLogger(__name__).handle(self._record)
 
     @property
     def _message(self) -> str:
@@ -131,6 +181,15 @@ class Result:
             return ''
 
         return f'{key}={value}'
+
+    @property
+    def _record(self) -> logging.LogRecord:
+        return logging.LogRecord('',
+                                 self.level.log_level,
+                                 self.file or '',
+                                 self.line or 1,
+                                 self.message,
+                                 None, None)
 
 
 class PullRequestCheck:
@@ -644,7 +703,7 @@ class Checker:
         print(f"Found {len(results)} result(s), {len(errors)} error(s)")
 
         for result in results:
-            print(result)
+            result.log()
 
         self.write_summary()
 
@@ -663,6 +722,8 @@ class Checker:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, handlers=[LogFormatter.handler()])
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--base', type=str,
                         help='Optional reference to the base branch')
