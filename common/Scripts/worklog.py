@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import html
 import json
 import os.path
 import subprocess
@@ -78,6 +79,9 @@ class Listable:
         raise NotImplementedError
 
     def to_md(self) -> str:
+        raise NotImplementedError
+
+    def to_html(self) -> str:
         raise NotImplementedError
 
     def to_tty(self) -> str:
@@ -183,6 +187,11 @@ class Build(Listable):
     def to_md(self) -> str:
         return f'[{self.pkg} {self.v}]({self.tag_url})'
 
+    def to_html(self) -> str:
+        return (f'<a href="{html.escape(self.tag_url, quote=True)}">'
+                f'{html.escape(self.pkg)}&nbsp;{html.escape(self.v)}'
+                '</a>')
+
     def to_tty(self) -> str:
         duration = f'({self.duration}) ' if self.duration else ''
         comment = f' # {self.comment}' if self.comment else ''
@@ -287,6 +296,13 @@ class Update(Listable):
 
         return f'**{self.package}** was updated to **{self.v}** ({", ".join(authors)})'
 
+    def to_html(self) -> str:
+        authors = [f'<a href="{html.escape(build.tag_url, quote=True)}">@{html.escape(build.commit().author)}</a>'
+                   for build in self._successful_builds]
+
+        return (f'<strong>{html.escape(self.package)}</strong> was updated to <strong>{html.escape(self.v)}</strong> '
+                f'({", ".join(authors)})')
+
 
 class Builds:
     _url = 'https://build.getsol.us/builds.json'
@@ -355,6 +371,9 @@ class Commit(Listable):
     def to_md(self) -> str:
         return f'[{self.msg}]({self.url})'
 
+    def to_html(self) -> str:
+        return f'<a href="{html.escape(self.url, quote=True)}">{html.escape(self.msg)}</a>'
+
     def to_tty(self) -> str:
         return (f'{TTY.Yellow}{TTY.url(self.ref, self.url)}{TTY.Reset} '
                 f'{self.date} '
@@ -407,8 +426,15 @@ class Printer:
         if sort:
             items = sorted(items, key=lambda item: (item.package, item.date))
 
-        print(f'{len(items)} {cli_args.command}:')
+        if format == 'html':
+            print(f'<p>{len(items)} {cli_args.command}:</p>\n<ul>')
+        else:
+            print(f'{len(items)} {cli_args.command}:')
+
         self._print(items, format)
+
+        if format == 'html':
+            print('</ul>')
 
     def follow(self, kind: str, format: str) -> None:
         while True:
@@ -445,6 +471,8 @@ class Printer:
                 print(item.to_tty())
             case 'md':
                 print(f'- {item.to_md()}')
+            case 'html':
+                print(f'<li>{item.to_html()}</li>')
             case _:
                 raise ValueError(f'unsupported format: {fmt}')
 
@@ -486,8 +514,9 @@ if __name__ == '__main__':
                         help='Show builds before this date. '
                              'The date can be specified in any format parsed by the `date` command. '
                              'Defaults to `now`.')
-    parser.add_argument('--format', '-f', type=str, choices=['md', 'tty'], default='tty',
-                        help='Output format: Terminal (`tty`) or Markdown (`md`). Defaults to `tty`.')
+    parser.add_argument('--format', '-f', type=str, choices=['md', 'tty', 'html'], default='tty',
+                        help='Output format: Terminal (`tty`), Markdown (`md`) or HTML (`html`). '
+                             'Defaults to `tty`.')
     parser.add_argument('--sort', '-s', action='store_true',
                         help='Sort packages in lexically ascending order.')
     parser.add_argument('--follow', '-F', action='store_true',
