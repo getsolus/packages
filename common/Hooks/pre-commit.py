@@ -8,11 +8,9 @@ package_checks = os.path.join(common_dir, 'common', 'CI', 'package_checks.py')
 
 
 def _run(name: str, *args: str) -> bool:
-    res = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    res = subprocess.run(args, stdout=subprocess.PIPE, text=True)
     if res.returncode != 0:
         print(f'{name} failed: {" ".join(args)}')
-        print('Output:')
-        print("\n".join(['  ' + line for line in res.stdout.split("\n")]))
 
     return res.returncode == 0
 
