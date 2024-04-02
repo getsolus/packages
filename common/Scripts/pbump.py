@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #  pbump.py: Bump pspec.xml
 #
@@ -14,10 +14,8 @@
 import xml.etree.ElementTree as ET
 import sys
 import os
-import xml.dom.minidom as minidom
 import datetime
-import commands
-import ConfigParser
+import configparser
 
 ''' Example config file
 ~/.config/solus/packager
@@ -28,10 +26,10 @@ Email=Your Email Goes Here
 '''
 
 if __name__ == "__main__":
-    #if len(sys.argv) != 2:
+    # if len(sys.argv) != 2:
     #    print "Not enough arguments - aborting"
     #    sys.exit(1)
-    homeDir = os.environ ["HOME"]
+    homeDir = os.environ["HOME"]
     config = ".config/solus/packager"
     config_old = ".solus/packager"
     config_p = os.path.join(homeDir, config)
@@ -39,22 +37,25 @@ if __name__ == "__main__":
 
     use_conf = None
 
-    if os.path.exists(config_p): # New packager exists
+    if os.path.exists(config_p):  # New packager exists
         use_conf = config_p
     else:
-        if os.path.exists(config_old_p): # Old only exists
+        if os.path.exists(config_old_p):  # Old only exists
             use_conf = config_old_p
         else:
-            print "Config file could not be found."
+            print("Config file could not be found.")
             sys.exit(1)
 
-    c = ConfigParser.ConfigParser()
-    c.readfp(open(use_conf))
+    c = configparser.ConfigParser()
+
+    with open(use_conf) as file:
+        c.read_file(file)
+
     newname = c.get("Packager", "Name")
     newemail = c.get("Packager", "Email")
 
     if not os.path.exists("pspec.xml"):
-        print "pspec.xml doesn\'t exist - aborting"
+        print("pspec.xml doesn\'t exist - aborting")
         sys.exit(1)
 
     tree = ET.parse("pspec.xml")
@@ -91,10 +92,10 @@ if __name__ == "__main__":
     ent.text = newemail
     ent.tail = "\n        "
 
-    s = ET.tostring(root, 'utf-8').replace("\r\n", "\n").replace("\t", "    ")
+    s = ET.tostring(root, 'utf-8').decode('utf-8').replace("\r\n", "\n").replace("\t", "    ")
     complete = "<?xml version=\"1.0\" ?>\n<!DOCTYPE PISI SYSTEM \"https://getsol.us/standard/pisi-spec.dtd\">\n" + s
 
-    with open ("pspec.xml", "w") as output:
+    with open("pspec.xml", "w") as output:
         output.writelines(complete)
 
-    print "Bumped to %s" % rel
+    print("Bumped to %s" % rel)
