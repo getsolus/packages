@@ -1,9 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 #  ep-update.py: Update a package using a tarball
 #
 #  USAGE: ep-update.py VERSION UPSTREAM_URL
 #  Copyright 2015 Ikey Doherty <iikey@solus-project.com>
+#  Copyright 2024 Solus Developers <releng@getsol.us>
 #
 #  WARNING: Not well tested, strips comments, and reorders attributes. Crap error handling
 #
@@ -12,27 +13,26 @@
 #  the Free Software Foundation; either version 2 of the License, or
 #  (at your option) any later version.
 
-import xml.etree.ElementTree as ET
-import sys
-import os
-import xml.dom.minidom as minidom
+import configparser
 import datetime
-import commands
-import ConfigParser
+import os
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
 
-''' Example config file
+""" Example config file
 ~/.config/solus/packager
 
 [Packager]
 Name=Your Name Goes Here
 Email=Your Email Goes Here
-'''
+"""
 
 if __name__ == "__main__":
-    #if len(sys.argv) != 2:
+    # if len(sys.argv) != 2:
     #    print "Not enough arguments - aborting"
     #    sys.exit(1)
-    homeDir = os.environ ["HOME"]
+    homeDir = os.environ["HOME"]
     config = ".config/solus/packager"
     config_old = ".solus/packager"
     config_p = os.path.join(homeDir, config)
@@ -40,22 +40,22 @@ if __name__ == "__main__":
 
     use_conf = None
 
-    if os.path.exists(config_p): # New packager exists
+    if os.path.exists(config_p):  # New packager exists
         use_conf = config_p
     else:
-        if os.path.exists(config_old_p): # Old only exists
+        if os.path.exists(config_old_p):  # Old only exists
             use_conf = config_old_p
         else:
-            print "Config file could not be found."
+            print("Config file could not be found.")
             sys.exit(1)
 
-    c = ConfigParser.ConfigParser()
-    c.readfp(open(use_conf))
+    c = configparser.ConfigParser()
+    c.read(use_conf)
     newname = c.get("Packager", "Name")
     newemail = c.get("Packager", "Email")
 
     if not os.path.exists("pspec.xml"):
-        print "pspec.xml doesn\'t exist - aborting"
+        print("pspec.xml doesn't exist - aborting")
         sys.exit(1)
 
     url = sys.argv[2]
@@ -63,24 +63,25 @@ if __name__ == "__main__":
     newversion = sys.argv[1]
     r = 0
     try:
-        r = os.system("wget \"%s\"" % url)
-    except:
-        print "Failed to download file"
+        r = os.system(f'wget "{url}"')
+    except Exception:
+        print("Failed to download file")
         sys.exit(1)
     if r != 0:
-        print "Failed to download file"
+        print("Failed to download file")
         sys.exit(1)
 
-    sha1 = commands.getoutput("sha1sum %s" % file).split()[0].strip()
+    sha1 = subprocess.getoutput(f"sha1sum {file}").split()[0].strip()
 
-    mapping = dict()
-    mapping["tar.bz2"] = "tarbz2"
-    mapping["tbz2"] = "tarbz"
-    mapping["tar.xz"] = "tarxz"
-    mapping["txz"] = "tarxz"
-    mapping["tar.gz" ] = "targz"
-    mapping["tgz"] = "targz"
-    mapping["zip"] = "zip"
+    mapping = {
+        "tar.bz2": "tarbz2",
+        "tbz2": "tarbz",
+        "tar.xz": "tarxz",
+        "txz": "tarxz",
+        "tar.gz": "targz",
+        "tgz": "targz",
+        "zip": "zip",
+    }
     extype = ".".join(url.split(".")[-2:])
     if extype in mapping:
         extension = mapping[extype]
@@ -93,17 +94,17 @@ if __name__ == "__main__":
     root = tree.getroot()
 
     archive = root.findall("Source/Archive")[0]
-    archive.attrib['sha1sum'] = sha1
-    archive.attrib['type'] = extension
+    archive.attrib["sha1sum"] = sha1
+    archive.attrib["type"] = extension
     archive.text = url
 
     hist = root.findall("History")
     last_update = hist[0].findall("Update")[0]
-    rel = int(last_update.attrib['release'])
+    rel = int(last_update.attrib["release"])
 
     # 10-06-2014
     d = datetime.date.today()
-    f = d.strftime('%m-%d-%Y')
+    f = d.strftime("%m-%d-%Y")
     # normal shmaz.
     rel += 1
     newrel = ET.Element("Update")
@@ -118,8 +119,8 @@ if __name__ == "__main__":
     ent.text = newversion
     ent = ET.SubElement(newrel, "Comment")
     ent.tail = "\n            "
-    ent.text = "Update to %s" % (newversion)
-    newrel.attrib['release'] = str(rel)
+    ent.text = f"Update to {newversion}"
+    newrel.attrib["release"] = str(rel)
     ent = ET.SubElement(newrel, "Name")
     ent.tail = "\n            "
     ent.text = newname
@@ -127,11 +128,14 @@ if __name__ == "__main__":
     ent.text = newemail
     ent.tail = "\n        "
 
-    s = ET.tostring(root, 'utf-8').replace("\r\n", "\n").replace("\t", "    ")
-    complete = "<?xml version=\"1.0\" ?>\n<!DOCTYPE PISI SYSTEM \"https://getsol.us/standard/pisi-spec.dtd\">\n" + s
+    s = ET.tostring(root, "unicode").replace("\r\n", "\n").replace("\t", "    ")
+    complete = (
+        '<?xml version="1.0" ?>\n<!DOCTYPE PISI SYSTEM "https://getsol.us/standard/pisi-spec.dtd">\n'
+        + s
+    )
 
     os.unlink(file)
-    with open ("pspec.xml", "w") as output:
+    with open("pspec.xml", "w") as output:
         output.writelines(complete)
 
-    print "Now please build to verify your changes"
+    print("Now please build to verify your changes")
