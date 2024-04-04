@@ -1,4 +1,4 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python3
 #
 # Helper script to find rebuilds not yet done against a specific release
 # of the package.
@@ -10,13 +10,13 @@
 # Script must be run with unstable repository configured so it can check
 # the index correctly.
 
-import pisi.api
+import pisi.db
 
 TARGET_PACKAGE = "libpng"
 TARGET_RELEASE = 14
 
-class StrayAccumulator:
 
+class StrayAccumulator:
     repoDB = None
     rebuilt = None
     pending = None
@@ -34,14 +34,14 @@ class StrayAccumulator:
         self.repoDB = pisi.db.packagedb.PackageDB()
 
     def calculate(self):
-        """ Attempt to assign all the buckets """
+        """Attempt to assign all the buckets"""
         revdeps = self.repoDB.get_rev_deps(self.package)
         package = self.repoDB.get_package(self.package)
 
         # Determine the *active* pkgRelease
         pkgRelease = int(package.release)
 
-        for (pkgID, dependency) in revdeps:
+        for pkgID, dependency in revdeps:
             fromRel = None
 
             # Most will depend *from* a release
@@ -50,7 +50,9 @@ class StrayAccumulator:
             elif dependency.release:
                 fromRel = int(dependency.release)
                 if fromRel != pkgRelease:
-                    print("WARNING: Invalid dependency on {} release {} == {}".format(self.package, fromRel, pkgID))
+                    print(
+                        f"WARNING: Invalid dependency on {self.package} release {fromRel} == {pkgID}"
+                    )
                     self.unknown.add(pkgID)
                     continue
 
@@ -66,34 +68,39 @@ class StrayAccumulator:
                 self.rebuilt.add(pkgID)
 
     def dump(self):
-        """ Emit statistics now """
+        """Emit statistics now"""
 
         # Dump the rebuilt status
-        if len(self.rebuilt) > 0:
-            print("{} packages have been rebuilt properly\n".format(
-                  len(self.rebuilt)))
+        if self.rebuilt:
+            print("{} packages have been rebuilt properly\n".format(len(self.rebuilt)))
 
         # Dump the pending set
-        if len(self.pending) > 0:
+        if self.pending:
             pending = list(self.pending)
             pending.sort()
             print("{} packages pending a rebuild\n".format(len(self.pending)))
             for p in pending:
-                print(" - {}".format(p))
+                print(f" - {p}")
 
-        if len(self.unknown) < 1:
+        if not self.unknown:
             return
 
         unknown = list(self.unknown)
         unknown.sort()
-        print("\n\n{} packages have manually added runtime dependency\n".format(len(unknown)))
+        print(
+            "\n\n{} packages have manually added runtime dependency\n".format(
+                len(unknown)
+            )
+        )
         for u in unknown:
-            print("  - {}".format(u))
+            print(f"  - {u}")
+
 
 def main():
     accum = StrayAccumulator(TARGET_PACKAGE, TARGET_RELEASE)
     accum.calculate()
     accum.dump()
+
 
 if __name__ == "__main__":
     main()
