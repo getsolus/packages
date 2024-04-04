@@ -1,16 +1,17 @@
-#!/usr/bin/env python2.7
+#!/usr/bin/env python3
 #
 # Helper script to find any  packages not rebuilt in a while
 
-import pisi.db
 import datetime
 import time
+
+import pisi.db
 
 DAY = 86400  # 86400 seconds in a day
 PERIOD = 365 * DAY
 
-class HistoryTeacher:
 
+class HistoryTeacher:
     pdb = None
     tipbucket = None
     stamp = None
@@ -21,12 +22,12 @@ class HistoryTeacher:
         self.stamp = float(time.time())
 
     def assess(self):
-        """ Walk all known packages in repo """
+        """Walk all known packages in repo"""
         for key in self.pdb.list_packages(None):
             self.maybe_push(key)
 
     def maybe_push(self, key):
-        """ Maybe assign the package to the tipbucket """
+        """Maybe assign the package to the tipbucket"""
         if key in self.tipbucket:
             return
         if not self.pdb.has_package(key):
@@ -37,18 +38,18 @@ class HistoryTeacher:
         self.tipbucket[key] = whence
 
     def sensible_date(self, shittyInput):
-        """ Return probably wonky date into a usable timestamp """
+        """Return probably wonky date into a usable timestamp"""
         try:
             whence = datetime.datetime(*time.strptime(shittyInput, "%Y-%m-%d")[0:6])
-        except:
+        except Exception:
             try:
                 whence = datetime.datetime(*time.strptime(shittyInput, "%d-%m-%Y")[0:6])
-            except:
+            except Exception:
                 whence = datetime.datetime(*time.strptime(shittyInput, "%m-%d-%Y")[0:6])
         return time.mktime(whence.timetuple())
 
     def dumpDelinquints(self):
-        """ Dump the nasty fecks out """
+        """Dump the nasty fecks out"""
         oldFogies = []
         for key in self.tipbucket:
             # Only show source names instead of package names
@@ -69,13 +70,15 @@ class HistoryTeacher:
         oldFogies.sort()
         print("Not rebuilt in 31 days or more:\n\n")
         for fogie in oldFogies:
-            print(" > {}".format(fogie))
+            print((" > {}".format(fogie)))
+
 
 def main():
     teacher = HistoryTeacher()
     teacher.assess()
     teacher.dumpDelinquints()
     pass
+
 
 if __name__ == "__main__":
     main()
