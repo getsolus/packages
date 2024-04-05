@@ -3,6 +3,7 @@ import argparse
 import html
 import json
 import os.path
+import re
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,14 @@ class GitHubCommit:
             return str(author.get('login', 'Unknown'))
 
         return str(self._data['commit']['author']['name'])
+
+    @property
+    def message(self) -> str:
+        return str(self._data['commit']['message'])
+
+    @property
+    def cves(self) -> List[str]:
+        return re.findall(r'CVE-\d{4}-\d{4,7}', self.message)
 
     @staticmethod
     def __tempfile(ref: str) -> str:
@@ -283,25 +292,49 @@ class Update(Listable):
     def _successful_builds(self) -> Iterable[Build]:
         return [build for build in self.builds if build.status == "OK"]
 
+    @property
+    def cves(self) -> List[str]:
+        return [cve for build in self._successful_builds
+                for cve in build.commit().cves]
+
     def to_tty(self) -> str:
         authors = [TTY.url(f'@{build.commit().author}', build.tag_url)
                    for build in self._successful_builds]
+        cves = [TTY.url(cve, f'https://nvd.nist.gov/vuln/detail/{cve}')
+                for cve in self.cves]
 
-        return (f'{TTY.Green}{self.package}{TTY.Reset} {self.v} ' +
+        line = (f'{TTY.Green}{self.package}{TTY.Reset} {self.v} ' +
                 f'{TTY.Blue}[{", ".join(authors)}]{TTY.Reset}')
+
+        if len(cves) > 0:
+            line += f' {TTY.Red}[{", ".join(cves)}]{TTY.Reset}'
+
+        return line
 
     def to_md(self) -> str:
         authors = [f'[@{build.commit().author}]({build.tag_url})'
                    for build in self._successful_builds]
+        cves = [f'[{cve}](https://nvd.nist.gov/vuln/detail/{cve})'
+                for cve in self.cves]
+        line = f'**{self.package}** was updated to **{self.v}** ({", ".join(authors)}).'
 
-        return f'**{self.package}** was updated to **{self.v}** ({", ".join(authors)})'
+        if len(cves) > 0:
+            line += f' Includes security fixes for {", ".join(cves)}.'
+
+        return line
 
     def to_html(self) -> str:
         authors = [f'<a href="{html.escape(build.tag_url, quote=True)}">@{html.escape(build.commit().author)}</a>'
                    for build in self._successful_builds]
+        cves = [f'<a href="https://nvd.nist.gov/vuln/detail/{cve}">{cve}</a>'
+                for cve in self.cves]
+        line = (f'<strong>{html.escape(self.package)}</strong> was updated to <strong>{html.escape(self.v)}</strong> '
+                f'({", ".join(authors)}).')
 
-        return (f'<strong>{html.escape(self.package)}</strong> was updated to <strong>{html.escape(self.v)}</strong> '
-                f'({", ".join(authors)})')
+        if len(cves) > 0:
+            line += f' Includes security fixes for {", ".join(cves)}.'
+
+        return line
 
 
 class Builds:
