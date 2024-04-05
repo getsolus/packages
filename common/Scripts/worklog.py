@@ -350,7 +350,7 @@ class Builds:
     def packages(self) -> List[Build]:
         return list({b.pkg: b for b in self.all}.values())
 
-    def updates(self, start: datetime, end: datetime) -> List[Update]:
+    def updates(self, start: datetime, end: datetime, security: bool = False) -> List[Update]:
         updates: Dict[str, Update] = {}
 
         for build in self._filter(self.all, start, end):
@@ -358,6 +358,10 @@ class Builds:
                 updates[build.package].append(build)
             else:
                 updates[build.package] = Update(build)
+
+        if security:
+            updates = {pkg: update for pkg, update in updates.items()
+                       if len(update.cves) > 0}
 
         return list(updates.values())
 
@@ -487,6 +491,8 @@ class Printer:
                 return self.builds.during(self.start, self.end)
             case 'updates':
                 return self.builds.updates(self.start, self.end)
+            case 'security-updates':
+                return self.builds.updates(self.start, self.end, security=True)
             case 'commits':
                 return self.git.commits(self.start, self.end)
             case _:
@@ -535,10 +541,11 @@ if __name__ == '__main__':
                 ./worklog.py commits '1 days ago'
             '''
         ))
-    parser.add_argument('command', type=str, choices=['builds', 'updates', 'commits'],
+    parser.add_argument('command', type=str, choices=['builds', 'updates', 'security-updates', 'commits'],
                         help='Type of output to show. '
                              '`builds` shows the builds as produced by the build server, '
                              '`updates` shows per-package updates based on the build server log and GitHub metadata, '
+                             '`security-updates` shows updates with security fixes, '
                              '`commits` shows the commits from your local copy of the `packages` repository.')
     parser.add_argument('after', type=str,
                         help='Show builds after this date. '
