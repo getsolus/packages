@@ -1,0 +1,133 @@
+name       : eopkg
+version    : 4.0.0
+release    : 4
+source     :
+    - git|https://github.com/getsolus/eopkg : 1cb0fe378aa397bba61dee83f8b5c2f465498d05
+    - git|https://github.com/getsolus/PackageKit.git : dcfcd941d2aa09a1378d738bc98afb4ca52d14df
+homepage   : https://github.com/getsolus/eopkg
+license    : GPL-2.0-or-later
+component  : system.utils
+summary    : UNSUPPORTED & EXPERIMENTAL (reserved for Solus Staff testing)
+description: |
+
+    WARNING: This package is **unsupported**, **experimental and may **break your system!!!**
+
+    It is included at this early stage to make it easier for Solus Staff to test and debug it.
+
+    Experienced contributors with packaging and bugreporting experience are welcome to help us test and report (non-duplicate!) problems here:
+
+    https://github.com/getsolus/packages/issues/1316
+
+strip      : no
+debug      : no
+builddeps  :
+    - pkgconfig(packagekit-glib2)
+    - pkgconfig(python3)
+    - iksemel-devel
+    - nuitka
+    - patchelf
+    - python-build
+    - python-installer
+    - python-magic
+    - python-packaging
+    - python-wheel
+    - python-xattr
+    - python-zstandard
+    - tree
+rundeps    :
+    #- ^eopkg-symlinks:
+    #    - eopkg
+    - ^python-eopkg :
+        - iksemel
+        - python-xattr
+    #- ^python-eopkg-symlinks:
+    #    - python-eopkg
+setup      : |
+    # NOTE: please leave the grep commands in for visibility purposes during build. Thanks. /ermo
+    # get rid of any existing lines w/git ref version info
+    sed "/__version__ += /d" -i pisi/__init__.py
+    grep -Hn version pisi/__init__.py
+    # append the git ref to __version__ on a new line
+    gawk -i inplace \
+        'BEGIN { "git rev-parse --short HEAD" | getline gitref } { print };
+         /__version__ = / { printf "%s %s\n", $1, "+= \" (" gitref ")\"" };' \
+        pisi/__init__.py
+    grep -Hn version pisi/__init__.py
+
+    %python3_setup
+build      : |
+    # This prevents the dynamic loader and glibc from attempting to resolve shared objects via hwcaps,
+    # and effectively forces nuitka to build with x86_64-v1 (OG AMD64). Note that more flags may need
+    # to be added in the future to guard against either x86_64-v2, x86_64-v3 or x86_64-v4 hwcaps being used.
+    export GLIBC_TUNABLES=glibc.cpu.hwcaps=-AVX
+
+    # Note: we need to ensure that ca-certs, libmagic, openssl, and zlib are included
+    #       in the standalone package (all are part of system.base, so not listed in
+    #       builddeps for now).
+    #       The context is that the py3 ssl module depends on openssl and openssl needs
+    #       ca-certs to be able to check https connections.
+    
+    # We're not actually using self-execution. In this case, eopkg is using the -c flag as shorthand for --component, rather than for passing the program as a string (as is default python behavior).
+    nuitka3 --onefile --include-module=dbm.gnu --show-scons --no-deployment-flag=self-execution $workdir/eopkg-cli
+    nuitka3 --onefile --include-module=dbm.gnu $sources/PackageKit.git/backends/eopkg/eopkgBackend.py
+install    : |
+    # install the normal pure py3 stuff
+    %python3_install
+
+    # Pure py3 initial installed state
+    tree -L 1 $installdir/usr/bin $installdir/usr/lib
+
+    # ensure no conflict w/eopkg py2 stuff, ensure this stuff goes into the ^python-eopkg pattern
+    for exe in eopkg lseopkg uneopkg; do
+        mv -v $installdir/usr/bin/${exe} $installdir/usr/bin/${exe}.py3
+    done
+
+    # install the compiled eopkg.bin nuitka standalone thing
+    install -Dm0755 $workdir/eopkg-cli.bin $installdir/usr/bin/eopkg.bin
+    
+    # ensure that existing eopkg4-bin aliases keep working for backwards compat purposes currently
+    ln -srvf $installdir/usr/bin/eopkg.bin $installdir/usr/bin/eopkg4-bin
+    
+    # If we want to make eopkg.bin the default at some point
+    # (patterned into the eopkg-symlinks package)
+    #ln -srv $installdir/usr/bin/eopkg.bin $installdir/usr/bin/eopkg
+    #ln -srv $installdir/usr/bin/eopkg.bin $installdir/usr/bin/eopkg-cli
+
+    # If we want to make python-eopkg take over some pisi symlinks at some point
+    # (patterned into the python-eopkg-symlinks package)
+    #test -f $installdir/usr/bin/check-newconfigs.py3 \
+    #    && ln -srv $installdir/usr/bin/check-newconfigs.py3 $installdir/usr/bin/check-newconfigs.py
+    #ln -srv $installdir/usr/bin/lseopkg.py3 $installdir/usr/bin/lseopkg
+    #ln -srv $installdir/usr/bin/lseopkg.py3 $installdir/usr/bin/lspisi
+    #test -f $installdir/usr/bin/revdep-rebuild.py3 \
+    #    && ln -srv $installdir/usr/bin/revdep-rebuild.py3 $installdir/usr/bin/revdep-rebuild
+    #ln -srv $installdir/usr/bin/uneopkg.py3 $installdir/usr/bin/uneopkg
+    #ln -srv $installdir/usr/bin/uneopkg.py3 $installdir/usr/bin/unpisi
+    
+    # install the nuitka-compiled eopkg PackageKit backend
+    install -Dm0755 $workdir/eopkgBackend.bin $installdir/usr/share/PackageKit/helpers/eopkg/eopkgBackend.bin
+    
+    # list which executables and symlinks were installed for reference
+    # /usr/bin final output
+    tree -L 1 $installdir/usr/bin $installdir/usr/lib
+replaces   :
+    - eopkg4-bin
+patterns   :
+    # This patterns follows our established practice of using python-<something> for pure python stuff
+    # It also conveniently replaces the existing python-eopkg standalone package (thanks for the idea Joey!)
+    - ^python-eopkg :
+        - /usr/lib/python3.*/site-packages/eopkg*
+        - /usr/lib/python3.*/site-packages/pisi
+        - /usr/bin/*.py3
+    # Together, these two symlink patterns comprise the full list of pisi py2 /usr/bin binaries/symlinks
+    # -- some may not yet be available in the present packages yet...
+    #- ^python-eopkg-symlinks :
+    #    - /usr/bin/check-newconfigs.py
+    #    - /usr/bin/lseopkg
+    #    - /usr/bin/lspisi
+    #    - /usr/bin/revdep-rebuild
+    #    - /usr/bin/uneopkg
+    #    - /usr/bin/unpisi
+    #- symlinks :
+    #    - /usr/bin/eopkg
+    #    - /usr/bin/eopkg-cli
