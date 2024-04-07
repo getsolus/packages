@@ -335,10 +335,6 @@ description: |
                 setup = "%perl_setup"
                 build = "%perl_build"
                 install = "%perl_install"
-                # Unused, but left in for historical purposes
-                #sample_actions = os.path.join(
-                #    self.template_dir, "actions.perlmodules.sample.py"
-                #)
             elif self.compile_type == CABAL:
                 setup = "%cabal_configure"
                 build = "%cabal_build"
