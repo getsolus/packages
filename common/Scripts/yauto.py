@@ -124,7 +124,7 @@ class AutoPackage:
 
         # Check for certain files..
         for root, dirs, files in os.walk(os.getcwd()):
-            depth = root[len(path) + len(os.path.sep) :].count(os.path.sep)
+            depth = root[len(path) + len(os.path.sep):].count(os.path.sep)
             if depth == 3:
                 print("bailing")
                 # We're currently two directories in, so all subdirs have depth 3
@@ -335,9 +335,10 @@ description: |
                 setup = "%perl_setup"
                 build = "%perl_build"
                 install = "%perl_install"
-                sample_actions = os.path.join(
-                    self.template_dir, "actions.perlmodules.sample.py"
-                )
+                # Unused, but left in for historical purposes
+                #sample_actions = os.path.join(
+                #    self.template_dir, "actions.perlmodules.sample.py"
+                #)
             elif self.compile_type == CABAL:
                 setup = "%cabal_configure"
                 build = "%cabal_build"
