@@ -1,10 +1,11 @@
-#!/usr/bin/env python2
-from pisi.db.filesdb import FilesDB
-import pisi.api
-import magic
+#!/usr/bin/env python3
+
 import os
 import re
 import subprocess
+
+import magic
+import pisi.api
 
 valid_dyn = ""
 
@@ -14,9 +15,11 @@ shared_lib = re.compile(r".*Shared library: \[(.*)\].*")
 r_path = re.compile(r".*Library rpath: \[(.*)\].*")
 r_soname = re.compile(r".*Library soname: \[(.*)\].*")
 
-def get_soname(path):
-    output = subprocess.check_output("/usr/bin/readelf -d {}".format(path), shell=True)
 
+def get_soname(path):
+    output = subprocess.check_output(
+        f"/usr/bin/readelf -d {path}", shell=True, encoding="utf-8"
+    )
     for line in output.split("\n"):
         line = line.strip()
         g = r_soname.match(line)
@@ -24,12 +27,14 @@ def get_soname(path):
             return g.group(1)
     return None
 
+
 def accumulate_dependencies(path, provided, emul32=False):
-    output = subprocess.check_output("/usr/bin/readelf -d {}".format(path), shell=True)
+    output = subprocess.check_output(
+        f"/usr/bin/readelf -d {path}", shell=True, encoding="utf-8"
+    )
 
     check_deps = set()
     r_paths = set()
-
     valid_libs = set()
 
     if emul32:
@@ -44,7 +49,7 @@ def accumulate_dependencies(path, provided, emul32=False):
         if g:
             lib = g.group(1)
             if lib in provided:
-                print("\nSkipping internally provided so: {}\n".format(lib))
+                print(f"\nSkipping internally provided so: {lib}\n")
                 continue
             check_deps.add(lib)
             continue
@@ -52,28 +57,40 @@ def accumulate_dependencies(path, provided, emul32=False):
         if r:
             r_paths.add(r.group(1))
 
-    print("Deps: {}".format(", ".join(check_deps)))
+    print(("Deps: {}".format(", ".join(check_deps))))
 
     dirname = os.path.dirname(path)
 
-    filter_deps = [x for x in check_deps for y in r_paths if os.path.exists(os.path.join(y, x)) or os.path.exists(os.path.join(dirname, x))]
-    print("Filtered by rpath: {}".format(", ".join(filter_deps)))
+    filter_deps = [
+        x
+        for x in check_deps
+        for y in r_paths
+        if os.path.exists(os.path.join(y, x))
+        or os.path.exists(os.path.join(dirname, x))
+    ]
+    print(("Filtered by rpath: {}".format(", ".join(filter_deps))))
 
-    print("Got %d of rpath:" % len(filter_deps))
+    print(("Got %d of rpath:" % len(filter_deps)))
 
-    ret_deps = filter(lambda s: s not in filter_deps, check_deps)
-    print("Remaining deps: {}".format(", ".join(ret_deps)))
+    ret_deps = [s for s in check_deps if s not in filter_deps]
+    print(("Remaining deps: {}".format(", ".join(ret_deps))))
 
-    full_paths = [os.path.join(y,x) for x in ret_deps for y in valid_libs if os.path.exists(os.path.join(y,x))]
-    print("Full paths is now: {}".format(", ".join(full_paths)))
+    full_paths = [
+        os.path.join(y, x)
+        for x in ret_deps
+        for y in valid_libs
+        if os.path.exists(os.path.join(y, x))
+    ]
+    print(("Full paths is now: {}".format(", ".join(full_paths))))
     return full_paths
+
 
 def is_dynamic_binary(path):
     if not os.path.exists(path) or not os.path.isfile(path):
         return False
     try:
         mg = magic.from_file(path)
-    except Exception, e:
+    except Exception:
         return False
     if v_bin.match(mg):
         return True
@@ -81,13 +98,13 @@ def is_dynamic_binary(path):
         return True
     return False
 
+
 def clean_path(p):
-    if not p[0] == '/':
+    if not p[0] == "/":
         return "/%s" % p
 
-def main():
-    le_files = set()
 
+def main():
     packages = ["firefox"]
 
     provided = set()
@@ -96,7 +113,7 @@ def main():
     deps = set()
 
     for pkg in packages:
-        (stuff,files,repo) = pisi.api.info_name(pkg, True)
+        (stuff, files, repo) = pisi.api.info_name(pkg, True)
 
         for f in files.list:
             f = clean_path(f.path)
@@ -105,7 +122,7 @@ def main():
                 continue
             soname = get_soname(f)
             if soname is not None:
-                print("\n\nAdding %s to provided\n\n" % soname)
+                print(("\n\nAdding %s to provided\n\n" % soname))
                 provided.add(soname)
             want_depends.add(f)
 
@@ -117,8 +134,8 @@ def main():
     print("\n\n")
     print("Dependencies")
     for i in deps:
-        print("  -> %s" % i)
+        print(("  -> %s" % i))
+
 
 if __name__ == "__main__":
     main()
-
