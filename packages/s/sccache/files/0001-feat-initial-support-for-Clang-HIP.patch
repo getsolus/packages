@@ -1,0 +1,1372 @@
+From 548181f396152dd119cb2be1a96ee7b56838d508 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Tue, 16 Jan 2024 09:56:52 -0500
+Subject: [PATCH 1/8] feat: initial support for Clang HIP
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs        |   1 +
+ src/compiler/clang.rs    | 136 +++++++++++++++++++++++++++++++++++++++
+ src/compiler/compiler.rs |   4 ++
+ src/compiler/gcc.rs      |   4 +-
+ 4 files changed, 144 insertions(+), 1 deletion(-)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index 769a32991..a12a8774a 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -1490,6 +1490,7 @@ mod test {
+         t("mm", Language::ObjectiveCxx);
+ 
+         t("cu", Language::Cuda);
++        t("hip", Language::Hip);
+     }
+ 
+     #[test]
+diff --git a/src/compiler/clang.rs b/src/compiler/clang.rs
+index f26961204..370754645 100644
+--- a/src/compiler/clang.rs
++++ b/src/compiler/clang.rs
+@@ -167,6 +167,9 @@ impl CCompilerImpl for Clang {
+ 
+ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
+     take_arg!("--dependent-lib", OsString, Concatenated('='), PassThrough),
++    take_arg!("--hip-device-lib-path", PathBuf, Concatenated('='), PassThroughPath),
++    take_arg!("--hip-path", PathBuf, Concatenated('='), PassThroughPath),
++    take_arg!("--rocm-path", PathBuf, Concatenated('='), PassThroughPath),
+     take_arg!("--serialize-diagnostics", OsString, Separated, PassThrough),
+     take_arg!("--target", OsString, Separated, PassThrough),
+     // Note: for clang we must override the dep options from gcc.rs with `CanBeSeparated`.
+@@ -181,6 +184,7 @@ counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
+     flag!("-fcolor-diagnostics", DiagnosticsColorFlag),
+     flag!("-fcxx-modules", TooHardFlag),
+     take_arg!("-fdebug-compilation-dir", OsString, Separated, PassThrough),
++    take_arg!("-fembed-offload-object", PathBuf, Concatenated('='), ExtraHashFile),
+     flag!("-fmodules", TooHardFlag),
+     flag!("-fno-color-diagnostics", NoDiagnosticsColorFlag),
+     flag!("-fno-pch-timestamp", PassThroughFlag),
+@@ -415,6 +419,138 @@ mod test {
+         );
+     }
+ 
++    #[test]
++    fn test_parse_arguments_hip() {
++        let a = parses!("-c", "foo.hip", "-o", "foo.o");
++        assert_eq!(Some("foo.hip"), a.input.to_str());
++        assert_eq!(Language::Hip, a.language);
++        assert_map_contains!(
++            a.outputs,
++            (
++                "obj",
++                ArtifactDescriptor {
++                    path: PathBuf::from("foo.o"),
++                    optional: false
++                }
++            )
++        );
++        assert!(a.preprocessor_args.is_empty());
++        assert!(a.common_args.is_empty());
++    }
++
++    #[test]
++    fn test_parse_arguments_hip_flags() {
++        let a = parses!(
++            "-c",
++            "foo.cpp",
++            "-x",
++            "hip",
++            "--offload-arch=gfx900",
++            "-o",
++            "foo.o"
++        );
++        assert_eq!(Some("foo.cpp"), a.input.to_str());
++        assert_eq!(Language::Hip, a.language);
++        assert_map_contains!(
++            a.outputs,
++            (
++                "obj",
++                ArtifactDescriptor {
++                    path: PathBuf::from("foo.o"),
++                    optional: false
++                }
++            )
++        );
++        assert!(a.preprocessor_args.is_empty());
++        assert_eq!(ovec!["--offload-arch=gfx900"], a.common_args);
++
++        let b = parses!(
++            "-c",
++            "foo.cpp",
++            "-x",
++            "hip",
++            "--offload-arch=gfx900",
++            "-o",
++            "foo.o"
++        );
++        assert_eq!(Some("foo.cpp"), b.input.to_str());
++        assert_eq!(Language::Hip, b.language);
++        assert_map_contains!(
++            b.outputs,
++            (
++                "obj",
++                ArtifactDescriptor {
++                    path: PathBuf::from("foo.o"),
++                    optional: false
++                }
++            )
++        );
++        assert!(b.preprocessor_args.is_empty());
++        assert_eq!(ovec!["--offload-arch=gfx900"], b.common_args);
++    }
++
++    #[test]
++    fn test_parse_arguments_hip_paths() {
++        let a = parses!(
++            "-c",
++            "foo.cpp",
++            "-x",
++            "hip",
++            "--offload-arch=gfx900",
++            "-o",
++            "foo.o",
++            "--hip-path=/usr"
++        );
++        assert_eq!(Some("foo.cpp"), a.input.to_str());
++        assert_eq!(Language::Hip, a.language);
++        assert_map_contains!(
++            a.outputs,
++            (
++                "obj",
++                ArtifactDescriptor {
++                    path: PathBuf::from("foo.o"),
++                    optional: false
++                }
++            )
++        );
++        assert!(a.preprocessor_args.is_empty());
++        assert_eq!(
++            ovec!["--offload-arch=gfx900", "--hip-path=/usr"],
++            a.common_args
++        );
++
++        let b = parses!(
++            "-c",
++            "foo.cpp",
++            "-x",
++            "hip",
++            "--offload-arch=gfx900",
++            "-o",
++            "foo.o",
++            "--hip-device-lib-path=/usr/lib64/amdgcn/bitcode"
++        );
++        assert_eq!(Some("foo.cpp"), b.input.to_str());
++        assert_eq!(Language::Hip, b.language);
++        assert_map_contains!(
++            b.outputs,
++            (
++                "obj",
++                ArtifactDescriptor {
++                    path: PathBuf::from("foo.o"),
++                    optional: false
++                }
++            )
++        );
++        assert!(b.preprocessor_args.is_empty());
++        assert_eq!(
++            ovec![
++                "--offload-arch=gfx900",
++                "--hip-device-lib-path=/usr/lib64/amdgcn/bitcode"
++            ],
++            b.common_args
++        );
++    }
++
+     #[test]
+     fn test_dependent_lib() {
+         let a = parses!(
+diff --git a/src/compiler/compiler.rs b/src/compiler/compiler.rs
+index 5a804ce5e..c41406962 100644
+--- a/src/compiler/compiler.rs
++++ b/src/compiler/compiler.rs
+@@ -113,6 +113,7 @@ pub enum Language {
+     ObjectiveCxx,
+     Cuda,
+     Rust,
++    Hip,
+ }
+ 
+ impl Language {
+@@ -135,6 +136,7 @@ impl Language {
+             Some("cu") => Some(Language::Cuda),
+             // TODO cy
+             Some("rs") => Some(Language::Rust),
++            Some("hip") => Some(Language::Hip),
+             e => {
+                 trace!("Unknown source extension: {}", e.unwrap_or("(None)"));
+                 None
+@@ -151,6 +153,7 @@ impl Language {
+             Language::ObjectiveCxx => "objc++",
+             Language::Cuda => "cuda",
+             Language::Rust => "rust",
++            Language::Hip => "hip",
+         }
+     }
+ }
+@@ -167,6 +170,7 @@ impl CompilerKind {
+             | Language::ObjectiveCxx => "C/C++",
+             Language::Cuda => "CUDA",
+             Language::Rust => "Rust",
++            Language::Hip => "HIP",
+         }
+         .to_string()
+     }
+diff --git a/src/compiler/gcc.rs b/src/compiler/gcc.rs
+index 390b719b9..549d3323d 100644
+--- a/src/compiler/gcc.rs
++++ b/src/compiler/gcc.rs
+@@ -381,6 +381,7 @@ where
+                     "cu" => Some(Language::Cuda),
+                     "rs" => Some(Language::Rust),
+                     "cuda" => Some(Language::Cuda),
++                    "hip" => Some(Language::Hip),
+                     _ => cannot_cache!("-x"),
+                 };
+             }
+@@ -643,7 +644,8 @@ fn language_to_gcc_arg(lang: Language) -> Option<&'static str> {
+         Language::ObjectiveC => Some("objective-c"),
+         Language::ObjectiveCxx => Some("objective-c++"),
+         Language::Cuda => Some("cu"),
+-        Language::Rust => None,          // Let the compiler decide
++        Language::Rust => None, // Let the compiler decide
++        Language::Hip => Some("hip"),
+         Language::GenericHeader => None, // Let the compiler decide
+     }
+ }
+
+From 3cc542921612153fd6eb360bfdc9c39945e6cbf8 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 9 Feb 2024 19:59:22 -0500
+Subject: [PATCH 2/8] Add basic HIP tests
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ tests/system.rs  | 300 ++++++++++++++++++++++++++++++++++++++++++++++-
+ tests/test_a.hip |  10 ++
+ tests/test_b.hip |  10 ++
+ tests/test_c.hip |  10 ++
+ 4 files changed, 329 insertions(+), 1 deletion(-)
+ create mode 100644 tests/test_a.hip
+ create mode 100644 tests/test_b.hip
+ create mode 100644 tests/test_c.hip
+
+diff --git a/tests/system.rs b/tests/system.rs
+index 26de59c50..386805a24 100644
+--- a/tests/system.rs
++++ b/tests/system.rs
+@@ -33,7 +33,7 @@ use serial_test::serial;
+ use std::collections::HashMap;
+ use std::env;
+ use std::ffi::{OsStr, OsString};
+-use std::fmt;
++use std::fmt::{self, format};
+ use std::io::{self, Read, Write};
+ use std::path::{Path, PathBuf};
+ use std::process::{Command, Output, Stdio};
+@@ -105,6 +105,7 @@ fn compile_cmdline<T: AsRef<OsStr>>(
+     }
+     arg
+ }
++
+ // TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
+ // default case on Fedora, e.g.
+ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
+@@ -134,6 +135,33 @@ fn compile_cuda_cmdline<T: AsRef<OsStr>>(
+     arg
+ }
+ 
++// TODO: This will fail if gcc/clang is actually a ccache wrapper, as it is the
++// default case on Fedora, e.g.
++//
++// archs is a list of GPU architectures to compile for.
++fn compile_hip_cmdline<T: AsRef<OsStr>>(
++    compiler: &str,
++    exe: T,
++    input: &str,
++    output: &str,
++    archs: &Vec<String>,
++    mut extra_args: Vec<OsString>,
++) -> Vec<OsString> {
++    let mut arg = match compiler {
++        "clang" => {
++            vec_from!(OsString, exe, "-x", "hip", "-c", input, "-o", output)
++        }
++        _ => panic!("Unsupported compiler: \"{}\"", compiler),
++    };
++    for arch in archs {
++        arg.push(format!("--offload-arch={}", arch).into());
++    }
++    if !extra_args.is_empty() {
++        arg.append(&mut extra_args)
++    }
++    arg
++}
++
+ const INPUT: &str = "test.c";
+ const INPUT_CLANG_MULTICALL: &str = "test_clang_multicall.c";
+ const INPUT_WITH_WHITESPACE: &str = "test_whitespace.c";
+@@ -144,6 +172,9 @@ const INPUT_WITH_DEFINE: &str = "test_with_define.c";
+ const INPUT_FOR_CUDA_A: &str = "test_a.cu";
+ const INPUT_FOR_CUDA_B: &str = "test_b.cu";
+ const INPUT_FOR_CUDA_C: &str = "test_c.cu";
++const INPUT_FOR_HIP_A: &str = "test_a.hip";
++const INPUT_FOR_HIP_B: &str = "test_b.hip";
++const INPUT_FOR_HIP_C: &str = "test_c.hip";
+ const OUTPUT: &str = "test.o";
+ 
+ // Copy the source files into the tempdir so we can compile with relative paths, since the commandline winds up in the hash key.
+@@ -688,6 +719,210 @@ fn run_sccache_cuda_command_tests(compiler: Compiler, tempdir: &Path) {
+     test_proper_lang_stat_tracking(compiler, tempdir);
+ }
+ 
++fn test_hip_compiles(compiler: &Compiler, tempdir: &Path) {
++    let Compiler {
++        name,
++        exe,
++        env_vars,
++    } = compiler;
++    trace!("run_sccache_command_test: {}", name);
++    // Compile multiple source files.
++    copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
++
++    let target_arch = vec!["gfx900".to_string()];
++
++    let out_file = tempdir.join(OUTPUT);
++    trace!("compile A");
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_A,
++            OUTPUT,
++            &target_arch,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(1, info.stats.compile_requests);
++        assert_eq!(1, info.stats.requests_executed);
++        assert_eq!(0, info.stats.cache_hits.all());
++        assert_eq!(1, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++    trace!("compile A");
++    fs::remove_file(&out_file).unwrap();
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_A,
++            OUTPUT,
++            &target_arch,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(2, info.stats.compile_requests);
++        assert_eq!(2, info.stats.requests_executed);
++        assert_eq!(1, info.stats.cache_hits.all());
++        assert_eq!(1, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
++        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
++        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++    // By compiling another input source we verify that the pre-processor
++    // phase is correctly running and outputting text
++    trace!("compile B");
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_B,
++            OUTPUT,
++            &target_arch,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(3, info.stats.compile_requests);
++        assert_eq!(3, info.stats.requests_executed);
++        assert_eq!(1, info.stats.cache_hits.all());
++        assert_eq!(2, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
++        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
++        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++}
++
++fn test_hip_compiles_multi_targets(compiler: &Compiler, tempdir: &Path) {
++    let Compiler {
++        name,
++        exe,
++        env_vars,
++    } = compiler;
++    trace!("run_sccache_command_test: {}", name);
++    // Compile multiple source files.
++    copy_to_tempdir(&[INPUT_FOR_HIP_A, INPUT_FOR_HIP_B], tempdir);
++
++    let target_arches: Vec<String> = vec!["gfx900".to_string(), "gfx1030".to_string()];
++
++    let out_file = tempdir.join(OUTPUT);
++    trace!("compile A with gfx900 and gfx1030");
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_A,
++            OUTPUT,
++            &target_arches,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(1, info.stats.compile_requests);
++        assert_eq!(1, info.stats.requests_executed);
++        assert_eq!(0, info.stats.cache_hits.all());
++        assert_eq!(1, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++
++    trace!("compile A with with gfx900 and gfx1030 again");
++    fs::remove_file(&out_file).unwrap();
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_A,
++            OUTPUT,
++            &target_arches,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(2, info.stats.compile_requests);
++        assert_eq!(2, info.stats.requests_executed);
++        assert_eq!(1, info.stats.cache_hits.all());
++        assert_eq!(1, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
++        assert_eq!(&1, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
++        assert_eq!(&1, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++
++    // By compiling another input source we verify that the pre-processor
++    // phase is correctly running and outputting text
++    trace!("compile B with gfx900 and gfx1030");
++    sccache_command()
++        .args(&compile_hip_cmdline(
++            name,
++            exe,
++            INPUT_FOR_HIP_B,
++            OUTPUT,
++            &target_arches,
++            Vec::new(),
++        ))
++        .current_dir(tempdir)
++        .envs(env_vars.clone())
++        .assert()
++        .success();
++    assert!(fs::metadata(&out_file).map(|m| m.len() > 0).unwrap());
++    trace!("request stats");
++    get_stats(|info| {
++        assert_eq!(3, info.stats.compile_requests);
++        assert_eq!(3, info.stats.requests_executed);
++        assert_eq!(1, info.stats.cache_hits.all());
++        assert_eq!(2, info.stats.cache_misses.all());
++        assert_eq!(&1, info.stats.cache_hits.get("HIP").unwrap());
++        assert_eq!(&2, info.stats.cache_misses.get("HIP").unwrap());
++        let adv_hip_key = adv_key_kind("hip", compiler.name);
++        assert_eq!(&1, info.stats.cache_hits.get_adv(&adv_hip_key).unwrap());
++        assert_eq!(&2, info.stats.cache_misses.get_adv(&adv_hip_key).unwrap());
++    });
++}
++
++fn run_sccache_hip_command_tests(compiler: Compiler, tempdir: &Path) {
++    zero_stats();
++    test_hip_compiles(&compiler, tempdir);
++    zero_stats();
++    test_hip_compiles_multi_targets(&compiler, tempdir);
++    // test_proper_lang_stat_tracking(compiler, tempdir);
++}
++
+ fn test_clang_multicall(compiler: Compiler, tempdir: &Path) {
+     let Compiler {
+         name,
+@@ -843,6 +1078,40 @@ fn find_cuda_compilers() -> Vec<Compiler> {
+     compilers
+ }
+ 
++// We detect the HIP Clang compiler through 2 methods:
++// 1. If the env var HIP_CLANG_PATH is set, try $HIP_CLANG_PATH/clang. This is the same behavior as
++//    hipcc, but is rarely know, so we have another option.
++// 2. If the env var ROCM_PATH is set, try $ROCM_PATH/llvm/bin/clang. This is the location in
++//    AMD's official debian packages.
++// 3. Otherwise, just bail.
++fn find_hip_compiler() -> Option<Compiler> {
++    let env_vars: Vec<(OsString, OsString)> = env::vars_os().collect();
++
++    if let Ok(hip_clang_path) = env::var("HIP_CLANG_PATH") {
++        let clang_path = Path::new(&hip_clang_path).join("clang");
++
++        if let Ok(true) = clang_path.try_exists() {
++            return Some(Compiler {
++                name: "clang",
++                exe: clang_path.into_os_string(),
++                env_vars,
++            });
++        }
++    }
++    if let Ok(rocm_path) = env::var("ROCM_PATH") {
++        let clang_path = Path::new(&rocm_path).join("llvm").join("bin").join("clang");
++
++        if let Ok(true) = clang_path.try_exists() {
++            return Some(Compiler {
++                name: "hip",
++                exe: clang_path.into_os_string(),
++                env_vars,
++            });
++        }
++    }
++    None
++}
++
+ // TODO: This runs multiple test cases, for multiple compilers. It should be
+ // split up to run them individually. In the current form, it is hard to see
+ // which sub test cases are executed, and if one fails, the remaining tests
+@@ -926,3 +1195,32 @@ fn test_cuda_sccache_command(preprocessor_cache_mode: bool) {
+         stop_local_daemon();
+     }
+ }
++
++#[test_case(true ; "with preprocessor cache")]
++#[test_case(false ; "without preprocessor cache")]
++#[serial]
++#[cfg(any(unix, target_env = "msvc"))]
++fn test_hip_sccache_command(preprocessor_cache_mode: bool) {
++    let _ = env_logger::try_init();
++    let tempdir = tempfile::Builder::new()
++        .prefix("sccache_system_test")
++        .tempdir()
++        .unwrap();
++
++    if let Some(compiler) = find_hip_compiler() {
++        stop_local_daemon();
++        // Create the configurations
++        let sccache_cfg = sccache_client_cfg(tempdir.path(), preprocessor_cache_mode);
++        write_json_cfg(tempdir.path(), "sccache-cfg.json", &sccache_cfg);
++        let sccache_cached_cfg_path = tempdir.path().join("sccache-cached-cfg");
++        // Start a server.
++        trace!("start server");
++        start_local_daemon(
++            &tempdir.path().join("sccache-cfg.json"),
++            &sccache_cached_cfg_path,
++        );
++        run_sccache_hip_command_tests(compiler, tempdir.path());
++        zero_stats();
++        stop_local_daemon();
++    }
++}
+diff --git a/tests/test_a.hip b/tests/test_a.hip
+new file mode 100644
+index 000000000..d723f3fac
+--- /dev/null
++++ b/tests/test_a.hip
+@@ -0,0 +1,10 @@
++
++#include <stdio.h>
++#include <hip/hip_runtime.h>
++
++__global__ void cuda_entry_point(int*, int*) {}
++__device__ void cuda_device_func(int*, int*) {}
++
++int main() {
++  printf("%s says hello world\n", __FILE__);
++}
+diff --git a/tests/test_b.hip b/tests/test_b.hip
+new file mode 100644
+index 000000000..d723f3fac
+--- /dev/null
++++ b/tests/test_b.hip
+@@ -0,0 +1,10 @@
++
++#include <stdio.h>
++#include <hip/hip_runtime.h>
++
++__global__ void cuda_entry_point(int*, int*) {}
++__device__ void cuda_device_func(int*, int*) {}
++
++int main() {
++  printf("%s says hello world\n", __FILE__);
++}
+diff --git a/tests/test_c.hip b/tests/test_c.hip
+new file mode 100644
+index 000000000..d723f3fac
+--- /dev/null
++++ b/tests/test_c.hip
+@@ -0,0 +1,10 @@
++
++#include <stdio.h>
++#include <hip/hip_runtime.h>
++
++__global__ void cuda_entry_point(int*, int*) {}
++__device__ void cuda_device_func(int*, int*) {}
++
++int main() {
++  printf("%s says hello world\n", __FILE__);
++}
+
+From 541925f5247c7ee1cd7e118d3bb2f99b268ceea8 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 9 Feb 2024 23:16:38 -0500
+Subject: [PATCH 3/8] Experimental support for hashing ROCm device libraries
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs | 58 +++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 58 insertions(+)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index a12a8774a..0e91ba1a9 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -249,11 +249,69 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+     ) -> CompilerArguments<Box<dyn CompilerHasher<T> + 'static>> {
+         match self.compiler.parse_arguments(arguments, cwd) {
+             CompilerArguments::Ok(mut args) => {
++                // Handle SCCACHE_EXTRAFILES
+                 for (k, v) in env_vars.iter() {
+                     if k.as_os_str() == OsStr::new("SCCACHE_EXTRAFILES") {
+                         args.extra_hash_files.extend(std::env::split_paths(&v))
+                     }
+                 }
++
++                // Handle cache invalidation for the ROCm device bitcode libraries. See
++                // https://clang.llvm.org/docs/HIPSupport.html for details regarding the order that
++                // the environment variables and command-line arguments take affect.
++                if args.language == Language::Hip {
++                    let mut rocm_path_arg = None;
++                    let mut hip_device_lib_path_arg = None;
++
++                    for arg in &args.common_args {
++                        if let Some(sarg) = arg.to_str() {
++                            if rocm_path_arg.is_none() && sarg.starts_with("--rocm-path=") {
++                                let mut p = sarg[12..].to_string();
++                                p.push_str("/amdgcn/bitcode");
++                                rocm_path_arg = Some(p);
++                            }
++                            if hip_device_lib_path_arg.is_none()
++                                && sarg.starts_with("--hip-device-lib-path=")
++                            {
++                                hip_device_lib_path_arg = Some(sarg[22..].to_string());
++                            }
++                        }
++                    }
++
++                    let mut rocm_path_env: Option<String> = None;
++                    let mut hip_device_lib_path_env: Option<String> = None;
++                    for (k, v) in env_vars.iter() {
++                        if k == "ROCM_PATH" {
++                            if let Some(p) = k.to_str() {
++                                let mut finp = p.to_string();
++                                finp.push_str("/amdgcn/bitcode");
++                                rocm_path_env = Some(finp);
++                            }
++                        } else if k == "HIP_DEVICE_LIB_PATH" {
++                            hip_device_lib_path_env = v.to_str().map(|s| s.to_string());
++                        }
++                    }
++
++                    let hip_device_lib_path: Option<String> = hip_device_lib_path_arg
++                        .or(hip_device_lib_path_env)
++                        .or(rocm_path_arg)
++                        .or(rocm_path_env);
++
++                    if let Some(hip_device_lib_path) = hip_device_lib_path {
++                        if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
++                            for file in files {
++                                if let Ok(file) = file {
++                                    if let Some(ext) = file.path().extension() {
++                                        if ext == "bc" {
++                                            args.extra_hash_files.push(file.path());
++                                        }
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++
+                 CompilerArguments::Ok(Box::new(CCompilerHasher {
+                     parsed_args: args,
+                     executable: self.executable.clone(),
+
+From d9a74efa605b6ef98b4008166bbe33035389c5ac Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 9 Feb 2024 23:17:52 -0500
+Subject: [PATCH 4/8] Run HIP integration tests
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ .github/workflows/integration-tests.yml |  72 ++++++++++++
+ tests/cmake-hip/CMakeLists.txt          |   6 +
+ tests/cmake-hip/vectoradd_hip.cpp       | 150 ++++++++++++++++++++++++
+ 3 files changed, 228 insertions(+)
+ create mode 100644 tests/cmake-hip/CMakeLists.txt
+ create mode 100644 tests/cmake-hip/vectoradd_hip.cpp
+
+diff --git a/.github/workflows/integration-tests.yml b/.github/workflows/integration-tests.yml
+index 2ae461596..ce109327d 100644
+--- a/.github/workflows/integration-tests.yml
++++ b/.github/workflows/integration-tests.yml
+@@ -520,6 +520,78 @@ jobs:
+ 
+           ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
+ 
++  hip:
++    # Probably wouldn't matter anyway since we run in a container, but staying 
++    # close to the version is better than not.
++    runs-on: ubuntu-22.04
++    needs: build
++    container:
++      image: rocm/dev-ubuntu-22.04:6.0
++
++    env:
++      # SCCACHE_GHA_ENABLED: "on"
++      ROCM_PATH: "/opt/rocm"
++
++    steps:
++      - uses: actions/checkout@v4
++
++      # I don't want to break the cache during testing. Will turn on after I
++      # make sure it's working.
++      #
++      # - name: Configure Cache Env
++      #   uses: actions/github-script@v7
++      #   with:
++      #     script: |
++      #       core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
++      #       core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '')
++
++      # - name: Configure ROCm Env
++      #   uses: actions/github-script@v7
++      #   with:
++      #     script: |
++      #       core.exportVariable('ROCM_PATH', process.env.ROCM_PATH || '');
++
++      - uses: actions/download-artifact@v4
++        with:
++          name: integration-tests
++          path: /home/runner/.cargo/bin/
++      - name: Chmod for binary
++        run: chmod +x ${SCCACHE_PATH}
++
++      - name: Install dependencies
++        shell: bash
++        run: |
++          ## Install dependencies
++          sudo apt-get update
++          sudo apt-get install -y cmake
++
++      # Ensure that HIPCC isn't already borken
++      - name: Sanity Check
++        run: |
++          hipcc -o vectoradd_hip --offload-arch=gfx900 tests/cmake-hip/vectoradd_hip.cpp
++
++      - name: Test
++        run: |
++          cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
++          cmake --build build
++
++      - name: Output
++        run: |
++          ${SCCACHE_PATH} --show-stats
++
++      - name: Test Twice for Cache Read
++        run: |
++          rm -rf build
++          cmake -B build -S tests/cmake-hip -DCMAKE_HIP_COMPILER_LAUNCHER=${SCCACHE_PATH} -DCMAKE_HIP_ARCHITECTURES=gfx900
++          cmake --build build
++
++      - name: Output
++        run: |
++          ${SCCACHE_PATH} --show-stats
++
++          ${SCCACHE_PATH} --show-stats | grep -e "Cache hits\s*[1-9]"
++
++
+   gcc:
+     runs-on: ubuntu-latest
+     needs: build
+diff --git a/tests/cmake-hip/CMakeLists.txt b/tests/cmake-hip/CMakeLists.txt
+new file mode 100644
+index 000000000..16a2195ea
+--- /dev/null
++++ b/tests/cmake-hip/CMakeLists.txt
+@@ -0,0 +1,6 @@
++cmake_minimum_required(VERSION 3.10)
++
++project(myproject LANGUAGES CXX HIP)
++
++add_library(vectoradd_hip vectoradd_hip.cpp)
++set_source_files_properties(vectoradd_hip.cpp PROPERTIES LANGUAGE HIP)
+diff --git a/tests/cmake-hip/vectoradd_hip.cpp b/tests/cmake-hip/vectoradd_hip.cpp
+new file mode 100644
+index 000000000..854ef374f
+--- /dev/null
++++ b/tests/cmake-hip/vectoradd_hip.cpp
+@@ -0,0 +1,150 @@
++/*
++Copyright (c) 2015-2016 Advanced Micro Devices, Inc. All rights reserved.
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in
++all copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
++THE SOFTWARE.
++*/
++#include <assert.h>
++#include <stdio.h>
++#include <algorithm>
++#include <stdlib.h>
++#include<iostream>
++#include "hip/hip_runtime.h"
++
++
++#define HIP_ASSERT(x) (assert((x)==hipSuccess))
++
++
++#define WIDTH     1024
++#define HEIGHT    1024
++
++#define NUM       (WIDTH*HEIGHT)
++
++#define THREADS_PER_BLOCK_X  16
++#define THREADS_PER_BLOCK_Y  16
++#define THREADS_PER_BLOCK_Z  1
++
++__global__ void 
++vectoradd_float(float* __restrict__ a, const float* __restrict__ b, const float* __restrict__ c, int width, int height) 
++
++  {
++ 
++      int x = hipBlockDim_x * hipBlockIdx_x + hipThreadIdx_x;
++      int y = hipBlockDim_y * hipBlockIdx_y + hipThreadIdx_y;
++
++      int i = y * width + x;
++      if ( i < (width * height)) {
++        a[i] = b[i] + c[i];
++      }
++
++
++
++  }
++
++#if 0
++__kernel__ void vectoradd_float(float* a, const float* b, const float* c, int width, int height) {
++
++  
++  int x = blockDimX * blockIdx.x + threadIdx.x;
++  int y = blockDimY * blockIdy.y + threadIdx.y;
++
++  int i = y * width + x;
++  if ( i < (width * height)) {
++    a[i] = b[i] + c[i];
++  }
++}
++#endif
++
++using namespace std;
++
++int main() {
++  
++  float* hostA;
++  float* hostB;
++  float* hostC;
++
++  float* deviceA;
++  float* deviceB;
++  float* deviceC;
++
++  hipDeviceProp_t devProp;
++  hipGetDeviceProperties(&devProp, 0);
++  cout << " System minor " << devProp.minor << endl;
++  cout << " System major " << devProp.major << endl;
++  cout << " agent prop name " << devProp.name << endl;
++
++
++
++  cout << "hip Device prop succeeded " << endl ;
++
++
++  int i;
++  int errors;
++
++  hostA = (float*)malloc(NUM * sizeof(float));
++  hostB = (float*)malloc(NUM * sizeof(float));
++  hostC = (float*)malloc(NUM * sizeof(float));
++  
++  // initialize the input data
++  for (i = 0; i < NUM; i++) {
++    hostB[i] = (float)i;
++    hostC[i] = (float)i*100.0f;
++  }
++  
++  HIP_ASSERT(hipMalloc((void**)&deviceA, NUM * sizeof(float)));
++  HIP_ASSERT(hipMalloc((void**)&deviceB, NUM * sizeof(float)));
++  HIP_ASSERT(hipMalloc((void**)&deviceC, NUM * sizeof(float)));
++  
++  HIP_ASSERT(hipMemcpy(deviceB, hostB, NUM*sizeof(float), hipMemcpyHostToDevice));
++  HIP_ASSERT(hipMemcpy(deviceC, hostC, NUM*sizeof(float), hipMemcpyHostToDevice));
++
++
++  hipLaunchKernelGGL(vectoradd_float, 
++                  dim3(WIDTH/THREADS_PER_BLOCK_X, HEIGHT/THREADS_PER_BLOCK_Y),
++                  dim3(THREADS_PER_BLOCK_X, THREADS_PER_BLOCK_Y),
++                  0, 0,
++                  deviceA ,deviceB ,deviceC ,WIDTH ,HEIGHT);
++
++
++  HIP_ASSERT(hipMemcpy(hostA, deviceA, NUM*sizeof(float), hipMemcpyDeviceToHost));
++
++  // verify the results
++  errors = 0;
++  for (i = 0; i < NUM; i++) {
++    if (hostA[i] != (hostB[i] + hostC[i])) {
++      errors++;
++    }
++  }
++  if (errors!=0) {
++    printf("FAILED: %d errors\n",errors);
++  } else {
++      printf ("PASSED!\n");
++  }
++
++  HIP_ASSERT(hipFree(deviceA));
++  HIP_ASSERT(hipFree(deviceB));
++  HIP_ASSERT(hipFree(deviceC));
++
++  free(hostA);
++  free(hostB);
++  free(hostC);
++
++  //hipResetDefaultAccelerator();
++
++  return errors;
++}
+
+From 2264d55daca9f906dfa8d49670a2d8b30c146a1c Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 9 Feb 2024 23:44:34 -0500
+Subject: [PATCH 5/8] Address Cargo clippy and add default ROCm device libs
+ locations
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs | 22 ++++++++++------------
+ 1 file changed, 10 insertions(+), 12 deletions(-)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index 0e91ba1a9..69d139ccb 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -292,20 +292,18 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+                         }
+                     }
+ 
+-                    let hip_device_lib_path: Option<String> = hip_device_lib_path_arg
++                    let hip_device_lib_path: String = hip_device_lib_path_arg
+                         .or(hip_device_lib_path_env)
+                         .or(rocm_path_arg)
+-                        .or(rocm_path_env);
+-
+-                    if let Some(hip_device_lib_path) = hip_device_lib_path {
+-                        if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
+-                            for file in files {
+-                                if let Ok(file) = file {
+-                                    if let Some(ext) = file.path().extension() {
+-                                        if ext == "bc" {
+-                                            args.extra_hash_files.push(file.path());
+-                                        }
+-                                    }
++                        .or(rocm_path_env)
++                        // This is the default location in official AMD packages and containers.
++                        .unwrap_or("/opt/rocm/amdgcn/bitcode".to_string());
++
++                    if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
++                        for file in files.flatten() {
++                            if let Some(ext) = file.path().extension() {
++                                if ext == "bc" {
++                                    args.extra_hash_files.push(file.path());
+                                 }
+                             }
+                         }
+
+From b04ff59c13f6dadb800b5e42c19af2ba8384776c Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Sat, 10 Feb 2024 12:16:04 -0500
+Subject: [PATCH 6/8] Cleanup bitcode libraries detection and add comments
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs | 53 +++++++++++++++++++++++++++++++----------------
+ 1 file changed, 35 insertions(+), 18 deletions(-)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index 69d139ccb..72e6cf4ad 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -256,50 +256,67 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+                     }
+                 }
+ 
+-                // Handle cache invalidation for the ROCm device bitcode libraries. See
+-                // https://clang.llvm.org/docs/HIPSupport.html for details regarding the order that
+-                // the environment variables and command-line arguments take affect.
++                // Handle cache invalidation for the ROCm device bitcode libraries. Every HIP
++                // object links in some LLVM bitcode libraries (.bc files), so in some sense
++                // every HIP object compilation has an direct dependency on those bitcode
++                // libraries.
++                //
++                // The bitcode libraries are unlikely to change **except** when a ROCm version
++                // changes, so for correctness we should take these bitcode libraries into
++                // account by adding them to `extra_hash_files`.
++                //
++                // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
++                // order in which the environment variables and command-line arguments control the
++                // directory to search for bitcode libraries.
++                //
++                // In reality, not every bitcode library in that directory is needed, but that is
++                // too much to handle on our side so we just hash every bitcode library in that
++                // directory.
+                 if args.language == Language::Hip {
+-                    let mut rocm_path_arg = None;
+-                    let mut hip_device_lib_path_arg = None;
++                    let mut rocm_path_arg: Option<PathBuf> = None;
++                    let mut hip_device_lib_path_arg: Option<PathBuf> = None;
+ 
+                     for arg in &args.common_args {
+                         if let Some(sarg) = arg.to_str() {
+                             if rocm_path_arg.is_none() && sarg.starts_with("--rocm-path=") {
+-                                let mut p = sarg[12..].to_string();
+-                                p.push_str("/amdgcn/bitcode");
+-                                rocm_path_arg = Some(p);
++                                rocm_path_arg = Some(
++                                    PathBuf::from(sarg["--rocm-path=".len()..].to_string())
++                                        .join("amdgcn")
++                                        .join("bitcode"),
++                                );
+                             }
+                             if hip_device_lib_path_arg.is_none()
+                                 && sarg.starts_with("--hip-device-lib-path=")
+                             {
+-                                hip_device_lib_path_arg = Some(sarg[22..].to_string());
++                                hip_device_lib_path_arg = Some(PathBuf::from(
++                                    sarg["--hip-device-lib-path=".len()..].to_string(),
++                                ));
+                             }
+                         }
+                     }
+ 
+-                    let mut rocm_path_env: Option<String> = None;
+-                    let mut hip_device_lib_path_env: Option<String> = None;
++                    let mut rocm_path_env: Option<PathBuf> = None;
++                    let mut hip_device_lib_path_env: Option<PathBuf> = None;
+                     for (k, v) in env_vars.iter() {
+                         if k == "ROCM_PATH" {
+                             if let Some(p) = k.to_str() {
+-                                let mut finp = p.to_string();
+-                                finp.push_str("/amdgcn/bitcode");
+-                                rocm_path_env = Some(finp);
++                                rocm_path_env = Some(
++                                    PathBuf::from(p.to_string()).join("amdgcn").join("bitcode"),
++                                );
+                             }
+                         } else if k == "HIP_DEVICE_LIB_PATH" {
+-                            hip_device_lib_path_env = v.to_str().map(|s| s.to_string());
++                            hip_device_lib_path_env = v.to_str().map(|s| PathBuf::from(s));
+                         }
+                     }
+ 
+-                    let hip_device_lib_path: String = hip_device_lib_path_arg
++                    let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
+                         .or(hip_device_lib_path_env)
+                         .or(rocm_path_arg)
+                         .or(rocm_path_env)
+                         // This is the default location in official AMD packages and containers.
+-                        .unwrap_or("/opt/rocm/amdgcn/bitcode".to_string());
++                        .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
+ 
+-                    if let Ok(files) = Path::new(&hip_device_lib_path).read_dir() {
++                    if let Ok(files) = hip_device_lib_path.read_dir() {
+                         for file in files.flatten() {
+                             if let Some(ext) = file.path().extension() {
+                                 if ext == "bc" {
+
+From ceb452fab3bbd712757951e505fd9f78ac6caa3e Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Thu, 15 Feb 2024 22:57:40 -0500
+Subject: [PATCH 7/8] Remove usage of let mut
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs | 59 ++++++++++++++++++-----------------------------
+ 1 file changed, 23 insertions(+), 36 deletions(-)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index 72e6cf4ad..a1d2c99e2 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -273,46 +273,33 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+                 // too much to handle on our side so we just hash every bitcode library in that
+                 // directory.
+                 if args.language == Language::Hip {
+-                    let mut rocm_path_arg: Option<PathBuf> = None;
+-                    let mut hip_device_lib_path_arg: Option<PathBuf> = None;
+-
+-                    for arg in &args.common_args {
+-                        if let Some(sarg) = arg.to_str() {
+-                            if rocm_path_arg.is_none() && sarg.starts_with("--rocm-path=") {
+-                                rocm_path_arg = Some(
+-                                    PathBuf::from(sarg["--rocm-path=".len()..].to_string())
+-                                        .join("amdgcn")
+-                                        .join("bitcode"),
+-                                );
++                    let extract_rocm_arg = |flag: &str| {
++                        args.common_args.iter().find_map(|arg| match arg.to_str() {
++                            Some(sarg) if sarg.starts_with(flag) => {
++                                Some(PathBuf::from(sarg[arg.len()..].to_string()))
+                             }
+-                            if hip_device_lib_path_arg.is_none()
+-                                && sarg.starts_with("--hip-device-lib-path=")
+-                            {
+-                                hip_device_lib_path_arg = Some(PathBuf::from(
+-                                    sarg["--hip-device-lib-path=".len()..].to_string(),
+-                                ));
+-                            }
+-                        }
+-                    }
+-
+-                    let mut rocm_path_env: Option<PathBuf> = None;
+-                    let mut hip_device_lib_path_env: Option<PathBuf> = None;
+-                    for (k, v) in env_vars.iter() {
+-                        if k == "ROCM_PATH" {
+-                            if let Some(p) = k.to_str() {
+-                                rocm_path_env = Some(
+-                                    PathBuf::from(p.to_string()).join("amdgcn").join("bitcode"),
+-                                );
+-                            }
+-                        } else if k == "HIP_DEVICE_LIB_PATH" {
+-                            hip_device_lib_path_env = v.to_str().map(|s| PathBuf::from(s));
+-                        }
+-                    }
++                            _ => None,
++                        })
++                    };
++
++                    let extract_rocm_env = |name: &str| {
++                        env_vars.iter().find_map(|(k, v)| match v.to_str() {
++                            Some(path) if k == name => Some(PathBuf::from(path.to_string())),
++                            _ => None,
++                        })
++                    };
++
++                    let rocm_path_arg: Option<PathBuf> = extract_rocm_arg("--rocm-path=");
++                    let hip_device_lib_path_arg: Option<PathBuf> =
++                        extract_rocm_arg("--hip-device-lib-path=");
++                    let rocm_path_env: Option<PathBuf> = extract_rocm_env("ROCM_PATH");
++                    let hip_device_lib_path_env: Option<PathBuf> =
++                        extract_rocm_env("HIP_DEVICE_LIB_PATH");
+ 
+                     let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
+                         .or(hip_device_lib_path_env)
+-                        .or(rocm_path_arg)
+-                        .or(rocm_path_env)
++                        .or(rocm_path_arg.map(|path| path.join("amdgcn").join("bitcode")))
++                        .or(rocm_path_env.map(|path| path.join("amdgcn").join("bitcode")))
+                         // This is the default location in official AMD packages and containers.
+                         .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
+ 
+
+From b84eeaad73a2bf3a59454fb629573c37ac471e64 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Wed, 21 Feb 2024 04:36:28 -0500
+Subject: [PATCH 8/8] Refactor search for HIP Device Libs
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ src/compiler/c.rs | 99 +++++++++++++++++++++++++----------------------
+ 1 file changed, 53 insertions(+), 46 deletions(-)
+
+diff --git a/src/compiler/c.rs b/src/compiler/c.rs
+index a1d2c99e2..14f9e5d53 100644
+--- a/src/compiler/c.rs
++++ b/src/compiler/c.rs
+@@ -228,6 +228,55 @@ where
+             compiler,
+         })
+     }
++
++    fn extract_rocm_arg(args: &ParsedArguments, flag: &str) -> Option<PathBuf> {
++        args.common_args.iter().find_map(|arg| match arg.to_str() {
++            Some(sarg) if sarg.starts_with(flag) => {
++                Some(PathBuf::from(sarg[arg.len()..].to_string()))
++            }
++            _ => None,
++        })
++    }
++
++    fn extract_rocm_env(env_vars: &[(OsString, OsString)], name: &str) -> Option<PathBuf> {
++        env_vars.iter().find_map(|(k, v)| match v.to_str() {
++            Some(path) if k == name => Some(PathBuf::from(path.to_string())),
++            _ => None,
++        })
++    }
++
++    // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
++    // order in which the environment variables and command-line arguments control the
++    // directory to search for bitcode libraries.
++    fn search_hip_device_libs(
++        args: &ParsedArguments,
++        env_vars: &[(OsString, OsString)],
++    ) -> Vec<PathBuf> {
++        let rocm_path_arg: Option<PathBuf> = Self::extract_rocm_arg(args, "--rocm-path=");
++        let hip_device_lib_path_arg: Option<PathBuf> =
++            Self::extract_rocm_arg(args, "--hip-device-lib-path=");
++        let rocm_path_env: Option<PathBuf> = Self::extract_rocm_env(env_vars, "ROCM_PATH");
++        let hip_device_lib_path_env: Option<PathBuf> =
++            Self::extract_rocm_env(env_vars, "HIP_DEVICE_LIB_PATH");
++
++        let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
++            .or(hip_device_lib_path_env)
++            .or(rocm_path_arg.map(|path| path.join("amdgcn").join("bitcode")))
++            .or(rocm_path_env.map(|path| path.join("amdgcn").join("bitcode")))
++            // This is the default location in official AMD packages and containers.
++            .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
++
++        hip_device_lib_path
++            .read_dir()
++            .ok()
++            .map(|f| {
++                f.flatten()
++                    .filter(|f| f.path().extension().map_or(false, |ext| ext == "bc"))
++                    .map(|f| f.path())
++                    .collect()
++            })
++            .unwrap_or(Vec::default())
++    }
+ }
+ 
+ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+@@ -265,53 +314,11 @@ impl<T: CommandCreatorSync, I: CCompilerImpl> Compiler<T> for CCompiler<I> {
+                 // changes, so for correctness we should take these bitcode libraries into
+                 // account by adding them to `extra_hash_files`.
+                 //
+-                // See https://clang.llvm.org/docs/HIPSupport.html for details regarding the
+-                // order in which the environment variables and command-line arguments control the
+-                // directory to search for bitcode libraries.
+-                //
+-                // In reality, not every bitcode library in that directory is needed, but that is
+-                // too much to handle on our side so we just hash every bitcode library in that
+-                // directory.
++                // In reality, not every available bitcode library is needed, but that is
++                // too much to handle on our side so we just hash every bitcode library we find.
+                 if args.language == Language::Hip {
+-                    let extract_rocm_arg = |flag: &str| {
+-                        args.common_args.iter().find_map(|arg| match arg.to_str() {
+-                            Some(sarg) if sarg.starts_with(flag) => {
+-                                Some(PathBuf::from(sarg[arg.len()..].to_string()))
+-                            }
+-                            _ => None,
+-                        })
+-                    };
+-
+-                    let extract_rocm_env = |name: &str| {
+-                        env_vars.iter().find_map(|(k, v)| match v.to_str() {
+-                            Some(path) if k == name => Some(PathBuf::from(path.to_string())),
+-                            _ => None,
+-                        })
+-                    };
+-
+-                    let rocm_path_arg: Option<PathBuf> = extract_rocm_arg("--rocm-path=");
+-                    let hip_device_lib_path_arg: Option<PathBuf> =
+-                        extract_rocm_arg("--hip-device-lib-path=");
+-                    let rocm_path_env: Option<PathBuf> = extract_rocm_env("ROCM_PATH");
+-                    let hip_device_lib_path_env: Option<PathBuf> =
+-                        extract_rocm_env("HIP_DEVICE_LIB_PATH");
+-
+-                    let hip_device_lib_path: PathBuf = hip_device_lib_path_arg
+-                        .or(hip_device_lib_path_env)
+-                        .or(rocm_path_arg.map(|path| path.join("amdgcn").join("bitcode")))
+-                        .or(rocm_path_env.map(|path| path.join("amdgcn").join("bitcode")))
+-                        // This is the default location in official AMD packages and containers.
+-                        .unwrap_or(PathBuf::from("/opt/rocm/amdgcn/bitcode"));
+-
+-                    if let Ok(files) = hip_device_lib_path.read_dir() {
+-                        for file in files.flatten() {
+-                            if let Some(ext) = file.path().extension() {
+-                                if ext == "bc" {
+-                                    args.extra_hash_files.push(file.path());
+-                                }
+-                            }
+-                        }
+-                    }
++                    args.extra_hash_files
++                        .extend(Self::search_hip_device_libs(&args, env_vars))
+                 }
+ 
+                 CompilerArguments::Ok(Box::new(CCompilerHasher {

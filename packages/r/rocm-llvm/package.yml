@@ -1,8 +1,9 @@
 name       : rocm-llvm
 version    : 6.0.0
-release    : 1
+release    : 2
 source     :
     - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.0.0.tar.gz : c673708d413d60ca8606ee75c77e9871b6953c59029c987b92f2f6e85f683626
+    - https://github.com/ROCm/hip-tests/archive/refs/tags/rocm-6.0.0.tar.gz#hip-tests-6.0.0.tar.gz : e8f92a0f5d1f6093ca1fb24ff1b7140128900fcdc6e9f01f153d6907e5c2d807
 homepage   : https://github.com/ROCm/llvm-project
 license    : Apache-2.0-with-LLVM-exception
 summary    : ROCm's patched LLVM
@@ -17,6 +18,8 @@ builddeps  :
     - pkgconfig(numa)
 rundeps    :
     - zstd-devel
+checkdeps  :
+    - rocm-hip
 environment: |
     # Decontaminate build environment
     unset LDFLAGS
@@ -59,8 +62,21 @@ environment: |
          -DLLVM_TARGET_ARCH=x86_64 \
          -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
          -DLIB_SUFFIX=%LIBSUFFIX%"
-# TODO(GZGavinZhao): cleanup when rebuilding/rebootstrapping against ROCm device
-# libs to build openmp/mlir
+
+    # For profiling
+    export PGO_INSTALL_DIR=$workdir/pgo-use
+    export OFFLOAD_ARCH_STR=$(echo "%AMDGPUTARGETS%" | awk '{ gsub("gfx", "--offload-arch=gfx"); gsub(";", " "); print }')
+    export ROCM_PATH=/usr
+    export HIP_PATH=/usr
+    export HIP_PLATFORM=amd
+    export HIP_RUNTIME=amd
+    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export HIP_CLANG_PATH=$PGO_INSTALL_DIR/bin
+    export HIP_ROCCLR_HOME=$PGO_INSTALL_DIR
+    export HIP_TESTS_DIR=$workdir/hip-tests-6.0.0
+    # I don't know why LLVM stores the profile data there, but they're there
+    export PROF_DIR=/home/build/YPKG/root/rocm-llvm/pgo
+# TODO(GZGavinZhao): maybe build openmp as well after bootstrapping?
 setup      : |
     # Just annoying.
     %patch -p1 -i $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
@@ -68,17 +84,20 @@ setup      : |
     %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
     # Allow us to force ignore -Werror
     %patch -p1 -i $pkgfiles/ignore-werror.patch
+    # This warning appears during profiling phase, not sure if it affects
+    # profile data generation
+    %patch -p1 -i $pkgfiles/fix-inconsistent-md5-checksum.patch
 
     # Patch cfe for Solus specific options
     pushd clang
         %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
     popd
 
-    # # Pull lld in line with binutils linkers for consistency
-    # pushd lld
-    #     %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
-    #     %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
-    # popd
+    # Pull lld in line with binutils linkers for consistency
+    pushd lld
+        %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
+        %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
+    popd
 
     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
                  $CMAKE_COMMON_OPTIONS \
@@ -86,10 +105,38 @@ setup      : |
                  -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
                  -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
                  -DLLVM_BUILD_DOCS=OFF \
-                 # -DCMAKE_CXX_LINK_FLAGS="-lzstd -lz" \
+                 -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+                 -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+                 -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
 build      : |
-    %ninja_build
+    ninja -C solusBuildDir install %JOBS%
+    cp -TRv $PGO_INSTALL_DIR/lib $PGO_INSTALL_DIR/lib64
+profile    : |
+    mkdir -p $HIP_TESTS_DIR
+    tar --strip-components=1 -C $HIP_TESTS_DIR -xf $sources/hip-tests-6.0.0.tar.gz
+    pushd $HIP_TESTS_DIR
+        %patch -p1 -i $pkgfiles/hip-tests.diff
+    popd
+
+    %cmake_ninja -B profile -S $HIP_TESTS_DIR/catch -L \
+      -DOFFLOAD_ARCH_STR="$OFFLOAD_ARCH_STR" \
+      -DHIP_PLATFORM=$HIP_PLATFORM \
+      -DROCM_PATH=$ROCM_PATH
+
+    %ninja_build -C profile build_tests
+
+    llvm-profdata merge -output=$PROF_DIR/code.profdata $PROF_DIR/default-*.profraw
 install    : |
+    rm -rf solusBuildDir
+    %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
+                 $CMAKE_COMMON_OPTIONS \
+                 -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
+                 -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
+                 -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
+                 -DLLVM_BUILD_DOCS=OFF \
+                 -DCMAKE_C_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata" \
+                 -DCMAKE_CXX_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata"
+
     %ninja_install
 
     cp -TRv $installdir/usr/lib64/llvm-rocm/lib $installdir/usr/lib64/llvm-rocm/lib64

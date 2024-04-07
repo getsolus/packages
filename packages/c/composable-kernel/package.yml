@@ -1,0 +1,70 @@
+name       : composable-kernel
+version    : 6.0.0
+release    : 2
+source     :
+    - https://github.com/ROCm/composable_kernel/archive/refs/tags/rocm-6.0.0.tar.gz : a8f736f2f2a8afa4cddd06301205be27774d85f545429049b4a2bbbe6fcd67df
+homepage   : https://github.com/ROCm/composable_kernel
+license    : MIT
+component  : programming.library
+summary    : Performance Portable Programming Model for Machine Learning Tensor Operators
+description: |
+    The Composable Kernel (CK) library provides a programming model for writing performance-critical kernels for machine learning workloads across multiple architectures (GPUs, CPUs, etc.). The CK library uses general purpose kernel languages, such as HIP C++.
+patterns   : /*
+builddeps  :
+    - rocm-cmake
+    - rocm-hip
+    # Unfortunately the Git binary must be present
+    - git
+debug      : no
+environment: |
+    # Speed up the process abit
+    unset LD_PRELOAD
+
+    unset CFLAGS CXXFLAGS LDFLAGS
+    # Too noisy
+    export CFLAGS="-w"
+    export CXXFLAGS="-w"
+    export CLANG_IGNORE_WERROR=1
+
+    export ROCM_PATH=/usr
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    # Check include/ck/ck.hpp for supported architectures
+    export AMDGPU_TARGETS="%AMDGPUTARGETS%"
+
+    export HIP_CLANG_LAUNCHER=sccache
+    export SCCACHE_IDLE_TIMEOUT=0
+setup      : |
+    %patch -p1 -i $pkgfiles/0001-Rename-device_operations-and-utility-to-prevent-name.patch
+    # MIOpen is not ready yet
+    # %patch -p1 -i $pkgfiles/0002-Split-the-static-library-into-several-files.patch
+    # TODO(GZGavinZhao): it's a little tricky
+    # %patch -p1 -i $pkgfiles/0003-Me-no-like-static-libs.patch
+
+    # They put commas in a CMake macro!
+    sed -i 's|USE_BITINT_EXTENSION_INT4,|USE_BITINT_EXTENSION_INT4|g' CMakeLists.txt
+    sed -i 's|USE_OPT_NAVI3X,|USE_OPT_NAVI3X|g' CMakeLists.txt
+
+    # Support gfx101*
+    sed -i 's/defined(__gfx900__)/defined(__gfx900__) || defined(__gfx1010__)/g' include/ck/ck.hpp
+
+    %cmake_ninja -L \
+      -DCMAKE_C_COMPILER=hipcc \
+      -DCMAKE_CXX_COMPILER=hipcc \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DROCM_SYMLINK_LIBS=OFF \
+      -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
+      -DINSTALL_GTEST=OFF \
+      -DBUILD_DEV=OFF \
+      -DBUILD_GMOCK=OFF \
+      -DINSTANCES_ONLY=ON \
+      -DUSE_BITINT_EXTENSION_INT4=OFF \
+      -DUSE_OPT_NAVI3X=ON \
+      -DDL_KERNELS=ON \
+      -DGPU_TARGETS="$AMDGPU_TARGETS" \
+      -DDTYPES="fp64;fp32;fp16;bf16;fp8;bf8;int8" \
+      # -DBUILD_SHARED_LIBS=ON
+build      : |
+    %ninja_build
+install    : |
+    %ninja_install
