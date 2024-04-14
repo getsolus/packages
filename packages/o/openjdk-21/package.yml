@@ -1,0 +1,131 @@
+name       : openjdk-21
+version    : 21.0.2
+release    : 1
+source     :
+    - https://github.com/openjdk/jdk21u/archive/refs/tags/jdk-21.0.2-ga.tar.gz : 17eda717843ffbbacc7de4bdcd934f404a23a57ebb3cda3cec630a668651531f
+    # Detection seems broken, we can't use system gtest (TODO fix this)
+    - https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz : 8ad598c73ad796e0d8280b082cebd82a630d73e73cd3c70057938a6501bba5d7
+    # Bootstrappin'
+    - https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.2%2B13/OpenJDK21U-jdk_x64_linux_hotspot_21.0.2_13.tar.gz : 454bebb2c9fe48d981341461ffb6bf1017c7b7c6e15c6b0c29b959194ba3aaa5
+license    : GPL-2.0-only WITH Classpath-exception-2.0
+component  : programming.java
+homepage   : https://openjdk.java.net/
+summary    : Open implementation of Oracle's Java Development Kit, major version 21
+description: |
+    Open implementation of Oracle's Java Development Kit, major version 21. This package includes the JDK, the JRE is not separately provided.
+clang      : yes
+builddeps  :
+    - pkgconfig(alsa)
+    - pkgconfig(fontconfig)
+    - pkgconfig(gtest)
+    - pkgconfig(lcms2)
+    - pkgconfig(libjpeg)
+    - pkgconfig(x11)
+    - pkgconfig(xext)
+    - pkgconfig(xrandr)
+    - pkgconfig(xrender)
+    - pkgconfig(xt)
+    - pkgconfig(xtst)
+    - pkgconfig(xxf86vm)
+    - cups-devel
+    - giflib-devel
+    # - openjdk-21
+checkdeps  :
+    - pkgconfig(gtest)
+    - jtreg
+patterns   :
+    - devel :
+        - /usr/lib64/openjdk-21/include/
+mancompress: yes
+environment: |
+    # ccache needs to be enabled via conf option, not by setting the path
+    if [[ " ${PATH[*]} " =~ "ccache" ]]; then
+        export PATH="${PATH//\/usr\/lib64\/ccache\/bin:/}"
+        export extra_conf_opts="--enable-ccache"
+    fi
+setup      : |
+    # %patch -p1 -i $pkgfiles/0001-Double-default-reserved-code-cache-size.patch
+    # %patch -p1 -i $pkgfiles/0001-Enable-tiered-compilation.patch
+    # %patch -p1 -i $pkgfiles/0001-Use-current-directory-as-backup-for-user-prefs.patch
+    # %patch -p1 -i $pkgfiles/0001-Dont-echo-_JAVA_OPTIONS.patch
+
+    # %patch -p1 -i $pkgfiles/0001-The-jdk-uses-tagged-pointers-on-this-which-clang-kno.patch
+    # %patch -p1 -i $pkgfiles/0001-fix-clang-14-test-failure.patch
+
+    # Setup gtest
+    tar xf $sources/v1.14.0.tar.gz
+    mv googletest-1.14.0 gtest-local
+
+    tar xvzf $sources/OpenJDK21U-jdk_x64_linux_hotspot_21.0.2_13.tar.gz -C $workdir
+
+    chmod +x configure
+    %configure --prefix="$installdir/usr" \
+        --with-jvm-variants=client \
+        --with-jvm-features="compiler2" \
+        --with-boot-jdk="$workdir/jdk-21.0.2+13" \
+        --with-native-debug-symbols=internal \
+        --with-toolchain-type=clang \
+        --with-version-build="13" \
+        --with-version-pre="" \
+        --with-version-opt="solus" \
+        --with-stdc++lib=dynamic \
+        --with-freetype=system \
+        --with-giflib=system \
+        --with-gtest=./gtest-local \
+        --with-harfbuzz=system \
+        --with-jtreg=/usr/share/jtreg7 \
+        --with-lcms=system \
+        --with-libjpeg=system \
+        --with-libpng=system \
+        --with-zlib=system \
+        --enable-unlimited-crypto \
+        --disable-warnings-as-errors \
+        --disable-absolute-paths-in-output \
+        --with-extra-cflags="${CFLAGS}" \
+        --with-extra-cxxflags="${CXXFLAGS}" \
+        --with-extra-ldflags="${LDFLAGS}" \
+        --with-jobs=%YJOBS% \
+        $extra_conf_opts
+build      : |
+    # Build OpenJDK
+    make images test-image
+install    : |
+    install -Ddm00755 $installdir/%libdir%/
+    install -dm00755 $installdir/usr/include/openjdk-21/
+    install -dm00755 $installdir/usr/share/applications/
+
+    make install
+
+    # Binaries
+    mv $installdir/usr/jvm/openjdk-* $installdir/%libdir%/openjdk-21/
+    rm -rfv $installdir/usr/jvm/
+    rm -rfv $installdir/usr/bin/
+
+    # Remove license files and demo files
+    rm -rfv $installdir/%libdir%/openjdk-21/{legal,demo}/
+
+    # Headers
+    pushd build/linux-x86_64-*/
+    cp -ar jdk/include/* $installdir/usr/include/openjdk-21/
+    # Symlink header files (because some apps look for them in $JAVA_HOME)
+    ln -srv $installdir/usr/include/openjdk-21/ $installdir/%libdir%/openjdk-21/include/
+    popd
+
+    # Man pages
+    mv $installdir/%libdir%/openjdk-21/man/ $installdir/usr/share/
+    find $installdir/usr/share/man/ -type f -print -exec rename -- ".1" "-21.1" {} \;
+
+    # Add java-21-jar.desktop into usable apps
+    install -Dm 00644 $pkgfiles/java-21-jar.desktop $installdir/usr/share/applications/
+
+    # Link system JVM installations under /usr/lib64/jvm so that tools that scan the system for JVMs can easily find them
+    install -dm00755 $installdir/%libdir%/jvm
+    ln -srv $installdir/%libdir%/openjdk-21 $installdir/%libdir%/jvm/openjdk-21
+# Tests take a long time so should be disabled before pushing
+# Note that some of these tests can OOM if you don't have enough system memory (32GB+ recommended)
+# If you still get OOMs even with that much memory try reducing the number of jobs in eopkg.conf,
+# or closing running applications so as to appease the openjdk (yes, it's that bad)
+# check      : |
+#     # You can add "RUN_PROBLEM_LISTS=true;" to the JTREG key below to run all tests in the ProblemList instead of excluding them.
+#     # This is useful to see if any tests have been fixed in a new version
+#     make test TEST="tier1 gtest:all" JTREG="EXTRA_PROBLEM_LISTS=$pkgfiles/ProblemList.txt"
