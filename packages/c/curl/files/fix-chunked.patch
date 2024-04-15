@@ -1,0 +1,99 @@
+From e71429b44e906508771bd5cdf51430e9fa3bc319 Mon Sep 17 00:00:00 2001
+From: Stefan Eissing <stefan@eissing.org>
+Date: Mon, 1 Apr 2024 15:41:18 +0200
+Subject: [PATCH 1/3] chunked POST forced, disable length check on read
+ callback
+
+- when an application forces HTTP/1.1 chunked transfer encoding
+  by setting the corresponding header and instructs curl to use
+  the CURLOPT_READFUNCTION, disregard any POST length information.
+- this establishes backward compatibility with previous curl versions
+
+Applications are encouraged to not force "chunked", but rather
+set length information for a POST. By setting -1, curl will
+auto-select chunked on HTTP/1.1 and work properly on other HTTP
+versions.
+---
+ lib/http.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index 92c04e69cd8373..e37899675efecf 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -2046,8 +2046,13 @@ static CURLcode set_reader(struct Curl_easy *data, Curl_HttpReq httpreq)
+       else
+         result = Curl_creader_set_null(data);
+     }
+-    else { /* we read the bytes from the callback */
+-      result = Curl_creader_set_fread(data, postsize);
++    else {
++      /* we read the bytes from the callback. In case "chunked" encoding
++       * is forced by the application, we disregard `postsize`. This is
++       * a backward compatibility decision to earlier versions where
++       * chunking disregarded this. See issue #13229. */
++      bool chunked = !!Curl_checkheaders(data, STRCONST("Transfer-Encoding"));
++      result = Curl_creader_set_fread(data, chunked? -1 : postsize);
+     }
+     return result;
+ 
+
+From 0184f02cb23e2af48a8b68d26e972742488f6855 Mon Sep 17 00:00:00 2001
+From: Stefan Eissing <stefan@eissing.org>
+Date: Mon, 1 Apr 2024 16:57:09 +0200
+Subject: [PATCH 2/3] Handle application enforced shunked encoding on HTTP/2
+ and higher
+
+- ignore application desire to chunk on HTTP/2 and higher
+- give information message that chunked encoding is suppressed
+---
+ lib/http.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/lib/http.c b/lib/http.c
+index e37899675efecf..7eebd1026f8237 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -2120,6 +2120,13 @@ CURLcode Curl_http_req_set_reader(struct Curl_easy *data,
+     data->req.upload_chunky =
+       Curl_compareheader(ptr,
+                          STRCONST("Transfer-Encoding:"), STRCONST("chunked"));
++    if(data->req.upload_chunky &&
++       Curl_use_http_1_1plus(data, data->conn) &&
++       (data->conn->httpversion >= 20)) {
++       infof(data, "suppressing chunked transfer encoding on connection "
++             "using HTTP version 2 or higher");
++       data->req.upload_chunky = FALSE;
++    }
+   }
+   else {
+     curl_off_t req_clen = Curl_creader_total_length(data);
+
+From d8aab07f5cf1eec5a1755765d35d69122727f565 Mon Sep 17 00:00:00 2001
+From: Stefan Eissing <stefan@eissing.org>
+Date: Mon, 1 Apr 2024 17:14:50 +0200
+Subject: [PATCH 3/3] check TE header for "chunked" when ignoring post size
+
+---
+ lib/http.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/lib/http.c b/lib/http.c
+index 7eebd1026f8237..a764d3c4403c39 100644
+--- a/lib/http.c
++++ b/lib/http.c
+@@ -2051,7 +2051,13 @@ static CURLcode set_reader(struct Curl_easy *data, Curl_HttpReq httpreq)
+        * is forced by the application, we disregard `postsize`. This is
+        * a backward compatibility decision to earlier versions where
+        * chunking disregarded this. See issue #13229. */
+-      bool chunked = !!Curl_checkheaders(data, STRCONST("Transfer-Encoding"));
++      bool chunked = FALSE;
++      char *ptr = Curl_checkheaders(data, STRCONST("Transfer-Encoding"));
++      if(ptr) {
++        /* Some kind of TE is requested, check if 'chunked' is chosen */
++        chunked = Curl_compareheader(ptr, STRCONST("Transfer-Encoding:"),
++                                     STRCONST("chunked"));
++      }
+       result = Curl_creader_set_fread(data, chunked? -1 : postsize);
+     }
+     return result;
