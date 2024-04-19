@@ -115,7 +115,7 @@ class Git:
         return self._run(self.root, list(args))
 
     def run_lines(self, *args: str) -> List[str]:
-        return self.run(*args).split("\n")
+        return self.run(*args).splitlines()
 
     def changed_files(self, base: str, head: str) -> List[str]:
         return self.run_lines('diff', '--name-only', '--diff-filter=AM', base, head)
