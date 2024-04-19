@@ -507,7 +507,7 @@ class PackageVersion(PullRequestCheck):
 
     def run(self) -> List[Result]:
         return [Result(message=self._error, level=self._level,
-                       file=path, line=self.file_line(path, r'^version\s*:'),)
+                       file=path, line=self.file_line(path, r'^version\s*:'), )
                 for path in self.package_files
                 if not self._check_version(path)]
 
@@ -730,7 +730,10 @@ class Checker:
         UnwantedFiles,
     ]
 
-    def __init__(self, base: Optional[str], head: str, path: str, modified: bool, untracked: bool, files: List[str]):
+    def __init__(self, base: Optional[str], head: str, path: str, files: List[str],
+                 modified: bool, untracked: bool, results_only: bool, exit_warn: bool):
+        self.results_only = results_only
+        self.exit_warn = exit_warn
         self.base = base
         self.head = head
         self.git = Git(path)
@@ -750,22 +753,25 @@ class Checker:
             self.files += self.git.untracked_files()
 
     def run(self) -> bool:
-        print(f'Checking files: {", ".join(self.files)}')
-        if self.commits:
-            print(f'Checking commits: {", ".join(self.commits)}')
+        if not self.results_only:
+            print(f'Checking files: {", ".join(self.files)}')
+            if self.commits:
+                print(f'Checking commits: {", ".join(self.commits)}')
 
         results = [result for check in self.checks
                    for result in check(self.git, self.files, self.commits, self.base).run()]
         errors = [r for r in results if r.level == Level.ERROR]
+        warnings = [r for r in results if r.level == Level.WARNING]
 
-        print(f"Found {len(results)} result(s), {len(errors)} error(s)")
+        if not self.results_only:
+            print(f"Found {len(results)} result(s), {len(warnings)} warnings and {len(errors)} error(s)")
 
         for result in results:
             result.log()
 
         self.write_summary()
 
-        return len(errors) > 0
+        return len(errors) > 0 or self.exit_warn and len(warnings) > 0
 
     def write_summary(self) -> None:
         if self.summary_file is None:
@@ -793,13 +799,20 @@ if __name__ == "__main__":
                         help='Include modified files')
     parser.add_argument('--untracked', action='store_true',
                         help='Include untracked files')
+    parser.add_argument('--fail-on-warnings', action='store_true',
+                        help='Exit with an error if warnings are encountered')
+    parser.add_argument('--results-only', action='store_true',
+                        help='Only show results, nothing else')
     parser.add_argument('filename', type=str, nargs="*",
                         help='Additional files to check')
+
     cli_args = parser.parse_args()
-    checker = Checker(cli_args.base,
-                      cli_args.head,
-                      cli_args.root,
-                      cli_args.modified,
-                      cli_args.untracked,
-                      cli_args.filename)
+    checker = Checker(base=cli_args.base,
+                      head=cli_args.head,
+                      path=cli_args.root,
+                      modified=cli_args.modified,
+                      untracked=cli_args.untracked,
+                      files=cli_args.filename,
+                      results_only=cli_args.results_only,
+                      exit_warn=cli_args.fail_on_warnings)
     exit(checker.run())
