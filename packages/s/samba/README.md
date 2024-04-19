@@ -34,8 +34,9 @@ Example:
 ```
 git checkout master
 git pull
-git checkout samba-4.10.10
+git checkout samba-4.19.6
 ```
+
 
 ### Internal Samba dependencies (developed as part of Samba)
 
@@ -54,23 +55,31 @@ done
 
 
 ```
-ermo@rocinante:~/src/samba ⑂samba-4.10.10
-$ for pkg in talloc tevent tdb ldb; do
->     grep -EHin '^VERSION =' "lib/${pkg}/wscript"
->     eopkg info ${pkg} |grep Name |uniq
-> done
-lib/talloc/wscript:4:VERSION = '2.1.16'
-Name                : talloc, version: 2.1.16, release: 9
-lib/tevent/wscript:4:VERSION = '0.9.39'
-Name                : tevent, version: 0.9.39, release: 10
-lib/tdb/wscript:4:VERSION = '1.3.18'
-Name                : tdb, version: 1.3.18, release: 13
-lib/ldb/wscript:4:VERSION = '1.5.6'
-Name                : ldb, version: 1.5.5, release: 11
-
+ermo@solbox:~/repos/samba [samba-4.19.6]
+$ for pkg in talloc tdb tevent ldb; do
+    grep -EHin '^VERSION =' "lib/${pkg}/wscript"
+    eopkg info ${pkg} |grep Name |uniq
+done
+lib/talloc/wscript:4:VERSION = '2.4.1'
+Name                : talloc, version: 2.3.4, release: 16
+Name                : talloc, version: 2.4.1, release: 17
+lib/tdb/wscript:4:VERSION = '1.4.9'
+Name                : tdb, version: 1.4.7, release: 24
+lib/tevent/wscript:4:VERSION = '0.15.0'
+Name                : tevent, version: 0.13.0, release: 18
+lib/ldb/wscript:5:VERSION = '2.8.0'
+Name                : ldb, version: 2.6.2, release: 28
 ```
 
-In this example, ldb needs to be updated from 1.5.5 -> 1.5.6 in the Solus repo prior to building and landing Samba-4.10.10.
+In this example (samba 4.17.12 -> 4.19.6):
+
+- talloc needs to be updated from 2.3.4 -> 2.4.1
+- tevent needs to be updated from 0.13.0 -> 0.15.0
+- tdb needs to be updated from 1.4.7 -> 1.4.9
+- ldb needs to be updated from 2.6.2 -> 2.8.0
+
+in the Solus repo prior to building and landing Samba-4.19.6.
+
 
 ### 3rd Party Samba dependencies (only shipped as part of Samba for convenience)
 
@@ -85,43 +94,25 @@ Samba and its dependencies need to be rebuilt in a certain order.  For major ver
 
 Within the same major version branch, the need to rebuild talloc/tevent/tdb/ldb is typically lower.
 
-When doing major version updates, create a phab task with associated diff stack for review.
+When doing major version updates, create a GH PR with commits ordered per the below list for review and easy pushing+building.
 
-### talloc safety rebuilds (eopkg-deps rev talloc)
 
-- ldb
-- notmuch
-- (samba)
-- tevent
-- cifs-utils 
+### Tiers and rebuild order
 
-### tevent safety rebuilds (eopkg-deps rev tevent)
+```
+$ autobuild query -t src:packages/ samba ldb tdb tevent talloc
+Build order:
+ Tier 1: talloc tdb 
+ Tier 2: cifs-utils notmuch tevent 
+ Tier 3: ldb 
+ Tier 4: samba 
+ Tier 5: acccheck ffmpeg python-pysmbc 
+ Tier 6: budgie-control-center gvfs kio-extras kodi mpd nautilus-share nemo-extensions rhythmbox vlc 
+ Tier 7: gnome-control-center 
+```
 
-- ldb
-- (samba)
+A few of the above packages only have samba as a rundep, so can be ignored for rebuilds.
 
-### tdb safety rebuilds (eopkg-deps rev tdb)
-
-- ldb
-- rhythmbox
-- (samba)
-- (tdb-utils is built as part of tdb)
-
-### ldb safety rebuilds (eopkg-deps rev ldb)
-
-- ffmpegthumbs
-- (samba)
-
-### Packages that will need a safety rebuild if Samba exports ABI changes (eopkg-deps rev samba)
-
-- budgie-control-center
-- ffmpeg
-- gnome-control-center
-- gvfs
-- kio-extras
-- kodi
-- python-pysmbc
-- vlc
 
 ### Related packages that should be checked for updates on a regular basis
 
@@ -129,16 +120,17 @@ When doing major version updates, create a phab task with associated diff stack 
 - [python-pysmbc](https://files.pythonhosted.org/packages/source/p/pysmbc/)
 - [wsdd](https://github.com/christgau/wsdd/tags)
 
+
 ## Suggested Test Plan for each Samba rebuild
 
 - Run `sudo testparm -v` and check for anomalies in the default config
-- Run `sudo systemctl enable --now smb ; smbclient -N -L localhost` and check that the service runs and that it is possible to connect to the smb daemon
-  - Look for `smbd` and ports 139 and 445 in `sudo ss -plantu |egrep '139|445|smbd'`
-- Rebuild current `ffmpegthumbs`, `gvfs` and `kio-extras` (especially important if there were removals in abi_symbols)
-  - Reboot and ensure that anonymous and authenticated user access works in the Dolphin (kio) and Nautilus (gvfs) file managers
-- Rebuild `ffmpeg` and `vlc` (especially important if there were removals in abi_symbols)
-  - Ensure that smb:// URI playback works in
-    - `kodi`
-    - `mpv` (used by Celluloid in Budgie and GNOME Shell)
-    - `smplayer` (used by KDE)
-    - `vlc` (used by MATE); note that vlc can be temperamental in this regard -- see T8538
+- Run `sudo systemctl enable --now smb ; smbclient -N -L 127.0.0.1` and check that the service runs and that it is possible to connect to the smb daemon
+  - Look for `smbd` and ports 139 and 445 in `sudo ss -plantu |grep -E '139|445|smbd'`
+- Reboot and ensure that anonymous and authenticated user access works in the Dolphin (kio) and Nautilus (gvfs) file managers
+- Ensure that smb:// URI playback works in:
+  - `celluloid` (used by Budgie and GNOME)
+  - `haruna` (used by KDE)
+  - `kodi`
+  - `mpv` (unauthenticated access will work fine, but authenticated access will not)
+  - `parole` (used by XFCE)
+  - `vlc` -- note that vlc can be temperamental in this regard -- see T8538
