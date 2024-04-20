@@ -1,6 +1,6 @@
 name       : iptables
 version    : 1.8.10
-release    : 12
+release    : 13
 source     :
     - https://www.netfilter.org/pub/iptables/iptables-1.8.10.tar.xz : 5cc255c189356e317d070755ce9371eb63a1b783c34498fb8c30264f3cc59c9c
 homepage   : https://www.netfilter.org
@@ -10,19 +10,28 @@ summary    : Netfilter firewall
 description: |
     Netfilter firewall
 emul32     : yes
+builddeps  :
+    - pkgconfig32(libmnl)
+    - pkgconfig32(libnfnetlink)
+    - pkgconfig32(libnftnl)
+rundeps    :
+    - nftables
+clang      : yes
+optimize   : thin-lto
 setup      : |
+    %patch -p1 -i $pkgfiles/0001-Stateless.patch
     if [ -n "${EMUL32BUILD+set}" ]; then
         extra_args="--disable-devel"
     else
         extra_args="--enable-devel"
     fi
 
-    %configure  --exec-prefix= \
-                --bindir=/usr/bin \
-                --with-xtlibdir=/usr/lib%LIBSUFFIX%/xtables \
-                --enable-libipq \
-                --disable-nftables \
-                $extra_args
+    %reconfigure  --exec-prefix= \
+                  --bindir=/usr/bin \
+                  --sbindir=/usr/sbin \
+                  --with-xtlibdir=/usr/lib%LIBSUFFIX%/xtables \
+                  --enable-libipq \
+                  $extra_args
 build      : |
     %make
 install    : |
@@ -30,19 +39,26 @@ install    : |
 
     # usr-merge for plugins
     install -D -d -m 00755 $installdir/lib%LIBSUFFIX%/
-    ln -sv ../../usr/lib%LIBSUFFIX%/xtables $installdir/lib%LIBSUFFIX%/xtables
+
+    ln -srv $installdir/usr/lib%LIBSUFFIX%/xtables $installdir/lib%LIBSUFFIX%/xtables
 
     if [ -n "${EMUL32BUILD+set}" ]; then
         # Don't need these potentially conflicting
         rm -rfv $installdir/usr/{bin,sbin,share}
 
     else
+        # NFT mode
+        for _x in {arp,eb,ip,ip6}tables{,-restore,-save}; do
+            ln -svf xtables-nft-multi "$installdir/usr/sbin/$_x"
+        done
+        ln -srvf $installdir/usr/sbin/xtables-nft-multi "$installdir/usr/bin/iptables-xml"
+
         # usr-merge for /bin and /sbin
         for TOP in {bin,sbin}; do
             install -D -d -m 00755 $installdir/$TOP
             pushd $installdir/usr/$TOP
             for FILE in *; do
-                ln -sv ../usr/$TOP/$FILE $installdir/$TOP/$FILE
+                ln -srv $installdir/usr/$TOP/$FILE $installdir/$TOP/$FILE
             done
             popd
         done
