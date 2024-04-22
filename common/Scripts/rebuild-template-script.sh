@@ -10,7 +10,7 @@
 # See Help() for usage.
 
 # The package we are building against e.g. libicu/libboost. Should be in our custom local repo.
-MAINPAK="poppler"
+MAINPAK=""
 
 # The packages to rebuild, in the order they need to be rebuilt.
 # Use eopkg info and eopkg-deps to get the rev deps of the main package
@@ -19,7 +19,7 @@ MAINPAK="poppler"
 # If the package list is particularly long you may wish to pass in a file instead.
 # e.g. $(cat "packages.txt")
 PACKAGES="
-inkscape kitinerary gdal pdf2djvu scribus libreoffice
+
 "
 
 # Track any troublesome packages here to deal with them manually.
@@ -187,8 +187,6 @@ build() {
                 sudo solbuild build package.yml -p local-unstable-${MAINPAK}-x86_64
             fi
             sudo mv *.eopkg /var/lib/solbuild/local-${MAINPAK}/
-        else
-            echo "continue"
         fi;
         popd
     done
@@ -282,7 +280,7 @@ commit() {
             git commit
         else
             git commit -F- <<EOF
-${i}: Rebuild against ${MAINPAK} 24.04.0
+${i}: Rebuild against ${MAINPAK}
 
 EOF
         fi
