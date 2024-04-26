@@ -1,6 +1,6 @@
 name       : fontconfig
 version    : 2.15.0
-release    : 42
+release    : 43
 source     :
     - https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.15.0.tar.xz : 63a0658d0e06e0fa886106452b58ef04f21f58202ea02a94c39de0d3335d7c0e
 homepage   : https://www.freedesktop.org/wiki/Software/fontconfig/
@@ -16,6 +16,7 @@ builddeps  :
     - pkgconfig32(freetype2)
     - pkgconfig32(uuid)
     - gperf
+    - tree
 rundeps    :
     - 32bit : harfbuzz-32bit
     - harfbuzz
@@ -25,15 +26,38 @@ setup      : |
     %meson_configure \
                      -Ddefault-hinting=slight \
                      -Ddefault-sub-pixel-rendering=rgb \
-                     -Dbaseconfig-dir=/usr/share/fonts \
-                     -Dconfig-dir=/usr/share/fonts/conf.d
+                     -Dbaseconfig-dir=/etc/fonts \
+                     -Dconfig-dir=/etc/fonts/conf.d
 build      : |
     %ninja_build
 install    : |
     %ninja_install
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        install -Dm00644 $pkgfiles/fontconfig.tmpfiles $installdir/%libdir%/tmpfiles.d/fontconfig.conf
+    if [[ ! -z "${EMUL32BUILD}" ]]; then
+        # Prevent these from conflicting with the 64-bit build
+        rm -rfv $installdir/etc \
+                $installdir/usr/bin \
+                $installdir/usr/include \
+                $installdir/usr/share
+        exit 0
     fi
+
+    # Tmpfiles
+    install -Dm00644 $pkgfiles/fontconfig.tmpfiles $installdir/%libdir%/tmpfiles.d/fontconfig.conf
+
+    # Move to stateless path
+    install -dm00755 $installdir/usr/share/
+    mv $installdir/etc/fonts $installdir/usr/share
+    rmdir -v $installdir/etc/
+
+    # Fix symlinks
+    pushd $installdir/usr/share/fonts/conf.d
+    for i in *.conf; do
+        ln -srvf $installdir/usr/share/fontconfig/conf.avail/$i $i
+    done
+    popd
+
+    # This config file will serve as the entry point for all fontconfig configuration
+    install -Dm00644 $pkgfiles/fonts.conf $installdir/usr/share/fonts/fonts.conf.link
 
     # We don't have all the builddeps to generate the man pages unfortunately
     # If we're building from the official tarball then we can use the pre-generated ones. If not (IE building from git) then skip it
