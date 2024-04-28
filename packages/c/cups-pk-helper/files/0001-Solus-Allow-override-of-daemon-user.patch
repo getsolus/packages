@@ -1,0 +1,194 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sun, 28 Apr 2024 16:16:12 -0500
+Subject: [PATCH] Solus: Allow override of daemon user
+
+Signed-off-by: Reilly Brogan <reilly@reillybrogan.com>
+---
+ meson_options.txt                             |  2 ++
+ src/meson.build                               | 22 +++++++++++++------
+ ...g.opensuse.CupsPkHelper.Mechanism.conf.in} |  3 +--
+ ...opensuse.CupsPkHelper.Mechanism.service.in |  2 +-
+ ...nsuse.cupspkhelper.mechanism.policy.in.in} | 11 ++++++++++
+ 5 files changed, 30 insertions(+), 10 deletions(-)
+ create mode 100644 meson_options.txt
+ rename src/{org.opensuse.CupsPkHelper.Mechanism.conf => org.opensuse.CupsPkHelper.Mechanism.conf.in} (88%)
+ rename src/{org.opensuse.cupspkhelper.mechanism.policy.in => org.opensuse.cupspkhelper.mechanism.policy.in.in} (84%)
+
+diff --git a/meson_options.txt b/meson_options.txt
+new file mode 100644
+index 0000000..1bf1114
+--- /dev/null
++++ b/meson_options.txt
+@@ -0,0 +1,2 @@
++option('daemon_user', type: 'string', value: 'root',
++       description: 'System user that the daemon service should be ran as')
+diff --git a/src/meson.build b/src/meson.build
+index a47e273..0b32205 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -50,17 +50,20 @@ foreach test_name: tests
+               'G_TEST_BUILDDIR=@0@'.format (meson.current_build_dir ())])
+ endforeach
+ 
++daemon_user = get_option('daemon_user')
++# Substitute fields in service file and install it
++dbus_conf = configuration_data ()
++dbus_conf.set ('libexecdir', join_paths (prefix, libexecdir))
++dbus_conf.set ('DAEMON_USER', daemon_user)
+ 
+ # Install configuration file
+-install_data (
+-  'org.opensuse.CupsPkHelper.Mechanism.conf',
++configure_file (
++  input: 'org.opensuse.CupsPkHelper.Mechanism.conf.in',
++  output: 'org.opensuse.CupsPkHelper.Mechanism.conf',
++  configuration: dbus_conf,
+   install_dir: join_paths (prefix, datadir, 'dbus-1', 'system.d'),
+ )
+ 
+-
+-# Substitute fields in service file and install it
+-dbus_conf = configuration_data ()
+-dbus_conf.set ('libexecdir', join_paths (prefix, libexecdir))
+ configure_file (
+   input: 'org.opensuse.CupsPkHelper.Mechanism.service.in',
+   output: 'org.opensuse.CupsPkHelper.Mechanism.service',
+@@ -71,10 +74,15 @@ install_data (
+   install_dir: join_paths (prefix, datadir, 'dbus-1', 'system-services')
+ )
+ 
++pk_policy = configure_file (
++  input: 'org.opensuse.cupspkhelper.mechanism.policy.in.in',
++  output: 'org.opensuse.cupspkhelper.mechanism.policy.in',
++  configuration: dbus_conf,
++)
+ 
+ # Translate and install policy file
+ i18n.merge_file (
+-  input: 'org.opensuse.cupspkhelper.mechanism.policy.in',
++  input: pk_policy.full_path(),
+   output: 'org.opensuse.cupspkhelper.mechanism.policy',
+   type: 'xml',
+   data_dirs: join_paths (meson.source_root (), 'src'),
+diff --git a/src/org.opensuse.CupsPkHelper.Mechanism.conf b/src/org.opensuse.CupsPkHelper.Mechanism.conf.in
+similarity index 88%
+rename from src/org.opensuse.CupsPkHelper.Mechanism.conf
+rename to src/org.opensuse.CupsPkHelper.Mechanism.conf.in
+index 4068ede..9d5d330 100644
+--- a/src/org.opensuse.CupsPkHelper.Mechanism.conf
++++ b/src/org.opensuse.CupsPkHelper.Mechanism.conf.in
+@@ -5,8 +5,7 @@
+  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+ <busconfig>
+ 
+-  <!-- Only root can own the service -->
+-  <policy user="root">
++  <policy user="@DAEMON_USER@">
+     <allow own="org.opensuse.CupsPkHelper.Mechanism"/>
+   </policy>
+ 
+diff --git a/src/org.opensuse.CupsPkHelper.Mechanism.service.in b/src/org.opensuse.CupsPkHelper.Mechanism.service.in
+index 472c213..9b61554 100644
+--- a/src/org.opensuse.CupsPkHelper.Mechanism.service.in
++++ b/src/org.opensuse.CupsPkHelper.Mechanism.service.in
+@@ -1,4 +1,4 @@
+ [D-BUS Service]
+ Name=org.opensuse.CupsPkHelper.Mechanism
+ Exec=@libexecdir@/cups-pk-helper-mechanism
+-User=root
++User=@DAEMON_USER@
+diff --git a/src/org.opensuse.cupspkhelper.mechanism.policy.in b/src/org.opensuse.cupspkhelper.mechanism.policy.in.in
+similarity index 84%
+rename from src/org.opensuse.cupspkhelper.mechanism.policy.in
+rename to src/org.opensuse.cupspkhelper.mechanism.policy.in.in
+index 1b663b2..ac912f7 100644
+--- a/src/org.opensuse.cupspkhelper.mechanism.policy.in
++++ b/src/org.opensuse.cupspkhelper.mechanism.policy.in.in
+@@ -16,6 +16,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.devices-get">
+@@ -26,6 +27,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <!-- Exists mainly so that it's possible to not require a password for this
+@@ -39,6 +41,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <!-- Exists mainly so that it's possible to not require a password for this
+@@ -52,6 +55,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.printer-local-edit">
+@@ -62,6 +66,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.printer-remote-edit">
+@@ -72,6 +77,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.class-edit">
+@@ -82,6 +88,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.job-edit">
+@@ -92,6 +99,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>yes</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.job-not-owned-edit">
+@@ -102,6 +110,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <action id="org.opensuse.cupspkhelper.mechanism.all-edit">
+@@ -112,6 +121,7 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ 
+   <!-- Deprecated -->
+@@ -123,5 +133,6 @@
+       <allow_inactive>auth_admin</allow_inactive>
+       <allow_active>auth_admin_keep</allow_active>
+     </defaults>
++    <annotate key="org.freedesktop.policykit.owner">unix-user:@DAEMON_USER@</annotate>
+   </action>
+ </policyconfig>
