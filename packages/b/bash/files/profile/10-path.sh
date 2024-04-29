@@ -1,6 +1,6 @@
 # Begin /usr/share/defaults/etc/profile.d/10-path.sh
 
-export PATH="/sbin:/bin:/usr/sbin:/usr/bin"
+export PATH="/usr/sbin:/usr/bin"
 if [ -d "/usr/local/sbin" ]; then
   export PATH="$PATH:/usr/local/sbin"
 fi
