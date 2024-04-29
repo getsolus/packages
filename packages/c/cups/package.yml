@@ -1,21 +1,25 @@
 name       : cups
-version    : 2.2.13
-release    : 30
+version    : 2.4.8
+release    : 31
 source     :
-    - https://github.com/apple/cups/releases/download/v2.2.13/cups-2.2.13-source.tar.gz : da375796e5e7ab6d31a853d0e5326486d41d10d42bbff9ec768b0cea85031b48
+    - https://github.com/OpenPrinting/cups/releases/download/v2.4.8/cups-2.4.8-source.tar.gz : 75c326b4ba73975efcc9a25078c4b04cdb4ee333caaad0d0823dbd522c6479a0
 homepage   : https://www.cups.org/
-license    : Apache-2.0
+license    :
+    - Apache-2.0 WITH LLVM-exception
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - Zlib
 component  : desktop.core
 summary    : The Common Unix Printing System
 description: |
     The Common Unix Printing System (CUPS) is a print spooler and associated utilities. It is based on the "Internet Printing Protocol" and provides printing services to most PostScript and raster printers.
 emul32     : yes
 builddeps  :
-    - pkgconfig(avahi-glib)
+    - pkgconfig32(avahi-glib)
     - pkgconfig32(dbus-1)
-    - pkgconfig32(gnutls)
     - pkgconfig32(libacl)
     - pkgconfig32(libattr)
+    - pkgconfig32(libcrypto)
     - pkgconfig32(liblzma)
     - pkgconfig32(libudev)
     - pkgconfig32(libusb-1.0)
@@ -24,59 +28,72 @@ builddeps  :
     - libgcrypt-32bit
     - libpaper-32bit-devel
 rundeps    :
-    - devel : libgnutls-devel
-    - 32bit-devel : libgnutls-32bit-devel
-patterns   :
-    - devel :
-        - /usr/bin/cups-config
-        - /usr/share/man/man1/cups-config.*
+    - 32bit-devel : openssl-32bit-devel
+clang      : yes
 setup      : |
-    %patch -p0 -i $pkgfiles/cups-fix-install-perms.patch
-    %patch -p1 -i $pkgfiles/0001-Change-cups-to-a-notify-type-service.patch
-
-    # Remove ".SILENT" rule for verbose output (bug #524338)
-    sed -i 's#^.SILENT:##g' Makedefs.in
+    %apply_patches
 
     ex_opts=""
     if [[ ! -z "${EMUL32BUILD}" ]]; then
-        ex_opts="-disable-avahi --disable-dnssd --disable-systemd"
+        ex_opts="--with-dnssd=no"
     fi
 
-    %configure_no_runstatedir \
-               $ex_opts --prefix=/usr \
+    %configure \
+               --prefix=/usr \
                --enable-libpaper \
+               --enable-pam=yes \
+               --enable-raw-printing=yes \
                --enable-relro \
                --enable-webif \
                --disable-gssapi \
                --with-cups-user=lp \
                --with-cups-group=lp \
-               --with-system-groups=lpadmin \
+               --with-dbusdir=/usr/share/dbus-1 \
+               --with-exe-file-perm=0755 \
+               --with-system-groups="lpadmin root sudo" \
                --with-rundir=/run/cups \
-               --without-rcdir
+               --without-rcdir \
+               $ex_opts
 build      : |
     %make
 install    : |
     %make_install BUILDROOT=$installdir
 
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        install -D -m00644 $pkgfiles/cups.sysusers $installdir/%libdir%/sysusers.d/cups.conf
-        install -D -m00644 $pkgfiles/cups.tmpfiles $installdir/%libdir%/tmpfiles.d/cups.conf
+    mv $installdir/usr/lib/pkgconfig $installdir/%libdir%
 
-        # should be pre-enabled
-        install -D -d -m00755 $installdir/usr/lib/systemd/system/printer.target.wants
-        install -D -d -m00755 $installdir/usr/lib/systemd/system/sockets.target.wants
-        install -D -d -m00755 $installdir/usr/lib/systemd/system/multi-user.target.wants
-        ln -s ../org.cups.cupsd.service $installdir/usr/lib/systemd/system/printer.target.wants/.
-        ln -s ../org.cups.cupsd.socket $installdir/usr/lib/systemd/system/sockets.target.wants/.
-        ln -s ../org.cups.cupsd.path $installdir/usr/lib/systemd/system/multi-user.target.wants/.
+    if [[ ! -z "${EMUL32BUILD+set}" ]]; then
+        # Delete everything except for the libs
+        rm -rfv $installdir/{etc,run,usr/bin,usr/include,usr/lib,usr/sbin,usr/share,var}
+        exit 0
     fi
 
-    rm -rf $installdir/{run,var}
+    install -D -m00644 $pkgfiles/cups.sysusers $installdir/%libdir%/sysusers.d/cups.conf
+    install -D -m00644 $pkgfiles/cups.tmpfiles $installdir/%libdir%/tmpfiles.d/cups.conf
+
+    # should be pre-enabled
+    install -D -d -m00755 $installdir/usr/lib/systemd/system/printer.target.wants
+    install -D -d -m00755 $installdir/usr/lib/systemd/system/sockets.target.wants
+    install -D -d -m00755 $installdir/usr/lib/systemd/system/multi-user.target.wants
+
+    ln -s ../cups.service $installdir/usr/lib/systemd/system/printer.target.wants/cups.service
+    ln -s ../cups.service $installdir/usr/lib/systemd/system/multi-user.target.wants/cups.service
+    ln -s ../cups.path $installdir/usr/lib/systemd/system/multi-user.target.wants/cups.path
+    ln -s ../cups.socket $installdir/usr/lib/systemd/system/sockets.target.wants/cups.socket
 
     install -Dm00644 $pkgfiles/cups.pam $installdir/usr/share/defaults/etc/pam.d/cups
-    ln -sf /usr/share/defaults/etc/pam.d/cups $installdir/usr/share/defaults/etc/pam.d/cups.N
-    # Fix dbus-1 location without changing sysconfdir, which would break our /etc lookups
-    install -dm00644 $installdir/usr/share/dbus-1/system.d/
-    mv $installdir/etc/dbus-1/system.d/* $installdir/usr/share/dbus-1/system.d/
-    # Nuke the old directory
-    rm -rf $installdir/etc/dbus-1
+    ln -srf $installdir/usr/share/defaults/etc/pam.d/cups $installdir/usr/share/defaults/etc/pam.d/cups.N
+
+    # No reason this can't be readable by world
+    chmod a+r $installdir/usr/sbin/cupsd
+
+    install -dm00755 $installdir/usr/share/defaults/cups/
+    mv $installdir/etc/cups/{cups-files,cupsd,snmp}.conf $installdir/usr/share/defaults/cups/
+    chmod a+r $installdir/usr/share/defaults/cups/*.conf
+    rm -rfv $installdir/{etc,run,var}
+    find $installdir -type d -empty -print -delete
+patterns   :
+    - devel :
+        - /usr/bin/cups-config
+        - /usr/share/man/man1/cups-config.*
+    - docs :
+        - /usr/share/doc

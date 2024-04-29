@@ -1,0 +1,103 @@
+From 57d9351ea45f47b3bd185f263b1e37d276cf17b8 Mon Sep 17 00:00:00 2001
+From: Till Kamppeter <till.kamppeter@gmail.com>
+Date: Wed, 6 Dec 2023 01:03:48 +0100
+Subject: [PATCH] Better handle damage of queues created by cups-browsed
+
+Fixes #429
+
+In issue #429 queues created by cups-browsed (with
+"implicitclass://..." device URI) and left over after cups-browsed
+shuts down (or crashes or gets killed) lose their cups-browsed flag
+"cups-browsed=true" for some unknown reason and are not identified as
+created by cups-browsed any more, making cups-browsed creating a fresh
+queue with another name while the user continues printing on the old
+queue which cups-browsed does not take care of any more (assign
+destination printers for the jobs). So the user gets the message "No
+destination host name supplied by cups-browsed for printer ..."  in
+the error_log of CUPS.
+
+Done the following changes:
+
+- Queues with "implicitclass://..." device URI are always created by
+  cups-browsed, so consider them as such regardless of the
+  "cups-browsed=true" attribute.
+
+- If a queue gets overwritten and cups-browsed gets note of that by a
+  printer-modified D-Bus notification, we will only drop control from
+  this queue and create a new queue with a new name if the device URI
+  gets replace by something different from "implicitclass://...". If
+  the device URI stays intact and the PPD gets modified, we recover
+  the PPD by regenerating the queue under its current name.
+
+This especially prevents from queues with "implicitclass://..." device
+URI not being handled by cups-browsed.
+---
+ daemon/cups-browsed.c | 27 ++++++++++++++++++++++++---
+ 1 file changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/daemon/cups-browsed.c b/daemon/cups-browsed.c
+index c1e64fab..29fd34a1 100644
+--- a/daemon/cups-browsed.c
++++ b/daemon/cups-browsed.c
+@@ -4090,6 +4090,13 @@ get_local_printers (void)
+     cups_browsed_controlled = val && (!strcasecmp (val, "yes") ||
+ 				      !strcasecmp (val, "on") ||
+ 				      !strcasecmp (val, "true"));
++    if (!cups_browsed_controlled &&
++	strncmp(device_uri, "implicitclass://", 16) == 0)
++    {
++      cups_browsed_controlled = 1;
++      debug_printf ("Printer %s with URI %s does not have the \"cups-browsed=true\" attribute set, considering cups-browsed-created anyway, due to the implicitclass backend being used.\n",
++		    dest->name, device_uri);
++    }
+     httpAssembleURIf(HTTP_URI_CODING_ALL, uri, sizeof(uri), "ipp", NULL,
+ 		     "localhost", 0, "/printers/%s", dest->name);
+     printer = new_local_printer (device_uri, get_printer_uuid(conn, uri),
+@@ -7176,7 +7183,11 @@ on_printer_deleted (CupsNotifier *object,
+ }
+ 
+ 
+-static int
++static int                              // 0: Queue OK, keep
++                                        // 1: Device URI overwritten, drop
++                                        //    control
++                                        // 2: URI OK, PPD overwritten,
++                                        //    recreate queue
+ queue_overwritten (remote_printer_t *p)
+ {
+   http_t        *conn = NULL;
+@@ -7306,7 +7317,7 @@ queue_overwritten (remote_printer_t *p)
+ 		     p->queue_name, (p->nickname ? p->nickname : "(no PPD)"),
+ 		     (makemodel ? makemodel :
+ 		      "(NickName not readable)"));
+-	overwritten = 1;
++	overwritten = 2;
+       }
+     }
+   }
+@@ -7349,7 +7360,7 @@ on_printer_modified (CupsNotifier *object,
+       // avoid an infinite recursion
+       goto end;
+ 
+-    if (queue_overwritten(p))
++    if (queue_overwritten(p) == 1)
+     {
+       // Our generated local queue pointing to a remote printer got
+       // overwritten by an externally created queue with the same
+@@ -7470,6 +7481,16 @@ on_printer_modified (CupsNotifier *object,
+       if (in_shutdown == 0)
+ 	recheck_timer();
+     }
++    else if (queue_overwritten(p) == 2)
++    {
++      // Only the PPD got overwritten, the device URI is still
++      // "implicitclass://...", so we have a totally broken queue
++      // and simply re-create it under its original name
++      p->status = STATUS_TO_BE_CREATED;
++      p->timeout = time(NULL) + TIMEOUT_IMMEDIATELY;
++      debug_printf("CUPS queue %s with URI %s got damaged (PPD overwritten). Re-create it.",
++		   printer, p->uri);
++    }
+     else
+     {
+       if (terminating)
