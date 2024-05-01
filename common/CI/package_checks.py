@@ -540,7 +540,7 @@ class SPDXLicense(PullRequestCheck):
     _exceptions_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/exceptions.json'
     _licenses: Optional[List[str]] = None
     _exceptions: Optional[List[str]] = None
-    _extra_licenses = ['Distributable', 'Public-Domain']
+    _extra_licenses = ['Distributable', 'EULA', 'Public-Domain']
     _error = 'Invalid license identifier: '
     _level = Level.WARNING
 
