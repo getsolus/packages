@@ -1,0 +1,969 @@
+From 87b68a11d4fdf17ab7213765f26f6707e0f2a3fd Mon Sep 17 00:00:00 2001
+From: Milan Crha <mcrha@redhat.com>
+Date: Tue, 23 Apr 2024 12:01:49 +0200
+Subject: [PATCH 2/7] I#267 - m365: Accepting event sends mail to each
+ recipient
+
+Closes https://gitlab.gnome.org/GNOME/evolution-ews/-/issues/267
+---
+ .../calendar/e-cal-backend-m365.c             | 732 +++++++++++++++++-
+ src/Microsoft365/common/e-m365-connection.c   |  67 ++
+ src/Microsoft365/common/e-m365-connection.h   |  18 +
+ 3 files changed, 801 insertions(+), 16 deletions(-)
+
+diff --git a/src/Microsoft365/calendar/e-cal-backend-m365.c b/src/Microsoft365/calendar/e-cal-backend-m365.c
+index 9cad82ba..6213a300 100644
+--- a/src/Microsoft365/calendar/e-cal-backend-m365.c
++++ b/src/Microsoft365/calendar/e-cal-backend-m365.c
+@@ -434,6 +434,7 @@ ecb_m365_get_changes_sync (ECalMetaBackend *meta_backend,
+ 				      const gchar *calendar_id,
+ 				      const gchar *prefer_outlook_timezone,
+ 				      const gchar *select,
++				      const gchar *filter,
+ 				      GSList **out_items,
+ 				      GCancellable *cancellable,
+ 				      GError **error);
+@@ -479,7 +480,7 @@ ecb_m365_get_changes_sync (ECalMetaBackend *meta_backend,
+ 	full_read = !select_props || !e_cache_get_count (E_CACHE (cal_cache), E_CACHE_INCLUDE_DELETED, cancellable, NULL);
+ 
+ 	success = list_items_func (cbm365->priv->cnc, NULL, cbm365->priv->group_id, cbm365->priv->folder_id, NULL,
+-		full_read ? NULL : select_props, &items, cancellable, error);
++		full_read ? NULL : select_props, NULL, &items, cancellable, error);
+ 
+ 	if (success) {
+ 		GSList *new_ids = NULL; /* const gchar *, borrowed from 'items' objects */
+@@ -564,9 +565,11 @@ ecb_m365_load_component_sync (ECalMetaBackend *meta_backend,
+ 			      GError **error)
+ {
+ 	ECalBackendM365 *cbm365;
++	ICalComponentKind kind;
+ 	JsonObject *item = NULL;
+ 	const gchar *(* get_change_key_func) (JsonObject *item);
+-	gboolean success;
++	guint pass;
++	gboolean success = FALSE;
+ 
+ 	g_return_val_if_fail (E_IS_CAL_BACKEND_M365 (meta_backend), FALSE);
+ 	g_return_val_if_fail (uid != NULL, FALSE);
+@@ -574,23 +577,72 @@ ecb_m365_load_component_sync (ECalMetaBackend *meta_backend,
+ 	g_return_val_if_fail (out_extra != NULL, FALSE);
+ 
+ 	cbm365 = E_CAL_BACKEND_M365 (meta_backend);
++	kind = e_cal_backend_get_kind (E_CAL_BACKEND (cbm365));
+ 
+ 	LOCK (cbm365);
+ 
+-	switch (e_cal_backend_get_kind (E_CAL_BACKEND (cbm365))) {
+-	case I_CAL_VEVENT_COMPONENT:
+-		success = e_m365_connection_get_event_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
+-			cbm365->priv->folder_id, uid, NULL, NULL, &item, cancellable, error);
+-		get_change_key_func = e_m365_event_get_change_key;
+-		break;
+-	case I_CAL_VTODO_COMPONENT:
+-		success = e_m365_connection_get_task_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
+-			cbm365->priv->folder_id, uid, NULL, NULL, &item, cancellable, error);
+-		get_change_key_func = e_m365_task_get_last_modified_as_string;
+-		break;
+-	default:
+-		success = FALSE;
+-		break;
++	for (pass = 0; pass < 2; pass++) {
++		gchar *tmp_uid = NULL;
++		const gchar *use_uid = uid;
++
++		if (pass == 1) {
++			gchar *filter = g_strdup_printf ("iCalUid eq '%s'", uid);
++
++			if (kind == I_CAL_VEVENT_COMPONENT) {
++				GSList *events = NULL;
++
++				if (e_m365_connection_list_events_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++					cbm365->priv->folder_id, NULL, "id", filter, &events, cancellable, NULL)) {
++					if (events && !events->next) {
++						EM365Event *event = events->data;
++						tmp_uid = g_strdup (e_m365_event_get_id (event));
++					}
++					g_slist_free_full (events, (GDestroyNotify) json_object_unref);
++				}
++			} else if (kind == I_CAL_VTODO_COMPONENT) {
++				GSList *events = NULL;
++
++				if (e_m365_connection_list_tasks_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++					cbm365->priv->folder_id, NULL, "id", filter, &events, cancellable, NULL)) {
++					if (events && !events->next) {
++						EM365Event *event = events->data;
++						tmp_uid = g_strdup (e_m365_event_get_id (event));
++					}
++					g_slist_free_full (events, (GDestroyNotify) json_object_unref);
++				}
++			} else {
++				g_free (filter);
++				break;
++			}
++
++			g_free (filter);
++
++			if (tmp_uid)
++				use_uid = tmp_uid;
++			else
++				break;
++		}
++
++		switch (kind) {
++		case I_CAL_VEVENT_COMPONENT:
++			success = e_m365_connection_get_event_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++				cbm365->priv->folder_id, use_uid, NULL, NULL, &item, cancellable, pass == 0 ? error : NULL);
++			get_change_key_func = e_m365_event_get_change_key;
++			break;
++		case I_CAL_VTODO_COMPONENT:
++			success = e_m365_connection_get_task_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++				cbm365->priv->folder_id, use_uid, NULL, NULL, &item, cancellable, pass == 0 ? error : NULL);
++			get_change_key_func = e_m365_task_get_last_modified_as_string;
++			break;
++		default:
++			success = FALSE;
++			break;
++		}
++
++		g_free (tmp_uid);
++
++		if (success || g_cancellable_is_cancelled (cancellable))
++			break;
+ 	}
+ 
+ 	if (success) {
+@@ -847,6 +899,652 @@ ecb_m365_discard_alarm_sync (ECalBackendSync *cal_backend_sync,
+ 	ecb_m365_maybe_disconnect_sync (cbm365, error, cancellable);
+ }
+ 
++static GHashTable *
++ecb_m365_get_mail_aliases (ECalBackendM365 *cbm365)
++{
++	ESource *source;
++	ESourceRegistry *registry;
++	GHashTable *aliases = NULL;
++	GList *identities, *link;
++	const gchar *parent_uid;
++
++	source = e_backend_get_source (E_BACKEND (cbm365));
++	parent_uid = e_source_get_parent (source);
++
++	if (!parent_uid || !*parent_uid)
++		return NULL;
++
++	registry = e_cal_backend_get_registry (E_CAL_BACKEND (cbm365));
++	identities = e_source_registry_list_enabled (registry, E_SOURCE_EXTENSION_MAIL_IDENTITY);
++
++	for (link = identities; link; link = g_list_next (link)) {
++		ESource *mail_identity = link->data;
++
++		if (g_strcmp0 (parent_uid, e_source_get_parent (mail_identity)) == 0) {
++			ESourceMailIdentity *extension;
++
++			extension = e_source_get_extension (mail_identity, E_SOURCE_EXTENSION_MAIL_IDENTITY);
++			aliases = e_source_mail_identity_get_aliases_as_hash_table (extension);
++			break;
++		}
++	}
++
++	g_list_free_full (identities, g_object_unref);
++
++	return aliases;
++}
++
++static ICalProperty *
++find_attendee (ICalComponent *icomp,
++	       const gchar *address,
++	       GHashTable *aliases)
++{
++	ICalProperty *prop;
++
++	if (address == NULL)
++		return NULL;
++
++	for (prop = i_cal_component_get_first_property (icomp, I_CAL_ATTENDEE_PROPERTY);
++	     prop != NULL;
++	     g_object_unref (prop), prop = i_cal_component_get_next_property (icomp, I_CAL_ATTENDEE_PROPERTY)) {
++		gchar *attendee;
++		gchar *text;
++
++		attendee = i_cal_property_get_value_as_string (prop);
++
++		 if (!attendee)
++			continue;
++
++		text = g_strdup (e_cal_util_strip_mailto (attendee));
++		text = g_strstrip (text);
++		if (text && ((!g_ascii_strcasecmp (address, text)) ||
++		    (aliases && g_hash_table_contains (aliases, text)))) {
++			g_free (text);
++			g_free (attendee);
++			break;
++		}
++		g_free (text);
++		g_free (attendee);
++	}
++
++	return prop;
++}
++
++static ICalProperty *
++find_attendee_if_sentby (ICalComponent *icomp,
++			 const gchar *address,
++			 GHashTable *aliases)
++{
++	ICalProperty *prop;
++
++	if (address == NULL)
++		return NULL;
++
++	for (prop = i_cal_component_get_first_property (icomp, I_CAL_ATTENDEE_PROPERTY);
++	     prop != NULL;
++	     g_object_unref (prop), prop = i_cal_component_get_next_property (icomp, I_CAL_ATTENDEE_PROPERTY)) {
++		ICalParameter *param;
++		const gchar *attendee_sentby;
++		gchar *text;
++
++		param = i_cal_property_get_first_parameter (prop, I_CAL_SENTBY_PARAMETER);
++		if (!param)
++			continue;
++
++		attendee_sentby = i_cal_parameter_get_sentby (param);
++
++		if (!attendee_sentby) {
++			g_object_unref (param);
++			continue;
++		}
++
++		text = g_strdup (e_cal_util_strip_mailto (attendee_sentby));
++		text = g_strstrip (text);
++
++		g_object_unref (param);
++
++		if (text && ((!g_ascii_strcasecmp (address, text)) ||
++		    (aliases && g_hash_table_contains (aliases, text)))) {
++			g_free (text);
++			break;
++		}
++		g_free (text);
++	}
++
++	return prop;
++}
++
++static ECalComponentAttendee *
++get_attendee (GSList *attendees,
++	      const gchar *address,
++	      GHashTable *aliases)
++{
++	GSList *l;
++
++	if (!address)
++		return NULL;
++
++	for (l = attendees; l; l = l->next) {
++		ECalComponentAttendee *attendee = l->data;
++		const gchar *nomailto;
++
++		nomailto = e_cal_util_get_attendee_email (attendee);
++
++		if (!nomailto || !*nomailto)
++			continue;
++
++		if ((address && e_cal_util_email_addresses_equal (nomailto, address)) ||
++		    (aliases && g_hash_table_contains (aliases, nomailto))) {
++			return attendee;
++		}
++	}
++
++	return NULL;
++}
++
++static ECalComponentAttendee *
++get_attendee_if_attendee_sentby_is_user (GSList *attendees,
++					 const gchar *address,
++					 GHashTable *aliases)
++{
++	GSList *l;
++
++	for (l = attendees; l; l = l->next) {
++		ECalComponentAttendee *attendee = l->data;
++		const gchar *nomailto;
++
++		nomailto = e_cal_util_strip_mailto (e_cal_component_attendee_get_sentby (attendee));
++		if (!nomailto || !*nomailto)
++			continue;
++
++		if ((address && e_cal_util_email_addresses_equal (nomailto, address)) ||
++		    (aliases && g_hash_table_contains (aliases, nomailto))) {
++			return attendee;
++		}
++	}
++
++	return NULL;
++}
++
++/* This is adapted copy of itip_get_comp_attendee(), to avoid dependency
++   on the evolution code in the backend. */
++static gchar *
++ecb_m365_get_comp_attendee (ESourceRegistry *registry,
++			    ECalComponent *comp,
++			    ECalClient *cal_client)
++{
++	ESource *source;
++	GSList *attendees;
++	ECalComponentAttendee *attendee = NULL;
++	GList *list, *link;
++	const gchar *extension_name;
++	gchar *address = NULL;
++
++	attendees = e_cal_component_get_attendees (comp);
++
++	if (cal_client) {
++		e_client_get_backend_property_sync (
++			E_CLIENT (cal_client),
++			E_CAL_BACKEND_PROPERTY_CAL_EMAIL_ADDRESS,
++			&address, NULL, NULL);
++	}
++
++	if (address != NULL && *address != '\0') {
++		attendee = get_attendee (attendees, address, NULL);
++
++		if (attendee) {
++			gchar *user_email;
++
++			user_email = g_strdup (e_cal_util_get_attendee_email (attendee));
++			g_slist_free_full (attendees, e_cal_component_attendee_free);
++			g_free (address);
++
++			return user_email;
++		}
++
++		attendee = get_attendee_if_attendee_sentby_is_user (attendees, address, NULL);
++
++		if (attendee != NULL) {
++			gchar *user_email;
++
++			user_email = g_strdup (e_cal_util_strip_mailto (e_cal_component_attendee_get_sentby (attendee)));
++			g_slist_free_full (attendees, e_cal_component_attendee_free);
++			g_free (address);
++
++			return user_email;
++		}
++	}
++
++	g_free (address);
++	address = NULL;
++
++	extension_name = E_SOURCE_EXTENSION_MAIL_IDENTITY;
++	list = e_source_registry_list_enabled (registry, extension_name);
++
++	for (link = list; link != NULL; link = g_list_next (link)) {
++		ESourceMailIdentity *extension;
++		GHashTable *aliases;
++
++		source = E_SOURCE (link->data);
++
++		extension_name = E_SOURCE_EXTENSION_MAIL_IDENTITY;
++		extension = e_source_get_extension (source, extension_name);
++		address = e_source_mail_identity_dup_address (extension);
++		aliases = e_source_mail_identity_get_aliases_as_hash_table (extension);
++
++		attendee = get_attendee (attendees, address, aliases);
++		if (attendee != NULL) {
++			gchar *user_email;
++
++			user_email = g_strdup (e_cal_util_get_attendee_email (attendee));
++			g_slist_free_full (attendees, e_cal_component_attendee_free);
++
++			if (aliases)
++				g_hash_table_destroy (aliases);
++			g_free (address);
++
++			g_list_free_full (list, g_object_unref);
++
++			return user_email;
++		}
++
++		/* If the account was not found in the attendees list, then
++		 * let's check the 'sentby' fields of the attendees if we can
++		 * find the account. */
++		attendee = get_attendee_if_attendee_sentby_is_user (attendees, address, aliases);
++		if (attendee) {
++			gchar *user_email;
++
++			user_email = g_strdup (e_cal_util_strip_mailto (e_cal_component_attendee_get_sentby (attendee)));
++			g_slist_free_full (attendees, e_cal_component_attendee_free);
++
++			if (aliases)
++				g_hash_table_destroy (aliases);
++			g_free (address);
++
++			g_list_free_full (list, g_object_unref);
++
++			return user_email;
++		}
++
++		if (aliases)
++			g_hash_table_destroy (aliases);
++		g_free (address);
++	}
++
++	g_list_free_full (list, g_object_unref);
++
++	/* We could not find the attendee in the component, so just give
++	 * the default account address if the email address is not set in
++	 * the backend. */
++	/* FIXME do we have a better way ? */
++	e_cal_util_get_default_name_and_address (registry, NULL, &address);
++
++	g_slist_free_full (attendees, e_cal_component_attendee_free);
++
++	return address;
++}
++
++static gboolean
++ecb_m365_get_rsvp (ICalProperty *attendee,
++		   EM365ResponseType *out_response,
++		   gboolean *out_rsvp_requested)
++{
++	ICalParameter *param;
++
++	if (!attendee)
++		return FALSE;
++
++	param = i_cal_property_get_first_parameter (attendee, I_CAL_PARTSTAT_PARAMETER);
++	if (param) {
++		switch (i_cal_parameter_get_partstat (param)) {
++		case I_CAL_PARTSTAT_NEEDSACTION:
++			*out_response = E_M365_RESPONSE_NOT_RESPONDED;
++			break;
++		case I_CAL_PARTSTAT_ACCEPTED:
++			*out_response = E_M365_RESPONSE_ACCEPTED;
++			break;
++		case I_CAL_PARTSTAT_DECLINED:
++			*out_response = E_M365_RESPONSE_DECLINED;
++			break;
++		case I_CAL_PARTSTAT_TENTATIVE:
++			*out_response = E_M365_RESPONSE_TENTATIVELY_ACCEPTED;
++			break;
++		default:
++			g_clear_object (&param);
++			return FALSE;
++		}
++		g_clear_object (&param);
++	}
++
++	param = i_cal_property_get_first_parameter (attendee, I_CAL_RSVP_PARAMETER);
++	if (param) {
++		*out_rsvp_requested = i_cal_parameter_get_rsvp (param) == I_CAL_RSVP_TRUE;
++		g_clear_object (&param);
++	}
++
++	return TRUE;
++}
++
++static EM365ResponseType
++ecb_m365_get_current_user_meeting_reponse (ECalBackendM365 *cbm365,
++					   ICalComponent *icomp,
++					   const gchar *current_user_mail,
++					   GHashTable *aliases,
++					   gboolean *out_rsvp_requested)
++{
++	ICalProperty *attendee;
++	const gchar *attendee_str = NULL, *attendee_mail = NULL;
++	gint attendees_count = 0;
++	EM365ResponseType response = E_M365_RESPONSE_NOT_RESPONDED;
++	gboolean found = FALSE;
++
++	if (out_rsvp_requested)
++		*out_rsvp_requested = FALSE;
++
++	attendee = i_cal_component_get_first_property (icomp, I_CAL_ORGANIZER_PROPERTY);
++	if (attendee) {
++		attendee_str = i_cal_property_get_organizer (attendee);
++
++		if (attendee_str) {
++			attendee_mail = e_cal_util_strip_mailto (attendee_str);
++
++			if (attendee_mail && ((current_user_mail && g_ascii_strcasecmp (attendee_mail, current_user_mail) == 0) ||
++			    (aliases && g_hash_table_contains (aliases, attendee_mail)))) {
++				g_object_unref (attendee);
++				return E_M365_RESPONSE_ORGANIZER;
++			}
++		}
++
++		g_object_unref (attendee);
++	}
++
++	for (attendee = i_cal_component_get_first_property (icomp, I_CAL_ATTENDEE_PROPERTY);
++	     attendee;
++	     g_object_unref (attendee), attendee = i_cal_component_get_next_property (icomp, I_CAL_ATTENDEE_PROPERTY), attendees_count++) {
++		attendee_str = i_cal_property_get_attendee (attendee);
++
++		if (attendee_str != NULL) {
++			attendee_mail = e_cal_util_strip_mailto (attendee_str);
++
++			if (attendee_mail && ((current_user_mail && g_ascii_strcasecmp (attendee_mail, current_user_mail) == 0) ||
++			    (aliases && g_hash_table_contains (aliases, attendee_mail)))) {
++				found = ecb_m365_get_rsvp (attendee, &response, out_rsvp_requested);
++			}
++		}
++	}
++
++	/* this should not happen, but if the user's configured email does not match the one
++	   used in the invitation, like when the invitation comes to a mailing list... */
++	if (!found && attendees_count == 1) {
++		attendee = i_cal_component_get_first_property (icomp, I_CAL_ATTENDEE_PROPERTY);
++		found = ecb_m365_get_rsvp (attendee, &response, out_rsvp_requested);
++	} else if (!found) {
++		ESourceRegistry *registry;
++		ECalComponent *comp;
++
++		registry = e_cal_backend_get_registry (E_CAL_BACKEND (cbm365));
++		comp = e_cal_component_new_from_icalcomponent (i_cal_component_clone (icomp));
++		if (comp) {
++			gchar *my_address;
++
++			my_address = ecb_m365_get_comp_attendee (registry, comp, NULL);
++
++			attendee = find_attendee (icomp, my_address ? my_address : "", aliases);
++			if (!attendee)
++				attendee = find_attendee_if_sentby (icomp, my_address ? my_address : "", aliases);
++
++			if (attendee) {
++				found = ecb_m365_get_rsvp (attendee, &response, out_rsvp_requested);
++				g_clear_object (&attendee);
++			}
++
++			g_free (my_address);
++		}
++
++		g_clear_object (&comp);
++	}
++
++	return response;
++}
++
++static void
++ecb_m365_receive_objects_sync (ECalBackendSync *sync_backend,
++			       EDataCal *cal,
++			       GCancellable *cancellable,
++			       const gchar *calobj,
++			       guint32 opflags,
++			       GError **error)
++{
++	ECalBackendM365 *cbm365;
++	ECalBackend *cal_backend;
++	CamelM365Settings *m365_settings;
++	ICalComponent *icomp, *subcomp;
++	ICalComponentKind kind;
++	GHashTable *aliases;
++	gchar *user_email;
++	gboolean success = TRUE, do_refresh = FALSE;
++
++	g_return_if_fail (E_IS_CAL_BACKEND_M365 (sync_backend));
++
++	cbm365 = E_CAL_BACKEND_M365 (sync_backend);
++
++	if (!e_cal_meta_backend_ensure_connected_sync (E_CAL_META_BACKEND (cbm365), cancellable, error))
++		return;
++
++	icomp = calobj ? i_cal_parser_parse_string (calobj) : NULL;
++
++	if (!icomp) {
++		g_propagate_error (error, ECC_ERROR (E_CAL_CLIENT_ERROR_INVALID_OBJECT));
++		return;
++	}
++
++	/* make sure ical data we parse is actually a vCalendar component */
++	if (i_cal_component_isa (icomp) != I_CAL_VCALENDAR_COMPONENT) {
++		g_object_unref (icomp);
++		g_propagate_error (error, ECC_ERROR (E_CAL_CLIENT_ERROR_INVALID_OBJECT));
++		return;
++	}
++
++	cal_backend = E_CAL_BACKEND (cbm365);
++	kind = e_cal_backend_get_kind (cal_backend);
++
++	m365_settings = camel_m365_settings_get_from_backend (E_BACKEND (cal_backend), e_cal_backend_get_registry (cal_backend));
++	user_email = camel_m365_settings_dup_email (m365_settings);
++	aliases = ecb_m365_get_mail_aliases (cbm365);
++
++	switch (i_cal_component_get_method (icomp)) {
++	case I_CAL_METHOD_REQUEST:
++	case I_CAL_METHOD_PUBLISH:
++	case I_CAL_METHOD_REPLY:
++		for (subcomp = i_cal_component_get_first_component (icomp, kind);
++		     subcomp && success;
++		     g_object_unref (subcomp), subcomp = i_cal_component_get_next_component (icomp, kind)) {
++			EM365ResponseType response_type;
++			gboolean rsvp_requested = FALSE;
++
++			/* getting a data for meeting request response */
++			response_type = ecb_m365_get_current_user_meeting_reponse (cbm365, subcomp, user_email, aliases, &rsvp_requested);
++			rsvp_requested = rsvp_requested && !(opflags & E_CAL_OPERATION_FLAG_DISABLE_ITIP_MESSAGE);
++
++			if (response_type == E_M365_RESPONSE_ACCEPTED ||
++			    response_type == E_M365_RESPONSE_DECLINED ||
++			    response_type == E_M365_RESPONSE_TENTATIVELY_ACCEPTED) {
++				const gchar *uid = i_cal_component_get_uid (subcomp);
++				const gchar *comment = i_cal_component_get_comment (subcomp);
++				GError *local_error = NULL;
++
++				if (comment && !*comment)
++					comment = NULL;
++
++				LOCK (cbm365);
++
++				success = e_m365_connection_response_event_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++					cbm365->priv->folder_id, uid, response_type, comment, rsvp_requested, cancellable, &local_error);
++
++				if (!success && g_error_matches (local_error, E_M365_ERROR, E_M365_ERROR_ID_MALFORMED)) {
++					/* search for the event by the iCalUid property */
++					gchar *filter = g_strdup_printf ("iCalUid eq '%s'", uid);
++					GSList *events = NULL;
++
++					g_clear_error (&local_error);
++
++					if (e_m365_connection_list_events_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++						cbm365->priv->folder_id, NULL, "id", filter, &events, cancellable, NULL)) {
++						if (events && !events->next) {
++							EM365Event *event = events->data;
++							const gchar *tmp_uid = e_m365_event_get_id (event);
++							if (tmp_uid && *tmp_uid) {
++								g_clear_error (&local_error);
++								success = e_m365_connection_response_event_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++									cbm365->priv->folder_id, tmp_uid, response_type, comment, rsvp_requested, cancellable, &local_error);
++							}
++						}
++						g_slist_free_full (events, (GDestroyNotify) json_object_unref);
++					}
++					g_free (filter);
++
++					if (!success && !local_error)
++						local_error = ECC_ERROR (E_CAL_CLIENT_ERROR_OBJECT_NOT_FOUND);
++				}
++
++				if (local_error)
++					g_propagate_error (error, local_error);
++
++				UNLOCK (cbm365);
++
++				do_refresh = TRUE;
++				break;
++			}
++		}
++		g_clear_object (&subcomp);
++		break;
++	case I_CAL_METHOD_COUNTER:
++		/*
++		 * this is a new time proposal mail from one of the attendees
++		 * if we decline the proposal, nothing have to be done
++		 * if we accept it we will call to modify_object
++		 */
++		success = FALSE;
++		g_propagate_error (error, EC_ERROR (E_CLIENT_ERROR_NOT_SUPPORTED));
++		break;
++	case I_CAL_METHOD_CANCEL: {
++		ECalObjModType mod_type = E_CAL_OBJ_MOD_ALL;
++		GSList *ids = NULL;
++
++		for (subcomp = i_cal_component_get_first_component (icomp, kind);
++		     subcomp && success;
++		     g_object_unref (subcomp), subcomp = i_cal_component_get_next_component (icomp, kind)) {
++			const gchar *uid;
++			gchar *rid;
++
++			uid = i_cal_component_get_uid (subcomp);
++			rid = e_cal_util_component_get_recurid_as_string (subcomp);
++
++			if (rid && *rid)
++				mod_type = E_CAL_OBJ_MOD_THIS;
++
++			ids = g_slist_prepend (ids, e_cal_component_id_new (uid, rid));
++
++			g_free (rid);
++		}
++
++		g_clear_object (&subcomp);
++
++		if (ids) {
++			GSList *old_comps = NULL, *new_comps = NULL;
++			GError *local_error = NULL;
++
++			e_cal_backend_sync_remove_objects (sync_backend, cal, cancellable, ids, mod_type, opflags, &old_comps, &new_comps, &local_error);
++
++			do_refresh = !local_error;
++
++			e_util_free_nullable_object_slist (old_comps);
++			e_util_free_nullable_object_slist (new_comps);
++			g_clear_error (&local_error);
++		}
++
++		g_slist_free_full (ids, e_cal_component_id_free);
++		} break;
++	default:
++		break;
++	}
++
++	g_clear_pointer (&aliases, g_hash_table_unref);
++	g_object_unref (icomp);
++	g_free (user_email);
++
++	if (success && do_refresh)
++		e_cal_meta_backend_schedule_refresh (E_CAL_META_BACKEND (cbm365));
++
++	ecb_m365_convert_error_to_client_error (error);
++	ecb_m365_maybe_disconnect_sync (cbm365, error, cancellable);
++}
++
++static void
++ecb_m365_send_objects_sync (ECalBackendSync *sync_backend,
++			    EDataCal *cal,
++			    GCancellable *cancellable,
++			    const gchar *calobj,
++			    guint32 opflags,
++			    GSList **users,
++			    gchar **modified_calobj,
++			    GError **error)
++{
++	ECalBackendM365 *cbm365;
++	ICalComponentKind kind;
++	ICalComponent *icomp, *subcomp = NULL;
++
++	g_return_if_fail (E_IS_CAL_BACKEND_M365 (sync_backend));
++
++	cbm365 = E_CAL_BACKEND_M365 (sync_backend);
++
++	if (!e_cal_meta_backend_ensure_connected_sync (E_CAL_META_BACKEND (cbm365), cancellable, error))
++		return;
++
++	icomp = calobj ? i_cal_parser_parse_string (calobj) : NULL;
++
++	/* make sure data was parsed properly */
++	if (!icomp) {
++		g_propagate_error (error, ECC_ERROR (E_CAL_CLIENT_ERROR_INVALID_OBJECT));
++		return;
++	}
++
++	/* make sure ical data we parse is actually a vcal component */
++	if (i_cal_component_isa (icomp) != I_CAL_VCALENDAR_COMPONENT &&
++	    i_cal_component_isa (icomp) != I_CAL_VEVENT_COMPONENT) {
++		g_object_unref (icomp);
++		g_propagate_error (error, ECC_ERROR (E_CAL_CLIENT_ERROR_INVALID_OBJECT));
++		return;
++	}
++
++	kind = e_cal_backend_get_kind (E_CAL_BACKEND (cbm365));
++
++	if (i_cal_component_isa (icomp) == I_CAL_VCALENDAR_COMPONENT) {
++		subcomp = i_cal_component_get_first_component (icomp, kind);
++	} else if (i_cal_component_isa (icomp) == I_CAL_VEVENT_COMPONENT) {
++		subcomp = g_object_ref (icomp);
++	}
++
++	if (subcomp) {
++		const gchar *uid = i_cal_component_get_uid (subcomp);
++		const gchar *comment = i_cal_component_get_comment (subcomp);
++
++		LOCK (cbm365);
++
++		e_m365_connection_cancel_event_sync (cbm365->priv->cnc, NULL, cbm365->priv->group_id,
++			cbm365->priv->folder_id, uid, comment, cancellable, error);
++
++		UNLOCK (cbm365);
++	}
++
++	g_clear_object (&subcomp);
++	g_object_unref (icomp);
++
++	ecb_m365_convert_error_to_client_error (error);
++	ecb_m365_maybe_disconnect_sync (cbm365, error, cancellable);
++}
++
+ static void
+ ecb_m365_get_free_busy_sync (ECalBackendSync *cal_backend_sync,
+ 			     EDataCal *cal,
+@@ -1145,6 +1843,8 @@ e_cal_backend_m365_class_init (ECalBackendM365Class *klass)
+ 
+ 	cal_backend_sync_class = E_CAL_BACKEND_SYNC_CLASS (klass);
+ 	cal_backend_sync_class->discard_alarm_sync = ecb_m365_discard_alarm_sync;
++	cal_backend_sync_class->receive_objects_sync = ecb_m365_receive_objects_sync;
++	cal_backend_sync_class->send_objects_sync = ecb_m365_send_objects_sync;
+ 	cal_backend_sync_class->get_free_busy_sync = ecb_m365_get_free_busy_sync;
+ 
+ 	cal_backend_class = E_CAL_BACKEND_CLASS (klass);
+diff --git a/src/Microsoft365/common/e-m365-connection.c b/src/Microsoft365/common/e-m365-connection.c
+index c7979a4b..a030fc32 100644
+--- a/src/Microsoft365/common/e-m365-connection.c
++++ b/src/Microsoft365/common/e-m365-connection.c
+@@ -28,6 +28,8 @@
+ 			"id,imAddresses,jobTitle,mail,mailNickname,mobilePhone,mySite,officeLocation,otherMails,postalCode,proxyAddresses," \
+ 			"state,streetAddress,surname"
+ 
++G_DEFINE_QUARK (e-m365-error-quark, e_m365_error)
++
+ typedef enum _CSMFlags {
+ 	CSM_DEFAULT		= 0,
+ 	CSM_DISABLE_RESPONSE	= 1 << 0
+@@ -858,6 +860,9 @@ m365_connection_extract_error (JsonNode *node,
+ 		status_code = G_IO_ERROR_INVALID_DATA;
+ 	} else if (g_strcmp0 (code, "ErrorInvalidUser") == 0) {
+ 		status_code = SOUP_STATUS_UNAUTHORIZED;
++	} else if (g_strcmp0 (code, "ErrorInvalidIdMalformed") == 0) {
++		domain = E_M365_ERROR;
++		status_code = E_M365_ERROR_ID_MALFORMED;
+ 	}
+ 
+ 	if (code && message)
+@@ -4390,6 +4395,7 @@ e_m365_connection_list_events_sync (EM365Connection *cnc,
+ 				    const gchar *calendar_id,
+ 				    const gchar *prefer_outlook_timezone, /* nullable - then UTC, otherwise that zone for the returned times */
+ 				    const gchar *select, /* nullable - properties to select */
++				    const gchar *filter, /* nullable - filter which events to list */
+ 				    GSList **out_events, /* EM365Event * - the returned event objects */
+ 				    GCancellable *cancellable,
+ 				    GError **error)
+@@ -4410,6 +4416,7 @@ e_m365_connection_list_events_sync (EM365Connection *cnc,
+ 		"", calendar_id,
+ 		"", "events",
+ 		"$select", select,
++		"$filter", filter,
+ 		NULL);
+ 
+ 	message = m365_connection_new_soup_message (SOUP_METHOD_GET, uri, CSM_DEFAULT, error);
+@@ -4839,6 +4846,64 @@ e_m365_connection_response_event_sync (EM365Connection *cnc,
+ 	return success;
+ }
+ 
++/* https://learn.microsoft.com/en-us/graph/api/event-cancel?view=graph-rest-1.0&tabs=http */
++
++gboolean
++e_m365_connection_cancel_event_sync (EM365Connection *cnc,
++				     const gchar *user_override, /* for which user, NULL to use the account user */
++				     const gchar *group_id, /* nullable - then the default group is used */
++				     const gchar *calendar_id,
++				     const gchar *event_id,
++				     const gchar *comment, /* nullable */
++				     GCancellable *cancellable,
++				     GError **error)
++{
++	JsonBuilder *builder;
++	SoupMessage *message;
++	gboolean success;
++	gchar *uri;
++
++	g_return_val_if_fail (E_IS_M365_CONNECTION (cnc), FALSE);
++	g_return_val_if_fail (calendar_id != NULL, FALSE);
++	g_return_val_if_fail (event_id != NULL, FALSE);
++
++	uri = e_m365_connection_construct_uri (cnc, TRUE, user_override, E_M365_API_V1_0, NULL,
++		group_id ? "calendarGroups" : "calendars",
++		group_id,
++		group_id ? "calendars" : NULL,
++		"", calendar_id,
++		"", "events",
++		"", event_id,
++		"", "cancel",
++		NULL);
++
++	message = m365_connection_new_soup_message (SOUP_METHOD_POST, uri, CSM_DISABLE_RESPONSE, error);
++
++	if (!message) {
++		g_free (uri);
++
++		return FALSE;
++	}
++
++	g_free (uri);
++
++	builder = json_builder_new_immutable ();
++
++	e_m365_json_begin_object_member (builder, NULL);
++	e_m365_json_add_nonempty_string_member (builder, "comment", comment);
++	e_m365_json_end_object_member (builder);
++
++	e_m365_connection_set_json_body (message, builder);
++
++	g_object_unref (builder);
++
++	success = m365_connection_send_request_sync (cnc, message, NULL, e_m365_read_no_response_cb, NULL, cancellable, error);
++
++	g_clear_object (&message);
++
++	return success;
++}
++
+ /* https://docs.microsoft.com/en-us/graph/api/event-dismissreminder?view=graph-rest-1.0&tabs=http */
+ 
+ gboolean
+@@ -5471,6 +5536,7 @@ e_m365_connection_list_tasks_sync (EM365Connection *cnc,
+ 				   const gchar *task_list_id,
+ 				   const gchar *prefer_outlook_timezone, /* nullable - then UTC, otherwise that zone for the returned times */
+ 				   const gchar *select, /* nullable - properties to select */
++				   const gchar *filter, /* nullable - filter which tasks to list */
+ 				   GSList **out_tasks, /* EM365Task * - the returned task objects */
+ 				   GCancellable *cancellable,
+ 				   GError **error)
+@@ -5490,6 +5556,7 @@ e_m365_connection_list_tasks_sync (EM365Connection *cnc,
+ 		task_list_id,
+ 		"", "tasks",
+ 		"$select", select,
++		"$filter", filter,
+ 		NULL);
+ 
+ 	message = m365_connection_new_soup_message (SOUP_METHOD_GET, uri, CSM_DEFAULT, error);
+diff --git a/src/Microsoft365/common/e-m365-connection.h b/src/Microsoft365/common/e-m365-connection.h
+index 6f403ca8..cfbfe35c 100644
+--- a/src/Microsoft365/common/e-m365-connection.h
++++ b/src/Microsoft365/common/e-m365-connection.h
+@@ -50,6 +50,13 @@ typedef enum _EM365ApiVersion {
+ 	E_M365_API_BETA
+ } EM365ApiVersion;
+ 
++typedef enum {
++	E_M365_ERROR_ID_MALFORMED
++} EM365Error;
++
++#define	E_M365_ERROR e_m365_error_quark ()
++GQuark		e_m365_error_quark		(void) G_GNUC_CONST;
++
+ typedef struct _EM365Connection EM365Connection;
+ typedef struct _EM365ConnectionClass EM365ConnectionClass;
+ typedef struct _EM365ConnectionPrivate EM365ConnectionPrivate;
+@@ -493,6 +500,7 @@ gboolean	e_m365_connection_list_events_sync
+ 						 const gchar *calendar_id,
+ 						 const gchar *prefer_outlook_timezone, /* nullable - then UTC, otherwise that zone for the returned times */
+ 						 const gchar *select, /* nullable - properties to select */
++						 const gchar *filter, /* nullable - filter which events to list */
+ 						 GSList **out_events, /* EM365Event * - the returned event objects */
+ 						 GCancellable *cancellable,
+ 						 GError **error);
+@@ -564,6 +572,15 @@ gboolean	e_m365_connection_response_event_sync
+ 						 gboolean send_response,
+ 						 GCancellable *cancellable,
+ 						 GError **error);
++gboolean	e_m365_connection_cancel_event_sync
++						(EM365Connection *cnc,
++						 const gchar *user_override, /* for which user, NULL to use the account user */
++						 const gchar *group_id, /* nullable, then the default group is used */
++						 const gchar *calendar_id,
++						 const gchar *event_id,
++						 const gchar *comment,
++						 GCancellable *cancellable,
++						 GError **error);
+ gboolean	e_m365_connection_dismiss_reminder_sync
+ 						(EM365Connection *cnc,
+ 						 const gchar *user_override, /* for which user, NULL to use the account user */
+@@ -672,6 +689,7 @@ gboolean	e_m365_connection_list_tasks_sync
+ 						 const gchar *task_list_id,
+ 						 const gchar *prefer_outlook_timezone, /* nullable - then UTC, otherwise that zone for the returned times */
+ 						 const gchar *select, /* nullable - properties to select */
++						 const gchar *filter, /* nullable - filter which tasks to list */
+ 						 GSList **out_tasks, /* EM365Task * - the returned task objects */
+ 						 GCancellable *cancellable,
+ 						 GError **error);
+-- 
+2.45.0
+

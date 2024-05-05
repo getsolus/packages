@@ -1,0 +1,823 @@
+From e5e8e7abf044aad53ba870cd5f0c496490467cb2 Mon Sep 17 00:00:00 2001
+From: Milan Crha <mcrha@redhat.com>
+Date: Wed, 24 Apr 2024 17:19:01 +0200
+Subject: [PATCH 4/7] m365: Calendar: Read detached and deleted instances of
+ event series
+
+With help of the code from evolution-mapi to decode recurrence blobs,
+read also detached and recognize deleted instances of a recurring
+event series.
+---
+ src/EWS/calendar/CMakeLists.txt               |   2 +
+ src/Microsoft365/calendar/CMakeLists.txt      |   2 +
+ .../calendar/e-cal-backend-m365-recur-blob.c  | 564 ++++++++++++++++++
+ .../calendar/e-cal-backend-m365-recur-blob.h  |  23 +
+ .../calendar/e-cal-backend-m365-utils.c       |  65 ++
+ src/Microsoft365/common/e-m365-connection.c   |   4 +
+ src/Microsoft365/common/e-m365-json-utils.c   |  29 +
+ src/Microsoft365/common/e-m365-json-utils.h   |   5 +
+ 8 files changed, 694 insertions(+)
+ create mode 100644 src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.c
+ create mode 100644 src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.h
+
+diff --git a/src/EWS/calendar/CMakeLists.txt b/src/EWS/calendar/CMakeLists.txt
+index 7fe472cb..dca4b00f 100644
+--- a/src/EWS/calendar/CMakeLists.txt
++++ b/src/EWS/calendar/CMakeLists.txt
+@@ -21,6 +21,8 @@ add_library(ews-m365 STATIC
+ 	${CMAKE_SOURCE_DIR}/src/Microsoft365/common/e-m365-tz-utils.h
+ 	${CMAKE_SOURCE_DIR}/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
+ 	${CMAKE_SOURCE_DIR}/src/Microsoft365/calendar/e-cal-backend-m365-utils.h
++	${CMAKE_SOURCE_DIR}/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.c
++	${CMAKE_SOURCE_DIR}/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.h
+ )
+ 
+ add_dependencies(ews-m365
+diff --git a/src/Microsoft365/calendar/CMakeLists.txt b/src/Microsoft365/calendar/CMakeLists.txt
+index 60801886..d0f8a3d3 100644
+--- a/src/Microsoft365/calendar/CMakeLists.txt
++++ b/src/Microsoft365/calendar/CMakeLists.txt
+@@ -6,6 +6,8 @@ set(SOURCES
+ 	e-cal-backend-m365.c
+ 	e-cal-backend-m365.h
+ 	e-cal-backend-m365-factory.c
++	e-cal-backend-m365-recur-blob.c
++	e-cal-backend-m365-recur-blob.h
+ 	e-cal-backend-m365-utils.c
+ 	e-cal-backend-m365-utils.h
+ )
+diff --git a/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.c b/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.c
+new file mode 100644
+index 00000000..dc0ec8f4
+--- /dev/null
++++ b/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.c
+@@ -0,0 +1,564 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*- */
++/*
++ * SPDX-FileCopyrightText: (C) 1999-2008 Novell, Inc. (www.novell.com)
++ * SPDX-FileCopyrightText: (C) 2024 Red Hat (www.redhat.com)
++ * SPDX-FileContributor: Suman Manjunath <msuman@novell.com>
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++
++/* Taken from evolution-mapi and adapted/simplified to extract only exceptions (deleted and detached instances) */
++
++#include "evolution-ews-config.h"
++
++#include <libecal/libecal.h>
++
++#include "e-cal-backend-m365-recur-blob.h"
++
++/* Subset of used/recognized pattern types */
++#define PatternType_Day 0x0
++#define PatternType_MonthNth 0x3
++
++/* Reader/Writer versions */
++#define READER_VERSION	0x3004
++#define WRITER_VERSION	0x3004
++#define READER_VERSION2 0x3006
++#define WRITER_VERSION2 0x3009
++
++/* Override flags defining what fields might be found in ExceptionInfo */
++#define ARO_SUBJECT 0x0001
++#define ARO_MEETINGTYPE 0x0002
++#define ARO_REMINDERDELTA 0x0004
++#define ARO_REMINDER 0x0008
++#define ARO_LOCATION 0x0010
++#define ARO_BUSYSTATUS 0x0020
++#define ARO_ATTACHMENT 0x0040
++#define ARO_SUBTYPE 0x0080
++#define ARO_APPTCOLOR 0x0100
++#define ARO_EXCEPTIONAL_BODY 0x0200
++
++/* Serialization helper: append len bytes from var to arr. */
++#define GBA_APPEND(a, v, l) g_byte_array_append ((a), (guint8*)(v), (l))
++
++/* Serialization helper: append the value of the variable to arr. */
++#define GBA_APPEND_LVAL(a, v) GBA_APPEND ((a), (&v), (sizeof (v)))
++
++/* Unserialization helper: read len bytes into buff from ba at offset off. */
++#define GBA_MEMCPY_OFFSET(arr, off, buf, blen) \
++	G_STMT_START { \
++		g_return_val_if_fail ((off >= 0 && arr->len - off >= blen), FALSE); \
++		memcpy (buf, arr->data + off, blen); \
++		off += blen; \
++	} G_STMT_END
++
++/* Unserialization helper: dereference and increment pointer. */
++#define GBA_DEREF_OFFSET(arr, off, lval, valtype) \
++	G_STMT_START { \
++		g_return_val_if_fail ((off >= 0 && arr->len - off >= sizeof (valtype)), FALSE); \
++		lval = *((valtype*)(arr->data+off)); \
++		off += sizeof (valtype); \
++	} G_STMT_END
++
++/** MS-OXOCAL 2.2.1.44.3 */
++struct ema_ChangeHighlight {
++	guint32 ChangeHighlightSize;
++	guint32 ChangeHighlightValue;
++	void *Reserved;
++};
++
++/** MS-OXOCAL 2.2.1.44.4 */
++struct ema_ExtendedException {
++	struct ema_ChangeHighlight ChangeHighlight;
++	guint32 ReservedBlockEE1Size;
++	void *ReservedBlockEE1;
++	guint32 StartDateTime;
++	guint32 EndDateTime;
++	guint32 OriginalStartDate;
++	guint16 WideCharSubjectLength;
++	gchar *WideCharSubject;
++	guint16 WideCharLocationLength;
++	gchar *WideCharLocation;
++	guint32 ReservedBlockEE2Size;
++	void *ReservedBlockEE2;
++};
++
++/** MS-OXOCAL 2.2.1.44.2 */
++struct ema_ExceptionInfo {
++	guint32 StartDateTime;
++	guint32 EndDateTime;
++	guint32 OriginalStartDate;
++	guint16 OverrideFlags;
++	guint16 SubjectLength;
++	guint16 SubjectLength2;
++	gchar *Subject;
++	guint32 MeetingType;
++	guint32 ReminderDelta;
++	guint32 ReminderSet;
++	guint16 LocationLength;
++	guint16 LocationLength2;
++	gchar *Location;
++	guint32 BusyStatus;
++	guint32 Attachment;
++	guint32 SubType;
++	guint32 AppointmentColor;
++};
++
++/** MS-OXOCAL 2.2.1.44.1 */
++struct ema_RecurrencePattern {
++	guint16 ReaderVersion;
++	guint16 WriterVersion;
++	guint16 RecurFrequency;
++	guint16 PatternType;
++	guint16 CalendarType;
++	guint32 FirstDateTime;
++	guint32 Period;
++	guint32 SlidingFlag;
++	guint32 PatternTypeSpecific;
++	guint32 N;
++	guint32 EndType;
++	guint32 OccurrenceCount;
++	guint32 FirstDOW;
++	guint32 DeletedInstanceCount;
++	guint32 *DeletedInstanceDates;
++	guint32 ModifiedInstanceCount;
++	guint32 *ModifiedInstanceDates;
++	guint32 StartDate;
++	guint32 EndDate;
++};
++
++/** MS-OXOCAL 2.2.1.44.5 */
++struct ema_AppointmentRecurrencePattern {
++	struct ema_RecurrencePattern RecurrencePattern;
++	guint32 ReaderVersion2;
++	guint32 WriterVersion2;
++	guint32 StartTimeOffset;
++	guint32 EndTimeOffset;
++	guint16 ExceptionCount;
++	struct ema_ExceptionInfo *ExceptionInfo;
++	guint32 ReservedBlock1Size;
++	void *ReservedBlock1;
++	struct ema_ExtendedException *ExtendedException;
++	guint32 ReservedBlock2Size;
++	void *ReservedBlock2;
++};
++
++static gboolean
++gba_to_rp (const GByteArray *gba,
++	   ptrdiff_t *off,
++	   struct ema_RecurrencePattern *rp)
++{
++	GBA_DEREF_OFFSET (gba, *off, rp->ReaderVersion, guint16);
++	GBA_DEREF_OFFSET (gba, *off, rp->WriterVersion, guint16);
++	GBA_DEREF_OFFSET (gba, *off, rp->RecurFrequency, guint16);
++	GBA_DEREF_OFFSET (gba, *off, rp->PatternType, guint16);
++	GBA_DEREF_OFFSET (gba, *off, rp->CalendarType, guint16);
++	GBA_DEREF_OFFSET (gba, *off, rp->FirstDateTime, guint32);
++	GBA_DEREF_OFFSET (gba, *off, rp->Period, guint32);
++	GBA_DEREF_OFFSET (gba, *off, rp->SlidingFlag, guint32);
++
++	if (rp->PatternType != PatternType_Day) {
++		GBA_DEREF_OFFSET (gba, *off, rp->PatternTypeSpecific, guint32);
++		if (rp->PatternType == PatternType_MonthNth) {
++			GBA_DEREF_OFFSET (gba, *off, rp->N,
++			                  guint32);
++		}
++	}
++
++	GBA_DEREF_OFFSET (gba, *off, rp->EndType, guint32);
++	GBA_DEREF_OFFSET (gba, *off, rp->OccurrenceCount, guint32);
++	GBA_DEREF_OFFSET (gba, *off, rp->FirstDOW, guint32);
++
++	GBA_DEREF_OFFSET (gba, *off, rp->DeletedInstanceCount, guint32);
++	if (rp->DeletedInstanceCount) {
++		rp->DeletedInstanceDates = g_new (guint32,
++		                                  rp->DeletedInstanceCount);
++		GBA_MEMCPY_OFFSET(gba, *off, rp->DeletedInstanceDates,
++		                  sizeof (guint32) * rp->DeletedInstanceCount);
++	}
++
++	GBA_DEREF_OFFSET (gba, *off, rp->ModifiedInstanceCount, guint32);
++	if (rp->ModifiedInstanceCount) {
++		rp->ModifiedInstanceDates = g_new (guint32,
++		                                   rp->ModifiedInstanceCount);
++		GBA_MEMCPY_OFFSET (gba, *off, rp->ModifiedInstanceDates,
++		                   sizeof (guint32) * rp->ModifiedInstanceCount);
++	}
++
++	GBA_DEREF_OFFSET(gba, *off, rp->StartDate, guint32);
++	GBA_DEREF_OFFSET(gba, *off, rp->EndDate, guint32);
++
++	return TRUE;
++}
++
++static gboolean
++gba_to_ei (const GByteArray *gba,
++	   ptrdiff_t *off,
++	   struct ema_ExceptionInfo *ei)
++{
++	GBA_DEREF_OFFSET (gba, *off, ei->StartDateTime, guint32);
++	GBA_DEREF_OFFSET (gba, *off, ei->EndDateTime, guint32);
++	GBA_DEREF_OFFSET (gba, *off, ei->OriginalStartDate, guint32);
++	GBA_DEREF_OFFSET (gba, *off, ei->OverrideFlags, guint16);
++
++	if (ei->OverrideFlags&ARO_SUBJECT) {
++		GBA_DEREF_OFFSET (gba, *off, ei->SubjectLength, guint16);
++		GBA_DEREF_OFFSET (gba, *off, ei->SubjectLength2, guint16);
++		ei->Subject = g_new0 (gchar, ei->SubjectLength2 + 1);
++		GBA_MEMCPY_OFFSET (gba, *off, ei->Subject, ei->SubjectLength2);
++	}
++
++	if (ei->OverrideFlags&ARO_MEETINGTYPE) {
++		GBA_DEREF_OFFSET (gba, *off, ei->MeetingType, guint32);
++	}
++
++	if (ei->OverrideFlags&ARO_REMINDERDELTA) {
++		GBA_DEREF_OFFSET (gba, *off, ei->ReminderDelta, guint32);
++	}
++
++	if (ei->OverrideFlags & ARO_REMINDER) {
++		GBA_DEREF_OFFSET (gba, *off, ei->ReminderSet, guint32);
++	}
++
++	if (ei->OverrideFlags&ARO_LOCATION) {
++		GBA_DEREF_OFFSET (gba, *off, ei->LocationLength, guint16);
++		GBA_DEREF_OFFSET (gba, *off, ei->LocationLength2, guint16);
++		ei->Location = g_new0 (gchar, ei->LocationLength2 + 1);
++		GBA_MEMCPY_OFFSET (gba, *off, ei->Location, ei->LocationLength2);
++	}
++
++	if (ei->OverrideFlags&ARO_BUSYSTATUS) {
++		GBA_DEREF_OFFSET (gba, *off, ei->BusyStatus, guint32);
++	}
++
++	if (ei->OverrideFlags&ARO_ATTACHMENT) {
++		GBA_DEREF_OFFSET (gba, *off, ei->Attachment, guint32);
++	}
++
++	if (ei->OverrideFlags&ARO_SUBTYPE) {
++		GBA_DEREF_OFFSET (gba, *off, ei->SubType, guint32);
++	}
++
++	if (ei->OverrideFlags&ARO_APPTCOLOR) {
++		GBA_DEREF_OFFSET (gba, *off, ei->AppointmentColor, guint32);
++	}
++
++	return TRUE;
++}
++
++static gboolean
++gba_to_ee (const GByteArray *gba, ptrdiff_t *off,
++	   struct ema_ExtendedException *ee,
++	   struct ema_AppointmentRecurrencePattern *arp, int exnum)
++{
++	GBA_DEREF_OFFSET (gba, *off, ee->ChangeHighlight.ChangeHighlightSize,
++	                  guint32);
++
++	if (arp->WriterVersion2 >= 0x3009) {
++		if (ee->ChangeHighlight.ChangeHighlightSize > 0) {
++			int reserved_size = ee->ChangeHighlight.ChangeHighlightSize - sizeof (guint32);
++			GBA_DEREF_OFFSET (gba, *off,
++			                  ee->ChangeHighlight.ChangeHighlightValue,
++			                  guint32);
++			if (reserved_size > 0) {
++				ee->ChangeHighlight.Reserved = g_new (gchar, reserved_size);
++				GBA_MEMCPY_OFFSET (gba, *off,
++				                   &ee->ChangeHighlight.Reserved,
++				                   reserved_size);
++			}
++		}
++	}
++
++	GBA_DEREF_OFFSET (gba, *off, ee->ReservedBlockEE1Size, guint32);
++	if (ee->ReservedBlockEE1Size) {
++		ee->ReservedBlockEE1 = g_new (gchar, ee->ReservedBlockEE1Size);
++		GBA_MEMCPY_OFFSET (gba, *off, ee->ReservedBlockEE1,
++		                   ee->ReservedBlockEE1Size);
++	}
++
++	if (arp->ExceptionInfo[exnum].OverrideFlags&(ARO_SUBJECT|ARO_LOCATION)) {
++		GBA_DEREF_OFFSET (gba, *off, ee->StartDateTime, guint32);
++		GBA_DEREF_OFFSET (gba, *off, ee->EndDateTime, guint32);
++		GBA_DEREF_OFFSET (gba, *off, ee->OriginalStartDate, guint32);
++
++		if(arp->ExceptionInfo[exnum].OverrideFlags&ARO_SUBJECT) {
++			GBA_DEREF_OFFSET (gba, *off, ee->WideCharSubjectLength,
++			                  guint16);
++			ee->WideCharSubject = g_new0(gchar,
++			                             sizeof(guint16) * (ee->WideCharSubjectLength + 1));
++			GBA_MEMCPY_OFFSET (gba, *off, ee->WideCharSubject,
++			                   sizeof(guint16) * ee->WideCharSubjectLength);
++		}
++
++		if(arp->ExceptionInfo[exnum].OverrideFlags&ARO_LOCATION) {
++			GBA_DEREF_OFFSET (gba, *off, ee->WideCharLocationLength,
++			                  guint16);
++			ee->WideCharLocation = g_new0 (gchar,
++			                               sizeof(guint16) * (ee->WideCharLocationLength + 1));
++			GBA_MEMCPY_OFFSET (gba, *off, ee->WideCharLocation,
++			                   sizeof (guint16) * ee->WideCharLocationLength);
++		}
++
++		GBA_DEREF_OFFSET (gba, *off, ee->ReservedBlockEE2Size, guint32);
++		if (ee->ReservedBlockEE2Size) {
++			ee->ReservedBlockEE2 = g_new (gchar,
++			                              ee->ReservedBlockEE2Size);
++			GBA_MEMCPY_OFFSET (gba, *off, ee->ReservedBlockEE2,
++			                   ee->ReservedBlockEE2Size);
++		}
++	}
++
++	return TRUE;
++}
++
++static gboolean
++gba_to_arp (const GByteArray *gba, ptrdiff_t *off,
++	    struct ema_AppointmentRecurrencePattern *arp)
++{
++	gint i;
++
++	g_return_val_if_fail (gba_to_rp (gba, off, &arp->RecurrencePattern),
++	                      FALSE);
++	GBA_DEREF_OFFSET (gba, *off, arp->ReaderVersion2, guint32);
++	GBA_DEREF_OFFSET (gba, *off, arp->WriterVersion2, guint32);
++	GBA_DEREF_OFFSET (gba, *off, arp->StartTimeOffset, guint32);
++	GBA_DEREF_OFFSET (gba, *off, arp->EndTimeOffset, guint32);
++
++	GBA_DEREF_OFFSET (gba, *off, arp->ExceptionCount, guint16);
++	if (arp->ExceptionCount) {
++		arp->ExceptionInfo = g_new0 (struct ema_ExceptionInfo,
++		                             arp->ExceptionCount);
++		for (i = 0; i < arp->ExceptionCount; ++i) {
++			g_return_val_if_fail (gba_to_ei (gba, off, &arp->ExceptionInfo[i]),
++			                      FALSE);
++		}
++	}
++
++	GBA_DEREF_OFFSET (gba, *off, arp->ReservedBlock1Size, guint32);
++	if (arp->ReservedBlock1Size) {
++		arp->ReservedBlock1 = g_new (gchar, arp->ReservedBlock1Size);
++		GBA_MEMCPY_OFFSET (gba, *off, arp->ReservedBlock1,
++		                   arp->ReservedBlock1Size);
++	}
++
++	if (arp->ExceptionCount) {
++		arp->ExtendedException = g_new0 (struct ema_ExtendedException,
++		                                 arp->ExceptionCount);
++		for (i = 0; i < arp->ExceptionCount; ++i) {
++			g_return_val_if_fail (gba_to_ee (gba, off, &arp->ExtendedException[i], arp, i),
++			                      FALSE);
++		}
++	}
++
++	GBA_DEREF_OFFSET (gba, *off, arp->ReservedBlock2Size, guint32);
++	if (arp->ReservedBlock2Size) {
++		arp->ReservedBlock2 = g_new (gchar, arp->ReservedBlock2Size);
++		GBA_MEMCPY_OFFSET (gba, *off, arp->ReservedBlock2,
++		                   arp->ReservedBlock2Size);
++	}
++
++	return TRUE;
++}
++
++static void
++free_arp_contents (struct ema_AppointmentRecurrencePattern *arp)
++{
++	gint i;
++
++	if(arp) {
++		if (arp->RecurrencePattern.DeletedInstanceDates)
++			g_free (arp->RecurrencePattern.DeletedInstanceDates);
++		if (arp->RecurrencePattern.ModifiedInstanceDates)
++			g_free (arp->RecurrencePattern.ModifiedInstanceDates);
++		if (arp->ExceptionInfo) {
++			for (i = 0; i < arp->RecurrencePattern.ModifiedInstanceCount; ++i) {
++				if (arp->ExceptionInfo[i].Subject)
++					g_free (arp->ExceptionInfo[i].Subject);
++				if (arp->ExceptionInfo[i].Location)
++					g_free (arp->ExceptionInfo[i].Location);
++			}
++			g_free (arp->ExceptionInfo);
++		}
++		if (arp->ReservedBlock1) {
++			g_free (arp->ReservedBlock1);
++		}
++		if (arp->ExtendedException) {
++			for (i = 0; i < arp->RecurrencePattern.ModifiedInstanceCount; ++i) {
++				if (arp->ExtendedException[i].ChangeHighlight.Reserved)
++					g_free (arp->ExtendedException[i].ChangeHighlight.Reserved);
++				if (arp->ExtendedException[i].ReservedBlockEE1)
++					g_free (arp->ExtendedException[i].ReservedBlockEE1);
++				if (arp->ExtendedException[i].WideCharSubject)
++					g_free (arp->ExtendedException[i].WideCharSubject);
++				if (arp->ExtendedException[i].WideCharLocation)
++					g_free (arp->ExtendedException[i].WideCharLocation);
++				if (arp->ExtendedException[i].ReservedBlockEE2)
++					g_free (arp->ExtendedException[i].ReservedBlockEE2);
++			}
++			g_free (arp->ExtendedException);
++		}
++		if (arp->ReservedBlock2) {
++			g_free (arp->ReservedBlock2);
++		}
++	}
++}
++
++static time_t
++convert_recurrence_minutes_to_timet (uint32_t minutes)
++{
++	const guint64 TIME_FIXUP_CONSTANT_INT = 11644473600;
++	guint64 secs;
++
++	secs = (guint64) minutes * 60;
++
++	/* adjust by 369 years to make the secs since 1970 */
++	return secs - TIME_FIXUP_CONSTANT_INT;
++}
++
++gboolean
++e_cal_backend_m365_decode_recur_blob (const gchar *base64_blob,
++				      ICalComponent *icomp,
++				      ICalTimezone *recur_zone,
++				      GSList **out_extra_detached) /* ICalComponent * */
++{
++	struct ema_AppointmentRecurrencePattern arp;
++	struct ema_RecurrencePattern *rp; /* Convenience pointer */
++	gint i;
++	ptrdiff_t off = 0;
++	GByteArray fake_ba;
++	guchar *blob;
++	gsize blob_len = 0;
++
++	blob = g_base64_decode (base64_blob, &blob_len);
++	if (blob == NULL || blob_len == 0) {
++		g_free (blob);
++		return FALSE;
++	}
++
++	fake_ba.data = (guint8 *) blob;
++	fake_ba.len = blob_len;
++
++	memset (&arp, 0, sizeof (struct ema_AppointmentRecurrencePattern));
++
++	if (!gba_to_arp (&fake_ba, &off, &arp)) {
++		free_arp_contents (&arp);
++		g_free (blob);
++		return FALSE;
++	}
++
++	rp = &arp.RecurrencePattern;
++
++	e_cal_util_component_remove_property_by_kind (icomp, I_CAL_EXDATE_PROPERTY, TRUE);
++
++	/* number of exceptions */
++	if (rp->DeletedInstanceCount) {
++		ICalTimezone *utc_zone = i_cal_timezone_get_utc_timezone ();
++
++		for (i = 0; i < rp->DeletedInstanceCount; ++i) {
++			ICalProperty *prop;
++			ICalTime *tt;
++			time_t ictime = convert_recurrence_minutes_to_timet (rp->DeletedInstanceDates[i]);
++
++			tt = i_cal_time_new_from_timet_with_zone (ictime, 1, NULL);
++			i_cal_time_set_timezone (tt, utc_zone);
++
++			prop = i_cal_property_new_exdate (tt);
++			i_cal_component_take_property (icomp, prop);
++		}
++	}
++
++	/* Modified exceptions */
++	if (arp.ExceptionCount && out_extra_detached) {
++		ICalTime *tt;
++		ECalComponentDateTime *edt;
++		ECalComponentRange *rid;
++		const gchar *tzid;
++
++		*out_extra_detached = NULL;
++
++		tzid = recur_zone ? i_cal_timezone_get_tzid (recur_zone) : "UTC";
++
++		for (i = 0; i < arp.ExceptionCount; i++) {
++			ECalComponent *detached;
++			struct ema_ExceptionInfo *ei = &arp.ExceptionInfo[i];
++			struct ema_ExtendedException *ee = &arp.ExtendedException[i];
++
++			detached = e_cal_component_new_from_icalcomponent (i_cal_component_clone (icomp));
++			if (!detached)
++				continue;
++
++			tt = i_cal_time_new_from_timet_with_zone (convert_recurrence_minutes_to_timet (ei->OriginalStartDate), 0, NULL);
++			rid = e_cal_component_range_new_take (E_CAL_COMPONENT_RANGE_SINGLE, e_cal_component_datetime_new_take (tt, g_strdup (tzid)));
++			e_cal_component_set_recurid (detached, rid);
++			e_cal_component_range_free (rid);
++
++			tt = i_cal_time_new_from_timet_with_zone (convert_recurrence_minutes_to_timet (ei->StartDateTime), 0, NULL);
++			edt = e_cal_component_datetime_new_take (tt, g_strdup (tzid));
++			e_cal_component_set_dtstart (detached, edt);
++			e_cal_component_datetime_free (edt);
++
++			tt = i_cal_time_new_from_timet_with_zone (convert_recurrence_minutes_to_timet (ei->EndDateTime), 0, NULL);
++			edt = e_cal_component_datetime_new_take (tt, g_strdup (tzid));
++			e_cal_component_set_dtend (detached, edt);
++			e_cal_component_datetime_free (edt);
++
++			e_cal_component_set_rdates (detached, NULL);
++			e_cal_component_set_rrules (detached, NULL);
++			e_cal_component_set_exdates (detached, NULL);
++			e_cal_component_set_exrules (detached, NULL);
++
++			if (ee->WideCharSubject) {
++				ECalComponentText *txt;
++				gchar *str;
++
++				str = g_convert (ee->WideCharSubject,
++				                 2 * ee->WideCharSubjectLength,
++				                 "UTF-8", "UTF-16", NULL, NULL,
++				                 NULL);
++				txt = e_cal_component_text_new (str ? str : "", NULL);
++				e_cal_component_set_summary (detached, txt);
++				e_cal_component_text_free (txt);
++				g_free (str);
++			} else if (ei->Subject) {
++				ECalComponentText *txt;
++
++				txt = e_cal_component_text_new (ei->Subject, NULL);
++				e_cal_component_set_summary (detached, txt);
++				e_cal_component_text_free (txt);
++			}
++
++			/* Handle MeetingType */
++			/* Handle ReminderDelta */
++			/* Handle Reminder */
++
++			if (ee->WideCharLocation) {
++				gchar *str;
++
++				/* LocationLength */
++				str = g_convert (ee->WideCharLocation,
++				                 2 * ee->WideCharLocationLength,
++				                 "UTF-8", "UTF-16", NULL, NULL,
++				                 NULL);
++				e_cal_component_set_location (detached, str);
++				g_free (str);
++			} else if (ei->Location) {
++				e_cal_component_set_location (detached, ei->Location);
++			}
++
++			/* Handle BusyStatus? */
++			/* Handle Attachment? */
++			/* Handle SubType? */
++			/* Handle AppointmentColor? */
++			/* do we do anything with ChangeHighlight? */
++
++			*out_extra_detached = g_slist_prepend (*out_extra_detached, g_object_ref (e_cal_component_get_icalcomponent (detached)));
++
++			g_clear_object (&detached);
++		}
++
++		*out_extra_detached = g_slist_reverse (*out_extra_detached);
++	}
++
++	free_arp_contents (&arp);
++	g_free (blob);
++
++	return TRUE;
++}
+diff --git a/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.h b/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.h
+new file mode 100644
+index 00000000..baac99bb
+--- /dev/null
++++ b/src/Microsoft365/calendar/e-cal-backend-m365-recur-blob.h
+@@ -0,0 +1,23 @@
++/* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*- */
++/*
++ * SPDX-FileCopyrightText: (C) 2024 Red Hat (www.redhat.com)
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++
++#ifndef E_CAL_BACKEND_M365_RECUR_BLOB_H
++#define E_CAL_BACKEND_M365_RECUR_BLOB_H
++
++#include <glib.h>
++#include <libecal/libecal.h>
++
++G_BEGIN_DECLS
++
++gboolean	e_cal_backend_m365_decode_recur_blob
++						(const gchar *base64_blob,
++						 ICalComponent *icomp,
++						 ICalTimezone *recur_zone,
++						 GSList **out_extra_detached); /* ICalComponent * */
++
++G_END_DECLS
++
++#endif
+diff --git a/src/Microsoft365/calendar/e-cal-backend-m365-utils.c b/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
+index a1a03b85..fc4c5acb 100644
+--- a/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
++++ b/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
+@@ -12,11 +12,73 @@
+ 
+ #include "common/e-m365-connection.h"
+ #include "common/e-m365-tz-utils.h"
++#include "e-cal-backend-m365-recur-blob.h"
+ #include "e-cal-backend-m365-utils.h"
+ 
+ #define EC_ERROR_EX(_code, _msg) e_client_error_create (_code, _msg)
+ #define ECC_ERROR_EX(_code, _msg) e_cal_client_error_create (_code, _msg)
+ 
++static void
++ecb_m365_json_to_ical_recur_blob (JsonObject *m365_object,
++				  ETimezoneCache *timezone_cache,
++				  ICalComponent **inout_icomp)
++{
++	const gchar *base64_blob;
++	ICalTimezone *recur_zone = NULL;
++	ICalProperty *prop;
++	GSList *extra_detached = NULL;
++
++	g_return_if_fail (m365_object != NULL);
++	g_return_if_fail (inout_icomp != NULL);
++	g_return_if_fail (*inout_icomp != NULL);
++
++	if (!e_cal_util_component_has_recurrences (*inout_icomp))
++		return;
++
++	base64_blob = e_m365_json_get_string_single_value_extended_property (m365_object, E_M365_RECURRENCE_BLOB_NAME);
++	if (!base64_blob || !*base64_blob)
++		return;
++
++	prop = i_cal_component_get_first_property (*inout_icomp, I_CAL_DTSTART_PROPERTY);
++	if (prop) {
++		ICalParameter *param;
++
++		param = i_cal_property_get_first_parameter (prop, I_CAL_TZID_PARAMETER);
++		if (param) {
++			const gchar *tzid;
++
++			tzid = i_cal_parameter_get_tzid (param);
++
++			if (tzid && *tzid)
++				recur_zone = e_timezone_cache_get_timezone (timezone_cache, tzid);
++
++			g_clear_object (&param);
++		}
++
++		g_clear_object (&prop);
++	}
++
++	if (e_cal_backend_m365_decode_recur_blob (base64_blob, *inout_icomp, recur_zone, &extra_detached)) {
++		if (extra_detached) {
++			ICalComponent *vcalendar;
++			GSList *link;
++
++			vcalendar = i_cal_component_new_vcalendar ();
++			i_cal_component_take_component (vcalendar, *inout_icomp);
++
++			for (link = extra_detached; link; link = g_slist_next (link)) {
++				ICalComponent *icomp = link->data;
++
++				i_cal_component_take_component (vcalendar, icomp);
++			}
++
++			*inout_icomp = vcalendar;
++
++			g_slist_free (extra_detached);
++		}
++	}
++}
++
+ static void
+ ecb_m365_get_uid (EM365Connection *cnc,
+ 		  const gchar *group_id,
+@@ -2742,6 +2804,9 @@ e_cal_backend_m365_utils_json_to_ical (EM365Connection *cnc,
+ 		}
+ 	}
+ 
++	if (success && kind == I_CAL_VEVENT_COMPONENT)
++		ecb_m365_json_to_ical_recur_blob (m365_object, timezone_cache, &icomp);
++
+ 	if (!success)
+ 		g_clear_object (&icomp);
+ 
+diff --git a/src/Microsoft365/common/e-m365-connection.c b/src/Microsoft365/common/e-m365-connection.c
+index a030fc32..9eb95782 100644
+--- a/src/Microsoft365/common/e-m365-connection.c
++++ b/src/Microsoft365/common/e-m365-connection.c
+@@ -4417,6 +4417,8 @@ e_m365_connection_list_events_sync (EM365Connection *cnc,
+ 		"", "events",
+ 		"$select", select,
+ 		"$filter", filter,
++		select ? NULL : "$expand",
++		select ? NULL : "singleValueExtendedProperties($filter=id eq '" E_M365_RECURRENCE_BLOB_NAME "')",
+ 		NULL);
+ 
+ 	message = m365_connection_new_soup_message (SOUP_METHOD_GET, uri, CSM_DEFAULT, error);
+@@ -4524,6 +4526,8 @@ e_m365_connection_prepare_get_event (EM365Connection *cnc,
+ 		"", "events",
+ 		"", event_id,
+ 		"$select", select,
++		select ? NULL : "$expand",
++		select ? NULL : "singleValueExtendedProperties($filter=id eq '" E_M365_RECURRENCE_BLOB_NAME "')",
+ 		NULL);
+ 
+ 	message = m365_connection_new_soup_message (SOUP_METHOD_GET, uri, CSM_DEFAULT, error);
+diff --git a/src/Microsoft365/common/e-m365-json-utils.c b/src/Microsoft365/common/e-m365-json-utils.c
+index 573490b0..7e38f9f0 100644
+--- a/src/Microsoft365/common/e-m365-json-utils.c
++++ b/src/Microsoft365/common/e-m365-json-utils.c
+@@ -563,6 +563,35 @@ e_m365_json_add_nonempty_or_null_string_member (JsonBuilder *builder,
+ 		e_m365_json_add_null_member (builder, member_name);
+ }
+ 
++const gchar *
++e_m365_json_get_string_single_value_extended_property (JsonObject *object,
++						       const gchar *property_name)
++{
++	JsonArray *array;
++	guint ii, len;
++
++	if (!object || !property_name)
++		return NULL;
++
++	array = e_m365_json_get_array_member (object, "singleValueExtendedProperties");
++	if (!array)
++		return NULL;
++
++	len = json_array_get_length (array);
++
++	for (ii = 0; ii < len; ii++) {
++		JsonObject *item = json_array_get_object_element (array, ii);
++
++		if (!item)
++			break;
++
++		if (g_strcmp0 (e_m365_json_get_string_member (item, "id", NULL), property_name) == 0)
++			return e_m365_json_get_string_member (item, "value", NULL);
++	}
++
++	return NULL;
++}
++
+ EM365Date
+ e_m365_date_get (JsonObject *object,
+ 		 const gchar *member_name)
+diff --git a/src/Microsoft365/common/e-m365-json-utils.h b/src/Microsoft365/common/e-m365-json-utils.h
+index 0c642b43..67425a6e 100644
+--- a/src/Microsoft365/common/e-m365-json-utils.h
++++ b/src/Microsoft365/common/e-m365-json-utils.h
+@@ -49,6 +49,8 @@ G_BEGIN_DECLS
+ #define EM365TimeOfDay			gint64
+ #define EM365WorkingHours		JsonObject
+ 
++#define E_M365_RECURRENCE_BLOB_NAME "Binary {00062002-0000-0000-c000-000000000046} Id 0x8216"
++
+ typedef enum _EM365AttachmentDataType {
+ 	E_M365_ATTACHMENT_DATA_TYPE_NOT_SET,
+ 	E_M365_ATTACHMENT_DATA_TYPE_UNKNOWN,
+@@ -298,6 +300,9 @@ void		e_m365_json_add_nonempty_or_null_string_member
+ 							(JsonBuilder *builder,
+ 							 const gchar *member_name,
+ 							 const gchar *value);
++const gchar *	e_m365_json_get_string_single_value_extended_property
++							(JsonObject *object,
++							 const gchar *property_name);
+ 
+ EM365Date	e_m365_date_get				(JsonObject *object,
+ 							 const gchar *member_name);
+-- 
+2.45.0
+

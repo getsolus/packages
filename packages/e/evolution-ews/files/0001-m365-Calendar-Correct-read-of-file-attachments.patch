@@ -1,0 +1,352 @@
+From 1ff988357102a593d8008706f5e845331cec8f66 Mon Sep 17 00:00:00 2001
+From: Milan Crha <mcrha@redhat.com>
+Date: Tue, 23 Apr 2024 11:52:05 +0200
+Subject: [PATCH 1/7] m365: Calendar: Correct read of file attachments
+
+Some attachments may not have `contentBytes` property, the same as it can be
+quite large file, thus read them one-by-one instead.
+---
+ .../calendar/e-cal-backend-m365-utils.c       | 72 +++++++++++------
+ src/Microsoft365/camel/camel-m365-folder.c    | 81 +------------------
+ src/Microsoft365/common/e-m365-connection.c   | 80 ++++++++++++++++++
+ src/Microsoft365/common/e-m365-connection.h   |  8 +-
+ 4 files changed, 137 insertions(+), 104 deletions(-)
+
+diff --git a/src/Microsoft365/calendar/e-cal-backend-m365-utils.c b/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
+index ecb171a9..a1a03b85 100644
+--- a/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
++++ b/src/Microsoft365/calendar/e-cal-backend-m365-utils.c
+@@ -2079,6 +2079,38 @@ ecb_m365_add_online_meeting (EM365Connection *cnc,
+ 	return TRUE;
+ }
+ 
++static gchar *
++ecb_m365_calc_hash (const gchar *value)
++{
++	gchar *hash;
++
++	if (!value)
++		return g_strdup ("empty");
++
++	/* the MD5 is fine here, the id-s are not that long to cause the collision;
++	   it's also short, which is for good */
++	hash = g_compute_checksum_for_string (G_CHECKSUM_MD5, value, -1);
++	if (!hash)
++		hash = g_compute_checksum_for_string (G_CHECKSUM_SHA1, value, -1);
++	if (!hash)
++		hash = g_compute_checksum_for_string (G_CHECKSUM_SHA256, value, -1);
++
++	/* fallback when cannot compute the hash */
++	if (!hash) {
++		gchar *ptr;
++
++		hash = g_strdup (value);
++
++		/* remove forward- and back-slashes from the string */
++		for (ptr = hash; *ptr; ptr++) {
++			if (*ptr == '/' || *ptr == '\\')
++				*ptr = '_';
++		}
++	}
++
++	return hash;
++}
++
+ static gboolean
+ ecb_m365_get_attachments (EM365Connection *cnc,
+ 			  const gchar *group_id,
+@@ -2093,6 +2125,7 @@ ecb_m365_get_attachments (EM365Connection *cnc,
+ {
+ 	GSList *attachments = NULL, *link;
+ 	const gchar *id;
++	gchar *event_id_hash;
+ 	gboolean success = TRUE;
+ 
+ 	switch (i_cal_component_isa (inout_comp)) {
+@@ -2103,7 +2136,7 @@ ecb_m365_get_attachments (EM365Connection *cnc,
+ 		id = e_m365_event_get_id (m365_object);
+ 
+ 		if (!e_m365_connection_list_event_attachments_sync (cnc, NULL,
+-			group_id, folder_id, id, "id,name,contentType,contentBytes",
++			group_id, folder_id, id, "id,name,contentType",
+ 			&attachments, cancellable, error)) {
+ 			return FALSE;
+ 		}
+@@ -2115,40 +2148,31 @@ ecb_m365_get_attachments (EM365Connection *cnc,
+ 		return FALSE;
+ 	}
+ 
++	event_id_hash = ecb_m365_calc_hash (id);
++
+ 	for (link = attachments; link && success; link = g_slist_next (link)) {
+ 		CamelStream *content_stream;
+ 		EM365Attachment *m365_attach = link->data;
+-		gchar *filename;
++		gchar *filename, *attach_id_hash;
+ 
+ 		if (!m365_attach || e_m365_attachment_get_data_type (m365_attach) != E_M365_ATTACHMENT_DATA_TYPE_FILE ||
+ 		    !e_m365_attachment_get_name (m365_attach))
+ 			continue;
+ 
+-		filename = g_build_filename (attachments_dir, id, e_m365_attachment_get_id (m365_attach), NULL);
++		attach_id_hash = ecb_m365_calc_hash (e_m365_attachment_get_id (m365_attach));
+ 
+-		content_stream = camel_stream_fs_new_with_name (filename, O_CREAT | O_TRUNC | O_WRONLY, 0666, error);
+-
+-		if (content_stream) {
+-			CamelMimeFilter *filter;
+-			CamelStream *filter_stream;
+-			const gchar *base64_data;
+-
+-			filter_stream = camel_stream_filter_new (content_stream);
+-
+-			filter = camel_mime_filter_basic_new (CAMEL_MIME_FILTER_BASIC_BASE64_DEC);
+-			camel_stream_filter_add (CAMEL_STREAM_FILTER (filter_stream), filter);
+-			g_object_unref (filter);
+-
+-			base64_data = e_m365_file_attachment_get_content_bytes (m365_attach);
++		filename = g_build_filename (attachments_dir, event_id_hash, NULL);
++		g_mkdir_with_parents (filename, 0777);
++		g_free (filename);
+ 
+-			if (base64_data && *base64_data)
+-				success = camel_stream_write (filter_stream, base64_data, strlen (base64_data), cancellable, error) != -1;
++		filename = g_build_filename (attachments_dir, event_id_hash, attach_id_hash, NULL);
+ 
+-			camel_stream_flush (filter_stream, cancellable, NULL);
+-			g_object_unref (filter_stream);
++		content_stream = camel_stream_fs_new_with_name (filename, O_CREAT | O_TRUNC | O_WRONLY, 0666, error);
+ 
+-			camel_stream_flush (content_stream, cancellable, NULL);
+-			g_object_unref (content_stream);
++		if (content_stream) {
++			success = e_m365_connection_get_event_attachment_sync (cnc, NULL, group_id, folder_id, id,
++				e_m365_attachment_get_id (m365_attach), e_m365_connection_util_read_raw_data_cb, content_stream,
++				cancellable, error);
+ 
+ 			if (success) {
+ 				gchar *uri;
+@@ -2199,9 +2223,11 @@ ecb_m365_get_attachments (EM365Connection *cnc,
+ 		}
+ 
+ 		g_free (filename);
++		g_free (attach_id_hash);
+ 	}
+ 
+ 	g_slist_free_full (attachments, (GDestroyNotify) json_object_unref);
++	g_free (event_id_hash);
+ 
+ 	return success;
+ }
+diff --git a/src/Microsoft365/camel/camel-m365-folder.c b/src/Microsoft365/camel/camel-m365-folder.c
+index 35cf3774..60e38559 100644
+--- a/src/Microsoft365/camel/camel-m365-folder.c
++++ b/src/Microsoft365/camel/camel-m365-folder.c
+@@ -384,85 +384,6 @@ m365_folder_cmp_uids (CamelFolder *folder,
+ 	return strcmp (uid1, uid2);
+ }
+ 
+-static gboolean
+-m365_folder_download_message_cb (EM365Connection *cnc,
+-				 SoupMessage *message,
+-				 GInputStream *raw_data_stream,
+-				 gpointer user_data,
+-				 GCancellable *cancellable,
+-				 GError **error)
+-{
+-	CamelStream *cache_stream = user_data;
+-	gssize expected_size = 0, wrote_size = 0, last_percent = -1;
+-	gint last_progress_notify = 0;
+-	gsize buffer_size = 65535;
+-	gchar *buffer;
+-	gboolean success;
+-
+-	g_return_val_if_fail (CAMEL_IS_STREAM (cache_stream), FALSE);
+-	g_return_val_if_fail (G_IS_INPUT_STREAM (raw_data_stream), FALSE);
+-
+-	if (message && soup_message_get_response_headers (message)) {
+-		const gchar *content_length_str;
+-
+-		content_length_str = soup_message_headers_get_one (soup_message_get_response_headers (message), "Content-Length");
+-
+-		if (content_length_str && *content_length_str)
+-			expected_size = (gssize) g_ascii_strtoll (content_length_str, NULL, 10);
+-	}
+-
+-	buffer = g_malloc (buffer_size);
+-
+-	do {
+-		success = !g_cancellable_set_error_if_cancelled (cancellable, error);
+-
+-		if (success) {
+-			gssize n_read, n_wrote;
+-
+-			n_read = g_input_stream_read (raw_data_stream, buffer, buffer_size, cancellable, error);
+-
+-			if (n_read == -1) {
+-				success = FALSE;
+-			} else if (!n_read) {
+-				break;
+-			} else {
+-				n_wrote = camel_stream_write (cache_stream, buffer, n_read, cancellable, error);
+-				success = n_read == n_wrote;
+-
+-				if (success && expected_size > 0) {
+-					gssize percent;
+-
+-					wrote_size += n_wrote;
+-
+-					percent = wrote_size * 100.0 / expected_size;
+-
+-					if (percent > 100)
+-						percent = 100;
+-
+-					if (percent != last_percent) {
+-						gint64 now = g_get_monotonic_time ();
+-
+-						/* Notify only 10 times per second, not more */
+-						if (percent == 100 || now - last_progress_notify > G_USEC_PER_SEC / 10) {
+-							last_progress_notify = now;
+-							last_percent = percent;
+-
+-							camel_operation_progress (cancellable, percent);
+-						}
+-					}
+-				}
+-			}
+-		}
+-	} while (success);
+-
+-	g_free (buffer);
+-
+-	if (success)
+-		camel_stream_flush (cache_stream, cancellable, NULL);
+-
+-	return success;
+-}
+-
+ static void
+ m365_folder_get_message_cancelled_cb (GCancellable *cancellable,
+ 				      gpointer user_data)
+@@ -546,7 +467,7 @@ m365_folder_get_message_sync (CamelFolder *folder,
+ 		success = cache_stream != NULL;
+ 
+ 		success = success && e_m365_connection_get_mail_message_sync (cnc, NULL, folder_id, uid,
+-			m365_folder_download_message_cb, cache_stream, cancellable, &local_error);
++			e_m365_connection_util_read_raw_data_cb, cache_stream, cancellable, &local_error);
+ 
+ 		if (local_error) {
+ 			camel_m365_store_maybe_disconnect (m365_store, local_error);
+diff --git a/src/Microsoft365/common/e-m365-connection.c b/src/Microsoft365/common/e-m365-connection.c
+index 701d0459..c7979a4b 100644
+--- a/src/Microsoft365/common/e-m365-connection.c
++++ b/src/Microsoft365/common/e-m365-connection.c
+@@ -538,6 +538,86 @@ e_m365_connection_util_get_message_status_code (SoupMessage *message)
+ 	return status_code;
+ }
+ 
++/* An EM365ConnectionRawDataFunc function, which writes the received data into the provided CamelStream */
++gboolean
++e_m365_connection_util_read_raw_data_cb (EM365Connection *cnc,
++					 SoupMessage *message,
++					 GInputStream *raw_data_stream,
++					 gpointer user_data, /* CamelStream * */
++					 GCancellable *cancellable,
++					 GError **error)
++{
++	CamelStream *cache_stream = user_data;
++	gssize expected_size = 0, wrote_size = 0, last_percent = -1;
++	gint last_progress_notify = 0;
++	gsize buffer_size = 65535;
++	gchar *buffer;
++	gboolean success;
++
++	g_return_val_if_fail (CAMEL_IS_STREAM (cache_stream), FALSE);
++	g_return_val_if_fail (G_IS_INPUT_STREAM (raw_data_stream), FALSE);
++
++	if (message && soup_message_get_response_headers (message)) {
++		const gchar *content_length_str;
++
++		content_length_str = soup_message_headers_get_one (soup_message_get_response_headers (message), "Content-Length");
++
++		if (content_length_str && *content_length_str)
++			expected_size = (gssize) g_ascii_strtoll (content_length_str, NULL, 10);
++	}
++
++	buffer = g_malloc (buffer_size);
++
++	do {
++		success = !g_cancellable_set_error_if_cancelled (cancellable, error);
++
++		if (success) {
++			gssize n_read, n_wrote;
++
++			n_read = g_input_stream_read (raw_data_stream, buffer, buffer_size, cancellable, error);
++
++			if (n_read == -1) {
++				success = FALSE;
++			} else if (!n_read) {
++				break;
++			} else {
++				n_wrote = camel_stream_write (cache_stream, buffer, n_read, cancellable, error);
++				success = n_read == n_wrote;
++
++				if (success && expected_size > 0) {
++					gssize percent;
++
++					wrote_size += n_wrote;
++
++					percent = wrote_size * 100.0 / expected_size;
++
++					if (percent > 100)
++						percent = 100;
++
++					if (percent != last_percent) {
++						gint64 now = g_get_monotonic_time ();
++
++						/* Notify only 10 times per second, not more */
++						if (percent == 100 || now - last_progress_notify > G_USEC_PER_SEC / 10) {
++							last_progress_notify = now;
++							last_percent = percent;
++
++							camel_operation_progress (cancellable, percent);
++						}
++					}
++				}
++			}
++		}
++	} while (success);
++
++	g_free (buffer);
++
++	if (success)
++		camel_stream_flush (cache_stream, cancellable, NULL);
++
++	return success;
++}
++
+ EM365Connection *
+ e_m365_connection_new (ESource *source,
+ 		       CamelM365Settings *settings)
+diff --git a/src/Microsoft365/common/e-m365-connection.h b/src/Microsoft365/common/e-m365-connection.h
+index e475b641..6f403ca8 100644
+--- a/src/Microsoft365/common/e-m365-connection.h
++++ b/src/Microsoft365/common/e-m365-connection.h
+@@ -84,7 +84,13 @@ void		e_m365_connection_util_set_message_status_code
+ 						 gint status_code);
+ gint		e_m365_connection_util_get_message_status_code
+ 						(SoupMessage *message);
+-
++gboolean	e_m365_connection_util_read_raw_data_cb
++						(EM365Connection *cnc,
++						 SoupMessage *message,
++						 GInputStream *raw_data_stream,
++						 gpointer user_data, /* CamelStream * */
++						 GCancellable *cancellable,
++						 GError **error);
+ GType		e_m365_connection_get_type	(void) G_GNUC_CONST;
+ 
+ EM365Connection *
+-- 
+2.45.0
+
