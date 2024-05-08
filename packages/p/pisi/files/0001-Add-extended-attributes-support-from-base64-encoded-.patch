@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ikey Doherty <ikey@solus-project.com>
+Date: Tue, 12 Apr 2016 07:51:04 +0100
+Subject: [PATCH] Add extended attributes support, from base64 encoded
+ key/value pairs
+
+Signed-off-by: Ikey Doherty <ikey@solus-project.com>
+---
+ pisi/atomicoperations.py | 16 ++++++++++++++++
+ pisi/files.py            |  9 +++++++++
+ 2 files changed, 25 insertions(+)
+
+diff --git a/pisi/atomicoperations.py b/pisi/atomicoperations.py
+index 7cf1df6..022923a 100644
+--- a/pisi/atomicoperations.py
++++ b/pisi/atomicoperations.py
+@@ -27,6 +27,7 @@ import pisi.ui
+ import pisi.version
+ import pisi.operations.delta
+ import pisi.db
++import base64
+ 
+ class Error(pisi.Error):
+     pass
+@@ -443,6 +444,7 @@ class Install(AtomicOperation):
+             update_permissions()
+ 
+         self.package.extract_install(ctx.config.dest_dir())
++        self.restore_xattrs()
+ 
+         if config_changed:
+             rename_configs()
+@@ -451,6 +453,20 @@ class Install(AtomicOperation):
+             clean_leftovers()
+ 
+ 
++    def restore_xattrs(self):
++        try:
++            import xattr
++
++            for file in self.files.list:
++                if not file.extendedAttributes:
++                    continue
++                for attrPair in file.extendedAttributes:
++                    realVal = base64.b64decode(attrPair.value)
++                    xattr.setxattr("/" + file.path, attrPair.label, realVal)
++        except Exception as e:
++            ctx.ui.warning("Failed to restore xattr: {}".format(e))
++            # ctx.ui.warning("Please run: eopkg fix-attributes")
++
+     def store_pisi_files(self):
+         """put files.xml, metadata.xml, actions.py and COMAR scripts
+         somewhere in the file system. We'll need these in future..."""
+diff --git a/pisi/files.py b/pisi/files.py
+index 67560e3..601f6ac 100644
+--- a/pisi/files.py
++++ b/pisi/files.py
+@@ -16,6 +16,14 @@ during the build process of a package and used in installation.'''
+ 
+ import pisi.pxml.autoxml as autoxml
+ 
++class ExtendedAttribute:
++    """XAttr holds a key/value mapping of extended attributes """
++
++    __metaclass__ = autoxml.autoxml
++
++    a_label = [ autoxml.String, autoxml.mandatory ]
++    s_value = [ autoxml.String, autoxml.mandatory ]
++
+ class FileInfo:
+     """File holds the information for a File node/tag in files.xml"""
+ 
+@@ -29,6 +37,7 @@ class FileInfo:
+     t_Mode = [ autoxml.String, autoxml.optional ]
+     t_Hash = [ autoxml.String, autoxml.optional, "SHA1Sum" ]
+     t_Permanent = [ autoxml.String, autoxml.optional ]
++    t_ExtendedAttributes = [[ExtendedAttribute], autoxml.optional ]
+ 
+     def __str__(self):
+         s = "/%s, type: %s, size: %s, sha1sum: %s" %  (self.path, self.type,
