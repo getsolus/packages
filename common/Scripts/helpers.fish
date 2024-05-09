@@ -11,9 +11,11 @@ function cpesearch -d "Search for known CPE entries for a program or library"
     if test "$argv[1]" = "--help"; or test "$argv[1]" = "-h"; or test (count $argv) -ne 1
         echo "usage: cpesearch <package-name>"
     else
-        curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$argv[1]\"]}" | jq .
+        curl -s "https://services.nvd.nist.gov/rest/json/cpes/2.0?cpeMatchString=cpe:2.3:*:*:$argv[1]*" |\
+        jq 'del(.products.[] | select(.cpe.deprecated == true))' | jq -r '.products.[].cpe.cpeName' |\
+        cut -d":" -f1-5 | sort -u
         
-        echo "Verify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
+        echo -e "\nVerify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
         echo "- CPE entries for software applications have the form 'cpe:2.3:a:\$VENDOR:\$PRODUCT"        
     end
 end
