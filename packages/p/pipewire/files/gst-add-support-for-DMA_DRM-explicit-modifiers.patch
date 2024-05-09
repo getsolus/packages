@@ -1,8 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Thu, 9 May 2024 11:36:22 -0500
+Subject: [PATCH] gst: Add support for DMA_DRM / explicit modifiers
+
+---
+ meson.build                 |   8 +
+ src/gst/gstpipewireformat.c | 509 +++++++++++++++++++++++++-----------
+ src/gst/gstpipewireformat.h |   4 +-
+ src/gst/gstpipewiresink.c   |   2 +-
+ src/gst/gstpipewiresrc.c    |  46 +++-
+ src/gst/gstpipewiresrc.h    |   5 +
+ 6 files changed, 411 insertions(+), 163 deletions(-)
+
 diff --git a/meson.build b/meson.build
-index 51a4fce0ae570abb77c40c94fce4f12c4a7bd753..b95eeb9e50ff6042f1e751abba3228d0f1bb8f84 100644
+index ab8bf5ca3..313dec6c2 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -364,6 +364,7 @@ gst_deps_def = {
+@@ -361,6 +361,7 @@ gst_deps_def = {
  }
  
  gst_dep = []
@@ -10,7 +24,7 @@ index 51a4fce0ae570abb77c40c94fce4f12c4a7bd753..b95eeb9e50ff6042f1e751abba3228d0
  foreach depname, kwargs: gst_deps_def
    dep = dependency(depname, required: gst_option, kwargs: kwargs)
    summary({depname: dep.found()}, bool_yn: true, section: 'GStreamer modules')
-@@ -376,6 +377,10 @@ foreach depname, kwargs: gst_deps_def
+@@ -373,6 +374,10 @@ foreach depname, kwargs: gst_deps_def
      break
    endif
    gst_dep += [dep]
@@ -21,7 +35,7 @@ index 51a4fce0ae570abb77c40c94fce4f12c4a7bd753..b95eeb9e50ff6042f1e751abba3228d0
  endforeach
  
  # This code relies on the array being empty if any dependency was not found
-@@ -384,6 +389,9 @@ summary({'gstreamer-device-provider': gst_dp_found}, bool_yn: true, section: 'Ba
+@@ -381,6 +386,9 @@ summary({'gstreamer-device-provider': gst_dp_found}, bool_yn: true, section: 'Ba
  
  cdata.set('HAVE_GSTREAMER_DEVICE_PROVIDER', get_option('gstreamer-device-provider').allowed())
  
@@ -32,7 +46,7 @@ index 51a4fce0ae570abb77c40c94fce4f12c4a7bd753..b95eeb9e50ff6042f1e751abba3228d0
    version : ['>= 1.2' ],
    required : false)
 diff --git a/src/gst/gstpipewireformat.c b/src/gst/gstpipewireformat.c
-index c4c61345433b8a7bb7d1281622b31400ecb9132d..6e71b4855ad5a9237c0cdf9265c01888788f650d 100644
+index b16f7b1cf..ff1752a06 100644
 --- a/src/gst/gstpipewireformat.c
 +++ b/src/gst/gstpipewireformat.c
 @@ -2,6 +2,8 @@
@@ -744,7 +758,7 @@ index c4c61345433b8a7bb7d1281622b31400ecb9132d..6e71b4855ad5a9237c0cdf9265c01888
      }
      else if (media_subtype == SPA_MEDIA_SUBTYPE_mjpg) {
 diff --git a/src/gst/gstpipewireformat.h b/src/gst/gstpipewireformat.h
-index d82dbee20cef333fbb986924a77f950abbbc1432..abd45c4e9bbbeb2cfa6080e23187585d42f71541 100644
+index d82dbee20..abd45c4e9 100644
 --- a/src/gst/gstpipewireformat.h
 +++ b/src/gst/gstpipewireformat.h
 @@ -11,9 +11,7 @@
@@ -759,10 +773,10 @@ index d82dbee20cef333fbb986924a77f950abbbc1432..abd45c4e9bbbeb2cfa6080e23187585d
  GstCaps *        gst_caps_from_format    (const struct spa_pod *format);
  
 diff --git a/src/gst/gstpipewiresink.c b/src/gst/gstpipewiresink.c
-index 11ede14331e508972ff4f0710c93e31a75a9176b..fa66f024b89a6a5c02f61a5e6285c4874e2a5b93 100644
+index 8a6541615..2f3ec9b8b 100644
 --- a/src/gst/gstpipewiresink.c
 +++ b/src/gst/gstpipewiresink.c
-@@ -570,7 +570,7 @@ gst_pipewire_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
+@@ -575,7 +575,7 @@ gst_pipewire_sink_setcaps (GstBaseSink * bsink, GstCaps * caps)
  
    pwsink = GST_PIPEWIRE_SINK (bsink);
  
@@ -772,7 +786,7 @@ index 11ede14331e508972ff4f0710c93e31a75a9176b..fa66f024b89a6a5c02f61a5e6285c487
    pw_thread_loop_lock (pwsink->core->loop);
    state = pw_stream_get_state (pwsink->stream, &error);
 diff --git a/src/gst/gstpipewiresrc.c b/src/gst/gstpipewiresrc.c
-index 0a8ffd761479d19ba2a621e2f240fc69f83cdeb6..71e376aea06273abc9b0df87b487a131e8257e9f 100644
+index a66ef964b..f96da74ba 100644
 --- a/src/gst/gstpipewiresrc.c
 +++ b/src/gst/gstpipewiresrc.c
 @@ -15,7 +15,6 @@
@@ -783,16 +797,16 @@ index 0a8ffd761479d19ba2a621e2f240fc69f83cdeb6..71e376aea06273abc9b0df87b487a131
  #include "gstpipewiresrc.h"
  #include "gstpipewireformat.h"
  
-@@ -851,7 +850,7 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
-   GST_DEBUG_OBJECT (basesrc, "have common caps: %" GST_PTR_FORMAT, caps);
+@@ -869,7 +868,7 @@ gst_pipewire_src_negotiate (GstBaseSrc * basesrc)
+   }
  
    /* open a connection with these caps */
--  possible = gst_caps_to_format_all (caps, SPA_PARAM_EnumFormat);
-+  possible = gst_caps_to_format_all (caps);
-   gst_caps_unref (caps);
+-  possible = gst_caps_to_format_all (possible_caps, SPA_PARAM_EnumFormat);
++  possible = gst_caps_to_format_all (possible_caps);
  
    /* first disconnect */
-@@ -1008,13 +1007,39 @@ on_param_changed (void *data, uint32_t id,
+   pw_thread_loop_lock (pwsrc->core->loop);
+@@ -1013,13 +1012,39 @@ on_param_changed (void *data, uint32_t id,
            gst_caps_unref(pwsrc->caps);
    pwsrc->caps = gst_caps_from_format (param);
  
@@ -837,7 +851,7 @@ index 0a8ffd761479d19ba2a621e2f240fc69f83cdeb6..71e376aea06273abc9b0df87b487a131
      const struct spa_pod *params[4];
      struct spa_pod_builder b = { NULL };
      uint8_t buffer[512];
-@@ -1022,12 +1047,7 @@ on_param_changed (void *data, uint32_t id,
+@@ -1027,12 +1052,7 @@ on_param_changed (void *data, uint32_t id,
      int buffertypes;
  
      buffertypes = (1<<SPA_DATA_DmaBuf);
@@ -852,7 +866,7 @@ index 0a8ffd761479d19ba2a621e2f240fc69f83cdeb6..71e376aea06273abc9b0df87b487a131
      }
  
 diff --git a/src/gst/gstpipewiresrc.h b/src/gst/gstpipewiresrc.h
-index 97f636fb301fb8096198edb02a5220ec38edaaaa..0a61853f50ec10c430755e339b847905b2a880bd 100644
+index 97f636fb3..0a61853f5 100644
 --- a/src/gst/gstpipewiresrc.h
 +++ b/src/gst/gstpipewiresrc.h
 @@ -5,6 +5,8 @@
