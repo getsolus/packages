@@ -1,0 +1,591 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sat, 11 May 2024 19:39:52 -0500
+Subject: [PATCH] legacy: Add handler for bin-merge consistency
+
+Add a handler that iterates over a statically defined list of paths and creates the corresponding symlink if the destination exists but the symlink doesn't. This fixes potential consistency issues from rolling back the bin-merge.
+
+Temporary as this will be removed once the usr-merge epoch is complete.
+
+Signed-off-by: Reilly Brogan <reilly@reillybrogan.com>
+---
+ src/context.c            |   1 +
+ src/handlers.h           |   1 +
+ src/handlers/fix-merge.c | 531 +++++++++++++++++++++++++++++++++++++++
+ src/meson.build          |   1 +
+ 4 files changed, 534 insertions(+)
+ create mode 100644 src/handlers/fix-merge.c
+
+diff --git a/src/context.c b/src/context.c
+index 70d9c9f..986813a 100644
+--- a/src/context.c
++++ b/src/context.c
+@@ -91,6 +91,7 @@ static const UscHandler *usc_handlers[] = {
+ 
+         /* Special cases */
+         &usc_handler_mandb,
++        &usc_handler_merge,
+         &usc_handler_ssl_certs,
+ 
+ #ifdef HAVE_MONO_CERTS
+diff --git a/src/handlers.h b/src/handlers.h
+index d708911..4c4ff40 100644
+--- a/src/handlers.h
++++ b/src/handlers.h
+@@ -64,6 +64,7 @@ extern UscHandler usc_handler_gtk2_immodules;
+ extern UscHandler usc_handler_gtk3_immodules;
+ 
+ extern UscHandler usc_handler_mandb;
++extern UscHandler usc_handler_merge;
+ extern UscHandler usc_handler_ssl_certs;
+ 
+ #ifdef HAVE_MONO_CERTS
+diff --git a/src/handlers/fix-merge.c b/src/handlers/fix-merge.c
+new file mode 100644
+index 0000000..aba5bb9
+--- /dev/null
++++ b/src/handlers/fix-merge.c
+@@ -0,0 +1,531 @@
++/*
++ * This file is part of usysconf.
++ *
++ * Copyright © 2017-2019 Solus Project
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ */
++
++#define _GNU_SOURCE
++
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h> 
++#include <string.h>
++#include <sys/stat.h>
++#include <unistd.h>
++
++#include "context.h"
++#include "files.h"
++#include "util.h"
++
++static const char *usyconf_path[] = {
++        /* Match the usysconf binary so we trigger on updates to the usysconf package itself */
++        "/usr/sbin/usysconf",
++};
++
++struct link_path {
++    char *source;
++    char *destination;
++};
++
++/* The full list of symlinks that should exist and their destinations */
++static const struct link_path bin_paths[] = {
++        {"/bin/arch", "/usr/bin/arch"},
++        {"/bin/attr", "/usr/bin/attr"},
++        {"/bin/aulast", "/usr/bin/aulast"},
++        {"/bin/aulastlog", "/usr/bin/aulastlog"},
++        {"/bin/ausyscall", "/usr/bin/ausyscall"},
++        {"/bin/basename", "/usr/bin/basename"},
++        {"/bin/bash", "/usr/bin/bash"},
++        {"/bin/bunzip2", "/usr/bin/bzip2"},
++        {"/bin/bzcat", "/usr/bin/bzip2"},
++        {"/bin/bzcmp", "/usr/bin/bzdiff"},
++        {"/bin/bzdiff", "/usr/bin/bzdiff"},
++        {"/bin/bzegrep", "/usr/bin/bzgrep"},
++        {"/bin/bzfgrep", "/usr/bin/bzgrep"},
++        {"/bin/bzgrep", "/usr/bin/bzgrep"},
++        {"/bin/bzip2", "/usr/bin/bzip2"},
++        {"/bin/bzip2recover", "/usr/bin/bzip2recover"},
++        {"/bin/bzless", "/usr/bin/bzmore"},
++        {"/bin/bzmore", "/usr/bin/bzmore"},
++        {"/bin/cal", "/usr/bin/cal"},
++        {"/bin/cat", "/usr/bin/cat"},
++        {"/bin/chacl", "/usr/bin/chacl"},
++        {"/bin/chage", "/usr/bin/chage"},
++        {"/bin/chattr", "/usr/bin/chattr"},
++        {"/bin/chfn", "/usr/bin/chfn"},
++        {"/bin/chgrp", "/usr/bin/chgrp"},
++        {"/bin/chmem", "/usr/bin/chmem"},
++        {"/bin/chmod", "/usr/bin/chmod"},
++        {"/bin/choom", "/usr/bin/choom"},
++        {"/bin/chown", "/usr/bin/chown"},
++        {"/bin/chrt", "/usr/bin/chrt"},
++        {"/bin/chsh", "/usr/bin/chsh"},
++        {"/bin/cifscreds", "/usr/bin/cifscreds"},
++        {"/bin/col", "/usr/bin/col"},
++        {"/bin/colcrt", "/usr/bin/colcrt"},
++        {"/bin/colrm", "/usr/bin/colrm"},
++        {"/bin/column", "/usr/bin/column"},
++        {"/bin/compile_et", "/usr/bin/compile_et"},
++        {"/bin/cp", "/usr/bin/cp"},
++        {"/bin/cpio", "/usr/bin/cpio"},
++        {"/bin/cut", "/usr/bin/cut"},
++        {"/bin/dash", "/usr/bin/dash"},
++        {"/bin/date", "/usr/bin/date"},
++        {"/bin/dd", "/usr/bin/dd"},
++        {"/bin/df", "/usr/bin/df"},
++        {"/bin/dir", "/usr/bin/dir"},
++        {"/bin/dmesg", "/usr/bin/dmesg"},
++        {"/bin/echo", "/usr/bin/echo"},
++        {"/bin/egrep", "/usr/bin/egrep"},
++        {"/bin/eject", "/usr/bin/eject"},
++        {"/bin/enosys", "/usr/bin/enosys"},
++        {"/bin/env", "/usr/bin/env"},
++        {"/bin/exch", "/usr/bin/exch"},
++        {"/bin/expiry", "/usr/bin/expiry"},
++        {"/bin/fadvise", "/usr/bin/fadvise"},
++        {"/bin/fallocate", "/usr/bin/fallocate"},
++        {"/bin/false", "/usr/bin/false"},
++        {"/bin/fgrep", "/usr/bin/fgrep"},
++        {"/bin/fincore", "/usr/bin/fincore"},
++        {"/bin/findmnt", "/usr/bin/findmnt"},
++        {"/bin/flock", "/usr/bin/flock"},
++        {"/bin/getcifsacl", "/usr/bin/getcifsacl"},
++        {"/bin/getfacl", "/usr/bin/getfacl"},
++        {"/bin/getfattr", "/usr/bin/getfattr"},
++        {"/bin/getopt", "/usr/bin/getopt"},
++        {"/bin/getsubids", "/usr/bin/getsubids"},
++        {"/bin/gpasswd", "/usr/bin/gpasswd"},
++        {"/bin/grep", "/usr/bin/grep"},
++        {"/bin/hardlink", "/usr/bin/hardlink"},
++        {"/bin/hexdump", "/usr/bin/hexdump"},
++        {"/bin/i386", "/usr/bin/setarch"},
++        {"/bin/ionice", "/usr/bin/ionice"},
++        {"/bin/ipcmk", "/usr/bin/ipcmk"},
++        {"/bin/ipcrm", "/usr/bin/ipcrm"},
++        {"/bin/ipcs", "/usr/bin/ipcs"},
++        {"/bin/iptables-xml", "/usr/sbin/xtables-nft-multi"},
++        {"/bin/irqtop", "/usr/bin/irqtop"},
++        {"/bin/isosize", "/usr/bin/isosize"},
++        {"/bin/kill", "/usr/bin/kill"},
++        {"/bin/kmod", "/usr/bin/kmod"},
++        {"/bin/last", "/usr/bin/last"},
++        {"/bin/lastb", "/usr/bin/last"},
++        {"/bin/lastlog2", "/usr/bin/lastlog2"},
++        {"/bin/line", "/usr/bin/line"},
++        {"/bin/link", "/usr/bin/link"},
++        {"/bin/linux32", "/usr/bin/setarch"},
++        {"/bin/linux64", "/usr/bin/setarch"},
++        {"/bin/ln", "/usr/bin/ln"},
++        {"/bin/logger", "/usr/bin/logger"},
++        {"/bin/login", "/usr/bin/login"},
++        {"/bin/look", "/usr/bin/look"},
++        {"/bin/lowntfs-3g", "/usr/bin/lowntfs-3g"},
++        {"/bin/ls", "/usr/bin/ls"},
++        {"/bin/lsattr", "/usr/bin/lsattr"},
++        {"/bin/lsblk", "/usr/bin/lsblk"},
++        {"/bin/lsclocks", "/usr/bin/lsclocks"},
++        {"/bin/lscpu", "/usr/bin/lscpu"},
++        {"/bin/lsfd", "/usr/bin/lsfd"},
++        {"/bin/lsipc", "/usr/bin/lsipc"},
++        {"/bin/lsirq", "/usr/bin/lsirq"},
++        {"/bin/lslocks", "/usr/bin/lslocks"},
++        {"/bin/lslogins", "/usr/bin/lslogins"},
++        {"/bin/lsmem", "/usr/bin/lsmem"},
++        {"/bin/lsns", "/usr/bin/lsns"},
++        {"/bin/mcookie", "/usr/bin/mcookie"},
++        {"/bin/mesg", "/usr/bin/mesg"},
++        {"/bin/mk_cmds", "/usr/bin/mk_cmds"},
++        {"/bin/mkdir", "/usr/bin/mkdir"},
++        {"/bin/mknod", "/usr/bin/mknod"},
++        {"/bin/mktemp", "/usr/bin/mktemp"},
++        {"/bin/more", "/usr/bin/more"},
++        {"/bin/mount", "/usr/bin/mount"},
++        {"/bin/mountpoint", "/usr/bin/mountpoint"},
++        {"/bin/mt", "/usr/bin/mt"},
++        {"/bin/mv", "/usr/bin/mv"},
++        {"/bin/namei", "/usr/bin/namei"},
++        {"/bin/newgidmap", "/usr/bin/newgidmap"},
++        {"/bin/newgrp", "/usr/bin/newgrp"},
++        {"/bin/newuidmap", "/usr/bin/newuidmap"},
++        {"/bin/nice", "/usr/bin/nice"},
++        {"/bin/nsenter", "/usr/bin/nsenter"},
++        {"/bin/ntfs-3g", "/usr/bin/ntfs-3g"},
++        {"/bin/ntfs-3g.probe", "/usr/bin/ntfs-3g.probe"},
++        {"/bin/ntfscat", "/usr/bin/ntfscat"},
++        {"/bin/ntfscluster", "/usr/bin/ntfscluster"},
++        {"/bin/ntfscmp", "/usr/bin/ntfscmp"},
++        {"/bin/ntfsdecrypt", "/usr/bin/ntfsdecrypt"},
++        {"/bin/ntfsfix", "/usr/bin/ntfsfix"},
++        {"/bin/ntfsinfo", "/usr/bin/ntfsinfo"},
++        {"/bin/ntfsls", "/usr/bin/ntfsls"},
++        {"/bin/ntfsrecover", "/usr/bin/ntfsrecover"},
++        {"/bin/ntfssecaudit", "/usr/bin/ntfssecaudit"},
++        {"/bin/ntfstruncate", "/usr/bin/ntfstruncate"},
++        {"/bin/ntfsusermap", "/usr/bin/ntfsusermap"},
++        {"/bin/ntfswipe", "/usr/bin/ntfswipe"},
++        {"/bin/ocamlbuild", "/usr/bin/ocamlbuild"},
++        {"/bin/ocamlbuild.byte", "/usr/bin/ocamlbuild.byte"},
++        {"/bin/ocamlbuild.native", "/usr/bin/ocamlbuild.native"},
++        {"/bin/passwd", "/usr/bin/passwd"},
++        {"/bin/pg", "/usr/bin/pg"},
++        {"/bin/pipesz", "/usr/bin/pipesz"},
++        {"/bin/prlimit", "/usr/bin/prlimit"},
++        {"/bin/pwd", "/usr/bin/pwd"},
++        {"/bin/readlink", "/usr/bin/readlink"},
++        {"/bin/rename", "/usr/bin/rename"},
++        {"/bin/renice", "/usr/bin/renice"},
++        {"/bin/rev", "/usr/bin/rev"},
++        {"/bin/rm", "/usr/bin/rm"},
++        {"/bin/rmdir", "/usr/bin/rmdir"},
++        {"/bin/script", "/usr/bin/script"},
++        {"/bin/scriptlive", "/usr/bin/scriptlive"},
++        {"/bin/scriptreplay", "/usr/bin/scriptreplay"},
++        {"/bin/sed", "/usr/bin/sed"},
++        {"/bin/setarch", "/usr/bin/setarch"},
++        {"/bin/setcifsacl", "/usr/bin/setcifsacl"},
++        {"/bin/setfacl", "/usr/bin/setfacl"},
++        {"/bin/setfattr", "/usr/bin/setfattr"},
++        {"/bin/setpgid", "/usr/bin/setpgid"},
++        {"/bin/setpriv", "/usr/bin/setpriv"},
++        {"/bin/setsid", "/usr/bin/setsid"},
++        {"/bin/setterm", "/usr/bin/setterm"},
++        {"/bin/sg", "/usr/bin/newgrp"},
++        {"/bin/sh", "/usr/bin/bash"},
++        {"/bin/sleep", "/usr/bin/sleep"},
++        {"/bin/smb2-quota", "/usr/bin/smb2-quota"},
++        {"/bin/smbinfo", "/usr/bin/smbinfo"},
++        {"/bin/sort", "/usr/bin/sort"},
++        {"/bin/stty", "/usr/bin/stty"},
++        {"/bin/su", "/usr/bin/su"},
++        {"/bin/sync", "/usr/bin/sync"},
++        {"/bin/systemctl", "/usr/bin/systemctl"},
++        {"/bin/systemd", "/usr/lib/systemd/systemd"},
++        {"/bin/tar", "/usr/bin/tar"},
++        {"/bin/taskset", "/usr/bin/taskset"},
++        {"/bin/tcsh", "/usr/bin/tcsh"},
++        {"/bin/touch", "/usr/bin/touch"},
++        {"/bin/true", "/usr/bin/true"},
++        {"/bin/uclampset", "/usr/bin/uclampset"},
++        {"/bin/ul", "/usr/bin/ul"},
++        {"/bin/umount", "/usr/bin/umount"},
++        {"/bin/uname", "/usr/bin/uname"},
++        {"/bin/uname26", "/usr/bin/setarch"},
++        {"/bin/unlink", "/usr/bin/unlink"},
++        {"/bin/unshare", "/usr/bin/unshare"},
++        {"/bin/utmpdump", "/usr/bin/utmpdump"},
++        {"/bin/uuidgen", "/usr/bin/uuidgen"},
++        {"/bin/uuidparse", "/usr/bin/uuidparse"},
++        {"/bin/vdir", "/usr/bin/vdir"},
++        {"/bin/vigr", "/usr/bin/vipw"},
++        {"/bin/vipw", "/usr/bin/vipw"},
++        {"/bin/waitpid", "/usr/bin/waitpid"},
++        {"/bin/wall", "/usr/bin/wall"},
++        {"/bin/wdctl", "/usr/bin/wdctl"},
++        {"/bin/whereis", "/usr/bin/whereis"},
++        {"/bin/write", "/usr/bin/write"},
++        {"/bin/x86_64", "/usr/bin/setarch"},
++        {"/bin/zsh", "/usr/bin/zsh"},
++        {"/bin/zsh-5.9", "/usr/bin/zsh-5.9"},
++};
++
++/* The full list of sbin symlinks that should exist and their destinations */
++static const struct link_path sbin_paths[] = {
++        {"/sbin/addpart", "/usr/sbin/addpart"},
++        {"/sbin/agetty", "/usr/sbin/agetty"},
++        {"/sbin/apparmor_parser", "/usr/sbin/apparmor_parser"},
++        {"/sbin/arpd", "/usr/sbin/arpd"},
++        {"/sbin/arptables", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/arptables-nft", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/arptables-nft-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/arptables-nft-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/arptables-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/arptables-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/audisp-af_unix", "/usr/sbin/audisp-af_unix"},
++        {"/sbin/audisp-filter", "/usr/sbin/audisp-filter"},
++        {"/sbin/audisp-remote", "/usr/sbin/audisp-remote"},
++        {"/sbin/audisp-syslog", "/usr/sbin/audisp-syslog"},
++        {"/sbin/auditctl", "/usr/sbin/auditctl"},
++        {"/sbin/auditd", "/usr/sbin/auditd"},
++        {"/sbin/augenrules", "/usr/sbin/augenrules"},
++        {"/sbin/aureport", "/usr/sbin/aureport"},
++        {"/sbin/ausearch", "/usr/sbin/ausearch"},
++        {"/sbin/badblocks", "/usr/sbin/badblocks"},
++        {"/sbin/blkdiscard", "/usr/sbin/blkdiscard"},
++        {"/sbin/blkid", "/usr/sbin/blkid"},
++        {"/sbin/blkmapd", "/usr/sbin/blkmapd"},
++        {"/sbin/blkpr", "/usr/sbin/blkpr"},
++        {"/sbin/blkzone", "/usr/sbin/blkzone"},
++        {"/sbin/blockdev", "/usr/sbin/blockdev"},
++        {"/sbin/bridge", "/usr/sbin/bridge"},
++        {"/sbin/cfdisk", "/usr/sbin/cfdisk"},
++        {"/sbin/chcpu", "/usr/sbin/chcpu"},
++        {"/sbin/chgpasswd", "/usr/sbin/chgpasswd"},
++        {"/sbin/chpasswd", "/usr/sbin/chpasswd"},
++        {"/sbin/cifs.idmap", "/usr/sbin/cifs.idmap"},
++        {"/sbin/cifs.upcall", "/usr/sbin/cifs.upcall"},
++        {"/sbin/ctrlaltdel", "/usr/sbin/ctrlaltdel"},
++        {"/sbin/ctstat", "/usr/sbin/lnstat"},
++        {"/sbin/debugfs", "/usr/sbin/debugfs"},
++        {"/sbin/delpart", "/usr/sbin/delpart"},
++        {"/sbin/depmod", "/usr/bin/kmod"},
++        {"/sbin/dumpe2fs", "/usr/sbin/dumpe2fs"},
++        {"/sbin/e2freefrag", "/usr/sbin/e2freefrag"},
++        {"/sbin/e2fsck", "/usr/sbin/e2fsck"},
++        {"/sbin/e2image", "/usr/sbin/e2image"},
++        {"/sbin/e2label", "/usr/sbin/e2label"},
++        {"/sbin/e2mmpstatus", "/usr/sbin/e2mmpstatus"},
++        {"/sbin/e2scrub", "/usr/sbin/e2scrub"},
++        {"/sbin/e2scrub_all", "/usr/sbin/e2scrub_all"},
++        {"/sbin/e2undo", "/usr/sbin/e2undo"},
++        {"/sbin/e4crypt", "/usr/sbin/e4crypt"},
++        {"/sbin/e4defrag", "/usr/sbin/e4defrag"},
++        {"/sbin/eapol_test", "/usr/sbin/eapol_test"},
++        {"/sbin/ebtables", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-nft", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-nft-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-nft-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ebtables-translate", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/exportfs", "/usr/sbin/exportfs"},
++        {"/sbin/fdisk", "/usr/sbin/fdisk"},
++        {"/sbin/filefrag", "/usr/sbin/filefrag"},
++        {"/sbin/findfs", "/usr/sbin/findfs"},
++        {"/sbin/fsck", "/usr/sbin/fsck"},
++        {"/sbin/fsck.cramfs", "/usr/sbin/fsck.cramfs"},
++        {"/sbin/fsck.ext2", "/usr/sbin/fsck.ext2"},
++        {"/sbin/fsck.ext3", "/usr/sbin/fsck.ext3"},
++        {"/sbin/fsck.ext4", "/usr/sbin/fsck.ext4"},
++        {"/sbin/fsck.minix", "/usr/sbin/fsck.minix"},
++        {"/sbin/fsfreeze", "/usr/sbin/fsfreeze"},
++        {"/sbin/fsidd", "/usr/sbin/fsidd"},
++        {"/sbin/fstrim", "/usr/sbin/fstrim"},
++        {"/sbin/genl", "/usr/sbin/genl"},
++        {"/sbin/groupadd", "/usr/sbin/groupadd"},
++        {"/sbin/groupdel", "/usr/sbin/groupdel"},
++        {"/sbin/groupmems", "/usr/sbin/groupmems"},
++        {"/sbin/groupmod", "/usr/sbin/groupmod"},
++        {"/sbin/grpck", "/usr/sbin/grpck"},
++        {"/sbin/grpconv", "/usr/sbin/grpconv"},
++        {"/sbin/grpunconv", "/usr/sbin/grpunconv"},
++        {"/sbin/halt", "/usr/bin/systemctl"},
++        {"/sbin/hwclock", "/usr/sbin/hwclock"},
++        {"/sbin/ifstat", "/usr/sbin/ifstat"},
++        {"/sbin/init", "/usr/lib/systemd/systemd"},
++        {"/sbin/insmod", "/usr/bin/kmod"},
++        {"/sbin/ip", "/usr/sbin/ip"},
++        {"/sbin/ip6tables", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-apply", "/usr/sbin/iptables-apply"},
++        {"/sbin/ip6tables-legacy", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/ip6tables-legacy-restore", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/ip6tables-legacy-save", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/ip6tables-nft", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-nft-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-nft-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-restore-translate", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ip6tables-translate", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-apply", "/usr/sbin/iptables-apply"},
++        {"/sbin/iptables-legacy", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/iptables-legacy-restore", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/iptables-legacy-save", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/iptables-nft", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-nft-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-nft-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-restore", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-restore-translate", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-save", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/iptables-translate", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/ldattach", "/usr/sbin/ldattach"},
++        {"/sbin/ldconfig", "/usr/sbin/ldconfig"},
++        {"/sbin/lnstat", "/usr/sbin/lnstat"},
++        {"/sbin/logsave", "/usr/sbin/logsave"},
++        {"/sbin/losetup", "/usr/sbin/losetup"},
++        {"/sbin/lsmod", "/usr/bin/kmod"},
++        {"/sbin/mdadm", "/usr/sbin/mdadm"},
++        {"/sbin/mdmon", "/usr/sbin/mdmon"},
++        {"/sbin/mke2fs", "/usr/sbin/mke2fs"},
++        {"/sbin/mkfs", "/usr/sbin/mkfs"},
++        {"/sbin/mkfs.bfs", "/usr/sbin/mkfs.bfs"},
++        {"/sbin/mkfs.cramfs", "/usr/sbin/mkfs.cramfs"},
++        {"/sbin/mkfs.ext2", "/usr/sbin/mkfs.ext2"},
++        {"/sbin/mkfs.ext3", "/usr/sbin/mkfs.ext3"},
++        {"/sbin/mkfs.ext4", "/usr/sbin/mkfs.ext4"},
++        {"/sbin/mkfs.minix", "/usr/sbin/mkfs.minix"},
++        {"/sbin/mkfs.ntfs", "/usr/sbin/mkntfs"},
++        {"/sbin/mklost+found", "/usr/sbin/mklost+found"},
++        {"/sbin/mkntfs", "/usr/sbin/mkntfs"},
++        {"/sbin/mkswap", "/usr/sbin/mkswap"},
++        {"/sbin/modinfo", "/usr/bin/kmod"},
++        {"/sbin/modprobe", "/usr/bin/kmod"},
++        {"/sbin/mount.cifs", "/usr/sbin/mount.cifs"},
++        {"/sbin/mount.davfs", "/usr/sbin/mount.davfs"},
++        {"/sbin/mount.fuse", "/usr/sbin/mount.fuse"},
++        {"/sbin/mount.lowntfs-3g", "/usr/bin/lowntfs-3g"},
++        {"/sbin/mount.nfs", "/usr/sbin/mount.nfs"},
++        {"/sbin/mount.nfs4", "/usr/sbin/mount.nfs"},
++        {"/sbin/mount.ntfs", "/usr/bin/ntfs-3g"},
++        {"/sbin/mount.ntfs-3g", "/usr/bin/ntfs-3g"},
++        {"/sbin/mount.smb3", "/usr/sbin/mount.cifs"},
++        {"/sbin/mountstats", "/usr/sbin/mountstats"},
++        {"/sbin/newusers", "/usr/sbin/newusers"},
++        {"/sbin/nfnl_osf", "/usr/sbin/nfnl_osf"},
++        {"/sbin/nfsconf", "/usr/sbin/nfsconf"},
++        {"/sbin/nfsdcld", "/usr/sbin/nfsdcld"},
++        {"/sbin/nfsdclddb", "/usr/sbin/nfsdclddb"},
++        {"/sbin/nfsdclnts", "/usr/sbin/nfsdclnts"},
++        {"/sbin/nfsdcltrack", "/usr/sbin/nfsdcltrack"},
++        {"/sbin/nfsidmap", "/usr/sbin/nfsidmap"},
++        {"/sbin/nfsiostat", "/usr/sbin/nfsiostat"},
++        {"/sbin/nfsstat", "/usr/sbin/nfsstat"},
++        {"/sbin/nologin", "/usr/sbin/nologin"},
++        {"/sbin/nstat", "/usr/sbin/nstat"},
++        {"/sbin/ntfsclone", "/usr/sbin/ntfsclone"},
++        {"/sbin/ntfscp", "/usr/sbin/ntfscp"},
++        {"/sbin/ntfslabel", "/usr/sbin/ntfslabel"},
++        {"/sbin/ntfsresize", "/usr/sbin/ntfsresize"},
++        {"/sbin/ntfsundelete", "/usr/sbin/ntfsundelete"},
++        {"/sbin/partx", "/usr/sbin/partx"},
++        {"/sbin/pivot_root", "/usr/sbin/pivot_root"},
++        {"/sbin/poweroff", "/usr/bin/systemctl"},
++        {"/sbin/pwck", "/usr/sbin/pwck"},
++        {"/sbin/pwconv", "/usr/sbin/pwconv"},
++        {"/sbin/pwunconv", "/usr/sbin/pwunconv"},
++        {"/sbin/readprofile", "/usr/sbin/readprofile"},
++        {"/sbin/reboot", "/usr/bin/systemctl"},
++        {"/sbin/resize2fs", "/usr/sbin/resize2fs"},
++        {"/sbin/resizepart", "/usr/sbin/resizepart"},
++        {"/sbin/rfkill", "/usr/sbin/rfkill"},
++        {"/sbin/rmmod", "/usr/bin/kmod"},
++        {"/sbin/routel", "/usr/sbin/routel"},
++        {"/sbin/rpcctl", "/usr/sbin/rpcctl"},
++        {"/sbin/rpcdebug", "/usr/sbin/rpcdebug"},
++        {"/sbin/rpc.gssd", "/usr/sbin/rpc.gssd"},
++        {"/sbin/rpc.idmapd", "/usr/sbin/rpc.idmapd"},
++        {"/sbin/rpc.mountd", "/usr/sbin/rpc.mountd"},
++        {"/sbin/rpc.nfsd", "/usr/sbin/rpc.nfsd"},
++        {"/sbin/rpc.statd", "/usr/sbin/rpc.statd"},
++        {"/sbin/rpc.svcgssd", "/usr/sbin/rpc.svcgssd"},
++        {"/sbin/rtacct", "/usr/sbin/rtacct"},
++        {"/sbin/rtcwake", "/usr/sbin/rtcwake"},
++        {"/sbin/rtmon", "/usr/sbin/rtmon"},
++        {"/sbin/rtstat", "/usr/sbin/lnstat"},
++        {"/sbin/runuser", "/usr/sbin/runuser"},
++        {"/sbin/sfdisk", "/usr/sbin/sfdisk"},
++        {"/sbin/showmount", "/usr/sbin/showmount"},
++        {"/sbin/shutdown", "/usr/bin/systemctl"},
++        {"/sbin/sln", "/usr/sbin/sln"},
++        {"/sbin/sm-notify", "/usr/sbin/sm-notify"},
++        {"/sbin/ss", "/usr/sbin/ss"},
++        {"/sbin/start-statd", "/usr/sbin/start-statd"},
++        {"/sbin/sulogin", "/usr/sbin/sulogin"},
++        {"/sbin/swaplabel", "/usr/sbin/swaplabel"},
++        {"/sbin/swapoff", "/usr/sbin/swapoff"},
++        {"/sbin/swapon", "/usr/sbin/swapon"},
++        {"/sbin/switch_root", "/usr/sbin/switch_root"},
++        {"/sbin/tc", "/usr/sbin/tc"},
++        {"/sbin/tune2fs", "/usr/sbin/tune2fs"},
++        {"/sbin/tunelp", "/usr/sbin/tunelp"},
++        {"/sbin/udevadm", "/usr/bin/udevadm"},
++        {"/sbin/umount.davfs", "/usr/sbin/umount.davfs"},
++        {"/sbin/umount.nfs", "/usr/sbin/mount.nfs"},
++        {"/sbin/umount.nfs4", "/usr/sbin/mount.nfs"},
++        {"/sbin/useradd", "/usr/sbin/useradd"},
++        {"/sbin/userdel", "/usr/sbin/userdel"},
++        {"/sbin/usermod", "/usr/sbin/usermod"},
++        {"/sbin/uuidd", "/usr/sbin/uuidd"},
++        {"/sbin/wipefs", "/usr/sbin/wipefs"},
++        {"/sbin/wpa_cli", "/usr/sbin/wpa_cli"},
++        {"/sbin/wpa_passphrase", "/usr/sbin/wpa_passphrase"},
++        {"/sbin/wpa_supplicant", "/usr/sbin/wpa_supplicant"},
++        {"/sbin/xtables-legacy-multi", "/usr/sbin/xtables-legacy-multi"},
++        {"/sbin/xtables-monitor", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/xtables-nft-multi", "/usr/sbin/xtables-nft-multi"},
++        {"/sbin/zramctl", "/usr/sbin/zramctl"},
++};
++
++/**
++ * Make sure that the usr-merge rollback has correct symlinks in place
++ */
++static UscHandlerStatus usc_handler_merge_exec(UscContext *ctx, __usc_unused__ const char *path)
++{
++        struct stat lstat_result;
++
++        usc_context_emit_task_start(ctx, "Ensuring usr-merge consistency");
++        lstat ("/bin", &lstat_result);
++        if (! S_ISLNK(lstat_result.st_mode)) {
++            for(size_t i = 0; i < ARRAY_SIZE(bin_paths); i++)
++            {
++                struct stat s;
++                if (stat(bin_paths[i].source, &s) == -1)
++                {
++                    struct stat t;
++                    if (stat(bin_paths[i].destination, &t) == 0)
++                    {
++                        char link_path[80] = "..";
++                        strcat(link_path, bin_paths[i].destination);
++                        int sl = symlink(link_path, bin_paths[i].source);
++                        if (sl != 0) {
++                            // Note that we're not stopping on failure, we want to try to create as many symlinks as we can
++                            fprintf(stderr, "Error creating link %s: %s\n", bin_paths[i].source, strerror(errno));
++                        }
++                    }
++                }
++            }
++        }
++
++        lstat ("/sbin", &lstat_result);
++        if (! S_ISLNK(lstat_result.st_mode)) {
++            for(size_t i = 0; i < ARRAY_SIZE(sbin_paths); i++)
++            {
++                struct stat s;
++                if (stat(sbin_paths[i].source, &s) == -1)
++                {
++                    struct stat t;
++                    if (stat(sbin_paths[i].destination, &t) == 0)
++                    {
++                        char link_path[80] = "..";
++                        strcat(link_path, sbin_paths[i].destination);
++                        int sl = symlink(link_path, sbin_paths[i].source);
++                        if (sl != 0) {
++                            // Note that we're not stopping on failure, we want to try to create as many symlinks as we can
++                            fprintf(stderr, "Error creating link %s: %s\n", sbin_paths[i].source, strerror(errno));
++                        }
++                    }
++                }
++            }
++        }
++
++        usc_context_emit_task_finish(ctx, USC_HANDLER_SUCCESS);
++        /* Only want to run once for all of our globs */
++        return USC_HANDLER_SUCCESS | USC_HANDLER_BREAK;
++}
++
++const UscHandler usc_handler_merge = {
++        .name = "usr-merge",
++        .description = "Ensuring usr-merge consistency",
++        .required_bin = "/usr/sbin/usysconf",
++        .exec = usc_handler_merge_exec,
++        .paths = usyconf_path,
++        .n_paths = ARRAY_SIZE(usyconf_path),
++};
++
++/*
++ * Editor modelines  -  https://www.wireshark.org/tools/modelines.html
++ *
++ * Local variables:
++ * c-basic-offset: 8
++ * tab-width: 8
++ * indent-tabs-mode: nil
++ * End:
++ *
++ * vi: set shiftwidth=8 tabstop=8 expandtab:
++ * :indentSize=8:tabSize=8:noTabs=true:
++ */
+diff --git a/src/meson.build b/src/meson.build
+index a92ebd9..3c1a4df 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -17,6 +17,7 @@ handlers = [
+     'ldconfig',
+     'hwdb',
+     'mandb',
++    'fix-merge',
+     'ssl',
+     'udev-rules',
+ ]
