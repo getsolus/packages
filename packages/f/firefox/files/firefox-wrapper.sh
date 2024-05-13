@@ -169,6 +169,13 @@ do
   esac
 done
 
+# We need to link Firefox with desktop file name
+if [ -z "$MOZ_APP_REMOTINGNAME" ]
+then
+  export MOZ_APP_REMOTINGNAME=firefox
+fi
+export MOZ_DBUS_APP_NAME=firefox
+
 # Don't throw "old profile" dialog box.
 export MOZ_ALLOW_DOWNGRADE=1
 
