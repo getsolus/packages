@@ -1,0 +1,256 @@
+From ac8645857e35b8ed162d7ad664928c075156664f Mon Sep 17 00:00:00 2001
+From: Guillem Jover <guillem@hadrons.org>
+Date: Fri, 1 Mar 2024 01:52:51 +0100
+Subject: [PATCH libaio 22/26] Add time64 public functions on 32-bit
+ architectures
+
+This adds new time64 functions for io_getevents() and io_pgetevents()
+that will get redirected when building with _TIME_BITS=64.
+
+Ideally we should generate the .map file and not include these symbols
+on 64-bit architectures, but this will do for now.
+
+Signed-off-by: Guillem Jover <guillem@hadrons.org>
+---
+ harness/Makefile                               |  2 +-
+ src/Makefile                                   |  3 ++-
+ src/compat-0_1.c                               |  7 +++++++
+ src/io_getevents.c                             |  7 +++++++
+ src/{io_getevents.c => io_getevents_time64.c}  | 14 +++++++-------
+ src/io_pgetevents.c                            |  7 +++++++
+ ...{io_pgetevents.c => io_pgetevents_time64.c} | 10 ++++++----
+ src/io_queue_wait.c                            |  7 +++++++
+ src/libaio.h                                   | 18 ++++++++++++++++++
+ src/libaio.map                                 |  6 ++++++
+ 10 files changed, 68 insertions(+), 13 deletions(-)
+ copy src/{io_getevents.c => io_getevents_time64.c} (80%)
+ copy src/{io_pgetevents.c => io_pgetevents_time64.c} (82%)
+
+diff --git a/harness/Makefile b/harness/Makefile
+index ae4e45e..3f97650 100644
+--- a/harness/Makefile
++++ b/harness/Makefile
+@@ -6,7 +6,7 @@ PROGS:=$(PARTPROGS) $(EXTRAPROGS)
+ HARNESS_SRCS:=main.c
+ # io_queue.c
+ 
+-MK_CPPFLAGS = -I../src $(CPPFLAGS)
++MK_CPPFLAGS = -I../src -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 $(CPPFLAGS)
+ CFLAGS ?= -Wall -Werror -g -O2
+ MK_CFLAGS = $(CFLAGS)
+ #-lpthread -lrt
+diff --git a/src/Makefile b/src/Makefile
+index da18e8c..e63e706 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -2,7 +2,7 @@ prefix ?= /usr
+ includedir ?= $(prefix)/include
+ libdir ?= $(prefix)/lib
+ 
+-MK_CPPFLAGS = -I. $(CPPFLAGS)
++MK_CPPFLAGS = -I. -D_FILE_OFFSET_BITS=64 -D_TIME_BITS=64 $(CPPFLAGS)
+ CFLAGS ?= -Wall -g -fomit-frame-pointer -O2
+ MK_CFLAGS = -fPIC $(CFLAGS)
+ SO_CFLAGS = -shared $(MK_CFLAGS)
+@@ -30,6 +30,7 @@ libaio_srcs += io_queue_wait.c io_queue_run.c
+ libaio_srcs += aio_pgetevents.c aio_getevents.c
+ libaio_srcs += io_getevents.c io_submit.c io_cancel.c
+ libaio_srcs += io_setup.c io_destroy.c io_pgetevents.c
++libaio_srcs += io_pgetevents_time64.c io_getevents_time64.c
+ 
+ # old symbols
+ libaio_srcs += compat-0_1.c
+diff --git a/src/compat-0_1.c b/src/compat-0_1.c
+index 25b789a..61df3b3 100644
+--- a/src/compat-0_1.c
++++ b/src/compat-0_1.c
+@@ -19,6 +19,13 @@
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++
++/*
++ * On 32-bit systems these were using 32-bit struct timespec, keep these
++ * backward compatibility functions that way.
++ */
++#undef _TIME_BITS
++
+ #include <stdlib.h>
+ #include <asm/errno.h>
+ 
+diff --git a/src/io_getevents.c b/src/io_getevents.c
+index c06e803..0b2d448 100644
+--- a/src/io_getevents.c
++++ b/src/io_getevents.c
+@@ -17,6 +17,13 @@
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++
++/*
++ * On 32-bit systems these were using 32-bit struct timespec, keep this
++ * backward compatibility function that way.
++ */
++#undef _TIME_BITS
++
+ #include <libaio.h>
+ #include <errno.h>
+ #include <stdlib.h>
+diff --git a/src/io_getevents.c b/src/io_getevents_time64.c
+similarity index 80%
+copy from src/io_getevents.c
+copy to src/io_getevents_time64.c
+index c06e803..942743d 100644
+--- a/src/io_getevents.c
++++ b/src/io_getevents_time64.c
+@@ -1,4 +1,4 @@
+-/* io_getevents.c
++/* io_getevents_time64.c
+    libaio Linux async I/O interface
+    Copyright 2002 Red Hat, Inc.
+    Copyright 2024 Guillem Jover <guillem@hadrons.org>
+@@ -24,14 +24,14 @@
+ #include "syscall.h"
+ #include "aio_time.h"
+ 
+-int io_getevents_0_4(io_context_t ctx, long min_nr, long nr,
++#if __BITS_PER_LONG == 32
++int io_getevents_time64(io_context_t ctx, long min_nr, long nr,
+ 		struct io_event * events, struct timespec * timeout)
+ {
+-	struct __kernel_timespec ts;
++	struct __kernel_timespec kts;
+ 
+ 	if (timeout)
+-		aio_get_timespec(&ts, timeout);
+-	return aio_getevents(ctx, min_nr, nr, events, timeout ? &ts : NULL);
++		aio_get_timespec(&kts, timeout);
++	return aio_getevents(ctx, min_nr, nr, events, timeout ? &kts : NULL);
+ }
+-
+-DEFSYMVER(io_getevents_0_4, io_getevents, 0.4);
++#endif
+diff --git a/src/io_pgetevents.c b/src/io_pgetevents.c
+index d960a05..50b8d1c 100644
+--- a/src/io_pgetevents.c
++++ b/src/io_pgetevents.c
+@@ -17,6 +17,13 @@
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++
++/*
++ * On 32-bit systems these were using 32-bit struct timespec, keep this
++ * backward compatibility function that way.
++ */
++#undef _TIME_BITS
++
+ #include <libaio.h>
+ #include <errno.h>
+ #include <stdlib.h>
+diff --git a/src/io_pgetevents.c b/src/io_pgetevents_time64.c
+similarity index 82%
+copy from src/io_pgetevents.c
+copy to src/io_pgetevents_time64.c
+index d960a05..55e4ad1 100644
+--- a/src/io_pgetevents.c
++++ b/src/io_pgetevents_time64.c
+@@ -24,14 +24,16 @@
+ #include <signal.h>
+ #include "aio_time.h"
+ 
+-int io_pgetevents(io_context_t ctx, long min_nr, long nr,
++#if __BITS_PER_LONG == 32
++int io_pgetevents_time64(io_context_t ctx, long min_nr, long nr,
+ 		struct io_event *events, struct timespec *timeout,
+ 		sigset_t *sigmask)
+ {
+-	struct __kernel_timespec ts;
++	struct __kernel_timespec kts;
+ 
+ 	if (timeout)
+-		aio_get_timespec(&ts, timeout);
+-	return aio_pgetevents(ctx, min_nr, nr, events, timeout ? &ts : NULL,
++		aio_get_timespec(&kts, timeout);
++	return aio_pgetevents(ctx, min_nr, nr, events, timeout ? &kts : NULL,
+ 			sigmask);
+ }
++#endif
+diff --git a/src/io_queue_wait.c b/src/io_queue_wait.c
+index b4bb236..fe89291 100644
+--- a/src/io_queue_wait.c
++++ b/src/io_queue_wait.c
+@@ -17,6 +17,13 @@
+    License along with this library; if not, write to the Free Software
+    Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
+  */
++
++/*
++ * On 32-bit systems these were using 32-bit struct timespec, keep this
++ * backward compatibility function that way.
++ */
++#undef _TIME_BITS
++
+ #define NO_SYSCALL_ERRNO
+ #include <sys/types.h>
+ #include <libaio.h>
+diff --git a/src/libaio.h b/src/libaio.h
+index 3304bf7..feeee37 100644
+--- a/src/libaio.h
++++ b/src/libaio.h
+@@ -27,6 +27,7 @@
+ extern "C" {
+ #endif
+ 
++#include <linux/types.h>
+ #include <sys/types.h>
+ #include <string.h>
+ #include <signal.h>
+@@ -50,6 +51,12 @@ typedef enum io_iocb_cmd {
+ 	IO_CMD_PWRITEV = 8,
+ } io_iocb_cmd_t;
+ 
++#define LIBAIO_STRING(x) #x
++
++#define LIBAIO_REDIRECT(name, proto, alias) name proto __asm__(LIBAIO_ASMNAME(#alias))
++#define LIBAIO_ASMNAME(cname) LIBAIO_ASMNAME_PREFIX(__USER_LABEL_PREFIX__, cname)
++#define LIBAIO_ASMNAME_PREFIX(prefix, cname) LIBAIO_STRING(prefix) cname
++
+ /* little endian, 32 bits */
+ #if defined(__i386__) || \
+     (defined(__x86_64__) && defined(__ILP32__)) || \
+@@ -178,6 +185,17 @@ extern int io_getevents(io_context_t ctx, long min_nr, long nr,
+ extern int io_pgetevents(io_context_t ctx, long min_nr, long nr,
+ 		struct io_event *events, struct timespec *timeout,
+ 		sigset_t *sigmask);
++#if __BITS_PER_LONG == 32 && defined(_TIME_BITS) && _TIME_BITS == 64
++extern int LIBAIO_REDIRECT(io_getevents, (io_context_t ctx,
++		long min_nr, long nr,
++		struct io_event *events, struct timespec *timeout),
++		io_getevents_time64);
++extern int LIBAIO_REDIRECT(io_pgetevents, (io_context_t ctx,
++		long min_nr, long nr,
++		struct io_event *events, struct timespec *timeout,
++		sigset_t *sigmask),
++		io_pgetevents_time64);
++#endif
+ 
+ 
+ static inline void io_set_callback(struct iocb *iocb, io_callback_t cb)
+diff --git a/src/libaio.map b/src/libaio.map
+index ec9d13b..74b2c08 100644
+--- a/src/libaio.map
++++ b/src/libaio.map
+@@ -25,3 +25,9 @@ LIBAIO_0.5 {
+ 	global:
+ 		io_pgetevents;
+ } LIBAIO_0.4;
++
++LIBAIO_0.6 {
++	global:
++		io_getevents_time64;
++		io_pgetevents_time64;
++} LIBAIO_0.5;
+-- 
+2.43.0
+

@@ -1,0 +1,451 @@
+From 680e578af7440464a983c5b564b1eae459b95c90 Mon Sep 17 00:00:00 2001
+From: Guillem Jover <guillem@hadrons.org>
+Date: Fri, 1 Mar 2024 01:52:51 +0100
+Subject: [PATCH libaio 21/26] Add time64 syscall support
+
+This implements both io_getevents() and io_pgetevents() as wrappers over
+the new aio_getevents() and aio_pgetevents() which use __kernel_timespec
+as its timespec data type which should always be 64-bit. We add the
+necessary conversion from __kernel_old_timespec or timsepec struct
+types.
+
+Signed-off-by: Guillem Jover <guillem@hadrons.org>
+---
+ src/Makefile                              |  1 +
+ src/{io_getevents.c => aio_getevents.c}   | 26 +++++++----
+ src/{io_pgetevents.c => aio_pgetevents.c} | 50 ++++++++++++++++-----
+ src/aio_ring.h                            |  3 +-
+ src/aio_time.h                            | 54 +++++++++++++++++++++++
+ src/compat-0_1.c                          | 14 +++---
+ src/io_getevents.c                        | 15 +++----
+ src/io_pgetevents.c                       | 33 +++-----------
+ src/io_queue_run.c                        |  5 ++-
+ src/io_queue_wait.c                       |  8 +++-
+ 10 files changed, 146 insertions(+), 63 deletions(-)
+ copy src/{io_getevents.c => aio_getevents.c} (64%)
+ copy src/{io_pgetevents.c => aio_pgetevents.c} (53%)
+ create mode 100644 src/aio_time.h
+
+diff --git a/src/Makefile b/src/Makefile
+index 387b57f..da18e8c 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -27,6 +27,7 @@ libaio_srcs := io_queue_init.c io_queue_release.c
+ libaio_srcs += io_queue_wait.c io_queue_run.c
+ 
+ # real syscalls
++libaio_srcs += aio_pgetevents.c aio_getevents.c
+ libaio_srcs += io_getevents.c io_submit.c io_cancel.c
+ libaio_srcs += io_setup.c io_destroy.c io_pgetevents.c
+ 
+diff --git a/src/io_getevents.c b/src/aio_getevents.c
+similarity index 64%
+copy from src/io_getevents.c
+copy to src/aio_getevents.c
+index f39d1af..b29ae32 100644
+--- a/src/io_getevents.c
++++ b/src/aio_getevents.c
+@@ -1,6 +1,7 @@
+-/* io_getevents.c
++/* aio_getevents.c
+    libaio Linux async I/O interface
+    Copyright 2002 Red Hat, Inc.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -21,18 +22,27 @@
+ #include <stdlib.h>
+ #include <time.h>
+ #include "syscall.h"
++#include "aio_time.h"
+ #include "aio_ring.h"
+ 
+-io_syscall5(int, __io_getevents_0_4, io_getevents, io_context_t, ctx,
++io_syscall5(int, __aio_getevents, io_getevents, io_context_t, ctx,
+ 		long, min_nr, long, nr, struct io_event *, events,
+-		struct timespec *, timeout)
++		struct sys_timespec *, timeout)
+ 
+-int io_getevents_0_4(io_context_t ctx, long min_nr, long nr,
+-		struct io_event * events, struct timespec * timeout)
++int aio_getevents(io_context_t ctx, long min_nr, long nr,
++		struct io_event * events, struct __kernel_timespec * timeout)
+ {
++	struct sys_timespec ts;
++	int ret;
++
++	ret = aio_pgetevents(ctx, min_nr, nr, events, timeout, NULL);
++	if (ret != -ENOSYS)
++		return ret;
++
+ 	if (aio_ring_is_empty(ctx, timeout))
+ 		return 0;
+-	return __io_getevents_0_4(ctx, min_nr, nr, events, timeout);
+-}
+ 
+-DEFSYMVER(io_getevents_0_4, io_getevents, 0.4);
++	if (timeout)
++		sys_get_timespec(&ts, timeout);
++	return __aio_getevents(ctx, min_nr, nr, events, timeout ? &ts : NULL);
++}
+diff --git a/src/io_pgetevents.c b/src/aio_pgetevents.c
+similarity index 53%
+copy from src/io_pgetevents.c
+copy to src/aio_pgetevents.c
+index 63ff806..e12036e 100644
+--- a/src/io_pgetevents.c
++++ b/src/aio_pgetevents.c
+@@ -1,6 +1,7 @@
+ /*
+    libaio Linux async I/O interface
+    Copyright 2018 Christoph Hellwig.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -22,35 +23,62 @@
+ #include <time.h>
+ #include <signal.h>
+ #include "syscall.h"
++#include "aio_time.h"
+ #include "aio_ring.h"
+ 
+ #ifdef __NR_io_pgetevents
+ io_syscall6(int, __io_pgetevents, io_pgetevents, io_context_t, ctx,
+ 		long, min_nr, long, nr, struct io_event *, events,
+-		struct timespec *, timeout, void *, sigmask);
++		struct sys_timespec *, timeout, void *, sigmask);
++#endif
+ 
+-int io_pgetevents(io_context_t ctx, long min_nr, long nr,
+-		struct io_event *events, struct timespec *timeout,
++#ifdef __NR_io_pgetevents_time64
++io_syscall6(int, __io_pgetevents_time64, io_pgetevents_time64,
++		io_context_t, ctx,
++		long, min_nr, long, nr, struct io_event *, events,
++		struct __kernel_timespec *, timeout, void *, sigmask);
++#endif
++
++int aio_pgetevents(io_context_t ctx, long min_nr, long nr,
++		struct io_event *events, struct __kernel_timespec *timeout,
+ 		sigset_t *sigmask)
+ {
++	int ret;
++#if defined(__NR_io_pgetevents) || defined(__NR_io_pgetevents_time64)
+ 	struct {
+ 		unsigned long ss;
+ 		unsigned long ss_len;
+ 	} aio_sigset;
++	struct sys_timespec sys_ts;
+ 
+ 	if (aio_ring_is_empty(ctx, timeout))
+ 		return 0;
+ 
+ 	aio_sigset.ss = (unsigned long)sigmask;
+ 	aio_sigset.ss_len = _NSIG / 8;
+-	return __io_pgetevents(ctx, min_nr, nr, events, timeout, &aio_sigset);
+-}
++#endif
++
++#ifdef __NR_io_pgetevents_time64
++	/*
++	 * On 32-bit systems that have a time64 variant of the syscall at
++	 * compile-time we try to use that, and if missing we fallback to
++	 * the 32-bit variant.
++	 */
++	ret = __io_pgetevents_time64(ctx, min_nr, nr, events, timeout,
++			sigmask ? &aio_sigset : NULL);
++	if (ret != -ENOSYS)
++		return ret;
++#endif
++
++#ifdef __NR_io_pgetevents
++	if (timeout)
++		sys_get_timespec(&sys_ts, timeout);
++
++	ret = __io_pgetevents(ctx, min_nr, nr, events,
++			timeout ? &sys_ts : NULL, &aio_sigset);
+ #else
+-int io_pgetevents(io_context_t ctx, long min_nr, long nr,
+-		struct io_event *events, struct timespec *timeout,
+-		sigset_t *sigmask)
++	ret = -ENOSYS;
++#endif
+ 
+-{
+-	return -ENOSYS;
++	return ret;
+ }
+-#endif /* __NR_io_pgetevents */
+diff --git a/src/aio_ring.h b/src/aio_ring.h
+index 3842c4b..17fe838 100644
+--- a/src/aio_ring.h
++++ b/src/aio_ring.h
+@@ -33,7 +33,8 @@ struct aio_ring {
+ 	unsigned        header_length;  /* size of aio_ring */
+ };
+ 
+-static inline int aio_ring_is_empty(io_context_t ctx, struct timespec *timeout)
++static inline int aio_ring_is_empty(io_context_t ctx,
++	struct __kernel_timespec *timeout)
+ {
+ 	struct aio_ring *ring = (struct aio_ring *)ctx;
+ 
+diff --git a/src/aio_time.h b/src/aio_time.h
+new file mode 100644
+index 0000000..373a1b0
+--- /dev/null
++++ b/src/aio_time.h
+@@ -0,0 +1,54 @@
++/*
++   libaio Linux async I/O interface
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
++
++   This library is free software; you can redistribute it and/or
++   modify it under the terms of the GNU Lesser General Public
++   License as published by the Free Software Foundation; either
++   version 2 of the License, or (at your option) any later version.
++
++   This library is distributed in the hope that it will be useful,
++   but WITHOUT ANY WARRANTY; without even the implied warranty of
++   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++   Lesser General Public License for more details.
++
++   You should have received a copy of the GNU Lesser General Public
++   License along with this library; if not, write to the Free Software
++   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307  USA
++ */
++#ifndef _AIO_TIME_H
++#define _AIO_TIME_H
++
++#include <linux/time_types.h>
++
++#if __BITS_PER_LONG == 32
++# define sys_timespec __kernel_old_timespec
++# define sys_get_timespec(sys_ts, kern_ts) \
++	aio_get_old_timespec(sys_ts, kern_ts)
++#else
++# define sys_timespec __kernel_timespec
++# define sys_get_timespec(sys_ts, kern_ts) *sys_ts = *kern_ts
++#endif
++
++static inline void aio_get_timespec(struct __kernel_timespec *kts,
++		const struct timespec *uts)
++{
++	kts->tv_sec = uts->tv_sec;
++	kts->tv_nsec = uts->tv_nsec;
++}
++
++static inline void aio_get_old_timespec(struct __kernel_old_timespec *ots,
++		const struct __kernel_timespec *kts)
++{
++	ots->tv_sec = kts->tv_sec;
++	ots->tv_nsec = kts->tv_nsec;
++}
++
++int aio_pgetevents(io_context_t ctx, long min_nr, long nr,
++		struct io_event *events, struct __kernel_timespec *timeout,
++		sigset_t *sigmask);
++
++int aio_getevents(io_context_t ctx, long min_nr, long nr,
++		struct io_event * events, struct __kernel_timespec * timeout);
++
++#endif /* _AIO_TIME_H */
+diff --git a/src/compat-0_1.c b/src/compat-0_1.c
+index 459586c..25b789a 100644
+--- a/src/compat-0_1.c
++++ b/src/compat-0_1.c
+@@ -3,6 +3,7 @@
+    compat-0_1.c : compatibility symbols for libaio 0.1.x-0.3.x
+ 
+    Copyright 2002 Red Hat, Inc.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -22,6 +23,7 @@
+ #include <asm/errno.h>
+ 
+ #include "libaio.h"
++#include "aio_time.h"
+ 
+ #include "syscall.h"
+ 
+@@ -38,10 +40,10 @@ SYMVER(compat0_1_io_cancel, io_cancel, 0.1);
+ 
+ int compat0_1_io_queue_wait(io_context_t ctx, struct timespec *when)
+ {
+-	struct timespec timeout;
++	struct __kernel_timespec timeout;
+ 	if (when)
+-		timeout = *when;
+-	return io_getevents(ctx, 0, 0, NULL, when ? &timeout : NULL);
++		aio_get_timespec(&timeout, when);
++	return aio_getevents(ctx, 0, 0, NULL, when ? &timeout : NULL);
+ }
+ SYMVER(compat0_1_io_queue_wait, io_queue_wait, 0.1);
+ 
+@@ -51,10 +53,10 @@ int compat0_1_io_getevents(io_context_t ctx, long nr,
+ 		       struct io_event *events,
+ 		       const struct timespec *const_timeout)
+ {
+-	struct timespec timeout;
++	struct __kernel_timespec timeout;
+ 	if (const_timeout)
+-		timeout = *const_timeout;
+-	return io_getevents(ctx, 1, nr, events,
++		aio_get_timespec(&timeout, const_timeout);
++	return aio_getevents(ctx, 1, nr, events,
+ 			const_timeout ? &timeout : NULL);
+ }
+ SYMVER(compat0_1_io_getevents, io_getevents, 0.1);
+diff --git a/src/io_getevents.c b/src/io_getevents.c
+index f39d1af..c06e803 100644
+--- a/src/io_getevents.c
++++ b/src/io_getevents.c
+@@ -1,6 +1,7 @@
+ /* io_getevents.c
+    libaio Linux async I/O interface
+    Copyright 2002 Red Hat, Inc.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -21,18 +22,16 @@
+ #include <stdlib.h>
+ #include <time.h>
+ #include "syscall.h"
+-#include "aio_ring.h"
+-
+-io_syscall5(int, __io_getevents_0_4, io_getevents, io_context_t, ctx,
+-		long, min_nr, long, nr, struct io_event *, events,
+-		struct timespec *, timeout)
++#include "aio_time.h"
+ 
+ int io_getevents_0_4(io_context_t ctx, long min_nr, long nr,
+ 		struct io_event * events, struct timespec * timeout)
+ {
+-	if (aio_ring_is_empty(ctx, timeout))
+-		return 0;
+-	return __io_getevents_0_4(ctx, min_nr, nr, events, timeout);
++	struct __kernel_timespec ts;
++
++	if (timeout)
++		aio_get_timespec(&ts, timeout);
++	return aio_getevents(ctx, min_nr, nr, events, timeout ? &ts : NULL);
+ }
+ 
+ DEFSYMVER(io_getevents_0_4, io_getevents, 0.4);
+diff --git a/src/io_pgetevents.c b/src/io_pgetevents.c
+index 63ff806..d960a05 100644
+--- a/src/io_pgetevents.c
++++ b/src/io_pgetevents.c
+@@ -1,6 +1,7 @@
+ /*
+    libaio Linux async I/O interface
+    Copyright 2018 Christoph Hellwig.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -21,36 +22,16 @@
+ #include <stdlib.h>
+ #include <time.h>
+ #include <signal.h>
+-#include "syscall.h"
+-#include "aio_ring.h"
+-
+-#ifdef __NR_io_pgetevents
+-io_syscall6(int, __io_pgetevents, io_pgetevents, io_context_t, ctx,
+-		long, min_nr, long, nr, struct io_event *, events,
+-		struct timespec *, timeout, void *, sigmask);
++#include "aio_time.h"
+ 
+ int io_pgetevents(io_context_t ctx, long min_nr, long nr,
+ 		struct io_event *events, struct timespec *timeout,
+ 		sigset_t *sigmask)
+ {
+-	struct {
+-		unsigned long ss;
+-		unsigned long ss_len;
+-	} aio_sigset;
+-
+-	if (aio_ring_is_empty(ctx, timeout))
+-		return 0;
+-
+-	aio_sigset.ss = (unsigned long)sigmask;
+-	aio_sigset.ss_len = _NSIG / 8;
+-	return __io_pgetevents(ctx, min_nr, nr, events, timeout, &aio_sigset);
+-}
+-#else
+-int io_pgetevents(io_context_t ctx, long min_nr, long nr,
+-		struct io_event *events, struct timespec *timeout,
+-		sigset_t *sigmask)
++	struct __kernel_timespec ts;
+ 
+-{
+-	return -ENOSYS;
++	if (timeout)
++		aio_get_timespec(&ts, timeout);
++	return aio_pgetevents(ctx, min_nr, nr, events, timeout ? &ts : NULL,
++			sigmask);
+ }
+-#endif /* __NR_io_pgetevents */
+diff --git a/src/io_queue_run.c b/src/io_queue_run.c
+index e0132f4..7b5a1be 100644
+--- a/src/io_queue_run.c
++++ b/src/io_queue_run.c
+@@ -20,15 +20,16 @@
+ #include <errno.h>
+ #include <stdlib.h>
+ #include <time.h>
++#include "aio_time.h"
+ 
+ int io_queue_run(io_context_t ctx)
+ {
+-	static struct timespec timeout = { 0, 0 };
++	static struct __kernel_timespec timeout = { 0, 0 };
+ 	struct io_event event;
+ 	int ret;
+ 
+ 	/* FIXME: batch requests? */
+-	while (1 == (ret = io_getevents(ctx, 0, 1, &event, &timeout))) {
++	while (1 == (ret = aio_getevents(ctx, 0, 1, &event, &timeout))) {
+ 		io_callback_t cb = (io_callback_t)event.data;
+ 		struct iocb *iocb = event.obj;
+ 
+diff --git a/src/io_queue_wait.c b/src/io_queue_wait.c
+index 6f69a51..b4bb236 100644
+--- a/src/io_queue_wait.c
++++ b/src/io_queue_wait.c
+@@ -1,6 +1,7 @@
+ /* io_submit
+    libaio Linux async I/O interface
+    Copyright 2002 Red Hat, Inc.
++   Copyright 2024 Guillem Jover <guillem@hadrons.org>
+ 
+    This library is free software; you can redistribute it and/or
+    modify it under the terms of the GNU Lesser General Public
+@@ -20,12 +21,17 @@
+ #include <sys/types.h>
+ #include <libaio.h>
+ #include <errno.h>
++#include "aio_time.h"
+ #include "syscall.h"
+ 
+ struct timespec;
+ 
+ int io_queue_wait_0_4(io_context_t ctx, struct timespec *timeout)
+ {
+-	return io_getevents(ctx, 0, 0, NULL, timeout);
++	struct __kernel_timespec ts;
++
++	if (timeout)
++		aio_get_timespec(&ts, timeout);
++	return aio_getevents(ctx, 0, 0, NULL, timeout ? &ts : NULL);
+ }
+ DEFSYMVER(io_queue_wait_0_4, io_queue_wait, 0.4);
+-- 
+2.43.0
+

@@ -1,0 +1,96 @@
+From cd2e1fdcf6a3474ac874303989e05e8333c7d2a2 Mon Sep 17 00:00:00 2001
+From: Guillem Jover <guillem@hadrons.org>
+Date: Tue, 2 Nov 2021 22:37:32 +0100
+Subject: [PATCH libaio 08/26] Use new symver function attribute to support LTO
+ builds
+
+The LTO support cannot work properly when there are versioned symbols
+via asm statements, as those are not seen by the compiler. Use the new
+function attributes if supported instead of the asm statements.
+
+We need to move the SYMVER calls after the function definitions
+otherwise it will reference symbols not yet seen.
+
+Origin: vendor
+Forwarded: https://marc.info/?l=linux-aio&m=164999309520544
+Signed-off-by: Guillem Jover <guillem@hadrons.org>
+---
+ src/compat-0_1.c |  7 +++----
+ src/syscall.h    | 13 +++++++++++++
+ 2 files changed, 16 insertions(+), 4 deletions(-)
+
+diff --git a/src/compat-0_1.c b/src/compat-0_1.c
+index 722e107..ac40fcc 100644
+--- a/src/compat-0_1.c
++++ b/src/compat-0_1.c
+@@ -28,7 +28,6 @@
+ 
+ 
+ /* ABI change.  Provide partial compatibility on this one for now. */
+-SYMVER(compat0_1_io_cancel, io_cancel, 0.1);
+ int compat0_1_io_cancel(io_context_t ctx, struct iocb *iocb)
+ {
+ 	struct io_event event;
+@@ -36,8 +35,8 @@ int compat0_1_io_cancel(io_context_t ctx, struct iocb *iocb)
+ 	/* FIXME: the old ABI would return the event on the completion queue */
+ 	return io_cancel(ctx, iocb, &event);
+ }
++SYMVER(compat0_1_io_cancel, io_cancel, 0.1);
+ 
+-SYMVER(compat0_1_io_queue_wait, io_queue_wait, 0.1);
+ int compat0_1_io_queue_wait(io_context_t ctx, struct timespec *when)
+ {
+ 	struct timespec timeout;
+@@ -45,10 +44,10 @@ int compat0_1_io_queue_wait(io_context_t ctx, struct timespec *when)
+ 		timeout = *when;
+ 	return io_getevents(ctx, 0, 0, NULL, when ? &timeout : NULL);
+ }
++SYMVER(compat0_1_io_queue_wait, io_queue_wait, 0.1);
+ 
+ 
+ /* ABI change.  Provide backwards compatibility for this one. */
+-SYMVER(compat0_1_io_getevents, io_getevents, 0.1);
+ int compat0_1_io_getevents(io_context_t ctx, long nr,
+ 		       struct io_event *events,
+ 		       const struct timespec *const_timeout)
+@@ -59,4 +58,4 @@ int compat0_1_io_getevents(io_context_t ctx, long nr,
+ 	return io_getevents(ctx, 1, nr, events,
+ 			const_timeout ? &timeout : NULL);
+ }
+-
++SYMVER(compat0_1_io_getevents, io_getevents, 0.1);
+diff --git a/src/syscall.h b/src/syscall.h
+index f7ce979..59e0bb3 100644
+--- a/src/syscall.h
++++ b/src/syscall.h
+@@ -2,14 +2,27 @@
+ #include <unistd.h>
+ #include <errno.h>
+ 
++#ifndef __has_attribute
++#define __has_attribute(x) 0
++#endif
++
+ #define _SYMSTR(str)	#str
+ #define SYMSTR(str)	_SYMSTR(str)
+ 
++#if __has_attribute(__symver__)
++#define SYMVER(compat_sym, orig_sym, ver_sym)	\
++	extern __typeof(compat_sym) compat_sym \
++	  __attribute__((__symver__(SYMSTR(orig_sym) "@LIBAIO_" SYMSTR(ver_sym))))
++#define DEFSYMVER(compat_sym, orig_sym, ver_sym)	\
++	extern __typeof(compat_sym) compat_sym \
++	  __attribute__((__symver__(SYMSTR(orig_sym) "@@LIBAIO_" SYMSTR(ver_sym))))
++#else
+ #define SYMVER(compat_sym, orig_sym, ver_sym)	\
+ 	__asm__(".symver " SYMSTR(compat_sym) "," SYMSTR(orig_sym) "@LIBAIO_" SYMSTR(ver_sym))
+ 
+ #define DEFSYMVER(compat_sym, orig_sym, ver_sym)	\
+ 	__asm__(".symver " SYMSTR(compat_sym) "," SYMSTR(orig_sym) "@@LIBAIO_" SYMSTR(ver_sym))
++#endif
+ 
+ #if defined(__i386__)
+ #include "syscall-i386.h"
+-- 
+2.43.0
+

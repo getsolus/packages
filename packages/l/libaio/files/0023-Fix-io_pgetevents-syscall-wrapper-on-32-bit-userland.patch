@@ -1,0 +1,105 @@
+From 50d7a07bab2bb6613bebd161c9a7618e815cfa35 Mon Sep 17 00:00:00 2001
+From: Guillem Jover <guillem@hadrons.org>
+Date: Fri, 16 Aug 2019 02:33:46 +0200
+Subject: [PATCH libaio 23/26] Fix io_pgetevents() syscall wrapper on 32-bit
+ userland on 64-bit kernels
+
+The kernel compat syscall in the kernel got introduced with a broken
+layout, which requires a pointer to the actual sigset_t variable but
+with the size of the running kernel, not the size of the compat code.
+
+This means that when the wrapper sends the expected compat (32-bit)
+pointer, the kernel reads a 64-bit pointer, eating with it also the
+sigset size member. And then proceeds to fail the comparison of the
+sigset_t size and returns EINVAL.
+
+This really needs to be fixed in the kernel, as there's no apparent
+user of the broken compat layout (from codesearch.debian.org, nor a
+quick github.com search). But we have to workaround it in libaio so
+that we can use kernels that have not yet been fixed.
+
+We do that, by trying the non-broken layout (that would be used with
+a 32-bit userland on a 32-bit kernel), and if that fails with -EINVAL
+we retry with a structure padded to what the kernel expects.
+
+Origin: vendor
+Forwarded: not-needed
+Sent-Upstream: rejected
+Signed-off-by: Guillem Jover <guillem@hadrons.org>
+---
+ src/aio_pgetevents.c | 30 ++++++++++++++++++++++++++----
+ src/libaio.h         | 10 ++++++++++
+ 2 files changed, 36 insertions(+), 4 deletions(-)
+
+diff --git a/src/aio_pgetevents.c b/src/aio_pgetevents.c
+index e12036e..89cec7b 100644
+--- a/src/aio_pgetevents.c
++++ b/src/aio_pgetevents.c
+@@ -45,10 +45,10 @@ int aio_pgetevents(io_context_t ctx, long min_nr, long nr,
+ {
+ 	int ret;
+ #if defined(__NR_io_pgetevents) || defined(__NR_io_pgetevents_time64)
+-	struct {
+-		unsigned long ss;
+-		unsigned long ss_len;
+-	} aio_sigset;
++	struct io_sigset aio_sigset;
++#ifndef __LP64__
++	struct io_sigset_compat aio_sigset_compat = { 0 };
++#endif
+ 	struct sys_timespec sys_ts;
+ 
+ 	if (aio_ring_is_empty(ctx, timeout))
+@@ -76,6 +76,28 @@ int aio_pgetevents(io_context_t ctx, long min_nr, long nr,
+ 
+ 	ret = __io_pgetevents(ctx, min_nr, nr, events,
+ 			timeout ? &sys_ts : NULL, &aio_sigset);
++
++#ifndef __LP64__
++	/*
++	 * The compat kernel syscall got introduced with a broken layout for
++	 * its sigset argument, expecting it to contain a pointer for the
++	 * non-compat pointer size.
++	 *
++	 * To cope with this on unfixed kernels, in case we are built as a
++	 * 32-bit library (which could run on a kernel with compat code) and
++	 * when the syscall returns EINVAL due to the kernel not finding the
++	 * sigset size member when unpacking the structure, we retry with
++	 * the fixed up compat layout, which requires the padding to be
++	 * zero-filled, otherwise the 64-bit pointer will contain garbage.
++	 */
++	if (ret != -EINVAL)
++		return ret;
++
++	aio_sigset_compat.ss = (unsigned long)sigmask;
++	aio_sigset_compat.ss_len = _NSIG / 8;
++	ret = __io_pgetevents(ctx, min_nr, nr, events,
++			timeout ? &sys_ts : NULL, &aio_sigset_compat);
++#endif
+ #else
+ 	ret = -ENOSYS;
+ #endif
+diff --git a/src/libaio.h b/src/libaio.h
+index feeee37..e99a17b 100644
+--- a/src/libaio.h
++++ b/src/libaio.h
+@@ -161,6 +161,16 @@ struct io_event {
+ 	PADDEDul(res2, __pad4);
+ };
+ 
++struct io_sigset {
++	unsigned long ss;
++	unsigned long ss_len;
++};
++
++struct io_sigset_compat {
++	PADDEDptr(unsigned long ss, __ss_pad);
++	unsigned long ss_len;
++};
++
+ #undef PADDED
+ #undef PADDEDptr
+ #undef PADDEDul
+-- 
+2.43.0
+
