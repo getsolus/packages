@@ -6,3 +6,6 @@ This file is used to indicate primary maintainership for this package. A package
 - David Harder
   - Matrix: @davidjharder:matrix.org
   - Email: david@davidjharder.ca
+
+- Facundo Ciruzzi
+  - Email: ciruzzifacundo@gmail.com
