@@ -1,6 +1,6 @@
 name       : lazarus
 version    : '3.2'
-release    : 16
+release    : 17
 source     :
     - https://sourceforge.net/projects/lazarus/files/Lazarus%20Zip%20_%20GZip/Lazarus%203.2/lazarus-3.2-0.tar.gz : 69f43f0a10b9e09deea5f35094c73b84464b82d3f40d8a2fcfcb5a5ab03c6edf
 homepage   : https://www.lazarus-ide.org
@@ -8,65 +8,77 @@ license    :
     - GPL-2.0-or-later
     - LGPL-2.1-or-later
     - MPL-1.1
-summary    :
-    - Lazarus is a Rapid Application Development Tool for Free Pascal
-    - ^qt6pas : Free Pascal Qt6 binding library
-    - ^qt6pas-devel : Development files for Free Pascal Qt6 binding library
-description:
-    - Lazarus is a Rapid Application Development Tool for Free Pascal.
-    - ^qt6pas : Free Pascal Qt6 binding library.
-    - ^qt6pas-devel : Development files for Free Pascal Qt6 binding library.
-component  :
-    - programming.tools
-    - ^qt6pas : programming.library
-    - ^qt6pas-devel : programming.devel
+summary    : Lazarus is a Rapid Application Development Tool for Free Pascal
+description: |
+    Lazarus is a Rapid Application Development Tool for Free Pascal.
+component  : programming.tools
 builddeps  :
     - pkgconfig(Qt6Core)
     - pkgconfig(gtk+-2.0)
+    - pkgconfig(gtk+-3.0)
     - fpc-src
+    - qt6pas-devel
 rundeps    :
     - fpc-src
     - gdb
     - make
 clang      : yes
 setup      : |
+    %patch -p1 -i $pkgfiles/0000-Makefile_patch.diff
+    %patch -p1 -i $pkgfiles/0001-crash-when-trying-to-recompile-packages.patch
     %patch -p1 -i $pkgfiles/0001-Support-Wayland-appId.patch
+    %patch -p1 -i $pkgfiles/ftbfs-qt-6.7.patch
+    %patch -p1 -i $pkgfiles/fix-gtk2-crash.patch
+
     # Remove non-Linux and distro-specific files.
     rm -rf debian
     find tools/install -mindepth 1 -maxdepth 1 -type d -not -name linux -exec rm -rf {} +
 build      : |
     export FPCDIR=/usr/share/fpc/src
+    export fpmakeopt="FPMAKEOPT=-T %YJOBS%"
+    export fpcopt="-g -gl -gw -O3"
 
     fpcmake -Tall
     pushd components
         fpcmake -Tall
     popd
-    make bigide OPT='-gl -gw'
-    make tools OPT='-gl -gw'
+    # Compile some basic targets required by everything else
+    make registration "$fpmakeopt" OPT="$fpcopt"
 
-    # Build Qt6Pas.
-    pushd lcl/interfaces/qt6/cbindings
-        qmake6 QMAKE_CFLAGS_RELEASE="${CFLAGS}" QMAKE_CXXFLAGS_RELEASE="${CXXFLAGS}" QMAKE_LFLAGS="${LDFLAGS}"
-        %make
-    popd
+    # Compile lazbuild - required to build other targets
+    make lazbuild "$fpmakeopt" OPT="$fpcopt"
+
+    # Compile LCL base (Lazarus Component Library) for the "nogui" widgetset
+    make lcl "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM=nogui
+
+    # Compile extra tools
+    make tools "$fpmakeopt" OPT="$fpcopt"
+
+    # Compile the LCL base + extra components for GUI widgetsets
+    for WIDGETSET in gtk2 gtk3 qt6; do
+        make lcl basecomponents bigidecomponents starter "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM="${WIDGETSET}"
+    done
+
+    # Compile the IDE itself
+    make bigide "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM=gtk2
 install    : |
-    %make_install INSTALL_PREFIX=$installdir/usr
-
-    # Install Qt6Pas.
-    %make_install -C lcl/interfaces/qt6/cbindings INSTALL_ROOT=$installdir
+    %make_install INSTALL_PREFIX=$installdir/usr _LIB=lib64
 
     # Replace the duplicate bindings with symlinks to the libdir ones
-    pushd $installdir/usr/share/lazarus/lcl/interfaces/qt6/cbindings
-        for f in libQt6Pas.so*; do
-            ln -srfv $installdir/%libdir%/$f $f
+    pushd $installdir/usr/lib64/lazarus/lcl/interfaces/qt6/cbindings
+        for f in /usr/lib64/libQt6Pas.so*; do
+            t=$(basename $f)
+            ln -sfv ../../../../../$t $t
         done
         rm -rfv tmp
     popd
 
     # Cleanup.
+    rm $installdir/usr/share/man/man1/svn2revisioninc.1.gz
     find $installdir -type d -empty -delete -print
     find $installdir -depth -type d -name '*.app' -prune -print -exec rm -rf {} +
-    rm -rfv $installdir/usr/share/lazarus/tools/install
-patterns   :
-    - ^qt6pas : /usr/lib64/libQt6Pas.so*
-    - ^qt6pas-devel : /usr/lib64/libQt6Pas.so
+    rm -rfv $installdir/usr/lib64/lazarus/tools/install
+
+    # Fix permissions and respect SOURCE_DATE_EPOCH
+    chown root:root -R $installdir
+    find $installdir -exec touch --date="@$SOURCE_DATE_EPOCH" --no-dereference {} \;
