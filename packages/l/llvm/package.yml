@@ -1,10 +1,10 @@
 name       : llvm
-version    : 16.0.6
-release    : 116
+version    : 18.1.6
+release    : 117
 source     :
-    - https://github.com/llvm/llvm-project/releases/download/llvmorg-16.0.6/llvm-project-16.0.6.src.tar.xz : ce5e71081d17ce9e86d7cbcfa28c4b04b9300f8fb7e78422b1feb6bc52c3028e
+    - https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.6/llvm-project-18.1.6.src.tar.xz : bd4b4cb6374bcd5fc5a3ba60cb80425d29da34f316b8821abc12c0db225cf6b4
 homepage   : http://llvm.org/
-license    : Apache-2.0-with-LLVM-exception
+license    : Apache-2.0 WITH LLVM-exception
 summary    :
     - Low Level Virtual Machine (Reusable compiler and toolchains)
     - clang : Clang Compiler frontend to LLVM
@@ -22,10 +22,10 @@ emul32     : no
 libsplit   : no
 clang      : yes
 builddeps  :
+    - pkgconfig32(libedit)
     - pkgconfig32(libelf)
     - pkgconfig32(libffi)
     - pkgconfig32(libxml-2.0)
-    - pkgconfig32(libedit)
     - pkgconfig32(libzstd)
     - pkgconfig32(ncursesw)
     - pkgconfig32(zlib)
@@ -34,19 +34,19 @@ builddeps  :
     - libgcc-32bit
     - libstdc++-32bit
     - llvm-32bit-devel
-    - python-recommonmark
-    - swig
     - llvm-bolt
+    - python-myst-parser
+    - swig
 rundeps    :
-    - devel :
-        - zstd-devel
     - clang :
         - llvm-devel
-    - clang-devel :
-        - llvm-clang
     - clang-32bit-devel :
         - llvm-clang-32bit
         - llvm-clang-devel
+    - clang-devel :
+        - llvm-clang
+    - devel :
+        - zstd-devel
 description: |
     The LLVM package contains a collection of modular and reusable compiler and toolchain technologies. The Low Level Virtual Machine (LLVM) Core libraries provide a modern source and target-independent optimizer, along with code generation support for many popular CPUs (as well as some less common ones!). These libraries are built around a well specified code representation known as the LLVM intermediate representation ("LLVM IR").
 patterns   :
@@ -127,7 +127,7 @@ environment: |
     # BOLT optimize libclang/libLLVM from Thin LTO PGO use build
     # Install BOLT'd Thin LTO PGO use build
 
-    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -O3 -fstack-protector -pipe "
+    export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -O3 -fstack-protector -fPIC -ffat-lto-objects -pipe "
     export CC=clang
     export CXX=clang++
 
@@ -157,20 +157,24 @@ environment: |
         -DCLANG_DEFAULT_LINKER=lld \
         -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
         -DCLANG_DEFAULT_PIE_ON_LINUX=ON \
+        -DCLANG_LINK_CLANG_DYLIB=ON \
+        -DCOMPILER_RT_BUILTINS_ENABLE_PIC=ON \
+        -DCOMPILER_RT_USE_LLVM_UNWINDER=OFF \
         -DENABLE_EXPERIMENTAL_NEW_PASS_MANAGER=ON \
-        -DLLVM_INSTALL_UTILS=ON \
-        -DLLVM_INCLUDE_TESTS=OFF \
+        -DENABLE_LINKER_BUILD_ID=ON \
+        -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
         -DLLVM_BINUTILS_INCDIR=/usr/include \
+        -DLLVM_BUILD_LLVM_DYLIB=ON \
+        -DLLVM_ENABLE_ASSERTIONS=OFF \
         -DLLVM_ENABLE_FFI=ON \
+        -DLLVM_ENABLE_LTO=Thin \
+        -DLLVM_ENABLE_PIC=ON \
+        -DLLVM_ENABLE_RTTI=ON \
         -DLLVM_ENABLE_ZLIB=ON \
         -DLLVM_ENABLE_ZSTD=ON \
-        -DLLVM_ENABLE_RTTI=ON \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DENABLE_LINKER_BUILD_ID=ON \
-        -DLLVM_ENABLE_PIC=ON \
-        -DLLVM_BUILD_LLVM_DYLIB=ON \
-        -DLLVM_LINK_LLVM_DYLIB=ON \
-        -DCLANG_LINK_CLANG_DYLIB=ON"
+        -DLLVM_INCLUDE_TESTS=OFF \
+        -DLLVM_INSTALL_UTILS=ON \
+        -DLLVM_LINK_LLVM_DYLIB=ON"
 
     # Used by everything except emul32 build
     export CMAKE_X84_64_OPTIONS="
@@ -192,16 +196,6 @@ setup      : |
     # Support solus, it's triplet, etc.
     %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
 
-    # AMDGPU related
-    %patch -p1 -i $pkgfiles/fix-amdgpu-si-fold-operands-assertion-error.patch
-    %patch -p1 -i $pkgfiles/fix-amdgpu-vgpr-live-range.patch
-    %patch -p1 -i $pkgfiles/amdgpu-skip-debug-instrs-in-vgpr.patch
-    %patch -p1 -i $pkgfiles/amdgpu-fix-delay-alu-1.patch
-    %patch -p1 -i $pkgfiles/amdgpu-fix-delay-alu-2.patch
-    %patch -p1 -i $pkgfiles/amdgpu-fix-delay-alu-3.patch
-
-    %patch -p1 -i $pkgfiles/fix-clang-assertions.patch
-
     pushd clang
         # Patch cfe for Solus specific options
         %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
@@ -216,12 +210,18 @@ setup      : |
         %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
     popd
 build      : |
+    OLD_LDFLAGS="${LDFLAGS}"
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+        # Emit relocs for BOLT
+        export LDFLAGS="${LDFLAGS} -Wl,-q"
+    fi
+
     ### PGO gen/use build for amd64.
     cmake -G Ninja -B solusBuildDir -S llvm \
         ${CMAKE_COMMON_OPTIONS} \
         ${CMAKE_X84_64_OPTIONS} \
-        -DCMAKE_C_FLAGS_RELEASE="$PGOFLAGS" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$PGOFLAGS" \
+        -DCMAKE_C_FLAGS="$PGOFLAGS" \
+        -DCMAKE_CXX_FLAGS="$PGOFLAGS" \
         -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
         -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
         -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
@@ -239,11 +239,13 @@ build      : |
         export PKG_CONFIG_PATH=/usr/lib32/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig
         export LT_SYS_LIBRARY_PATH=/usr/lib32
 
+        export LDFLAGS="${OLD_LDFLAGS}"
+
         export CC="$workdir/solusBuildDir/bin/clang -m32"
         export CXX="$workdir/solusBuildDir/bin/clang++ -m32"
 
-        export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32"
-        export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32"
+        export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-objects"
+        export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-objects"
 
         cmake -G Ninja -B emul32 -S llvm \
           ${CMAKE_COMMON_OPTIONS} \
@@ -283,49 +285,31 @@ install    : |
     # Install x86_64 build
     %ninja_install -v
 
-    # Emit relocs for BOLT
-    export LDFLAGS="${LDFLAGS} -Wl,-q"
-
-    ### Thin LTO
-    # Rebuild with thin LTO to avoid installing static files containing LLVM bitcode
-    # by installing core toolchain bits only.
-    cmake -G Ninja -B lto-build -S llvm \
-        ${CMAKE_COMMON_OPTIONS} \
-        ${CMAKE_X84_64_OPTIONS} \
-        ${CMAKE_USE_COMPILER} \
-        -DCMAKE_C_FLAGS_RELEASE="$PGOFLAGS" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$PGOFLAGS" \
-        -DLLVM_ENABLE_PROJECTS="llvm;clang;lld;polly" \
-        -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
-        -DLLVM_ENABLE_LTO=Thin \
-        -DLLVM_INSTALL_TOOLCHAIN_ONLY=ON
-    DESTDIR="%installroot%" ninja install -C lto-build -v
-
     ### BOLT
     # Instrument
-    %bolt_instr $workdir/lto-build/lib64/libclang-cpp.so.16
-    %bolt_instr $workdir/lto-build/lib64/libLLVM-16.so
+    #bolt_instr $workdir/solusBuildDir/lib64/libclang-cpp.so.18.1
+    #bolt_instr $workdir/solusBuildDir/lib64/libLLVM.so.18.1
     # Profile
-    cmake -G Ninja -B bolt-profile -S runtimes \
-        ${CMAKE_COMMON_OPTIONS} \
-        ${CMAKE_X84_64_OPTIONS} \
-        -DCMAKE_AR=$workdir/lto-build/bin/llvm-ar \
-        -DCMAKE_NM=$workdir/lto-build/bin/llvm-nm \
-        -DCMAKE_RANLIB=$workdir/lto-build/bin/llvm-ranlib \
-        -DCMAKE_C_COMPILER=$workdir/lto-build/bin/clang \
-        -DCMAKE_CXX_COMPILER=$workdir/lto-build/bin/clang++ \
-        -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' \
-        -DCMAKE_C_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
-        -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL"
-    ninja %JOBS% -C bolt-profile -v
+    # cmake -G Ninja -B bolt-profile -S runtimes \
+    #     ${CMAKE_COMMON_OPTIONS} \
+    #     ${CMAKE_X84_64_OPTIONS} \
+    #     -DCMAKE_AR=$workdir/solusBuildDir/bin/llvm-ar \
+    #     -DCMAKE_NM=$workdir/solusBuildDir/bin/llvm-nm \
+    #     -DCMAKE_RANLIB=$workdir/solusBuildDir/bin/llvm-ranlib \
+    #     -DCMAKE_C_COMPILER=$workdir/solusBuildDir/bin/clang \
+    #     -DCMAKE_CXX_COMPILER=$workdir/solusBuildDir/bin/clang++ \
+    #     -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' \
+    #     -DCMAKE_C_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
+    #     -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL"
+    # ninja %JOBS% -C bolt-profile -v
     # Merge and optimize
-    %bolt_merge $workdir/lto-build/lib64/libclang-cpp.so.16
-    %bolt_merge $workdir/lto-build/lib64/libLLVM-16.so
-    %bolt_opt $workdir/lto-build/lib64/libclang-cpp.so.16
-    %bolt_opt $workdir/lto-build/lib64/libLLVM-16.so
+    #bolt_merge $workdir/solusBuildDir/lib64/libclang-cpp.so.18.1
+    #bolt_merge $workdir/solusBuildDir/lib64/libLLVM.so.18.1
+    #bolt_opt $workdir/solusBuildDir/lib64/libclang-cpp.so.18.1
+    #bolt_opt $workdir/solusBuildDir/lib64/libLLVM.so.18.1
     # Install BOLT'd libs over the LTO build
-    install -Dm00777 $workdir/lto-build/lib64/libLLVM-16.so $installdir/usr/lib64/libLLVM-16.so
-    install -Dm00755 $workdir/lto-build/lib64/libclang-cpp.so.16 $installdir/usr/lib64/libclang-cpp.so.16
+    #install -Dm00777 $workdir/solusBuildDir/lib64/libLLVM.so.18.1 $installdir/usr/lib64/libLLVM.so.18.1
+    #install -Dm00755 $workdir/solusBuildDir/lib64/libclang-cpp.so.18.1 $installdir/usr/lib64/libclang-cpp.so.18.1
 
     # Make sure that the .defs files are arch-dependent
     pushd $installdir/usr/include/llvm/Config
@@ -347,4 +331,4 @@ install    : |
     install -m 00644 $pkgfiles/llvm-config.h $installdir/usr/include/llvm/Config/llvm-config.h
 
     # For some reason, the include path only contains the major version now
-    ln -sv %libdir%/clang/16 $installdir/%libdir%/clang/%version%
+    ln -srv $installdir/%libdir%/clang/18 $installdir/%libdir%/clang/%version%
