@@ -1,6 +1,6 @@
 name       : llvm
 version    : 18.1.6
-release    : 118
+release    : 119
 source     :
     - https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.6/llvm-project-18.1.6.src.tar.xz : bd4b4cb6374bcd5fc5a3ba60cb80425d29da34f316b8821abc12c0db225cf6b4
 homepage   : http://llvm.org/
@@ -114,25 +114,28 @@ environment: |
     unset CFLAGS
     unset CXXFLAGS
 
+    # Set to 1 to bootstrap against itself e.g. for major llvm update or flag changes.
+    # For point releases or backports this can be set to 0.
+    export BOOTSTRAP=1
+
     ## BUILD STEPS for packager reference
+    # Bootstrap build (optional)
     # PGO gen build
     # PGO profiling build
     # PGO use build
     # EMUL32 PGO use build
     # Install emul32 pgo use build
     # Install PGO use build
-    # Thin LTO PGO use build
-    # BOLT instrument libclang/libLLVM from Thin LTO PGO use build
+    # BOLT instrument libclang/libLLVM from PGO use build
     # BOLT profiling build
-    # BOLT optimize libclang/libLLVM from Thin LTO PGO use build
-    # Install BOLT'd Thin LTO PGO use build
+    # BOLT optimize libclang/libLLVM from PGO use build
+    # Install BOLT'd PGO use libs
 
     export _LLVM_FLAGS_FINAL="-march=x86-64 -mtune=generic -O3 -fstack-protector -fPIC -ffat-lto-objects -pipe "
     export CC=clang
     export CXX=clang++
 
-    # Identical code folding reduces size on disk.
-    export LDFLAGS="${LDFLAGS} -Wl,--icf=all -Wl,--as-needed -Wl,-z,pack-relative-relocs"
+    export LDFLAGS="${LDFLAGS} -Wl,--icf=all -Wl,--as-needed -Wl,-z,pack-relative-relocs -Wl,-z,now"
 
     # Set flags, projects and targets to build for PGO gen/use builds.
     # We compile just the neccessities during the pgo gen build to speed things up
@@ -189,6 +192,22 @@ environment: |
         -DCMAKE_C_COMPILER=$workdir/solusBuildDir/bin/clang \
         -DCMAKE_CXX_COMPILER=$workdir/solusBuildDir/bin/clang++ \
         -DLLVM_CCACHE_BUILD=ON"
+
+    # Optionally use the bootstrapped compiler
+    if [[ ${BOOTSTRAP} == "1" ]]; then
+        echo "SETTING UP BOOTSTRAP PREPROCESSOR ARGS"
+
+        export PATH="$PKG_BUILD_DIR/../bootstrap/bin:${PATH}"
+        export CMAKE_COMMON_OPTIONS="${CMAKE_COMMON_OPTIONS} \
+            -DCMAKE_AR=$PKG_BUILD_DIR/../bootstrap/bin/llvm-ar \
+            -DCMAKE_NM=$PKG_BUILD_DIR/../bootstrap/bin/llvm-nm \
+            -DCMAKE_RANLIB=$PKG_BUILD_DIR/../bootstrap/bin/llvm-ranlib \
+            -DCMAKE_C_COMPILER=$PKG_BUILD_DIR/../bootstrap/bin/clang \
+            -DCMAKE_CXX_COMPILER=$PKG_BUILD_DIR/../bootstrap/bin/clang++ \
+            -DCLANG_TABLEGEN=$PKG_BUILD_DIR/../bootstrap/bin/clang-tblgen \
+            -DLLVM_TABLEGEN=$PKG_BUILD_DIR/../bootstrap/bin/llvm-tblgen \
+            -DLLVM_CCACHE_BUILD=ON"
+    fi
 setup      : |
     # Just annoying.
     %patch -p1 -i $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
@@ -210,6 +229,30 @@ setup      : |
         %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
         %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
     popd
+
+    ### Bootstrap compiler (optional)
+    if [[ ! -z "${PGO_GEN_BUILD}" && ${BOOTSTRAP} == "1" ]]; then
+
+        echo "BUILDING BOOTSTRAP COMPILER"
+
+        mkdir -p $PKG_BUILD_DIR/../bootstrap
+
+        cd $PKG_BUILD_DIR/../bootstrap
+
+        cmake -G Ninja $workdir/llvm \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCLANG_DEFAULT_LINKER=lld \
+            -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
+            -DENABLE_LINKER_BUILD_ID=ON \
+            -DLLVM_ENABLE_LTO=Thin \
+            ${CMAKE_X84_64_OPTIONS} \
+            -DCMAKE_C_FLAGS="$_LLVM_FLAGS_FINAL" \
+            -DCMAKE_CXX_FLAGS="$_LLVM_FLAGS_FINAL" \
+            -DLLVM_ENABLE_PROJECTS='clang;lld;llvm' \
+            -DLLVM_ENABLE_RUNTIMES='compiler-rt' \
+            -DLLVM_OPTIMIZED_TABLEGEN=ON
+        ninja %JOBS% clang compiler-rt lld llvm-profdata llvm-ar llvm-nm llvm-ranlib llvm-objcopy -v
+    fi
 build      : |
     ### PGO gen/use build for amd64.
     cmake -G Ninja -B solusBuildDir -S llvm \
