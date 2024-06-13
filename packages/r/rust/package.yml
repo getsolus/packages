@@ -1,8 +1,8 @@
 name       : rust
-version    : 1.78.0
-release    : 128
+version    : 1.79.0
+release    : 129
 source     :
-    - https://static.rust-lang.org/dist/rustc-1.78.0-src.tar.xz : 8065824f0255faa3901db8206e6f9423f6f8c07cec28bc6f2797c6c948310ece
+    - https://static.rust-lang.org/dist/rustc-1.79.0-src.tar.xz : ab826e84b8d48ec6eda3370065034dea8c006f6a946d78a9ba12bcb50e6d3c7a
 license    :
     - Apache-2.0
     - MIT
@@ -19,7 +19,12 @@ libsplit   : no
 ## Uncomment for bootstrapping
 # networking : yes
 builddeps  :
-    - pkgconfig32(sqlite3)
+    - pkgconfig(libcurl)
+    # Need libgit2 >= 1.7.2
+    # - pkgconfig(libgit2)
+    - pkgconfig(liblzma)
+    - pkgconfig(libssh2)
+    - pkgconfig(sqlite3)
     - glibc-32bit-devel
     - libgcc-32bit
     - llvm-devel
@@ -30,6 +35,9 @@ rundeps    :
 clang      : yes
 checkdeps  :
     - fakeroot-32bit
+environment: |
+    # Don't set these here, all configuration should come from config.toml or the package.yml
+    unset RUSTFLAGS
 setup      : |
     %patch -p1 -i $pkgfiles/0001-Set-correct-libdir-in-bootstrap.patch
 
@@ -40,9 +48,33 @@ setup      : |
     sed -e 's|@@LTO@@|fat|g' $pkgfiles/config.toml.in > config.toml.release
 
     # Ensure that we use the system sqlite3
-    %patch -p1 -i $pkgfiles/rustc-1.78.0-unbundle-sqlite.patch
+    %patch -p1 -d src/tools/cargo -i $pkgfiles/0001-unbundle-sqlite.patch
+    find ./vendor/libsqlite3-sys*/sqlite3/ -mindepth 1 -delete -print
+
+    # Remove unused vendored libraries
+    find ./vendor/curl-sys*/curl/ -mindepth 1 -delete -print
+    find ./vendor/*jemalloc-sys*/jemalloc/ -mindepth 1 -delete -print
+    find ./vendor/libffi-sys*/libffi/ -mindepth 1 -delete -print
+    find ./vendor/libmimalloc-sys*/c_src/mimalloc/ -mindepth 1 -delete -print
+    find ./vendor/libsqlite3-sys*/sqlcipher/ -mindepth 1 -delete -print
+    find ./vendor/libssh2-sys*/libssh2/ -mindepth 1 -delete -print
+    find ./vendor/libz-sys*/src/zlib{,-ng}/ -mindepth 1 -delete -print
+    find ./vendor/openssl-src*/openssl/ -mindepth 1 -delete -print
+
+    # Need libgit2 >= 1.7.2 in order to use the system libgit2
+    # find ./vendor/libgit2-sys*/libgit2/ -mindepth 1 -delete -print
+
+    # This only affects the transient rust-installer, but let it use our system lzma
+    find ./vendor/lzma-sys*/xz-*/ -mindepth 1 -delete -print
+    sed -i.lzma -e '/LZMA_API_STATIC/d' src/bootstrap/src/core/build_steps/tool.rs
+
+    # Fix bootstrap checking checksums for all the files we just deleted
+    find vendor -name .cargo-checksum.json -print \
+        -exec sed -i.uncheck -e 's/"files":{[^}]*}/"files":{ }/' '{}' '+'
 build      : |
+    # Force libsqlite3-sys and libssh2-sys to use the system deps
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+    export LIBSSH2_SYS_USE_PKG_CONFIG=1
 
     ## Generate rustc PGO profiling data
     mkdir $workdir/rustc-pgo-profile-data
