@@ -1,7 +1,7 @@
 # Begin /usr/share/defaults/etc/profile.d/10-xdg.sh
 
-export XDG_DATA_DIRS="/usr/share"
-export XDG_CONFIG_DIRS="/run/xdg:/etc/xdg:/usr/share/xdg:/usr/share"
+export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share/:/usr/share/}"
+export XDG_CONFIG_DIRS="${XDG_CONFIG_DIRS:-/run/xdg/:/etc/xdg/:/usr/share/xdg/}"
 
 if [ -e "/etc/locale.conf" ]; then
     . /etc/locale.conf

@@ -1,20 +1,25 @@
 # Begin /usr/share/defaults/etc/profile.d/10-path.sh
 
-export PATH="/usr/sbin:/usr/bin"
-if [ -d "/usr/local/sbin" ]; then
-  export PATH="$PATH:/usr/local/sbin"
-fi
+if [ -z ${PATH+set} ]; then
 
-if [ -d "/usr/local/bin" ]; then
-  export PATH="$PATH:/usr/local/bin"
-fi
+  NEW_PATH="/usr/sbin:/usr/bin"
+  if [ -d "/usr/local/sbin" ]; then
+    NEW_PATH="$NEW_PATH:/usr/local/sbin"
+  fi
 
-if [ -d "$HOME/bin" ]; then
-  export PATH="$HOME/bin:$PATH"
-fi
+  if [ -d "/usr/local/bin" ]; then
+    NEW_PATH="$NEW_PATH:/usr/local/bin"
+  fi
 
-if [ -d "$HOME/.local/bin" ]; then
-  export PATH="$HOME/.local/bin:$PATH"
+  if [ -d "$HOME/bin" ]; then
+    NEW_PATH="$HOME/bin:$NEW_PATH"
+  fi
+
+  if [ -d "$HOME/.local/bin" ]; then
+    NEW_PATH="$HOME/.local/bin:$NEW_PATH"
+  fi
+
+  export PATH="$NEW_PATH"
 fi
 
 # End /usr/share/defaults/etc/profile.d/10-path.sh
