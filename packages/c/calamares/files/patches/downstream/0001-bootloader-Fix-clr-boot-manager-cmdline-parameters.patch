@@ -1,0 +1,82 @@
+From 659403f283b030a7d4af6c2822efe84f5d35b2ac Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Wed, 5 Jun 2024 18:43:24 +0200
+Subject: [PATCH] bootloader: Fix clr-boot-manager cmdline parameters
+
+CBM detects most kernel parameters automatically.
+Only set the parameters not detected by CBM: `resume` and `rd.luks.uuid` for the swap partition.
+
+Co-authored-by: Evan Maddock <maddock.evan@vivaldi.net>
+---
+ src/modules/bootloader/main.py | 46 +++++++++++++++++++++++++++-------
+ 1 file changed, 37 insertions(+), 9 deletions(-)
+
+diff --git a/src/modules/bootloader/main.py b/src/modules/bootloader/main.py
+index 0a9e96598..5cbca1902 100644
+--- a/src/modules/bootloader/main.py
++++ b/src/modules/bootloader/main.py
+@@ -507,6 +507,36 @@ def get_kernels(installation_root_path):
+     return kernel_list
+ 
+ 
++def _find_swap_params(partitions):
++    """
++    Finds the swap parameters. Based on `get_kernel_params`.
++    """
++    swap_id = None
++    luks_uuid = None
++
++    for partition in partitions:
++        if partition["fs"] == "linuxswap" and not partition.get("claimed", None):
++            # Skip foreign swap
++            continue
++        has_luks = "luksMapperName" in partition
++        if partition["fs"] == "linuxswap" and not has_luks:
++            swap_id = 'UUID=' + partition["uuid"]
++
++        if partition["fs"] == "linuxswap" and has_luks:
++            swap_id = os.path.join('/dev', 'mapper', partition["luksMapperName"])
++            luks_uuid = partition["luksUuid"]
++
++    return swap_id, luks_uuid
++
++
++def _write_resume_file(path, swap_uuid, luks_uuid):
++    with open(path, "w") as resume_file:
++        if luks_uuid:
++            resume_file.write(f"rd.luks.uuid={luks_uuid}\n")
++
++        resume_file.write(f"resume={swap_uuid}\n")
++
++
+ def install_clr_boot_manager():
+     """
+     Installs clr-boot-manager as the bootloader for EFI systems
+@@ -514,17 +544,15 @@ def install_clr_boot_manager():
+     libcalamares.utils.debug("Bootloader: clr-boot-manager")
+ 
+     installation_root_path = libcalamares.globalstorage.value("rootMountPoint")
+-    kernel_config_path = os.path.join(installation_root_path, "etc", "kernel")
++    kernel_config_path = os.path.join(installation_root_path, "etc", "kernel", "cmdline.d")
+     os.makedirs(kernel_config_path, exist_ok=True)
+-    cmdline_path = os.path.join(kernel_config_path, "cmdline")
+ 
+-    # Get the kernel params
+-    uuid = get_uuid()
+-    kernel_params = " ".join(get_kernel_params(uuid))
+-
+-    # Write out the cmdline file for clr-boot-manager
+-    with open(cmdline_path, "w") as cmdline_file:
+-        cmdline_file.write(kernel_params)
++    # Write out the resume= parameter for clr-boot-manager
++    kernel_resume_file = os.path.join(kernel_config_path, "10_resume.conf")
++    partitions = libcalamares.globalstorage.value("partitions")
++    swap_id, swap_luks_uuid = _find_swap_params(partitions)
++    if swap_id:
++        _write_resume_file(kernel_resume_file, swap_id, swap_luks_uuid)
+ 
+     check_target_env_call(["clr-boot-manager", "update"])
+ 
+-- 
+2.45.1
+
