@@ -1,5 +1,6 @@
 #!/usr/bin/bash
 set -euo pipefail
+set -x
 
 # Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
 # This will be removed once we are ready to enable this by default
@@ -14,7 +15,9 @@ ORPHAN_DIR="${ORPHAN_DIR:=/var/usr-merge-orphaned-files}"
 CP="${CP:=/usr/bin/cp}"
 DIRNAME="${DIRNAME:=/usr/bin/dirname}"
 FIND="${FIND:=/usr/bin/find}"
+LN="${LN:=/usr/bin/ln}"
 MKDIR="${MKDIR:=/usr/bin/mkdir}"
+MV="${MV:=/usr/bin/mv}"
 READLINK="${READLINK:=/usr/bin/readlink}"
 RM="${RM:=/usr/bin/rm}"
 SHA256SUM="${SHA256SUM:=/usr/bin/sha256sum}"
@@ -67,14 +70,96 @@ create_dir_components () {
 
     printf "Creating $dir_name with $dir_stat permissions\n"
     # Create the directory with the defined permissions. This is allowed to fail, if it does then we orphan the file instead
-    $MKDIR --mode="$dir_stat" $dir_name || true && action="orphan"
+    $MKDIR --verbose --mode="$dir_stat" "$dir_name" || (true && action="orphan")
 }
 
-# This script takes a given file and moves it to the orphaned files directory
-# To reduce the risk of any errors occurring or file collisions we flatten the directory path and append the file hash
+# Create a symbolic link in the old location that points to the new file location. This uses atomic file operations but ultimately is a destructive operation
+create_compat_link () {
+    local old_location="$1"
+    local new_location="$2"
+
+    # Since the new location exists we can presumably checksum it
+    local file_checksum=($($SHA256SUM "$new_location"))
+    local temporary_name="${old_location}.tmp.${file_checksum}"
+
+    # If the temporary file already exists then delete it (?)
+    if test -e "$temporary_name"; then
+        $RM --verbose "$temporary_name"
+    fi
+
+    printf "Creating symlink $old_location to $new_location\n"
+    $LN --no-dereference --symbolic --verbose --relative "$new_location" "$temporary_name"
+    $MV --force --no-target-directory --verbose "$temporary_name" "$old_location"
+}
+
+# Takes three arguments, the first is the source file, the second the destination, and the third the cp arguments
+# If the source and the destination would be on the same file system then it will add a cp flag to create a hard link
+copy_or_hard_link () {
+    local file_to_move="$1"
+    local destination="$2"
+    local cp_args="$3"
+
+    local dest_parent=$($DIRNAME "$destination")
+
+    local source_device=$($STAT -c "%D" "$file_to_move")
+    local dest_device=$($STAT -c "%D" "$dest_parent")
+
+    if [[ "$source_device" == "$dest_device" ]]; then
+        cp_args="$cp_args --link"
+    fi
+
+    $CP $cp_args "$file_to_move" "$destination"
+}
+
+# Take a given file path and move it to the /usr location. We copy the file first
+#  to a temporary file and then move it into place as an atomic operation
+move_file () {
+    local file_to_move="$1"
+    local destination="$2"
+
+    # If the destination exists and is directory then orphan the file
+    if test -d "$destination"; then
+        action="orphan"
+        return 0
+    fi
+
+    # If the destination exists and is a regular file then check the checksum of it, if they're the same then we orphan the file.
+    # If they are the same we can just skip the file
+    local file_checksum=($($SHA256SUM "$file_to_move"))
+    if test -f "$destination"; then
+        local dest_checksum=($($SHA256SUM "$destination"))
+        if [[ "$file_checksum" != "$dest_checksum" ]]; then
+            action="orphan"
+        fi
+        return 0
+    fi
+
+    local temporary_name="${destination}.tmp.${file_checksum}"
+
+    # If the temporary file already exists then delete it. We could checksum it but better to redo the copy operation
+    if test -e "$temporary_name"; then
+        printf "$temporary_name already exists, deleting it\n"
+        $RM --verbose "$temporary_name"
+    fi
+
+    printf "Copying file $file_to_move to $temporary_name\n"
+    copy_or_hard_link "$file_to_move" "$temporary_name" "--archive --verbose"
+
+    # Check if the destination is a symbolic link, if so clobber it
+    local mv_mode="--no-clobber"
+    if test -L "$destination"; then
+        mv_mode="--force"
+    fi
+
+    $MV $mv_mode --no-target-directory --verbose "$temporary_name" "$destination"
+    create_compat_link "$file_to_move" "$destination"
+}
+
+# Take a given file and moves it to the orphaned files directory. To reduce the risk of any errors occurring or file collisions
+#  we flatten the directory path and append the file hash. An error here will halt the script
 orphan_file () {
     if ! test -d "$ORPHAN_DIR"; then
-        $MKDIR "$ORPHAN_DIR"
+        $MKDIR --verbose "$ORPHAN_DIR"
     fi
 
     local file_to_orphan="$1"
@@ -91,22 +176,57 @@ orphan_file () {
 
         # The orphaned file exists but does not have the correct checksum. Assume it's an incomplete copy
         printf "Deleting previously orphaned file $new_file_name\n"
-        $RM -v "$new_file_name"
+        $RM --verbose "$new_file_name"
     fi
 
     printf "Copying file $file_to_orphan to $new_file_name\n"
-    $CP -av "$file_to_orphan" "$new_file_name"
+    copy_or_hard_link "$file_to_orphan" "$new_file_name" "--archive --verbose"
+
+    # TODO: For now we're not deleting orphaned files since we want the script to fail so we can find any edge cases
+}
+
+# Detect whether or not the given directory contains only 
+detect_ready_for_merge () {
+    local dir_name="$1"
+
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <($FIND "$dir_name" -type f -print0)
+
+    if [ ${#file_list[@]} -eq 0 ]; then
+        printf "$dir_name is ready for merge\n"
+        return 0
+    fi
+    return 1
+}
+
+# Usr-merge a given directory
+usr_merge_directory () {
+    local dir_name="$1"
+    local usr_location="usr$dir_name"
+
+    local temporary_name="${dir_name}.tmp-usr-merge"
+
+    # Delete the temporary file if it already exists
+    if test -L "$temporary_name"; then
+        $RM --verbose "$temporary_name"
+    fi
+
+    printf "Usr-merging $dir_name to $usr_location\n"
+    $LN --no-dereference --symbolic --verbose "$usr_location" "$temporary_name"
+    $MV --force --exchange --no-target-directory --verbose "$temporary_name" "$dir_name"
+    $RM --verbose --recursive "$temporary_name"
 }
 
 merge_dir () {
-    if needs_to_be_merged $1; then
-        echo ""
-
+    local dir_name="$1"
+    if needs_to_be_merged "$dir_name"; then
         # Get list of files that are not symlinks
         file_list=()
         while IFS=  read -r -d $'\0'; do
             file_list+=("$REPLY")
-        done < <($FIND $1 -type f -print0)
+        done < <($FIND "$dir_name" -type f -print0)
 
         for old_location in "${file_list[@]}"
         do
@@ -115,9 +235,18 @@ merge_dir () {
             action="move"
             create_dir_components $($DIRNAME "$new_location")
 
-            # This is where I'm stopped currently, we need to correctly handle the logic of moving files here
-            orphan_file "$old_location"
+            if [[ "$action" == "move" ]]; then
+                move_file "$old_location" "$new_location"
+            fi
+
+            if [[ "$action" == "orphan" ]]; then
+                orphan_file "$old_location"
+            fi
         done
+
+        if detect_ready_for_merge "$dir_name"; then
+            usr_merge_directory "$dir_name"
+        fi
     fi
 }
 
