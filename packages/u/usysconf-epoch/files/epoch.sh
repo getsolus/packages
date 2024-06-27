@@ -130,6 +130,8 @@ move_file () {
         local dest_checksum=($($SHA256SUM "$destination"))
         if [[ "$file_checksum" != "$dest_checksum" ]]; then
             action="orphan"
+        else
+            create_compat_link "$file_to_move" "$destination"
         fi
         return 0
     fi
