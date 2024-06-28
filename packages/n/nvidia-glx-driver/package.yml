@@ -1,10 +1,10 @@
 # If you are updating this package please update nvidia-beta-driver as well if that package is on a lesser version than this one.
 # nvidia-beta-driver should always be ahead of nvidia-glx-driver version-wise or at the same version, never behind.
 name       : nvidia-glx-driver
-version    : 550.90.07
-release    : 526
+version    : '555.58'
+release    : 527
 source     :
-    - https://us.download.nvidia.com/XFree86/Linux-x86_64/550.90.07/NVIDIA-Linux-x86_64-550.90.07.run : 51acf579d5a9884f573a1d3f522e7fafa5e7841e22a9cec0b4bbeae31b0b9733
+    - https://us.download.nvidia.com/XFree86/Linux-x86_64/555.58/NVIDIA-Linux-x86_64-555.58.run : 6d7bdc5e483691066e08d29164ce50a136938c5e25d93b6bb0a52fca2723e5ec
 extract    : no
 homepage   : https://nvidia.com
 license    :
@@ -63,10 +63,14 @@ patterns   :
         - /usr/lib32
         - /usr/share/metainfo/nvidia-32bit.metainfo.xml
     - main :
-        - /lib/modules/*.lts
+        - /lib64/modules/*.lts
+        - /usr/lib64/kernel/initrd-com.solus-project.lts.*
+        - /usr/lib64/modules/*.lts
         - /usr/share/metainfo/nvidia-lts.metainfo.xml
     - current :
-        - /lib/modules/*.current
+        - /lib64/modules/*.current
+        - /usr/lib64/kernel/initrd-com.solus-project.current.*
+        - /usr/lib64/modules/*.current
         - /usr/share/metainfo/nvidia-current.metainfo.xml
 strip      : no
 debug      : no
@@ -82,7 +86,9 @@ builddeps  :
     - linux-lts
     - linux-lts-headers
 permanent  :
-    - /lib/modules
+    - /lib64/modules
+    - /usr/lib64/kernel
+    - /usr/lib64/modules
 setup      : |
     sh $sources/NVIDIA-Linux-x86_64-$version.run --extract-only
     pushd NVIDIA*
@@ -99,12 +105,12 @@ build      : |
     %make -C current_kernel SYSSRC="/lib/modules/%kernel_version_current%/build"
 install    : |
     # Install LTS kernel drivers
-    install -D -d -m 00755 $installdir/lib/modules/%kernel_version_lts%/kernel/drivers/video
-    install -m 00644 lts_kernel/*.ko $installdir/lib/modules/%kernel_version_lts%/kernel/drivers/video/.
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video
+    install -m 00644 lts_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video/.
 
     # Install current kernel drivers
-    install -D -d -m 00755 $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video
-    install -m 00644 current_kernel/*.ko $installdir/lib/modules/%kernel_version_current%/kernel/drivers/video/.
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video
+    install -m 00644 current_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video/.
 
     # Prepare modaliases from the LTS kernel
     sh -e $pkgfiles/nvidia_supported nvidia ${package} README.txt lts_kernel/nvidia/nv-kernel.o_binary > modalias
@@ -155,7 +161,7 @@ install    : |
     redo_libs $installdir/usr/lib{32,64}/lib*.so.%version%
 
     # GSP Firmware
-    install -Dm644 -t "$installdir/lib/firmware/nvidia/$version/" firmware/*.bin
+    install -Dm644 -t "$installdir/usr/lib64/firmware/nvidia/$version/" firmware/*.bin
 
     # Move vdpau into the final position
     install -D -d -m 00755 $installdir/usr/lib{32,64}/vdpau
@@ -252,5 +258,66 @@ install    : |
     # Check for broken symlinks
     %symlink_check
 
+    # Generate per-kernel initrd with embedded nvidia kernel drivers
+    shopt -s extglob
+    for i in current lts; do
+        mkdir init-$i && pushd init-$i
+        # Copy from what we have in the installdir already
+        cp -ra $installdir/* .
+        # cleanup, don't need anything besides the modules for the chosen kernel
+        tmp=$(mktemp -d)
+        mv usr/lib64/modules $tmp
+        rm -rfv *
+        install -dm00755 usr/lib64
+        mv $tmp/* usr/lib64/
+        rm -rv usr/lib64/modules/!(*.$i)
+
+        # Strip the debug symobls (we can get them from the normal kernel modules).
+        # Don't compress the kernel modules here so that the final archive is slightly smaller
+        find . -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+
+        # We need this because we can't share path inodes
+        mkdir nvidia && pushd nvidia
+        find ../. -name '*.ko' -print -exec mv {} . \;
+        popd
+        rm -rf lib
+        # Create the initrd
+        find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
+
+        # TODO Sign it
+        popd
+    done
+
+    # Install it (do it here so that we don't copy this again during the second loop of the above for)
+    kernel_current=%kernel_version_current%
+    current_string="${kernel_current/.current}"
+    install -D -m 00644 $workdir/initrd-current $installdir/usr/lib64/kernel/initrd-com.solus-project.current.$current_string.nvidia
+    kernel_lts=%kernel_version_lts%
+    lts_string="${kernel_lts/.lts}"
+    install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
+
+    # Generate single initrd (to be shared between current and lts) with the GSP firmware
+    mkdir -p init-firmware/nvidia-firmware && pushd init-firmware
+    cp -ra $installdir/usr/lib64/firmware/nvidia/ nvidia-firmware/
+    find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
+    install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd-com.solus-project.nvidia-firmware
+
     # Compress modules with zstd. TODO fix this so that we're able to capture the debug symbols (needs ypkg changes)
     find "$installdir" -name '*.ko' -exec strip --strip-unneeded {} \; -exec zstd -19 {} \; -exec rm -v {} \;
+
+    # Usr-merge
+    install -dm00755 $installdir/lib64
+    pushd $installdir/usr
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find lib64/modules -type f -print0)
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find lib64/firmware -type f -print0)
+    for file in "${file_list[@]}"; do
+        parent=$(dirname "$file")
+        install -dm00755 "$installdir/$parent"
+        ln -srv "$installdir/usr/$file" "$installdir/$file"
+    done
+    popd
