@@ -1,0 +1,114 @@
+diff --git a/pisi/__init__.py b/pisi/__init__.py
+index 23ea996..f02c90e 100644
+--- a/pisi/__init__.py
++++ b/pisi/__init__.py
+@@ -29,7 +29,7 @@ except:
+     def translate(msg): return msg
+ 
+ 
+-__version__ = "3.12.1"
++__version__ = "3.12.2"
+ 
+ __all__ = [ 'api', 'configfile', 'db']
+ 
+diff --git a/pisi/operations/helper.py b/pisi/operations/helper.py
+index c311dbc..b459c60 100644
+--- a/pisi/operations/helper.py
++++ b/pisi/operations/helper.py
+@@ -42,6 +42,19 @@ def reorder_base_packages(order):
+         ctx.ui.info(_("install_order: %s" % install_order))
+     return install_order
+ 
++def reorder_base_packages_dummy(order):
++    """Dummy function that doesn't actually re-order system.base in front.
++
++       We now use OrderedSets, which keep the original topological sort,
++       so this shouldn't actually be necessary now.
++
++       This also implies that the only function of system.base is for the
++       packages in it to be un-removable.
++    """
++    if len(order) > 1 and ctx.config.get_option("debug"):
++        ctx.ui.info(_("install_order including system.base deps: %s" % order))
++    return order
++
+ def check_conflicts(order, packagedb):
+     """check if upgrading to the latest versions will cause havoc
+     done in a simple minded way without regard for dependencies of
+diff --git a/pisi/operations/install.py b/pisi/operations/install.py
+index b63d871..1753c9e 100644
+--- a/pisi/operations/install.py
++++ b/pisi/operations/install.py
+@@ -27,24 +27,14 @@ import pisi.ui as ui
+ import pisi.db
+ 
+ BASELAYOUT_PKG = 'baselayout'
+-EOPKG_PKG = 'eopkg'
+ 
+-def plan_deterministic_install_order(order):
+-    """Ensure that baselayout and eopkg are put at the end of any topological sort that includes them."""
++def reorder_baselayout(order):
++    """Ensure that baselayout is put at the end of any topological sort that includes it."""
+ 
+     # save cycles
+     if len(order) <= 1:
+         return order
+ 
+-    # when eopkg is in the order, move it to the end of the order (since the order gets reversed).
+-    # this is useful when file ownership between it and pisi changes.
+-    if EOPKG_PKG in order:
+-        order.remove(EOPKG_PKG)
+-        order.append(EOPKG_PKG)
+-        # An alternative is to _force_ eopkg to be upgraded/installed by itself, such that the next
+-        # operation is guaranteed to be using the new eopkg version. This option needs to stay on the table.
+-        #return [EOPKG_PKG]
+-
+     # always order baselayout _last_ (since the order gets reversed)
+     if BASELAYOUT_PKG in order:
+         order.remove(BASELAYOUT_PKG)
+@@ -274,7 +264,7 @@ def install_pkg_files(package_URIs, reinstall = False):
+         conflicts = operations.helper.check_conflicts(order, packagedb)
+         if conflicts:
+             operations.remove.remove_conflicting_packages(conflicts)
+-    order = plan_deterministic_install_order(order)
++    order = reorder_baselayout(order)
+     order.reverse()
+     ctx.ui.info(_('Installation order: ') + util.strlist(order) )
+ 
+@@ -342,9 +332,9 @@ def plan_install_pkg_names(A):
+     order = G_f.topological_sort()
+     if len(order) > 1 and ctx.config.get_option("debug"):
+         ctx.ui.info(_("topological_sort order: %s" % order))
+-    order = plan_deterministic_install_order(order)
++    order = reorder_baselayout(order)
+     if len(order) > 1 and ctx.config.get_option("debug"):
+-        ctx.ui.info(_("deterministic order: %s" % order))
++        ctx.ui.info(_("baselayout last: %s" % order))
+     order.reverse()
+     if len(order) > 1 and ctx.config.get_option("debug"):
+         ctx.ui.info(_("final order.reverse(): %s" % order))
+diff --git a/pisi/operations/upgrade.py b/pisi/operations/upgrade.py
+index a4a693c..30f68f8 100644
+--- a/pisi/operations/upgrade.py
++++ b/pisi/operations/upgrade.py
+@@ -335,7 +335,7 @@ def plan_upgrade(A, force_replaced=True, replaces=None):
+         G_f.write_graphviz(sys.stdout)
+ 
+     order = G_f.topological_sort()
+-    order = operations.install.plan_deterministic_install_order(order)
++    order = operations.install.reorder_baselayout(order)
+     order.reverse()
+     return G_f, order
+ 
+@@ -371,9 +371,9 @@ def upgrade_base(A = set()):
+             install_and_upgrade_order = set(install_order + upgrade_order)
+             if len(install_and_upgrade_order) > 1 and ctx.config.get_option("debug"):
+                 ctx.ui.info(_("installs and upgrades (unordered): %s" % install_and_upgrade_order))
+-            install_and_upgrade_order = operations.install.plan_deterministic_install_order(install_and_upgrade_order)
++            install_and_upgrade_order = operations.install.reorder_baselayout(install_and_upgrade_order)
+             if len(install_and_upgrade_order) > 1 and ctx.config.get_option("debug"):
+-                ctx.ui.info(_("installs and upgrades (deterministic order): %s" % install_and_upgrade_order))
++                ctx.ui.info(_("installs and upgrades (baselayout last): %s" % install_and_upgrade_order))
+             # return packages that must be added to any installation
+             return install_and_upgrade_order
+         else:
