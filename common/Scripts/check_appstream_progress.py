@@ -14,12 +14,18 @@ APPSTREAM_DATA_DIRS = [
     pathlib.Path("/usr/share/appdata"),
 ]
 
+IGNORE_LIST_PATH = pathlib.Path.joinpath(
+    pathlib.Path(__file__).parent, "appstream_ignored_packages.txt"
+)
+
 
 def main():
     parser = argparse.ArgumentParser(
         prog="check_appstream_progress",
         description="Scan either the whole Solus packages repo or a single pspec.xml "
-        "to check for .desktop files and appstream metadata.",
+        "to check for .desktop files and appstream metadata."
+        "Place the names of packages to be ignored (such as internal pieces of desktop environments,"
+        " for example) in a file called 'appstream_ignored_packages.txt' next to this script.",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(
@@ -27,7 +33,14 @@ def main():
         action="store_true",
         dest="package_names_only",
         default=False,
-        help="Output only the names of packages which need appstream metainfo added to them",
+        help="Output only the names of packages which need appstream metainfo added to them, suppressing info messages",
+    )
+    parser.add_argument(
+        "--no-ignorelist",
+        action="store_true",
+        dest="no_ignorelist",
+        default=False,
+        help="Report all packages, even if they are present in appstream_ignored_packages.txt",
     )
     parser.add_argument(
         "packages_or_pspec_path",
@@ -48,6 +61,26 @@ Text explaining these results is also printed to stdout.""",
             if not args.package_names_only:
                 print("Directory detected, scanning whole repository...")
             repo_info = check_whole_repo(pathlib.Path(sys.argv[1]))
+            if not args.no_ignorelist:
+                if os.path.isfile(IGNORE_LIST_PATH):
+                    with open(IGNORE_LIST_PATH, "r") as ignore_file:
+                        if not args.package_names_only:
+                            print(f"Ignoring packages in {IGNORE_LIST_PATH}")
+                        ignore_list = [
+                            package
+                            for package in ignore_file.read().splitlines()
+                            if not package.startswith("#")
+                        ]
+                        repo_info["problematic_packages"] = [
+                            package
+                            for package in repo_info["problematic_packages"]
+                            if package not in ignore_list
+                        ]
+                else:
+                    if not args.package_names_only:
+                        print(
+                            f"WARNING: No ignore list file detected at {IGNORE_LIST_PATH}"
+                        )
             if not args.package_names_only:
                 print(
                     f'Count of packages shipping .desktop file: {len(repo_info["packages_with_desktop_file"])}'
