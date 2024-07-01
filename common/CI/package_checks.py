@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fnmatch
 import glob
 import json
 import logging
@@ -87,8 +88,16 @@ class FreezeConfig:
 
 
 @dataclass
+class StaticLibsConfig:
+    """Configuration for the 'StaticLibs' check."""
+    allowed_packages: List[str]
+    allowed_files: List[str]
+
+
+@dataclass
 class Config:
     freeze: FreezeConfig
+    static_libs: StaticLibsConfig
 
     @staticmethod
     def load(stream: Any) -> 'Config':
@@ -96,6 +105,7 @@ class Config:
 
     def __post_init__(self) -> None:
         self.freeze = FreezeConfig(**self.freeze)  # type: ignore
+        self.static_libs = StaticLibsConfig(**self.static_libs)  # type: ignore
 
 
 class Git:
@@ -268,11 +278,11 @@ class PullRequestCheck:
 
     @property
     def package_files(self) -> List[str]:
-        return self._filter_packages(self.files)
+        return self.filter_files(*self._package_files)
 
-    def _filter_packages(self, files: List[str]) -> List[str]:
-        return [f for f in files
-                if os.path.basename(f) in self._package_files]
+    def filter_files(self, *allowed: str) -> List[str]:
+        return [f for f in self.files
+                if os.path.basename(f) in allowed]
 
     def _path(self, path: str) -> str:
         return os.path.join(self.git.root, path)
@@ -631,6 +641,40 @@ class Pspec(PullRequestCheck):
         return self.load_pspec_xml(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
+class StaticLibs(PullRequestCheck):
+    """
+    Checks if any static libraries have been included.
+
+    Static libraries can be allowed by adding them to the allow list.
+    """
+    _error = 'A static library has been included in the package.'
+    _level = Level.ERROR
+
+    def run(self) -> List[Result]:
+        return [self._result(pspec, file)
+                for pspec in self.filter_files('pspec_x86_64.xml')
+                if not self._allowed_package(pspec)
+                for file in self.load_pspec_xml(pspec).files
+                if self._check(file)]
+
+    def _result(self, pspec: str, file: str) -> Result:
+        return Result(message=f'A static library has been included in the package: `{file}`. '
+                              'Whitelist the package or file in `common/CI/config.yaml` if this is desired.',
+                      file=pspec, line=self.file_line(pspec, f'.*{file}.*'), level=self._level)
+
+    def _check(self, file: str) -> bool:
+        return (file.startswith('/usr/lib') and
+                file.endswith('.a') and
+                not self._allowed_path(file))
+
+    def _allowed_package(self, file: str) -> bool:
+        return self.package_for(file) in self.config.static_libs.allowed_packages
+
+    def _allowed_path(self, file: str) -> bool:
+        return any([fnmatch.filter([file], pattern)
+                    for pattern in self.config.static_libs.allowed_files])
+
+
 class SystemDependencies(PullRequestCheck):
     _components = ['system.base', 'system.devel']
 
@@ -726,6 +770,7 @@ class Checker:
         Patch,
         Pspec,
         SPDXLicense,
+        StaticLibs,
         SystemDependencies,
         UnwantedFiles,
     ]
