@@ -1,0 +1,153 @@
+From b2e621c98bcb045396c6d40dd5c3e827044e522b Mon Sep 17 00:00:00 2001
+From: Lucas Burlingham <lucas@lucasburlingham.me>
+Date: Wed, 6 Apr 2022 07:39:45 -0400
+Subject: [PATCH 01/11] Check for package managers, not distros
+
+Rework unsnap to work based on package managers instead of distros.
+Supported package managers are apt, pacman, zypper, dnf, yum and eopkg.
+
+Co-authored-by: Silke Hofstra <silke@slxh.eu>
+---
+ unsnap | 80 +++++++++++++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 62 insertions(+), 18 deletions(-)
+
+diff --git a/unsnap b/unsnap
+index d15cdce..c7f2db3 100755
+--- a/unsnap
++++ b/unsnap
+@@ -30,7 +30,7 @@ function setup_environment() {
+     SHEBANG="#!/usr/bin/env bash"
+     RECOMMENDREBOOT="no"
+     REBOOTTEXT="WARNING: Please logout/in or reboot, to ensure applications appear in your desktop menu"
+-    DISTRO="unknown"
++    PACKAGEMGR="unknown"
+ }
+ 
+ function create_logdir() {
+@@ -99,17 +99,46 @@ function generate_flatpak_install_script() {
+     # to run script using sudo or root.
+     echo "INFO: Generating flatpak installer script in $INSTALLFLATPACKSCRIPT" | tee -a "$LOGFILE"
+     echo "$SHEBANG" > "$INSTALLFLATPACKSCRIPT"
+-    case $DISTRO in
+-        debian|ubuntu|linuxmint|pop|elementary|zorin)
++    echo "# Documentation: https://flatpak.org/setup/" >> "$INSTALLFLATPACKSCRIPT"
++    case $PACKAGEMGR in
++        apt)
+         cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
+-# Documentation: https://flatpak.org/setup/
+ sudo apt update
+ sudo apt install -y flatpak
+ # sudo apt install gnome-software-plugin-flatpak
++EOT
++            ;;
++        pacman)
++        cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
++sudo pacman -Syu
++sudo pacman -S flatpak
++EOT
++            ;;
++        zypper)
++        cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
++sudo zypper refresh
++sudo zypper install flatpak
++EOT
++            ;;
++        dnf)
++        cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
++sudo dnf update
++sudo dnf install flatpak
++EOT
++            ;;
++        yum)
++        cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
++sudo yum update
++sudo yum install flatpak
++EOT
++            ;;
++        eopkg)
++        cat <<EOT >> "$INSTALLFLATPACKSCRIPT"
++sudo eopkg install flatpak
+ EOT
+             ;;
+         *)
+-            echo "ERROR: Unable to generate flatpak install script. Unimplemented distro." | tee -a "$LOGFILE"
++            echo "ERROR: Unable to generate flatpak install script. Unimplemented Package Manager." | tee -a "$LOGFILE"
+             exit 5
+     esac
+     RECOMMENDREBOOT="yes"
+@@ -186,12 +215,27 @@ function generate_remove_snapd_script() {
+     echo "INFO: Generating snapd removal script in $REMOVESNAPDSCRIPT" | tee -a "$LOGFILE"
+     echo "$SHEBANG" > "$REMOVESNAPDSCRIPT" 
+     echo "echo Removing snapd" >> "$REMOVESNAPDSCRIPT" 
+-    case $DISTRO in
+-        debian|ubuntu|linuxmint|pop|elementary|zorin)
++    case $PACKAGEMGR in
++        apt)
+             echo "sudo apt remove snapd" >> "$REMOVESNAPDSCRIPT"
+             ;;
++        pacman)
++            echo "sudo pacman -Rsn snapd" >> "$REMOVESNAPDSCRIPT"
++            ;;
++        zypper)
++            echo "sudo zypper remove snapd" >> "$REMOVESNAPDSCRIPT"
++            ;;
++        dnf)
++            echo "sudo dnf remove snapd" >> "$REMOVESNAPDSCRIPT"
++            ;;
++        yum)
++            echo "sudo yum remove snapd" >> "$REMOVESNAPDSCRIPT"
++            ;;
++        eopkg)
++            echo "sudo eopkg remove snapd" >> "$REMOVESNAPDSCRIPT"
++            ;;
+         *)
+-            echo "ERROR: Unable to generate snapd removal script. Unimplemented distro." | tee -a "$LOGFILE"
++            echo "ERROR: Unable to generate snapd removal script. Unimplemented package manager." | tee -a "$LOGFILE"
+     esac
+     chmod +x "$REMOVESNAPDSCRIPT"
+ }
+@@ -241,21 +285,20 @@ function check_for_flathub() {
+     fi
+ }
+ 
+-function determine_distro() {
+-    # Figure out what distro we're running on so we can use appropriate commands
++function determine_packagemanager() {
++    # Figure out what package manager is base to the current system on so we can use appropriate commands
+     # later for installing / removing snapd and installing flatpak
+-    # TODO: Add more distros
+-    CANDIDATE=$(grep -w ID /etc/os-release | awk -F "=" '{ print $2} ')
+-    case $CANDIDATE in
+-        debian|ubuntu|linuxmint|pop|elementary|zorin)
+-            DISTRO="$CANDIDATE"
++    PACKAGEMGR=$(command -v {apt,pacman,zypper,dnf,eopkg} | sed "s/.*\///")
++    case $PACKAGEMGR in
++        apt|pacman|zypper|dnf|yum|eopkg)
++            PACKAGEMGR="$PACKAGEMGR"
+             ;;
+         *)
+-            echo "ERROR: Running on unknown distro, '$CANDIDATE' aborting" | tee -a "$LOGFILE"
++            echo "ERROR: Could not determine appropriate package manager, '$PACKAGEMGR' aborting" | tee -a "$LOGFILE"
+             exit 2
+             ;;
+     esac
+-    echo "INFO: Detected $DISTRO" | tee -a "$LOGFILE"
++    echo "INFO: Detected $PACKAGEMGR as package manager" | tee -a "$LOGFILE"
+ }
+ 
+ function get_installed_snaps() {
+@@ -346,9 +389,10 @@ else
+     display_warnings
+     create_logdir
+ fi
+-determine_distro
++
+ check_for_snap # this should be universal, so we can check for the binary earlier for check_snap
+ check_for_flatpak # this should be universal check maybe, so it can be checked in "check_flatpak"
++determine_packagemanager
+ get_installed_snaps
+ generate_backup_script
+ generate_packages_install_script
+-- 
+2.45.2
+
