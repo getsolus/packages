@@ -1,6 +1,6 @@
 name       : openrazer
 version    : 3.8.0
-release    : 321
+release    : 322
 source     :
     - https://github.com/openrazer/openrazer/archive/v3.8.0.tar.gz : 721955ed59ff4522077ddfaea610e79ad62bd48ec80c858944926e5b771e79b5
 license    : GPL-2.0-or-later
@@ -30,11 +30,16 @@ builddeps  :
     - linux-lts-headers
 patterns   :
     - common : /*
-    - main : /lib/modules/*.lts
-    - current : /lib/modules/*.current
+    - main :
+        - /lib64/modules/*.lts
+        - /usr/lib64/modules/*.lts
+    - current :
+        - /lib64/modules/*.current
+        - /usr/lib64/modules/*.current
     - modaliases : /usr/share/linux-driver-management/modaliases
 permanent  :
-    - /lib/modules
+    - /lib64/modules
+    - /usr/usr/lib64/modules
 rundeps    :
     - common :
         - numpy
@@ -64,11 +69,11 @@ setup      : |
 build      : |
     pushd lts-build
     KVER=%kernel_version_lts%
-    %make KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid
+    %make KERNELDIR=/usr/lib64/modules/$KVER/build MODULEDIR=/usr/lib64/modules/$KVER/kernel/drivers/hid
     popd
     pushd current-build
     KVER=%kernel_version_current%
-    %make KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid
+    %make KERNELDIR=/usr/lib64/modules/$KVER/build MODULEDIR=/usr/lib64/modules/$KVER/kernel/drivers/hid
     popd
 
     # Generate modaliases from the LTS tree
@@ -78,15 +83,15 @@ build      : |
 install    : |
     pushd lts-build
     KVER=%kernel_version_lts%
-    install -d -m 00644 $installdir/lib/modules/$KVER/kernel/drivers/hid
-    %make install_i_know_what_i_am_doing KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
+    install -d -m 00644 $installdir/usr/lib64/modules/$KVER/kernel/drivers/hid
+    %make install_i_know_what_i_am_doing KERNELDIR=/usr/lib64/modules/$KVER/build MODULEDIR=/usr/lib64/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
     popd
     # Razer's build system really flops when things already exist.. Autotools wouldn't hurt.
-    rm -rf $installdir/usr
+    rm -rfv $installdir/usr/{lib,share}
     pushd current-build
     KVER=%kernel_version_current%
-    install -d -m 00644 $installdir/lib/modules/$KVER/kernel/drivers/hid
-    %make install_i_know_what_i_am_doing KERNELDIR=/lib/modules/$KVER/build MODULEDIR=/lib/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
+    install -d -m 00644 $installdir/usr/lib64/modules/$KVER/kernel/drivers/hid
+    %make install_i_know_what_i_am_doing KERNELDIR=/usr/lib64/modules/$KVER/build MODULEDIR=/usr/lib64/modules/$KVER/kernel/drivers/hid DESTDIR=$installdir
     popd
 
     # Use example file as default configuration
@@ -97,3 +102,17 @@ install    : |
 
     # Compress modules with zstd
     find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    # Usr-merge
+    install -dm00755 $installdir/lib64
+    pushd $installdir/usr
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find lib64/modules -type f -print0)
+    for file in "${file_list[@]}"; do
+        parent=$(dirname "$file")
+        install -dm00755 "$installdir/$parent"
+        ln -srv "$installdir/usr/$file" "$installdir/$file"
+    done
+    popd

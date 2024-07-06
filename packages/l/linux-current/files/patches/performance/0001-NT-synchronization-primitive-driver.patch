@@ -1,62 +1,49 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: Elizabeth Figura <zfigura@codeweavers.com>
-Date: Mon, 19 Feb 2024 16:38:02 -0600
-Subject: [PATCH] NT synchronization primitive driver
+From: Peter Jung <admin@ptr1337.dev>
+Date: Thu, 27 Jun 2024 16:53:18 +0200
+Subject: [PATCH] ntsync
 
-This patch series introduces a new char misc driver, /dev/ntsync, which is used
-to implement Windows NT synchronization primitives.
-
- Documentation/userspace-api/index.rst              |    1 +
- Documentation/userspace-api/ioctl/ioctl-number.rst |    2 +
- Documentation/userspace-api/ntsync.rst             |  399 ++++++
- MAINTAINERS                                        |    9 +
- drivers/misc/Kconfig                               |   11 +
- drivers/misc/Makefile                              |    1 +
- drivers/misc/ntsync.c                              | 1159 ++++++++++++++++
- include/uapi/linux/ntsync.h                        |   62 +
- tools/testing/selftests/Makefile                   |    1 +
- tools/testing/selftests/drivers/ntsync/Makefile    |    8 +
- tools/testing/selftests/drivers/ntsync/config      |    1 +
- tools/testing/selftests/drivers/ntsync/ntsync.c    | 1407 ++++++++++++++++++++
- 12 files changed, 3061 insertions(+)
+Signed-off-by: Peter Jung <admin@ptr1337.dev>
 ---
  Documentation/userspace-api/index.rst         |    1 +
  .../userspace-api/ioctl/ioctl-number.rst      |    2 +
- Documentation/userspace-api/ntsync.rst        |  399 +++++
+ Documentation/userspace-api/ntsync.rst        |  398 +++++
  MAINTAINERS                                   |    9 +
  drivers/misc/Kconfig                          |   11 +
  drivers/misc/Makefile                         |    1 +
- drivers/misc/ntsync.c                         | 1159 ++++++++++++++
+ drivers/misc/ntsync.c                         | 1232 +++++++++++++++
  include/uapi/linux/ntsync.h                   |   62 +
  tools/testing/selftests/Makefile              |    1 +
- .../testing/selftests/drivers/ntsync/Makefile |    8 +
+ .../selftests/drivers/ntsync/.gitignore       |    1 +
+ .../testing/selftests/drivers/ntsync/Makefile |    7 +
  tools/testing/selftests/drivers/ntsync/config |    1 +
  .../testing/selftests/drivers/ntsync/ntsync.c | 1407 +++++++++++++++++
- 12 files changed, 3061 insertions(+)
+ 13 files changed, 3133 insertions(+)
  create mode 100644 Documentation/userspace-api/ntsync.rst
  create mode 100644 drivers/misc/ntsync.c
  create mode 100644 include/uapi/linux/ntsync.h
+ create mode 100644 tools/testing/selftests/drivers/ntsync/.gitignore
  create mode 100644 tools/testing/selftests/drivers/ntsync/Makefile
  create mode 100644 tools/testing/selftests/drivers/ntsync/config
  create mode 100644 tools/testing/selftests/drivers/ntsync/ntsync.c
 
 diff --git a/Documentation/userspace-api/index.rst b/Documentation/userspace-api/index.rst
-index 09f61bd2ac2e..f5a72ed27def 100644
+index afecfe3cc4a86..d5745a500fa7b 100644
 --- a/Documentation/userspace-api/index.rst
 +++ b/Documentation/userspace-api/index.rst
-@@ -34,6 +34,7 @@ place where this information is gathered.
-    tee
-    isapnp
-    dcdbas
+@@ -62,6 +62,7 @@ Everything else
+    vduse
+    futex2
+    perf_ring_buffer
 +   ntsync
  
  .. only::  subproject and html
  
 diff --git a/Documentation/userspace-api/ioctl/ioctl-number.rst b/Documentation/userspace-api/ioctl/ioctl-number.rst
-index 457e16f06e04..2f5c6994f042 100644
+index c472423412bf2..a141e8e65c5d3 100644
 --- a/Documentation/userspace-api/ioctl/ioctl-number.rst
 +++ b/Documentation/userspace-api/ioctl/ioctl-number.rst
-@@ -173,6 +173,8 @@ Code  Seq#    Include File                                           Comments
+@@ -174,6 +174,8 @@ Code  Seq#    Include File                                           Comments
  'M'   00-0F  drivers/video/fsl-diu-fb.h                              conflict!
  'N'   00-1F  drivers/usb/scanner.h
  'N'   40-7F  drivers/block/nvme.c
@@ -67,10 +54,10 @@ index 457e16f06e04..2f5c6994f042 100644
  'P'   60-6F  sound/sscape_ioctl.h                                    conflict!
 diff --git a/Documentation/userspace-api/ntsync.rst b/Documentation/userspace-api/ntsync.rst
 new file mode 100644
-index 000000000000..202c2350d3af
+index 0000000000000..767844637a7df
 --- /dev/null
 +++ b/Documentation/userspace-api/ntsync.rst
-@@ -0,0 +1,399 @@
+@@ -0,0 +1,398 @@
 +===================================
 +NT synchronization primitive driver
 +===================================
@@ -94,10 +81,11 @@ index 000000000000..202c2350d3af
 +semaphores, mutexes, and events.
 +
 +A semaphore holds a single volatile 32-bit counter, and a static 32-bit
-+integer denoting the maximum value. It is considered signaled when the
-+counter is nonzero. The counter is decremented by one when a wait is
-+satisfied. Both the initial and maximum count are established when the
-+semaphore is created.
++integer denoting the maximum value. It is considered signaled (that is,
++can be acquired without contention, or will wake up a waiting thread)
++when the counter is nonzero. The counter is decremented by one when a
++wait is satisfied. Both the initial and maximum count are established
++when the semaphore is created.
 +
 +A mutex holds a volatile 32-bit recursion count, and a volatile 32-bit
 +identifier denoting its owner. A mutex is considered signaled when its
@@ -117,10 +105,11 @@ index 000000000000..202c2350d3af
 +driver does not actually validate that a calling thread provides
 +consistent or unique identifiers.
 +
-+An event holds a volatile boolean state denoting whether it is signaled
-+or not. There are two types of events, auto-reset and manual-reset. An
-+auto-reset event is designaled when a wait is satisfied; a manual-reset
-+event is not. The event type is specified when the event is created.
++An event is similar to a semaphore with a maximum count of one. It holds
++a volatile boolean state denoting whether it is signaled or not. There
++are two types of events, auto-reset and manual-reset. An auto-reset
++event is designaled when a wait is satisfied; a manual-reset event is
++not. The event type is specified when the event is created.
 +
 +Unless specified otherwise, all operations on an object are atomic and
 +totally ordered with respect to other operations on the same object.
@@ -413,8 +402,7 @@ index 000000000000..202c2350d3af
 +  operations on the same object. If two wait operations (with different
 +  ``owner`` identifiers) are queued on the same mutex, only one is
 +  signaled. If two wait operations are queued on the same semaphore,
-+  and a value of one is posted to it, only one is signaled. The order
-+  in which threads are signaled is not specified.
++  and a value of one is posted to it, only one is signaled.
 +
 +  If an abandoned mutex is acquired, the ioctl fails with
 +  ``EOWNERDEAD``. Although this is a failure return, the function may
@@ -423,9 +411,7 @@ index 000000000000..202c2350d3af
 +  abandoned, and ``index`` is still set to the index of the mutex.
 +
 +  The ``alert`` argument is an "extra" event which can terminate the
-+  wait, independently of all other objects. If members of ``objs`` and
-+  ``alert`` are both simultaneously signaled, a member of ``objs`` will
-+  always be given priority and acquired first.
++  wait, independently of all other objects.
 +
 +  It is valid to pass the same object more than once, including by
 +  passing the same event in the ``objs`` array and in ``alert``. If a
@@ -471,10 +457,10 @@ index 000000000000..202c2350d3af
 +  ``objs`` and in ``alert``. If this is attempted, the function fails
 +  with ``EINVAL``.
 diff --git a/MAINTAINERS b/MAINTAINERS
-index b6416cf3f022..b053adc49720 100644
+index 3121709d99e3b..baa28e4151aa6 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -15617,6 +15617,15 @@ T:	git https://github.com/Paragon-Software-Group/linux-ntfs3.git
+@@ -15720,6 +15720,15 @@ T:	git https://github.com/Paragon-Software-Group/linux-ntfs3.git
  F:	Documentation/filesystems/ntfs3.rst
  F:	fs/ntfs3/
  
@@ -491,7 +477,7 @@ index b6416cf3f022..b053adc49720 100644
  M:	Finn Thain <fthain@linux-m68k.org>
  L:	linux-m68k@lists.linux-m68k.org
 diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
-index 4fb291f0bf7c..801ed229ed7d 100644
+index 4fb291f0bf7c8..801ed229ed7dc 100644
 --- a/drivers/misc/Kconfig
 +++ b/drivers/misc/Kconfig
 @@ -506,6 +506,17 @@ config OPEN_DICE
@@ -513,7 +499,7 @@ index 4fb291f0bf7c..801ed229ed7d 100644
  	tristate "Guest vCPU stall detector"
  	depends on OF && HAS_IOMEM
 diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
-index ea6ea5bbbc9c..153a3f4837e8 100644
+index ea6ea5bbbc9c6..153a3f4837e8c 100644
 --- a/drivers/misc/Makefile
 +++ b/drivers/misc/Makefile
 @@ -59,6 +59,7 @@ obj-$(CONFIG_PVPANIC)   	+= pvpanic/
@@ -526,10 +512,10 @@ index ea6ea5bbbc9c..153a3f4837e8 100644
  obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
 diff --git a/drivers/misc/ntsync.c b/drivers/misc/ntsync.c
 new file mode 100644
-index 000000000000..f54c81dada3d
+index 0000000000000..87a24798a5c7b
 --- /dev/null
 +++ b/drivers/misc/ntsync.c
-@@ -0,0 +1,1159 @@
+@@ -0,0 +1,1232 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/*
 + * ntsync.c - Kernel driver for NT synchronization primitives
@@ -545,6 +531,7 @@ index 000000000000..f54c81dada3d
 +#include <linux/ktime.h>
 +#include <linux/miscdevice.h>
 +#include <linux/module.h>
++#include <linux/mutex.h>
 +#include <linux/overflow.h>
 +#include <linux/sched.h>
 +#include <linux/sched/signal.h>
@@ -575,6 +562,7 @@ index 000000000000..f54c81dada3d
 +
 +struct ntsync_obj {
 +	spinlock_t lock;
++	int dev_locked;
 +
 +	enum ntsync_type type;
 +
@@ -589,7 +577,7 @@ index 000000000000..f54c81dada3d
 +		} sem;
 +		struct {
 +			__u32 count;
-+			__u32 owner;
++			pid_t owner;
 +			bool ownerdead;
 +		} mutex;
 +		struct {
@@ -618,10 +606,6 @@ index 000000000000..f54c81dada3d
 +	 * Therefore we first check whether all_hint is zero, and, if it is,
 +	 * we skip trying to wake "all" waiters.
 +	 *
-+	 * This hint isn't protected by any lock. It might change during the
-+	 * course of a wake, but there's no meaningful race there; it's only a
-+	 * hint.
-+	 *
 +	 * Since wait requests must originate from user-space threads, we're
 +	 * limited here by PID_MAX_LIMIT, so there's no risk of overflow.
 +	 */
@@ -640,7 +624,7 @@ index 000000000000..f54c81dada3d
 +	__u32 owner;
 +
 +	/*
-+	 * Protected via atomic_cmpxchg(). Only the thread that wins the
++	 * Protected via atomic_try_cmpxchg(). Only the thread that wins the
 +	 * compare-and-swap may actually change object states and wake this
 +	 * task.
 +	 */
@@ -659,19 +643,111 @@ index 000000000000..f54c81dada3d
 +	 * If one thread is trying to acquire several objects, another thread
 +	 * cannot touch the object at the same time.
 +	 *
-+	 * We achieve this by grabbing multiple object locks at the same time.
-+	 * However, this creates a lock ordering problem. To solve that problem,
-+	 * wait_all_lock is taken first whenever multiple objects must be locked
-+	 * at the same time.
++	 * This device-wide lock is used to serialize wait-for-all
++	 * operations, and operations on an object that is involved in a
++	 * wait-for-all.
 +	 */
-+	spinlock_t wait_all_lock;
++	struct mutex wait_all_lock;
 +
 +	struct file *file;
 +};
 +
++/*
++ * Single objects are locked using obj->lock.
++ *
++ * Multiple objects are 'locked' while holding dev->wait_all_lock.
++ * In this case however, individual objects are not locked by holding
++ * obj->lock, but by setting obj->dev_locked.
++ *
++ * This means that in order to lock a single object, the sequence is slightly
++ * more complicated than usual. Specifically it needs to check obj->dev_locked
++ * after acquiring obj->lock, if set, it needs to drop the lock and acquire
++ * dev->wait_all_lock in order to serialize against the multi-object operation.
++ */
++
++static void dev_lock_obj(struct ntsync_device *dev, struct ntsync_obj *obj)
++{
++	lockdep_assert_held(&dev->wait_all_lock);
++	lockdep_assert(obj->dev == dev);
++	spin_lock(&obj->lock);
++	/*
++	 * By setting obj->dev_locked inside obj->lock, it is ensured that
++	 * anyone holding obj->lock must see the value.
++	 */
++	obj->dev_locked = 1;
++	spin_unlock(&obj->lock);
++}
++
++static void dev_unlock_obj(struct ntsync_device *dev, struct ntsync_obj *obj)
++{
++	lockdep_assert_held(&dev->wait_all_lock);
++	lockdep_assert(obj->dev == dev);
++	spin_lock(&obj->lock);
++	obj->dev_locked = 0;
++	spin_unlock(&obj->lock);
++}
++
++static void obj_lock(struct ntsync_obj *obj)
++{
++	struct ntsync_device *dev = obj->dev;
++
++	for (;;) {
++		spin_lock(&obj->lock);
++		if (likely(!obj->dev_locked))
++			break;
++
++		spin_unlock(&obj->lock);
++		mutex_lock(&dev->wait_all_lock);
++		spin_lock(&obj->lock);
++		/*
++		 * obj->dev_locked should be set and released under the same
++		 * wait_all_lock section, since we now own this lock, it should
++		 * be clear.
++		 */
++		lockdep_assert(!obj->dev_locked);
++		spin_unlock(&obj->lock);
++		mutex_unlock(&dev->wait_all_lock);
++	}
++}
++
++static void obj_unlock(struct ntsync_obj *obj)
++{
++	spin_unlock(&obj->lock);
++}
++
++static bool ntsync_lock_obj(struct ntsync_device *dev, struct ntsync_obj *obj)
++{
++	bool all;
++
++	obj_lock(obj);
++	all = atomic_read(&obj->all_hint);
++	if (unlikely(all)) {
++		obj_unlock(obj);
++		mutex_lock(&dev->wait_all_lock);
++		dev_lock_obj(dev, obj);
++	}
++
++	return all;
++}
++
++static void ntsync_unlock_obj(struct ntsync_device *dev, struct ntsync_obj *obj, bool all)
++{
++	if (all) {
++		dev_unlock_obj(dev, obj);
++		mutex_unlock(&dev->wait_all_lock);
++	} else {
++		obj_unlock(obj);
++	}
++}
++
++#define ntsync_assert_held(obj) \
++	lockdep_assert((lockdep_is_held(&(obj)->lock) != LOCK_STATE_NOT_HELD) || \
++		       ((lockdep_is_held(&(obj)->dev->wait_all_lock) != LOCK_STATE_NOT_HELD) && \
++			(obj)->dev_locked))
++
 +static bool is_signaled(struct ntsync_obj *obj, __u32 owner)
 +{
-+	lockdep_assert_held(&obj->lock);
++	ntsync_assert_held(obj);
 +
 +	switch (obj->type) {
 +	case NTSYNC_TYPE_SEM:
@@ -698,15 +774,16 @@ index 000000000000..f54c81dada3d
 +{
 +	__u32 count = q->count;
 +	bool can_wake = true;
++	int signaled = -1;
 +	__u32 i;
 +
 +	lockdep_assert_held(&dev->wait_all_lock);
 +	if (locked_obj)
-+		lockdep_assert_held(&locked_obj->lock);
++		lockdep_assert(locked_obj->dev_locked);
 +
 +	for (i = 0; i < count; i++) {
 +		if (q->entries[i].obj != locked_obj)
-+			spin_lock_nest_lock(&q->entries[i].obj->lock, &dev->wait_all_lock);
++			dev_lock_obj(dev, q->entries[i].obj);
 +	}
 +
 +	for (i = 0; i < count; i++) {
@@ -716,7 +793,7 @@ index 000000000000..f54c81dada3d
 +		}
 +	}
 +
-+	if (can_wake && atomic_cmpxchg(&q->signaled, -1, 0) == -1) {
++	if (can_wake && atomic_try_cmpxchg(&q->signaled, &signaled, 0)) {
 +		for (i = 0; i < count; i++) {
 +			struct ntsync_obj *obj = q->entries[i].obj;
 +
@@ -742,7 +819,7 @@ index 000000000000..f54c81dada3d
 +
 +	for (i = 0; i < count; i++) {
 +		if (q->entries[i].obj != locked_obj)
-+			spin_unlock(&q->entries[i].obj->lock);
++			dev_unlock_obj(dev, q->entries[i].obj);
 +	}
 +}
 +
@@ -751,7 +828,7 @@ index 000000000000..f54c81dada3d
 +	struct ntsync_q_entry *entry;
 +
 +	lockdep_assert_held(&dev->wait_all_lock);
-+	lockdep_assert_held(&obj->lock);
++	lockdep_assert(obj->dev_locked);
 +
 +	list_for_each_entry(entry, &obj->all_waiters, node)
 +		try_wake_all(dev, entry->q, obj);
@@ -761,15 +838,17 @@ index 000000000000..f54c81dada3d
 +{
 +	struct ntsync_q_entry *entry;
 +
-+	lockdep_assert_held(&sem->lock);
++	ntsync_assert_held(sem);
++	lockdep_assert(sem->type == NTSYNC_TYPE_SEM);
 +
 +	list_for_each_entry(entry, &sem->any_waiters, node) {
 +		struct ntsync_q *q = entry->q;
++		int signaled = -1;
 +
 +		if (!sem->u.sem.count)
 +			break;
 +
-+		if (atomic_cmpxchg(&q->signaled, -1, entry->index) == -1) {
++		if (atomic_try_cmpxchg(&q->signaled, &signaled, entry->index)) {
 +			sem->u.sem.count--;
 +			wake_up_process(q->task);
 +		}
@@ -780,17 +859,19 @@ index 000000000000..f54c81dada3d
 +{
 +	struct ntsync_q_entry *entry;
 +
-+	lockdep_assert_held(&mutex->lock);
++	ntsync_assert_held(mutex);
++	lockdep_assert(mutex->type == NTSYNC_TYPE_MUTEX);
 +
 +	list_for_each_entry(entry, &mutex->any_waiters, node) {
 +		struct ntsync_q *q = entry->q;
++		int signaled = -1;
 +
 +		if (mutex->u.mutex.count == UINT_MAX)
 +			break;
 +		if (mutex->u.mutex.owner && mutex->u.mutex.owner != q->owner)
 +			continue;
 +
-+		if (atomic_cmpxchg(&q->signaled, -1, entry->index) == -1) {
++		if (atomic_try_cmpxchg(&q->signaled, &signaled, entry->index)) {
 +			if (mutex->u.mutex.ownerdead)
 +				q->ownerdead = true;
 +			mutex->u.mutex.ownerdead = false;
@@ -805,15 +886,17 @@ index 000000000000..f54c81dada3d
 +{
 +	struct ntsync_q_entry *entry;
 +
-+	lockdep_assert_held(&event->lock);
++	ntsync_assert_held(event);
++	lockdep_assert(event->type == NTSYNC_TYPE_EVENT);
 +
 +	list_for_each_entry(entry, &event->any_waiters, node) {
 +		struct ntsync_q *q = entry->q;
++		int signaled = -1;
 +
 +		if (!event->u.event.signaled)
 +			break;
 +
-+		if (atomic_cmpxchg(&q->signaled, -1, entry->index) == -1) {
++		if (atomic_try_cmpxchg(&q->signaled, &signaled, entry->index)) {
 +			if (!event->u.event.manual)
 +				event->u.event.signaled = false;
 +			wake_up_process(q->task);
@@ -829,7 +912,7 @@ index 000000000000..f54c81dada3d
 +{
 +	__u32 sum;
 +
-+	lockdep_assert_held(&sem->lock);
++	ntsync_assert_held(sem);
 +
 +	if (check_add_overflow(sem->u.sem.count, count, &sum) ||
 +	    sum > sem->u.sem.max)
@@ -845,6 +928,7 @@ index 000000000000..f54c81dada3d
 +	__u32 __user *user_args = argp;
 +	__u32 prev_count;
 +	__u32 args;
++	bool all;
 +	int ret;
 +
 +	if (copy_from_user(&args, argp, sizeof(args)))
@@ -853,29 +937,17 @@ index 000000000000..f54c81dada3d
 +	if (sem->type != NTSYNC_TYPE_SEM)
 +		return -EINVAL;
 +
-+	if (atomic_read(&sem->all_hint) > 0) {
-+		spin_lock(&dev->wait_all_lock);
-+		spin_lock_nest_lock(&sem->lock, &dev->wait_all_lock);
++	all = ntsync_lock_obj(dev, sem);
 +
-+		prev_count = sem->u.sem.count;
-+		ret = post_sem_state(sem, args);
-+		if (!ret) {
++	prev_count = sem->u.sem.count;
++	ret = post_sem_state(sem, args);
++	if (!ret) {
++		if (all)
 +			try_wake_all_obj(dev, sem);
-+			try_wake_any_sem(sem);
-+		}
-+
-+		spin_unlock(&sem->lock);
-+		spin_unlock(&dev->wait_all_lock);
-+	} else {
-+		spin_lock(&sem->lock);
-+
-+		prev_count = sem->u.sem.count;
-+		ret = post_sem_state(sem, args);
-+		if (!ret)
-+			try_wake_any_sem(sem);
-+
-+		spin_unlock(&sem->lock);
++		try_wake_any_sem(sem);
 +	}
++
++	ntsync_unlock_obj(dev, sem, all);
 +
 +	if (!ret && put_user(prev_count, user_args))
 +		ret = -EFAULT;
@@ -889,7 +961,7 @@ index 000000000000..f54c81dada3d
 +static int unlock_mutex_state(struct ntsync_obj *mutex,
 +			      const struct ntsync_mutex_args *args)
 +{
-+	lockdep_assert_held(&mutex->lock);
++	ntsync_assert_held(mutex);
 +
 +	if (mutex->u.mutex.owner != args->owner)
 +		return -EPERM;
@@ -905,6 +977,7 @@ index 000000000000..f54c81dada3d
 +	struct ntsync_device *dev = mutex->dev;
 +	struct ntsync_mutex_args args;
 +	__u32 prev_count;
++	bool all;
 +	int ret;
 +
 +	if (copy_from_user(&args, argp, sizeof(args)))
@@ -915,29 +988,17 @@ index 000000000000..f54c81dada3d
 +	if (mutex->type != NTSYNC_TYPE_MUTEX)
 +		return -EINVAL;
 +
-+	if (atomic_read(&mutex->all_hint) > 0) {
-+		spin_lock(&dev->wait_all_lock);
-+		spin_lock_nest_lock(&mutex->lock, &dev->wait_all_lock);
++	all = ntsync_lock_obj(dev, mutex);
 +
-+		prev_count = mutex->u.mutex.count;
-+		ret = unlock_mutex_state(mutex, &args);
-+		if (!ret) {
++	prev_count = mutex->u.mutex.count;
++	ret = unlock_mutex_state(mutex, &args);
++	if (!ret) {
++		if (all)
 +			try_wake_all_obj(dev, mutex);
-+			try_wake_any_mutex(mutex);
-+		}
-+
-+		spin_unlock(&mutex->lock);
-+		spin_unlock(&dev->wait_all_lock);
-+	} else {
-+		spin_lock(&mutex->lock);
-+
-+		prev_count = mutex->u.mutex.count;
-+		ret = unlock_mutex_state(mutex, &args);
-+		if (!ret)
-+			try_wake_any_mutex(mutex);
-+
-+		spin_unlock(&mutex->lock);
++		try_wake_any_mutex(mutex);
 +	}
++
++	ntsync_unlock_obj(dev, mutex, all);
 +
 +	if (!ret && put_user(prev_count, &user_args->count))
 +		ret = -EFAULT;
@@ -951,7 +1012,7 @@ index 000000000000..f54c81dada3d
 + */
 +static int kill_mutex_state(struct ntsync_obj *mutex, __u32 owner)
 +{
-+	lockdep_assert_held(&mutex->lock);
++	ntsync_assert_held(mutex);
 +
 +	if (mutex->u.mutex.owner != owner)
 +		return -EPERM;
@@ -966,6 +1027,7 @@ index 000000000000..f54c81dada3d
 +{
 +	struct ntsync_device *dev = mutex->dev;
 +	__u32 owner;
++	bool all;
 +	int ret;
 +
 +	if (get_user(owner, (__u32 __user *)argp))
@@ -976,27 +1038,16 @@ index 000000000000..f54c81dada3d
 +	if (mutex->type != NTSYNC_TYPE_MUTEX)
 +		return -EINVAL;
 +
-+	if (atomic_read(&mutex->all_hint) > 0) {
-+		spin_lock(&dev->wait_all_lock);
-+		spin_lock_nest_lock(&mutex->lock, &dev->wait_all_lock);
++	all = ntsync_lock_obj(dev, mutex);
 +
-+		ret = kill_mutex_state(mutex, owner);
-+		if (!ret) {
++	ret = kill_mutex_state(mutex, owner);
++	if (!ret) {
++		if (all)
 +			try_wake_all_obj(dev, mutex);
-+			try_wake_any_mutex(mutex);
-+		}
-+
-+		spin_unlock(&mutex->lock);
-+		spin_unlock(&dev->wait_all_lock);
-+	} else {
-+		spin_lock(&mutex->lock);
-+
-+		ret = kill_mutex_state(mutex, owner);
-+		if (!ret)
-+			try_wake_any_mutex(mutex);
-+
-+		spin_unlock(&mutex->lock);
++		try_wake_any_mutex(mutex);
 +	}
++
++	ntsync_unlock_obj(dev, mutex, all);
 +
 +	return ret;
 +}
@@ -1005,34 +1056,22 @@ index 000000000000..f54c81dada3d
 +{
 +	struct ntsync_device *dev = event->dev;
 +	__u32 prev_state;
++	bool all;
 +
 +	if (event->type != NTSYNC_TYPE_EVENT)
 +		return -EINVAL;
 +
-+	if (atomic_read(&event->all_hint) > 0) {
-+		spin_lock(&dev->wait_all_lock);
-+		spin_lock_nest_lock(&event->lock, &dev->wait_all_lock);
++	all = ntsync_lock_obj(dev, event);
 +
-+		prev_state = event->u.event.signaled;
-+		event->u.event.signaled = true;
++	prev_state = event->u.event.signaled;
++	event->u.event.signaled = true;
++	if (all)
 +		try_wake_all_obj(dev, event);
-+		try_wake_any_event(event);
-+		if (pulse)
-+			event->u.event.signaled = false;
++	try_wake_any_event(event);
++	if (pulse)
++		event->u.event.signaled = false;
 +
-+		spin_unlock(&event->lock);
-+		spin_unlock(&dev->wait_all_lock);
-+	} else {
-+		spin_lock(&event->lock);
-+
-+		prev_state = event->u.event.signaled;
-+		event->u.event.signaled = true;
-+		try_wake_any_event(event);
-+		if (pulse)
-+			event->u.event.signaled = false;
-+
-+		spin_unlock(&event->lock);
-+	}
++	ntsync_unlock_obj(dev, event, all);
 +
 +	if (put_user(prev_state, (__u32 __user *)argp))
 +		return -EFAULT;
@@ -1042,17 +1081,19 @@ index 000000000000..f54c81dada3d
 +
 +static int ntsync_event_reset(struct ntsync_obj *event, void __user *argp)
 +{
++	struct ntsync_device *dev = event->dev;
 +	__u32 prev_state;
++	bool all;
 +
 +	if (event->type != NTSYNC_TYPE_EVENT)
 +		return -EINVAL;
 +
-+	spin_lock(&event->lock);
++	all = ntsync_lock_obj(dev, event);
 +
 +	prev_state = event->u.event.signaled;
 +	event->u.event.signaled = false;
 +
-+	spin_unlock(&event->lock);
++	ntsync_unlock_obj(dev, event, all);
 +
 +	if (put_user(prev_state, (__u32 __user *)argp))
 +		return -EFAULT;
@@ -1063,16 +1104,21 @@ index 000000000000..f54c81dada3d
 +static int ntsync_sem_read(struct ntsync_obj *sem, void __user *argp)
 +{
 +	struct ntsync_sem_args __user *user_args = argp;
++	struct ntsync_device *dev = sem->dev;
 +	struct ntsync_sem_args args;
++	bool all;
 +
 +	if (sem->type != NTSYNC_TYPE_SEM)
 +		return -EINVAL;
 +
 +	args.sem = 0;
-+	spin_lock(&sem->lock);
++
++	all = ntsync_lock_obj(dev, sem);
++
 +	args.count = sem->u.sem.count;
 +	args.max = sem->u.sem.max;
-+	spin_unlock(&sem->lock);
++
++	ntsync_unlock_obj(dev, sem, all);
 +
 +	if (copy_to_user(user_args, &args, sizeof(args)))
 +		return -EFAULT;
@@ -1082,18 +1128,23 @@ index 000000000000..f54c81dada3d
 +static int ntsync_mutex_read(struct ntsync_obj *mutex, void __user *argp)
 +{
 +	struct ntsync_mutex_args __user *user_args = argp;
++	struct ntsync_device *dev = mutex->dev;
 +	struct ntsync_mutex_args args;
++	bool all;
 +	int ret;
 +
 +	if (mutex->type != NTSYNC_TYPE_MUTEX)
 +		return -EINVAL;
 +
 +	args.mutex = 0;
-+	spin_lock(&mutex->lock);
++
++	all = ntsync_lock_obj(dev, mutex);
++
 +	args.count = mutex->u.mutex.count;
 +	args.owner = mutex->u.mutex.owner;
 +	ret = mutex->u.mutex.ownerdead ? -EOWNERDEAD : 0;
-+	spin_unlock(&mutex->lock);
++
++	ntsync_unlock_obj(dev, mutex, all);
 +
 +	if (copy_to_user(user_args, &args, sizeof(args)))
 +		return -EFAULT;
@@ -1103,16 +1154,21 @@ index 000000000000..f54c81dada3d
 +static int ntsync_event_read(struct ntsync_obj *event, void __user *argp)
 +{
 +	struct ntsync_event_args __user *user_args = argp;
++	struct ntsync_device *dev = event->dev;
 +	struct ntsync_event_args args;
++	bool all;
 +
 +	if (event->type != NTSYNC_TYPE_EVENT)
 +		return -EINVAL;
 +
 +	args.event = 0;
-+	spin_lock(&event->lock);
++
++	all = ntsync_lock_obj(dev, event);
++
 +	args.manual = event->u.event.manual;
 +	args.signaled = event->u.event.signaled;
-+	spin_unlock(&event->lock);
++
++	ntsync_unlock_obj(dev, event, all);
 +
 +	if (copy_to_user(user_args, &args, sizeof(args)))
 +		return -EFAULT;
@@ -1288,6 +1344,9 @@ index 000000000000..f54c81dada3d
 +	struct file *file = fget(fd);
 +	struct ntsync_obj *obj;
 +
++	if (!file)
++		return NULL;
++
 +	if (file->f_op != &ntsync_obj_fops) {
 +		fput(file);
 +		return NULL;
@@ -1349,9 +1408,6 @@ index 000000000000..f54c81dada3d
 +	struct ntsync_q *q;
 +	__u32 total_count;
 +	__u32 i, j;
-+
-+	if (!args->owner)
-+		return -EINVAL;
 +
 +	if (args->pad || (args->flags & ~NTSYNC_WAIT_REALTIME))
 +		return -EINVAL;
@@ -1432,6 +1488,7 @@ index 000000000000..f54c81dada3d
 +	__u32 i, total_count;
 +	struct ntsync_q *q;
 +	int signaled;
++	bool all;
 +	int ret;
 +
 +	if (copy_from_user(&args, argp, sizeof(args)))
@@ -1451,9 +1508,9 @@ index 000000000000..f54c81dada3d
 +		struct ntsync_q_entry *entry = &q->entries[i];
 +		struct ntsync_obj *obj = entry->obj;
 +
-+		spin_lock(&obj->lock);
++		all = ntsync_lock_obj(dev, obj);
 +		list_add_tail(&entry->node, &obj->any_waiters);
-+		spin_unlock(&obj->lock);
++		ntsync_unlock_obj(dev, obj, all);
 +	}
 +
 +	/*
@@ -1470,9 +1527,9 @@ index 000000000000..f54c81dada3d
 +		if (atomic_read(&q->signaled) != -1)
 +			break;
 +
-+		spin_lock(&obj->lock);
++		all = ntsync_lock_obj(dev, obj);
 +		try_wake_any_obj(obj);
-+		spin_unlock(&obj->lock);
++		ntsync_unlock_obj(dev, obj, all);
 +	}
 +
 +	/* sleep */
@@ -1485,9 +1542,9 @@ index 000000000000..f54c81dada3d
 +		struct ntsync_q_entry *entry = &q->entries[i];
 +		struct ntsync_obj *obj = entry->obj;
 +
-+		spin_lock(&obj->lock);
++		all = ntsync_lock_obj(dev, obj);
 +		list_del(&entry->node);
-+		spin_unlock(&obj->lock);
++		ntsync_unlock_obj(dev, obj, all);
 +
 +		put_obj(obj);
 +	}
@@ -1526,7 +1583,7 @@ index 000000000000..f54c81dada3d
 +
 +	/* queue ourselves */
 +
-+	spin_lock(&dev->wait_all_lock);
++	mutex_lock(&dev->wait_all_lock);
 +
 +	for (i = 0; i < args.count; i++) {
 +		struct ntsync_q_entry *entry = &q->entries[i];
@@ -1545,16 +1602,16 @@ index 000000000000..f54c81dada3d
 +		struct ntsync_q_entry *entry = &q->entries[args.count];
 +		struct ntsync_obj *obj = entry->obj;
 +
-+		spin_lock_nest_lock(&obj->lock, &dev->wait_all_lock);
++		dev_lock_obj(dev, obj);
 +		list_add_tail(&entry->node, &obj->any_waiters);
-+		spin_unlock(&obj->lock);
++		dev_unlock_obj(dev, obj);
 +	}
 +
 +	/* check if we are already signaled */
 +
 +	try_wake_all(dev, q, NULL);
 +
-+	spin_unlock(&dev->wait_all_lock);
++	mutex_unlock(&dev->wait_all_lock);
 +
 +	/*
 +	 * Check if the alert event is signaled, making sure to do so only
@@ -1565,9 +1622,9 @@ index 000000000000..f54c81dada3d
 +		struct ntsync_obj *obj = q->entries[args.count].obj;
 +
 +		if (atomic_read(&q->signaled) == -1) {
-+			spin_lock(&obj->lock);
++			bool all = ntsync_lock_obj(dev, obj);
 +			try_wake_any_obj(obj);
-+			spin_unlock(&obj->lock);
++			ntsync_unlock_obj(dev, obj, all);
 +		}
 +	}
 +
@@ -1577,7 +1634,7 @@ index 000000000000..f54c81dada3d
 +
 +	/* and finally, unqueue */
 +
-+	spin_lock(&dev->wait_all_lock);
++	mutex_lock(&dev->wait_all_lock);
 +
 +	for (i = 0; i < args.count; i++) {
 +		struct ntsync_q_entry *entry = &q->entries[i];
@@ -1593,18 +1650,20 @@ index 000000000000..f54c81dada3d
 +
 +		put_obj(obj);
 +	}
++
++	mutex_unlock(&dev->wait_all_lock);
++
 +	if (args.alert) {
 +		struct ntsync_q_entry *entry = &q->entries[args.count];
 +		struct ntsync_obj *obj = entry->obj;
++		bool all;
 +
-+		spin_lock_nest_lock(&obj->lock, &dev->wait_all_lock);
++		all = ntsync_lock_obj(dev, obj);
 +		list_del(&entry->node);
-+		spin_unlock(&obj->lock);
++		ntsync_unlock_obj(dev, obj, all);
 +
 +		put_obj(obj);
 +	}
-+
-+	spin_unlock(&dev->wait_all_lock);
 +
 +	signaled = atomic_read(&q->signaled);
 +	if (signaled != -1) {
@@ -1631,7 +1690,7 @@ index 000000000000..f54c81dada3d
 +	if (!dev)
 +		return -ENOMEM;
 +
-+	spin_lock_init(&dev->wait_all_lock);
++	mutex_init(&dev->wait_all_lock);
 +
 +	file->private_data = dev;
 +	dev->file = file;
@@ -1691,7 +1750,7 @@ index 000000000000..f54c81dada3d
 +MODULE_LICENSE("GPL");
 diff --git a/include/uapi/linux/ntsync.h b/include/uapi/linux/ntsync.h
 new file mode 100644
-index 000000000000..b5e835d8dba8
+index 0000000000000..4a8095a3fc34c
 --- /dev/null
 +++ b/include/uapi/linux/ntsync.h
 @@ -0,0 +1,62 @@
@@ -1731,10 +1790,10 @@ index 000000000000..b5e835d8dba8
 +	__u64 timeout;
 +	__u64 objs;
 +	__u32 count;
-+	__u32 owner;
 +	__u32 index;
-+	__u32 alert;
 +	__u32 flags;
++	__u32 owner;
++	__u32 alert;
 +	__u32 pad;
 +};
 +
@@ -1758,41 +1817,47 @@ index 000000000000..b5e835d8dba8
 +
 +#endif
 diff --git a/tools/testing/selftests/Makefile b/tools/testing/selftests/Makefile
-index 15b6a111c3be..6c714a4e6478 100644
+index e1504833654db..6f95206325e1f 100644
 --- a/tools/testing/selftests/Makefile
 +++ b/tools/testing/selftests/Makefile
-@@ -15,6 +15,7 @@ TARGETS += cpu-hotplug
- TARGETS += damon
+@@ -16,6 +16,7 @@ TARGETS += damon
+ TARGETS += devices
  TARGETS += dmabuf-heaps
  TARGETS += drivers/dma-buf
 +TARGETS += drivers/ntsync
  TARGETS += drivers/s390x/uvdevice
  TARGETS += drivers/net/bonding
  TARGETS += drivers/net/team
+diff --git a/tools/testing/selftests/drivers/ntsync/.gitignore b/tools/testing/selftests/drivers/ntsync/.gitignore
+new file mode 100644
+index 0000000000000..848573a3d3eaf
+--- /dev/null
++++ b/tools/testing/selftests/drivers/ntsync/.gitignore
+@@ -0,0 +1 @@
++ntsync
 diff --git a/tools/testing/selftests/drivers/ntsync/Makefile b/tools/testing/selftests/drivers/ntsync/Makefile
 new file mode 100644
-index 000000000000..a34da5ccacf0
+index 0000000000000..dbf2b055c0b28
 --- /dev/null
 +++ b/tools/testing/selftests/drivers/ntsync/Makefile
-@@ -0,0 +1,8 @@
+@@ -0,0 +1,7 @@
 +# SPDX-LICENSE-IDENTIFIER: GPL-2.0-only
 +TEST_GEN_PROGS := ntsync
 +
-+top_srcdir =../../../../..
-+CFLAGS += -I$(top_srcdir)/usr/include
++CFLAGS += $(KHDR_INCLUDES)
 +LDLIBS += -lpthread
 +
 +include ../../lib.mk
 diff --git a/tools/testing/selftests/drivers/ntsync/config b/tools/testing/selftests/drivers/ntsync/config
 new file mode 100644
-index 000000000000..60539c826d06
+index 0000000000000..60539c826d062
 --- /dev/null
 +++ b/tools/testing/selftests/drivers/ntsync/config
 @@ -0,0 +1 @@
 +CONFIG_WINESYNC=y
 diff --git a/tools/testing/selftests/drivers/ntsync/ntsync.c b/tools/testing/selftests/drivers/ntsync/ntsync.c
 new file mode 100644
-index 000000000000..5fa2c9a0768c
+index 0000000000000..5fa2c9a0768c0
 --- /dev/null
 +++ b/tools/testing/selftests/drivers/ntsync/ntsync.c
 @@ -0,0 +1,1407 @@

@@ -1,8 +1,8 @@
 name       : linux-current
-version    : 6.8.12
-release    : 293
+version    : 6.9.8
+release    : 294
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.8.12.tar.xz : 19b31956d229b5b9ca5671fa1c74320179682a3d8d00fc86794114b21da86039
+    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.9.8.tar.xz : f048267b7b88316c9ca708c68d15a9ae802dcfc943c3188c1273eb958c433281
 license    : GPL-2.0-only
 component  :
     - kernel.image
@@ -39,8 +39,9 @@ rundeps    :
 patterns   :
     - headers : /usr/src
 permanent  :
-    - /lib/modules
-    - /usr/lib/kernel
+    - /lib64/modules
+    - /usr/lib64/kernel
+    - /usr/lib64/modules
     - /usr/src
 replaces   :
     - kernel
@@ -88,35 +89,72 @@ install    : |
     # Install kernel blob
     kernID="com.solus-project.current"
     kversion="${version}-${release}.current"
-    install -D -m 0755 arch/x86/boot/bzImage $installdir/usr/lib/kernel/$kernID.${version}-${release}
+    install -D -m 0755 arch/x86/boot/bzImage $installdir/usr/lib64/kernel/$kernID.${version}-${release}
 
     # Install additional files
-    install -m 00644 .config $installdir/usr/lib/kernel/config-$kversion
-    install -m 00644 System.map $installdir/usr/lib/kernel/System.map-$kversion
-    install -m 00644 $pkgfiles/cmdline $installdir/usr/lib/kernel/cmdline-$kversion
+    install -m 00644 .config $installdir/usr/lib64/kernel/config-$kversion
+    install -m 00644 System.map $installdir/usr/lib64/kernel/System.map-$kversion
+    install -m 00644 $pkgfiles/cmdline $installdir/usr/lib64/kernel/cmdline-$kversion
 
     # Install kernel modules, disable depmod + firmware install
-    install -D -d -m 00755 $installdir/lib/modules/$kversion
+    install -dm00755 $installdir/lib/modules/$kversion
     %make ARCH=x86_64 INSTALL_MOD_PATH=$installdir/ modules_install KERNELRELEASE=$kversion mod-fw= DEPMOD=/bin/true
-
-    # Remove broken link
-    rm -v $installdir/lib/modules/${kversion}/build
-
-    # Mark this as the default "current" kernel
-    ln -sv $kernID.${version}-${release} $installdir/usr/lib/kernel/default-current
-
-    # For virtiofs VMs, make a handy symlink that always points to the current kernel initrd and vmlinux
-    ln -sv $kernID.${version}-${release} $installdir/usr/lib/kernel/current-vmlinux
-    ln -sv initrd-$kernID.${version}-${release} $installdir/usr/lib/kernel/current-initrd
 
     # Fix mods
     depmod -b $installdir/ $kversion -a
+    install -dm00755 $installdir/usr/lib64/modules
+    mv -v $installdir/lib/modules/$kversion $installdir/usr/lib64/modules/
+    rmdir -v $installdir/lib/modules $installdir/lib
+
+    # Remove broken link
+    rm -v $installdir/usr/lib64/modules/${kversion}/build
+
+    # Mark this as the default "current" kernel
+    ln -sv $kernID.${version}-${release} $installdir/usr/lib64/kernel/default-current
+
+    # For virtiofs VMs, make a handy symlink that always points to the current kernel initrd and vmlinux
+    ln -sv $kernID.${version}-${release} $installdir/usr/lib64/kernel/current-vmlinux
+    ln -sv initrd-$kernID.${version}-${release} $installdir/usr/lib64/kernel/current-initrd
 
     # Strip the kernel modules for the initramfs. We can eke out some slight size improvements by keeping the modules
     # uncompressed before we compress the entire initramfs.
     mkdir -p dracut-modules/lib/modules/
-    cp -ra $installdir/lib/modules/${kversion} dracut-modules/lib/modules/
+    cp -ra $installdir/usr/lib64/modules/${kversion} dracut-modules/lib/modules/
     find "dracut-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
+
+    # We can make the initrd smaller by decompressing the firmware prior to compressing the entire initrd.
+    # This is fragile, the relative path of the --fwdir flag in dracut is the path the firmware ends up so we create a "phantom"
+    # lib so the paths are correct. The solution is to add decompression to dracut directly
+    # TODO: Update this post-usr-merge
+    mkdir -p lib/
+    cp -ra /usr/lib64/firmware lib
+    pushd lib
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find firmware -type f -print0)
+    for file in "${file_list[@]}"; do
+        if [ -z ${file##*.zst} ]; then
+            unzstd --rm "$file"
+        fi
+    done
+
+    link_list=()
+    while IFS=  read -r -d $'\0'; do
+        link_list+=("$REPLY")
+    done < <(find firmware -type l -print0)
+    for file in "${link_list[@]}"; do
+        link=$(readlink "$file")
+        if [ -z ${link##*.zst} ]; then
+            new_link="${link%.zst}"
+            ln -sfv "$new_link" "$file"
+        fi
+        if [ -z ${file##*.zst} ]; then
+            new_filename="${file%.zst}"
+            mv -v "$file" "$new_filename"
+        fi
+    done
+    popd
 
     # Create a directory structure that we'll merge with the initrd. This is because we can't use symlinks with --include
     # By creating symlinks here we can reference modules outside of the ordinary directory. This is needed for injecting
@@ -131,20 +169,20 @@ install    : |
     # 2024-04-21: Add vfio kernel modules to initrd as they need to be loaded very early in the boot process
     vfio_modules="vfio_pci vfio_iommu_type1"
     LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
-        --kmoddir dracut-modules/lib/modules/${kversion} --kver $kversion \
+        --kmoddir dracut-modules/lib/modules/${kversion} --kver $kversion --fwdir lib/firmware/ \
         --add "bash systemd lvm dm rescue resume fido2 tpm2-tss virtiofs" --omit "nvmf" \
         --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
         --add-drivers "amdgpu hyperv_drm i915 qxl radeon simpledrm virtio-gpu xe $vfio_modules" \
         --include $pkgfiles/initrd/timeouts.conf /usr/lib/systemd/system.conf.d/timeouts.conf \
         --include initramfs / \
-        $installdir/usr/lib/kernel/initrd-$kernID.${version}-${release}
+        $installdir/usr/lib64/kernel/initrd-$kernID.${version}-${release}
 
     # Sign with our MOK if we have the secureboot-keys submodule checked out.
     if [[ -e $pkgfiles/secureboot-keys/MOK.key ]]; then
         sbsign --key $pkgfiles/secureboot-keys/MOK.key \
                 --cert $pkgfiles/secureboot-keys/MOK.crt \
-                --output $installdir/usr/lib/kernel/$kernID.${version}-${release} \
-                $installdir/usr/lib/kernel/$kernID.${version}-${release}
+                --output $installdir/usr/lib64/kernel/$kernID.${version}-${release} \
+                $installdir/usr/lib64/kernel/$kernID.${version}-${release}
     fi
 
     # Install the headers
@@ -185,9 +223,25 @@ install    : |
     install -m 00755 tools/objtool/objtool $dstDir/tools/objtool/objtool
 
     # Fix up build/source links
-    ln -svf build $installdir/lib/modules/$kversion/source
-    ln -srvf ${dstDir} $installdir/lib/modules/$kversion/build
+    ln -svf build $installdir/usr/lib64/modules/$kversion/source
+    ln -srvf ${dstDir} $installdir/usr/lib64/modules/$kversion/build
 
     # Compress modules with zstd and strip them in the process
     # TODO remove this once the kernel module compression w/ dbginfo is fixed
-    find "$installdir/lib/modules" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+    find "$installdir/usr/lib64/modules" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    # Usr-merge
+    install -dm00755 $installdir/lib64
+    pushd $installdir/usr
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find lib64/modules -type f -print0)
+    for file in "${file_list[@]}"; do
+        parent=$(dirname "$file")
+        install -dm00755 "$installdir/$parent"
+        ln -srv "$installdir/usr/$file" "$installdir/$file"
+    done
+    popd
+    ln -svf build $installdir/lib64/modules/$kversion/source
+    ln -srvf ${dstDir} $installdir/lib64/modules/$kversion/build

@@ -1,6 +1,6 @@
 name       : vhba-module
 version    : '20240202'
-release    : 257
+release    : 258
 source     :
     - https://sourceforge.net/projects/cdemu/files/vhba-module/vhba-module-20240202.tar.xz#vhba-module.tar.xz : bf5850d4b8f50221ca87d7343a929eda87b191f6f5ae8c614174543b5badde83
 extract    : no
@@ -24,11 +24,14 @@ rundeps    :
     - main :
         - vhba-module-common
 permanent  :
-    - /lib/modules
+    - /lib64/modules
+    - /usr/lib64/modules
 patterns   :
     - common : /usr/lib64/udev
     - common : /usr/lib64/modules-load.d
-    - current : /lib/modules/*.current
+    - current :
+        - /lib64/modules/*.current
+        - /usr/lib64/modules/*.current
 setup      : |
     mkdir lts-build current-build
     tar --strip-components=1 -xf $sources/vhba-module.tar.xz -C lts-build
@@ -46,16 +49,30 @@ install    : |
 
     # lts kernel
     export KERNELRELEASE="%kernel_version_lts%"
-    export KDIR="$installdir/lib/modules/${KERNELRELEASE}/kernel/drivers/misc"
+    export KDIR="$installdir/usr/lib64/modules/${KERNELRELEASE}/kernel/drivers/misc"
     install -D -m 00644 vhba.ko $KDIR/vhba.ko
     popd
 
     # current kernel
     pushd current-build
     export KERNELRELEASE="%kernel_version_current%"
-    export KDIR="$installdir/lib/modules/${KERNELRELEASE}/kernel/drivers/misc"
+    export KDIR="$installdir/usr/lib64/modules/${KERNELRELEASE}/kernel/drivers/misc"
     install -D -m 00644 vhba.ko $KDIR/vhba.ko
     popd
 
     # Compress modules with zstd
     find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    # Usr-merge
+    install -dm00755 $installdir/lib64
+    pushd $installdir/usr
+    file_list=()
+    while IFS=  read -r -d $'\0'; do
+        file_list+=("$REPLY")
+    done < <(find lib64/modules -type f -print0)
+    for file in "${file_list[@]}"; do
+        parent=$(dirname "$file")
+        install -dm00755 "$installdir/$parent"
+        ln -srv "$installdir/usr/$file" "$installdir/$file"
+    done
+    popd
