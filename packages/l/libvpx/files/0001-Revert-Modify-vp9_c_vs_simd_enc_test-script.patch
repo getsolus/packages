@@ -1,0 +1,184 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Fri, 5 Jul 2024 20:56:26 -0500
+Subject: [PATCH] Revert "Modify vp9_c_vs_simd_enc_test script"
+
+This reverts commit 61f868bcf78d167df63ac9e792871f75b6b6e1f0.
+---
+ test/examples.sh             |  2 +-
+ test/vp9_c_vs_simd_encode.sh | 59 ++++++++++++++++++------------------
+ 2 files changed, 31 insertions(+), 30 deletions(-)
+
+diff --git a/test/examples.sh b/test/examples.sh
+index 629f04239..c15a367f3 100755
+--- a/test/examples.sh
++++ b/test/examples.sh
+@@ -15,7 +15,7 @@
+ example_tests=$(ls $(dirname $0)/*.sh)
+ 
+ # List of script names to exclude.
+-exclude_list="examples stress tools_common"
++exclude_list="examples stress tools_common vp9_c_vs_simd_encode"
+ 
+ # Filter out the scripts in $exclude_list.
+ for word in ${exclude_list}; do
+diff --git a/test/vp9_c_vs_simd_encode.sh b/test/vp9_c_vs_simd_encode.sh
+index 03843610d..030013590 100755
+--- a/test/vp9_c_vs_simd_encode.sh
++++ b/test/vp9_c_vs_simd_encode.sh
+@@ -10,8 +10,6 @@
+ ##
+ ##  This script checks the bit exactness between C and SIMD
+ ##  implementations of VP9 encoder.
+-##
+-. $(dirname $0)/tools_common.sh
+ 
+ TEST_BITRATES="1600 6400"
+ PRESETS="good rt"
+@@ -19,6 +17,7 @@ TEST_CLIPS="yuv_raw_input y4m_360p_10bit_input yuv_480p_raw_input y4m_720p_input
+ OUT_FILE_SUFFIX=".ivf"
+ SCRIPT_DIR=$(dirname "$0")
+ LIBVPX_SOURCE_DIR=$(cd "${SCRIPT_DIR}/.."; pwd)
++devnull='> /dev/null 2>&1'
+ 
+ # Clips used in test.
+ YUV_RAW_INPUT="${LIBVPX_TEST_DATA_PATH}/hantro_collage_w352h288.yuv"
+@@ -88,11 +87,9 @@ vp9_c_vs_simd_enc_verify_environment() {
+   fi
+ }
+ 
+-# This is not needed since tools_common.sh does the same cleanup.
+-# Keep the code here for our reference.
+-# cleanup() {
+-#   rm -rf  ${VPX_TEST_OUTPUT_DIR}
+-# }
++cleanup() {
++  rm -rf  ${VPX_TEST_OUTPUT_DIR}
++}
+ 
+ # Echo VPX_SIMD_CAPS_MASK for different instruction set architecture.
+ avx512f() {
+@@ -146,12 +143,10 @@ y4m_360p_10bit_input() {
+ 
+ has_x86_isa_extn() {
+   instruction_set=$1
+-  if ! grep -q "$instruction_set" /proc/cpuinfo; then
+-    # This instruction_set is not supported.
++  grep -q "$instruction_set" /proc/cpuinfo
++  if [ $? -eq 1 ]; then
+     return 1
+   fi
+-  # This instruction_set is supported.
+-  return 0
+ }
+ 
+ # Echo good encode params for use with VP9 encoder.
+@@ -245,8 +240,9 @@ compare_enc_output() {
+   local clip=$3
+   local bitrate=$4
+   local preset=$5
+-  if ! diff -q ${VPX_TEST_OUTPUT_DIR}/Out-generic-gnu-"${clip}"-${preset}-${bitrate}kbps-cpu${cpu}${OUT_FILE_SUFFIX} \
+-       ${VPX_TEST_OUTPUT_DIR}/Out-${target}-"${clip}"-${preset}-${bitrate}kbps-cpu${cpu}${OUT_FILE_SUFFIX}; then
++  diff ${VPX_TEST_OUTPUT_DIR}/Out-generic-gnu-"${clip}"-${preset}-${bitrate}kbps-cpu${cpu}${OUT_FILE_SUFFIX} \
++       ${VPX_TEST_OUTPUT_DIR}/Out-${target}-"${clip}"-${preset}-${bitrate}kbps-cpu${cpu}${OUT_FILE_SUFFIX} > /dev/null
++  if [ $? -eq 1 ]; then
+     elog "C vs ${target} encode mismatches for ${clip}, at ${bitrate} kbps, speed ${cpu}, ${preset} preset"
+     return 1
+   fi
+@@ -293,7 +289,6 @@ vp9_enc_test() {
+           if [ "${target}" != "generic-gnu" ]; then
+             if ! compare_enc_output ${target} $cpu ${clip} $bitrate ${preset}; then
+               # Find the mismatch
+-              cd "${save_dir}"
+               return 1
+             fi
+           fi
+@@ -334,7 +329,8 @@ vp9_test_generic() {
+ vp9_test_x86() {
+   local arch=$1
+ 
+-  if ! uname -m | grep -q "x86"; then
++  uname -m | grep -q "x86"
++  if [ $? -eq 1 ]; then
+     elog "Machine architecture is not x86 or x86_64"
+     return 0
+   fi
+@@ -352,14 +348,14 @@ vp9_test_x86() {
+   vp9_enc_build ${target} ${configure}
+   local encoder="$(vp9_enc_tool_path "${target}")"
+   for isa in $x86_isa_variants; do
+-    # Note that if has_x86_isa_extn returns 1, it is false, and vice versa.
+-    if ! has_x86_isa_extn $isa; then
++    has_x86_isa_extn $isa
++    if [ $? -eq 1 ]; then
+       echo "${isa} is not supported in this machine"
+       continue
+     fi
+     export VPX_SIMD_CAPS_MASK=$($isa)
+-    if ! vp9_enc_test $encoder ${target}; then
+-      # Find the mismatch
++    vp9_enc_test $encoder ${target}
++    if [ $? -eq 1 ]; then
+       return 1
+     fi
+     unset VPX_SIMD_CAPS_MASK
+@@ -374,8 +370,8 @@ vp9_test_arm() {
+   vp9_enc_build ${target} "${configure}"
+ 
+   local encoder="$(vp9_enc_tool_path "${target}")"
+-  if ! vp9_enc_test "qemu-aarch64 -L /usr/aarch64-linux-gnu ${encoder}" ${target}; then
+-    # Find the mismatch
++  vp9_enc_test "qemu-aarch64 -L /usr/aarch64-linux-gnu ${encoder}" ${target}
++  if [ $? -eq 1 ]; then
+     return 1
+   fi
+ }
+@@ -386,9 +382,9 @@ vp9_c_vs_simd_enc_test() {
+ 
+   # Test x86 (32 bit)
+   echo "vp9 test for x86 (32 bit): Started."
+-  if ! vp9_test_x86 "x86"; then
++  vp9_test_x86 "x86"
++  if [ $? -eq 1 ]; then
+     echo "vp9 test for x86 (32 bit): Done, test failed."
+-    return 1
+   else
+     echo "vp9 test for x86 (32 bit): Done, all tests passed."
+   fi
+@@ -396,9 +392,9 @@ vp9_c_vs_simd_enc_test() {
+   # Test x86_64 (64 bit)
+   if [ "$(eval uname -m)" = "x86_64" ]; then
+     echo "vp9 test for x86_64 (64 bit): Started."
+-    if ! vp9_test_x86 "x86_64"; then
++    vp9_test_x86 "x86_64"
++    if [ $? -eq 1 ]; then
+       echo "vp9 test for x86_64 (64 bit): Done, test failed."
+-      return 1
+     else
+       echo "vp9 test for x86_64 (64 bit): Done, all tests passed."
+     fi
+@@ -406,15 +402,20 @@ vp9_c_vs_simd_enc_test() {
+ 
+   # Test ARM
+   echo "vp9_test_arm: Started."
+-  if ! vp9_test_arm; then
++  vp9_test_arm
++  if [ $? -eq 1 ]; then
+     echo "vp9 test for arm: Done, test failed."
+-    return 1
+   else
+     echo "vp9 test for arm: Done, all tests passed."
+   fi
+ }
+ 
+ # Setup a trap function to clean up build, and output files after tests complete.
+-# trap cleanup EXIT
++trap cleanup EXIT
+ 
+-run_tests vp9_c_vs_simd_enc_verify_environment vp9_c_vs_simd_enc_test
++vp9_c_vs_simd_enc_verify_environment
++if [ $? -eq 1 ]; then
++  echo "Environment check failed."
++  exit 1
++fi
++vp9_c_vs_simd_enc_test
