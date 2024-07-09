@@ -33,7 +33,6 @@ MOZ_DIST_BIN="$MOZ_LIB_DIR/firefox"
 MOZ_LANGPACKS_DIR="$MOZ_DIST_BIN/langpacks"
 MOZ_EXTENSIONS_PROFILE_DIR="$HOME/.mozilla/extensions/{ec8030f7-c20a-464f-9b0e-13a3a9e97384}"
 MOZ_PROGRAM="$MOZ_DIST_BIN/$MOZ_FIREFOX_FILE"
-MOZ_LAUNCHER="$MOZ_DIST_BIN/run-mozilla.sh"
 
 ##
 ## Wayland is now enabled by default as of Firefox 121, but let's still allow users to opt out via MOZ_DISABLE_WAYLAND
@@ -140,41 +139,19 @@ if [ $MOZILLA_DOWN -ne 0 ]; then
     create_langpack_link $MOZLOCALE || create_langpack_link $SHORTMOZLOCALE || true
 fi
 
-# Prepare command line arguments
-script_args=""
-pass_arg_count=0
-while [ $# -gt $pass_arg_count ]
-do
-  case "$1" in
-    -g | --debug)
-      script_args="$script_args -g"
-      debugging=1
-      shift
-      ;;
-    -d | --debugger)
-      if [ $# -gt 1 ]; then
-        script_args="$script_args -d $2"
-        shift 2
-      else
-        shift
-      fi
-      ;;
-    *)
-      # Move the unrecognized argument to the end of the list.
-      arg="$1"
-      shift
-      set -- "$@" "$arg"
-      pass_arg_count=`expr $pass_arg_count + 1`
-      ;;
-  esac
-done
-
-# We need to link Firefox with desktop file name
+# MOZ_APP_REMOTINGNAME links Firefox with desktop file name
 if [ -z "$MOZ_APP_REMOTINGNAME" ]
 then
   export MOZ_APP_REMOTINGNAME=firefox
 fi
-export MOZ_DBUS_APP_NAME=firefox
+
+# MOZ_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
+# search provider or remote launcher
+# DBus interface name (or prefix) is org.mozilla.MOZ_DBUS_APP_NAME
+if [ -z "$MOZ_DBUS_APP_NAME" ]
+then
+  export MOZ_DBUS_APP_NAME=firefox
+fi
 
 # Don't throw "old profile" dialog box.
 export MOZ_ALLOW_DOWNGRADE=1
@@ -183,7 +160,7 @@ export MOZ_ALLOW_DOWNGRADE=1
 debugging=0
 if [ $debugging = 1 ]
 then
-  echo $MOZ_LAUNCHER $script_args $MOZ_PROGRAM "$@"
+  echo $MOZ_PROGRAM "$@"
 fi
 
-exec $MOZ_LAUNCHER $script_args $MOZ_PROGRAM "$@"
+exec $MOZ_PROGRAM "$@"
