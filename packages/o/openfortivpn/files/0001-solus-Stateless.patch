@@ -1,0 +1,110 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Wed, 10 Jul 2024 22:11:05 -0500
+Subject: [PATCH] solus: Stateless
+
+---
+ src/config.c | 14 +++++++++++---
+ src/config.h |  3 ++-
+ src/main.c   |  7 ++++++-
+ 3 files changed, 19 insertions(+), 5 deletions(-)
+
+diff --git a/src/config.c b/src/config.c
+index 9c6d3c5..d2c2f43 100644
+--- a/src/config.c
++++ b/src/config.c
+@@ -35,6 +35,7 @@
+ #include <ctype.h>
+ #include <limits.h>
+ #include <stdio.h>
++#include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -182,7 +183,7 @@ int parse_min_tls(const char *str)
+  * @param[in]  filename  the file to read values from
+  * @return               0 if successful, or < 0 in case of error
+  */
+-int load_config(struct vpn_config *cfg, const char *filename)
++int load_config(struct vpn_config *cfg, const char *filename, const bool config_set)
+ {
+ 	int ret = 0;
+ 	FILE *file;
+@@ -192,8 +193,15 @@ int load_config(struct vpn_config *cfg, const char *filename)
+ 
+ 	file = fopen(filename, "r");
+ 	if (file == NULL) {
+-		ret = ERR_CFG_SEE_ERRNO;
+-		goto err_return;
++		if (!config_set) {
++			if ((file = fopen("/usr/share/defaults/openfortivpn/config", "r") == NULL)) {
++				ret = ERR_CFG_SEE_ERRNO;
++				goto err_return;
++			}
++		} else {
++			ret = ERR_CFG_SEE_ERRNO;
++			goto err_return;
++		}
+ 	}
+ 
+ 	// Read line by line
+diff --git a/src/config.h b/src/config.h
+index eaf7f82..06cc687 100644
+--- a/src/config.h
++++ b/src/config.h
+@@ -22,6 +22,7 @@
+ #include <net/if.h>
+ 
+ #include <errno.h>
++#include <stdbool.h>
+ #include <stdint.h>
+ #include <string.h>
+ 
+@@ -141,7 +142,7 @@ int add_trusted_cert(struct vpn_config *cfg, const char *digest);
+ int strtob(const char *str);
+ int parse_min_tls(const char *str);
+ 
+-int load_config(struct vpn_config *cfg, const char *filename);
++int load_config(struct vpn_config *cfg, const char *filename, const bool config_set);
+ void destroy_vpn_config(struct vpn_config *cfg);
+ 
+ /*
+diff --git a/src/main.c b/src/main.c
+index c1fba33..e30eb02 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -27,6 +27,7 @@
+ 
+ #include <limits.h>
+ #include <stdio.h>
++#include <stdbool.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 
+@@ -218,6 +219,9 @@ int main(int argc, char *argv[])
+ 	const char *host;
+ 	char *port_str;
+ 
++	// Whether or not the user has overridden the configuration
++	bool config_set = false;
++
+ 	struct vpn_config cfg = {
+ 		.gateway_host = {'\0'},
+ 		.gateway_port = 443,
+@@ -619,6 +623,7 @@ int main(int argc, char *argv[])
+ 			break;
+ 		case 'c':
+ 			config_file = optarg;
++			config_set = true;
+ 			break;
+ 		case 'u':
+ 			strncpy(cli_cfg.username, optarg, USERNAME_SIZE);
+@@ -654,7 +659,7 @@ int main(int argc, char *argv[])
+ 
+ 	// Load configuration file
+ 	if (config_file[0] != '\0') {
+-		ret = load_config(&cfg, config_file);
++		ret = load_config(&cfg, config_file, config_set);
+ 		if (ret == 0)
+ 			log_debug("Loaded configuration file \"%s\".\n", config_file);
+ 		else
