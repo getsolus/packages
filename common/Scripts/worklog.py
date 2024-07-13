@@ -203,7 +203,7 @@ class Build(Listable):
 
     def to_tty(self) -> str:
         duration = f'({self.duration}) ' if self.duration else ''
-        comment = f' # {self.comment}' if self.comment else ''
+        comment = f' # {self._comment}' if self.comment else ''
 
         return (TTY.color(self.status_color, f'{self.status_symbol} {self.package} ') +
                 f'{self.v} ' +
@@ -244,6 +244,10 @@ class Build(Listable):
             return None
 
         return f'{round((self._finished - self._started).total_seconds())} s'
+
+    @property
+    def _comment(self) -> Optional[str]:
+        return self.comment.replace('\n','; ') if self.comment else None
 
     @property
     def status_color(self) -> str:
