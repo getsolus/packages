@@ -1,0 +1,322 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Volker Simonis <simonis@openjdk.org>
+Date: Thu, 15 Oct 2020 09:18:26 +0000
+Subject: [PATCH] 8253952: Refine ZipOutputStream.putNextEntry() to recalculate
+ ZipEntry's compressed size
+
+Reviewed-by: lancea, alanb
+---
+ .../java/util/jar/JarOutputStream.java        |  11 +-
+ .../share/classes/java/util/zip/ZipEntry.java |   4 +
+ .../java/util/zip/ZipOutputStream.java        |  27 ++-
+ test/jdk/java/util/zip/CopyZipFile.java       | 203 ++++++++++++++++++
+ 4 files changed, 234 insertions(+), 11 deletions(-)
+ create mode 100644 test/jdk/java/util/zip/CopyZipFile.java
+
+diff --git a/src/java.base/share/classes/java/util/jar/JarOutputStream.java b/src/java.base/share/classes/java/util/jar/JarOutputStream.java
+index 36942772619..29cf7e2bae4 100644
+--- a/src/java.base/share/classes/java/util/jar/JarOutputStream.java
++++ b/src/java.base/share/classes/java/util/jar/JarOutputStream.java
+@@ -77,8 +77,15 @@ class JarOutputStream extends ZipOutputStream {
+     /**
+      * Begins writing a new JAR file entry and positions the stream
+      * to the start of the entry data. This method will also close
+-     * any previous entry. The default compression method will be
+-     * used if no compression method was specified for the entry.
++     * any previous entry.
++     * <p>
++     * The default compression method will be used if no compression
++     * method was specified for the entry. When writing a compressed
++     * (DEFLATED) entry, and the compressed size has not been explicitly
++     * set with the {@link ZipEntry#setCompressedSize(long)} method,
++     * then the compressed size will be set to the actual compressed
++     * size after deflation.
++     * <p>
+      * The current time will be used if the entry has no set modification
+      * time.
+      *
+diff --git a/src/java.base/share/classes/java/util/zip/ZipEntry.java b/src/java.base/share/classes/java/util/zip/ZipEntry.java
+index 41f8c7b3b38..028fa4e7bfb 100644
+--- a/src/java.base/share/classes/java/util/zip/ZipEntry.java
++++ b/src/java.base/share/classes/java/util/zip/ZipEntry.java
+@@ -54,6 +54,8 @@ class ZipEntry implements ZipConstants, Cloneable {
+     long crc = -1;      // crc-32 of entry data
+     long size = -1;     // uncompressed size of entry data
+     long csize = -1;    // compressed size of entry data
++    boolean csizeSet = false; // Only true if csize was explicitely set by
++                        // a call to setCompressedSize()
+     int method = -1;    // compression method
+     int flag = 0;       // general purpose flag
+     byte[] extra;       // optional extra field data for entry
+@@ -128,6 +130,7 @@ class ZipEntry implements ZipConstants, Cloneable {
+         crc = e.crc;
+         size = e.size;
+         csize = e.csize;
++        csizeSet = e.csizeSet;
+         method = e.method;
+         flag = e.flag;
+         extra = e.extra;
+@@ -448,6 +451,7 @@ class ZipEntry implements ZipConstants, Cloneable {
+      */
+     public void setCompressedSize(long csize) {
+         this.csize = csize;
++        this.csizeSet = true;
+     }
+ 
+     /**
+diff --git a/src/java.base/share/classes/java/util/zip/ZipOutputStream.java b/src/java.base/share/classes/java/util/zip/ZipOutputStream.java
+index 0929d245ad3..d6de676aee3 100644
+--- a/src/java.base/share/classes/java/util/zip/ZipOutputStream.java
++++ b/src/java.base/share/classes/java/util/zip/ZipOutputStream.java
+@@ -180,12 +180,18 @@ class ZipOutputStream extends DeflaterOutputStream implements ZipConstants {
+     /**
+      * Begins writing a new ZIP file entry and positions the stream to the
+      * start of the entry data. Closes the current entry if still active.
++     * <p>
+      * The default compression method will be used if no compression method
+-     * was specified for the entry, and the current time will be used if
+-     * the entry has no set modification time.
+-     * @param e the ZIP entry to be written
+-     * @exception ZipException if a ZIP format error has occurred
+-     * @exception IOException if an I/O error has occurred
++     * was specified for the entry. When writing a compressed (DEFLATED)
++     * entry, and the compressed size has not been explicitly set with the
++     * {@link ZipEntry#setCompressedSize(long)} method, then the compressed
++     * size will be set to the actual compressed size after deflation.
++     * <p>
++     * The current time will be used if the entry has no set modification time.
++     *
++     * @param     e the ZIP entry to be written
++     * @throws    ZipException if a ZIP format error has occurred
++     * @throws    IOException if an I/O error has occurred
+      */
+     public void putNextEntry(ZipEntry e) throws IOException {
+         ensureOpen();
+@@ -204,11 +210,14 @@ class ZipOutputStream extends DeflaterOutputStream implements ZipConstants {
+         e.flag = 0;
+         switch (e.method) {
+         case DEFLATED:
+-            // store size, compressed size, and crc-32 in data descriptor
+-            // immediately following the compressed entry data
+-            if (e.size  == -1 || e.csize == -1 || e.crc   == -1)
++            // If not set, store size, compressed size, and crc-32 in data
++            // descriptor immediately following the compressed entry data.
++            // Ignore the compressed size of a ZipEntry if it was implcitely set
++            // while reading that ZipEntry from a  ZipFile or ZipInputStream because
++            // we can't know the compression level of the source zip file/stream.
++            if (e.size  == -1 || e.csize == -1 || e.crc   == -1 || !e.csizeSet) {
+                 e.flag = 8;
+-
++            }
+             break;
+         case STORED:
+             // compressed size, uncompressed size, and crc-32 must all be
+diff --git a/test/jdk/java/util/zip/CopyZipFile.java b/test/jdk/java/util/zip/CopyZipFile.java
+new file mode 100644
+index 00000000000..e6fa4bfe057
+--- /dev/null
++++ b/test/jdk/java/util/zip/CopyZipFile.java
+@@ -0,0 +1,203 @@
++/*
++ * Copyright Amazon.com Inc. or its affiliates. All Rights Reserved.
++ * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
++ *
++ * This code is free software; you can redistribute it and/or modify it
++ * under the terms of the GNU General Public License version 2 only, as
++ * published by the Free Software Foundation.
++ *
++ * This code is distributed in the hope that it will be useful, but WITHOUT
++ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
++ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
++ * version 2 for more details (a copy is included in the LICENSE file that
++ * accompanied this code).
++ *
++ * You should have received a copy of the GNU General Public License version
++ * 2 along with this work; if not, write to the Free Software Foundation,
++ * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
++ *
++ * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
++ * or visit www.oracle.com if you need additional information or have any
++ * questions.
++ */
++
++/**
++ * @test
++ * @summary Test behaviour when copying ZipEntries between zip files.
++ * @run main/othervm CopyZipFile
++ */
++
++import java.io.File;
++import java.io.ByteArrayOutputStream;
++import java.io.FileInputStream;
++import java.io.FileNotFoundException;
++import java.io.FileOutputStream;
++import java.io.InputStream;
++import java.io.OutputStream;
++import java.util.Enumeration;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++import java.util.zip.CRC32;
++import java.util.zip.Deflater;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipException;
++import java.util.zip.ZipFile;
++import java.util.zip.ZipInputStream;
++import java.util.zip.ZipOutputStream;
++
++public class CopyZipFile {
++    private static final String ZIP_FILE = "first.zip";
++    private static final String TEST_STRING = "TestTestTest";
++
++    private static void createZip(String zipFile) throws Exception {
++        File f = new File(zipFile);
++        f.deleteOnExit();
++        try (OutputStream os = new FileOutputStream(f);
++             ZipOutputStream zos = new ZipOutputStream(os)) {
++            // First file will be compressed with DEFAULT_COMPRESSION (i.e. -1 or 6)
++            zos.putNextEntry(new ZipEntry("test1.txt"));
++            zos.write(TEST_STRING.getBytes());
++            zos.closeEntry();
++            // Second file won't be compressed at all (i.e. STORED)
++            zos.setMethod(ZipOutputStream.STORED);
++            ZipEntry ze = new ZipEntry("test2.txt");
++            int length = TEST_STRING.length();
++            ze.setSize(length);
++            ze.setCompressedSize(length);
++            CRC32 crc = new CRC32();
++            crc.update(TEST_STRING.getBytes("utf8"), 0, length);
++            ze.setCrc(crc.getValue());
++            zos.putNextEntry(ze);
++            zos.write(TEST_STRING.getBytes());
++            // Third file will be compressed with NO_COMPRESSION (i.e. 0)
++            zos.setMethod(ZipOutputStream.DEFLATED);
++            zos.setLevel(Deflater.NO_COMPRESSION);
++            zos.putNextEntry(new ZipEntry("test3.txt"));
++            zos.write(TEST_STRING.getBytes());
++            // Fourth file will be compressed with BEST_SPEED (i.e. 1)
++            zos.setLevel(Deflater.BEST_SPEED);
++            zos.putNextEntry(new ZipEntry("test4.txt"));
++            zos.write(TEST_STRING.getBytes());
++            // Fifth file will be compressed with BEST_COMPRESSION (i.e. 9)
++            zos.setLevel(Deflater.BEST_COMPRESSION);
++            zos.putNextEntry(new ZipEntry("test5.txt"));
++            zos.write(TEST_STRING.getBytes());
++        }
++    }
++
++    public static void main(String args[]) throws Exception {
++        // By default, ZipOutputStream creates zip files with Local File Headers
++        // without size, compressedSize and crc values and an extra Data
++        // Descriptor (see https://en.wikipedia.org/wiki/Zip_(file_format)
++        // after the data belonging to that entry with these values if in the
++        // corresponding ZipEntry one of the size, compressedSize or crc fields is
++        // equal to '-1' (which is the default for newly created ZipEntries).
++        createZip(ZIP_FILE);
++
++        // Now read all the entries of the newly generated zip file with a ZipInputStream
++        // and copy them to a new zip file with the help of a ZipOutputStream.
++        // This only works reliably because the generated zip file has no values for the
++        // size, compressedSize and crc values of a zip entry in the local file header and
++        // therefore the ZipEntry objects created by ZipOutputStream.getNextEntry() will have
++        // all these fields set to '-1'.
++        ZipEntry entry;
++        byte[] buf = new byte[512];
++        try (InputStream is = new FileInputStream(ZIP_FILE);
++             ZipInputStream zis = new ZipInputStream(is);
++             OutputStream os = new ByteArrayOutputStream();
++             ZipOutputStream zos = new ZipOutputStream(os)) {
++            while((entry = zis.getNextEntry())!=null) {
++                // ZipInputStream.getNextEntry() only reads the Local File Header of a zip entry,
++                // so for the zip file we've just generated the ZipEntry fields 'size', 'compressedSize`
++                // and 'crc' for deflated entries should be uninitialized (i.e. '-1').
++                System.out.println(
++                    String.format("name=%s, clen=%d, len=%d, crc=%d",
++                                  entry.getName(), entry.getCompressedSize(), entry.getSize(), entry.getCrc()));
++                if (entry.getMethod() == ZipEntry.DEFLATED &&
++                    (entry.getCompressedSize() != -1 || entry.getSize() != -1 || entry.getCrc() != -1)) {
++                    throw new Exception("'size', 'compressedSize' and 'crc' shouldn't be initialized at this point.");
++                }
++                zos.putNextEntry(entry);
++                zis.transferTo(zos);
++                // After all the data belonging to a zip entry has been inflated (i.e. after ZipInputStream.read()
++                // returned '-1'), it is guaranteed that the ZipInputStream will also have consumed the Data
++                // Descriptor (if any) after the data and will have updated the 'size', 'compressedSize' and 'crc'
++                // fields of the ZipEntry object.
++                System.out.println(
++                    String.format("name=%s, clen=%d, len=%d, crc=%d\n",
++                                  entry.getName(), entry.getCompressedSize(), entry.getSize(), entry.getCrc()));
++                if (entry.getCompressedSize() == -1 || entry.getSize() == -1) {
++                    throw new Exception("'size' and 'compressedSize' must be initialized at this point.");
++                }
++            }
++        }
++
++        // Now we read all the entries of the initially generated zip file with the help
++        // of the ZipFile class. The ZipFile class reads all the zip entries from the Central
++        // Directory which must have accurate information for size, compressedSize and crc.
++        // This means that all ZipEntry objects returned from ZipFile will have correct
++        // settings for these fields.
++        // If the compression level was different in the initial zip file (which we can't find
++        // out any more now because the zip file format doesn't record this information) the
++        // size of the re-compressed entry we are writing to the ZipOutputStream might differ
++        // from the original compressed size recorded in the ZipEntry. This would result in an
++        // "invalid entry compressed size" ZipException if ZipOutputStream wouldn't ignore
++        // the implicitely set compressed size attribute of ZipEntries read from a ZipFile
++        // or ZipInputStream.
++        try (OutputStream os = new ByteArrayOutputStream();
++             ZipOutputStream zos = new ZipOutputStream(os);
++             ZipFile zf = new ZipFile(ZIP_FILE)) {
++            Enumeration<? extends ZipEntry> entries = zf.entries();
++            while (entries.hasMoreElements()) {
++                entry = entries.nextElement();
++                System.out.println(
++                    String.format("name=%s, clen=%d, len=%d, crc=%d\n",
++                                  entry.getName(), entry.getCompressedSize(),
++                                  entry.getSize(), entry.getCrc()));
++                if (entry.getCompressedSize() == -1 || entry.getSize() == -1) {
++                    throw new Exception("'size' and 'compressedSize' must be initialized at this point.");
++                }
++                InputStream is = zf.getInputStream(entry);
++                zos.putNextEntry(entry);
++                is.transferTo(zos);
++                zos.closeEntry();
++            }
++        }
++
++        // The compressed size attribute of a ZipEntry shouldn't be ignored if it was set
++        // explicitely by calling ZipEntry.setCpompressedSize()
++        try (OutputStream os = new ByteArrayOutputStream();
++             ZipOutputStream zos = new ZipOutputStream(os);
++             ZipFile zf = new ZipFile(ZIP_FILE)) {
++            Enumeration<? extends ZipEntry> entries = zf.entries();
++            while (entries.hasMoreElements()) {
++                try {
++                    entry = entries.nextElement();
++                    entry.setCompressedSize(entry.getCompressedSize());
++                    InputStream is = zf.getInputStream(entry);
++                    zos.putNextEntry(entry);
++                    is.transferTo(zos);
++                    zos.closeEntry();
++                    if ("test3.txt".equals(entry.getName())) {
++                        throw new Exception(
++                            "Should throw a ZipException if ZipEntry.setCpompressedSize() was called.");
++                    }
++                } catch (ZipException ze) {
++                    if ("test1.txt".equals(entry.getName()) || "test2.txt".equals(entry.getName())) {
++                        throw new Exception(
++                            "Shouldn't throw a ZipExcpetion for STORED files or files compressed with DEFAULT_COMPRESSION");
++                    }
++                    // Hack to fix and close the offending zip entry with the correct compressed size.
++                    // The exception message is something like:
++                    //   "invalid entry compressed size (expected 12 but got 7 bytes)"
++                    // and we need to extract the second integer.
++                    Pattern cSize = Pattern.compile("\\d+");
++                    Matcher m = cSize.matcher(ze.getMessage());
++                    m.find();
++                    m.find();
++                    entry.setCompressedSize(Integer.parseInt(m.group()));
++                }
++            }
++        }
++    }
++}
