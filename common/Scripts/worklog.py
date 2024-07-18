@@ -247,7 +247,7 @@ class Build(Listable):
 
     @property
     def _comment(self) -> Optional[str]:
-        return self.comment.replace('\n','; ') if self.comment else None
+        return self.comment.replace('\n', '; ') if self.comment else None
 
     @property
     def status_color(self) -> str:
