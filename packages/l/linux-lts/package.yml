@@ -1,8 +1,8 @@
 name       : linux-lts
-version    : 6.6.37
-release    : 248
+version    : 6.6.41
+release    : 249
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.37.tar.xz : f3976e77708694fe4a1f8d1307c315c8a36cbc58f038a38e006b91e29a1f3214
+    - https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.41.tar.xz : 9ec99c578158ab85d99b37791a76643d2ea4c3f72ecbef7b5eb6d60f3de032ef
 license    : GPL-2.0-only
 component  :
     - kernel.image
@@ -118,21 +118,17 @@ install    : |
 
     # Strip the kernel modules for the initramfs. We can eke out some slight size improvements by keeping the modules
     # uncompressed before we compress the entire initramfs.
-    mkdir -p dracut-modules/lib/modules/
-    cp -ra $installdir/usr/lib64/modules/${kversion} dracut-modules/lib/modules/
-    find "dracut-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
+    mkdir -p decompressed-modules/lib/modules/
+    cp -ra $installdir/usr/lib64/modules/${kversion} decompressed-modules/lib/modules/
+    find "decompressed-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
 
     # We can make the initrd smaller by decompressing the firmware prior to compressing the entire initrd.
-    # This is fragile, the relative path of the --fwdir flag in dracut is the path the firmware ends up so we create a "phantom"
-    # lib so the paths are correct. The solution is to add decompression to dracut directly
-    # TODO: Update this post-usr-merge
-    mkdir -p lib/
-    cp -ra /usr/lib64/firmware lib
-    pushd lib
+    mkdir -p kernel-firmware/
+    cp -ra /usr/lib64/firmware/* kernel-firmware
     file_list=()
     while IFS=  read -r -d $'\0'; do
         file_list+=("$REPLY")
-    done < <(find firmware -type f -print0)
+    done < <(find kernel-firmware -type f -print0)
     for file in "${file_list[@]}"; do
         if [ -z ${file##*.zst} ]; then
             unzstd --rm "$file"
@@ -142,7 +138,7 @@ install    : |
     link_list=()
     while IFS=  read -r -d $'\0'; do
         link_list+=("$REPLY")
-    done < <(find firmware -type l -print0)
+    done < <(find kernel-firmware -type l -print0)
     for file in "${link_list[@]}"; do
         link=$(readlink "$file")
         if [ -z ${link##*.zst} ]; then
@@ -154,25 +150,16 @@ install    : |
             mv -v "$file" "$new_filename"
         fi
     done
-    popd
-
-    # Create a directory structure that we'll merge with the initrd. This is because we can't use symlinks with --include
-    # By creating symlinks here we can reference modules outside of the ordinary directory. This is needed for injecting
-    # modules from a secondary initramfs. We'll likely need to create such a symlink for every extra initramfs we intend to support
-    mkdir -p initramfs/lib64/modules/${kversion}/extra-modules/
-    mkdir -p initramfs/lib64/firmware
-    ln -sv /nvidia initramfs/lib64/modules/${kversion}/extra-modules/nvidia
-    ln -sv /nvidia-firmware initramfs/lib64/firmware/nvidia
 
     # Store vendor initrd within the kernel package, prevent mangling from fakeroot
     # 2021-01-20: Force early KMS for everything except Nouveau (this will not work with Nvidia propretary)
     LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
-        --kmoddir dracut-modules/lib/modules/${kversion} --kver $kversion --fwdir lib/firmware/ \
-        --add "bash systemd lvm dm rescue resume fido2 tpm2-tss virtiofs" --omit "nvmf" \
+        --kmoddir decompressed-modules/lib/modules/${kversion} --kver $kversion --fwdir kernel-firmware/ \
+        --add "bash systemd lvm dm rescue resume fido2 tpm2-tss qemu virtiofs solus-init" --omit "nvmf" \
         --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
         --add-drivers "amdgpu hyperv_drm i915 qxl radeon simpledrm virtio-gpu" \
         --include $pkgfiles/initrd/timeouts.conf /usr/lib/systemd/system.conf.d/timeouts.conf \
-        --include initramfs / \
+        --include $pkgfiles/initrd/depmod.conf /usr/lib/depmod.d/depmod.conf \
         $installdir/usr/lib64/kernel/initrd-$kernID.${version}-${release}
 
     # Sign with our MOK if we have the secureboot-keys submodule checked out.

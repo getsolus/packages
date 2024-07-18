@@ -22,14 +22,14 @@ Signed-off-by: John Johansen <john.johansen@canonical.com>
 (cherry picked from https://gitlab.com/jjohansen/apparmor-kernel)
 Signed-off-by: Andrea Righi <andrea.righi@canonical.com>
 ---
- Documentation/ABI/testing/ima_policy |  8 ++-
- include/linux/security.h             | 14 ++---
- security/integrity/ima/ima_policy.c  | 76 +++++++++++++++++++++++++---
- security/security.c                  | 35 ++++++++++---
- 4 files changed, 112 insertions(+), 21 deletions(-)
+ Documentation/ABI/testing/ima_policy |  8 +++-
+ include/linux/security.h             | 14 +++---
+ security/integrity/ima/ima_policy.c  | 72 +++++++++++++++++++++++++---
+ security/security.c                  | 35 +++++++++++---
+ 4 files changed, 110 insertions(+), 19 deletions(-)
 
 diff --git a/Documentation/ABI/testing/ima_policy b/Documentation/ABI/testing/ima_policy
-index c2385183826c..a59291b97c24 100644
+index c2385183826cb..a59291b97c24f 100644
 --- a/Documentation/ABI/testing/ima_policy
 +++ b/Documentation/ABI/testing/ima_policy
 @@ -26,7 +26,7 @@ Description:
@@ -55,18 +55,18 @@ index c2385183826c..a59291b97c24 100644
  
  			measure func=KEXEC_KERNEL_CHECK pcr=4
 diff --git a/include/linux/security.h b/include/linux/security.h
-index 70206efe1be0..53599f91e2eb 100644
+index 02d4bfd123120..3d0aea787d393 100644
 --- a/include/linux/security.h
 +++ b/include/linux/security.h
-@@ -2067,25 +2067,27 @@ static inline void security_audit_rule_free(struct audit_lsm_rules *lsmrules)
+@@ -2069,25 +2069,27 @@ static inline void security_audit_rule_free(struct audit_lsm_rules *lsmrules)
  #endif /* CONFIG_AUDIT */
  
  #if defined(CONFIG_IMA_LSM_RULES) && defined(CONFIG_SECURITY)
--int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule);
+-int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule, gfp_t gfp);
 -int ima_filter_rule_match(u32 secid, u32 field, u32 op, void *lsmrule);
 -void ima_filter_rule_free(void *lsmrule);
 +int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule,
-+			 int lsmslot);
++			 int lsmslot, gfp_t gfp);
 +int ima_filter_rule_match(u32 secid, u32 field, u32 op, void *lsmrule,
 +			  int lsmslot);
 +void ima_filter_rule_free(void *lsmrule, int lsmslot);
@@ -74,8 +74,8 @@ index 70206efe1be0..53599f91e2eb 100644
  #else
  
  static inline int ima_filter_rule_init(u32 field, u32 op, char *rulestr,
--					   void **lsmrule)
-+				       void **lsmrule, int lsmslot)
+-					   void **lsmrule, gfp_t gfp)
++				       void **lsmrule, int lsmslot, gfp_t gfp)
  {
  	return 0;
  }
@@ -93,7 +93,7 @@ index 70206efe1be0..53599f91e2eb 100644
  
  #endif /* defined(CONFIG_IMA_LSM_RULES) && defined(CONFIG_SECURITY) */
 diff --git a/security/integrity/ima/ima_policy.c b/security/integrity/ima/ima_policy.c
-index f69062617754..49e8b4e84b19 100644
+index f3f46c6186c08..d2e12bf0ee595 100644
 --- a/security/integrity/ima/ima_policy.c
 +++ b/security/integrity/ima/ima_policy.c
 @@ -117,6 +117,8 @@ struct ima_rule_entry {
@@ -146,17 +146,15 @@ index f69062617754..49e8b4e84b19 100644
  		kfree(entry->lsm[i].args_p);
  	}
  }
-@@ -425,7 +452,8 @@ static struct ima_rule_entry *ima_lsm_copy_rule(struct ima_rule_entry *entry)
- 
+@@ -427,6 +454,7 @@ static struct ima_rule_entry *ima_lsm_copy_rule(struct ima_rule_entry *entry,
  		ima_filter_rule_init(nentry->lsm[i].type, Audit_equal,
  				     nentry->lsm[i].args_p,
--				     &nentry->lsm[i].rule);
-+				     &nentry->lsm[i].rule,
-+				     entry->lsm[i].rules_lsm);
+ 				     &nentry->lsm[i].rule,
++				     entry->lsm[i].rules_lsm,
+ 				     gfp);
  		if (!nentry->lsm[i].rule)
  			pr_warn("rule for LSM \'%s\' is undefined\n",
- 				nentry->lsm[i].args_p);
-@@ -451,7 +479,8 @@ static int ima_lsm_update_rule(struct ima_rule_entry *entry)
+@@ -453,7 +481,8 @@ static int ima_lsm_update_rule(struct ima_rule_entry *entry)
  	 * be owned by nentry.
  	 */
  	for (i = 0; i < MAX_LSM_RULES; i++)
@@ -166,7 +164,7 @@ index f69062617754..49e8b4e84b19 100644
  	kfree(entry);
  
  	return 0;
-@@ -650,14 +679,16 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+@@ -652,14 +681,16 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
  			security_inode_getsecid(inode, &osid);
  			rc = ima_filter_rule_match(osid, lsm_rule->lsm[i].type,
  						   Audit_equal,
@@ -185,7 +183,7 @@ index f69062617754..49e8b4e84b19 100644
  			break;
  		default:
  			break;
-@@ -680,7 +711,8 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
+@@ -682,7 +713,8 @@ static bool ima_match_rules(struct ima_rule_entry *rule,
  out:
  	if (rule_reinitialized) {
  		for (i = 0; i < MAX_LSM_RULES; i++)
@@ -195,7 +193,7 @@ index f69062617754..49e8b4e84b19 100644
  		kfree(lsm_rule);
  	}
  	return result;
-@@ -1073,7 +1105,7 @@ enum policy_opt {
+@@ -1075,7 +1107,7 @@ enum policy_opt {
  	Opt_digest_type,
  	Opt_appraise_type, Opt_appraise_flag, Opt_appraise_algos,
  	Opt_permit_directio, Opt_pcr, Opt_template, Opt_keyrings,
@@ -204,7 +202,7 @@ index f69062617754..49e8b4e84b19 100644
  };
  
  static const match_table_t policy_tokens = {
-@@ -1121,6 +1153,7 @@ static const match_table_t policy_tokens = {
+@@ -1123,6 +1155,7 @@ static const match_table_t policy_tokens = {
  	{Opt_pcr, "pcr=%s"},
  	{Opt_template, "template=%s"},
  	{Opt_keyrings, "keyrings=%s"},
@@ -212,17 +210,15 @@ index f69062617754..49e8b4e84b19 100644
  	{Opt_label, "label=%s"},
  	{Opt_err, NULL}
  };
-@@ -1140,7 +1173,8 @@ static int ima_lsm_rule_init(struct ima_rule_entry *entry,
- 	entry->lsm[lsm_rule].type = audit_type;
+@@ -1143,6 +1176,7 @@ static int ima_lsm_rule_init(struct ima_rule_entry *entry,
  	result = ima_filter_rule_init(entry->lsm[lsm_rule].type, Audit_equal,
  				      entry->lsm[lsm_rule].args_p,
--				      &entry->lsm[lsm_rule].rule);
-+				      &entry->lsm[lsm_rule].rule,
-+				      entry->lsm[lsm_rule].rules_lsm);
+ 				      &entry->lsm[lsm_rule].rule,
++				      entry->lsm[lsm_rule].rules_lsm,
+ 				      GFP_KERNEL);
  	if (!entry->lsm[lsm_rule].rule) {
  		pr_warn("rule for LSM \'%s\' is undefined\n",
- 			entry->lsm[lsm_rule].args_p);
-@@ -1878,6 +1912,23 @@ static int ima_parse_rule(char *rule, struct ima_rule_entry *entry)
+@@ -1881,6 +1915,23 @@ static int ima_parse_rule(char *rule, struct ima_rule_entry *entry)
  						 &(template_desc->num_fields));
  			entry->template = template_desc;
  			break;
@@ -246,7 +242,7 @@ index f69062617754..49e8b4e84b19 100644
  		case Opt_err:
  			ima_log_string(ab, "UNKNOWN", p);
  			result = -EINVAL;
-@@ -1923,6 +1974,7 @@ ssize_t ima_parse_add_rule(char *rule)
+@@ -1926,6 +1977,7 @@ ssize_t ima_parse_add_rule(char *rule)
  	struct ima_rule_entry *entry;
  	ssize_t result, len;
  	int audit_info = 0;
@@ -254,7 +250,7 @@ index f69062617754..49e8b4e84b19 100644
  
  	p = strsep(&rule, "\n");
  	len = strlen(p) + 1;
-@@ -1940,6 +1992,11 @@ ssize_t ima_parse_add_rule(char *rule)
+@@ -1943,6 +1995,11 @@ ssize_t ima_parse_add_rule(char *rule)
  
  	INIT_LIST_HEAD(&entry->list);
  
@@ -266,7 +262,7 @@ index f69062617754..49e8b4e84b19 100644
  	result = ima_parse_rule(p, entry);
  	if (result) {
  		ima_free_rule(entry);
-@@ -2251,6 +2308,9 @@ int ima_policy_show(struct seq_file *m, void *v)
+@@ -2254,6 +2311,9 @@ int ima_policy_show(struct seq_file *m, void *v)
  					   entry->lsm[i].args_p);
  				break;
  			}
@@ -277,18 +273,18 @@ index f69062617754..49e8b4e84b19 100644
  		}
  	}
 diff --git a/security/security.c b/security/security.c
-index 85eb318205e7..b1f8be3180eb 100644
+index 5f27c1ce52f86..de90eabd19e5c 100644
 --- a/security/security.c
 +++ b/security/security.c
-@@ -5331,19 +5331,42 @@ int security_audit_rule_match(u32 secid, u32 field, u32 op,
+@@ -5332,19 +5332,42 @@ int security_audit_rule_match(u32 secid, u32 field, u32 op,
   * The integrity subsystem uses the same hooks as
   * the audit subsystem.
   */
--int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule)
+-int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule, gfp_t gfp)
 +int ima_filter_rule_init(u32 field, u32 op, char *rulestr, void **lsmrule,
-+			 int lsmslot)
++			 int lsmslot, gfp_t gfp)
  {
--	return call_int_hook(audit_rule_init, 0, field, op, rulestr, lsmrule);
+-	return call_int_hook(audit_rule_init, 0, field, op, rulestr, lsmrule, gfp);
 +	struct security_hook_list *hp;
 +
 +	hlist_for_each_entry(hp, &security_hook_heads.audit_rule_init, list)
