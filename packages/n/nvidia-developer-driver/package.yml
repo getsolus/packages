@@ -1,6 +1,6 @@
 name       : nvidia-developer-driver
 version    : 550.40.65
-release    : 296
+release    : 297
 source     :
     - https://developer.nvidia.com/downloads/vulkan-beta-5504065-linux : 76ef3a187301c73524acffa70f33287417711f77754ee78b3c7e4a79848d2985
 extract    : no
@@ -237,29 +237,22 @@ install    : |
     %symlink_check
 
     # Generate per-kernel initrd with embedded nvidia kernel drivers
-    shopt -s extglob
     for i in current lts; do
-        mkdir init-$i && pushd init-$i
-        # Copy from what we have in the installdir already
-        cp -ra $installdir/* .
-        # cleanup, don't need anything besides the modules for the chosen kernel
-        tmp=$(mktemp -d)
-        mv usr/lib64/modules $tmp
-        rm -rfv *
-        install -dm00755 usr/lib64
-        mv $tmp/* usr/lib64/
-        rm -rv usr/lib64/modules/!(*.$i)
+        mkdir -p init-$i/dracut-nvidia
+
+        # This file triggers a dracut service that regenerates the depmod index files
+        touch init-$i/.dracut-depmod-invalidate
+
+        pushd $installdir/usr/lib64/modules/*.$i
+        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        popd
 
         # Strip the debug symobls (we can get them from the normal kernel modules).
         # Don't compress the kernel modules here so that the final archive is slightly smaller
-        find . -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+        find init-$i -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
 
-        # We need this because we can't share path inodes
-        mkdir nvidia && pushd nvidia
-        find ../. -name '*.ko' -print -exec mv {} . \;
-        popd
-        rm -rf lib
         # Create the initrd
+        pushd init-$i
         find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
 
         # TODO Sign it
@@ -275,10 +268,11 @@ install    : |
     install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
 
     # Generate single initrd (to be shared between current and lts) with the GSP firmware
-    mkdir -p init-firmware/nvidia-firmware && pushd init-firmware
-    cp -ra $installdir/usr/lib64/firmware/nvidia/ nvidia-firmware/
-    find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
-    install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd-com.solus-project.nvidia-firmware
+    # mkdir -p init-firmware/dracut-firmware-nvidia-proprietary && pushd init-firmware
+    # cp -rav $installdir/usr/lib64/firmware/nvidia/* dracut-firmware-nvidia-proprietary/
+    # find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
+    # popd
+    # install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd.d/com.solus-project.nvidia-firmware
 
     # Compress modules with zstd. TODO fix this so that we're able to capture the debug symbols (needs ypkg changes)
     find "$installdir" -name '*.ko' -exec strip --strip-unneeded {} \; -exec zstd -19 {} \; -exec rm -v {} \;
