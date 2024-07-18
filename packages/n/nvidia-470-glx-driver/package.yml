@@ -1,6 +1,6 @@
 name       : nvidia-470-glx-driver
 version    : 470.256.02
-release    : 89
+release    : 90
 source     :
     - https://us.download.nvidia.com/XFree86/Linux-x86_64/470.256.02/NVIDIA-Linux-x86_64-470.256.02.run : d6451862deb695bb0447f3b7cd6268f73e81168c10e2c10597ff3fa01349b1de
 extract    : no
@@ -233,29 +233,22 @@ install    : |
     mv $installdir/usr/lib64/libglxserver_nvidia.so* $installdir/%libdir%/nvidia/modules/
 
     # Generate per-kernel initrd with embedded nvidia kernel drivers
-    shopt -s extglob
     for i in current lts; do
-        mkdir init-$i && pushd init-$i
-        # Copy from what we have in the installdir already
-        cp -ra $installdir/* .
-        # cleanup, don't need anything besides the modules for the chosen kernel
-        tmp=$(mktemp -d)
-        mv usr/lib64/modules $tmp
-        rm -rfv *
-        install -dm00755 usr/lib64
-        mv $tmp/* usr/lib64/
-        rm -rv usr/lib64/modules/!(*.$i)
+        mkdir -p init-$i/dracut-nvidia
+
+        # This file triggers a dracut service that regenerates the depmod index files
+        touch init-$i/.dracut-depmod-invalidate
+
+        pushd $installdir/usr/lib64/modules/*.$i
+        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        popd
 
         # Strip the debug symobls (we can get them from the normal kernel modules).
         # Don't compress the kernel modules here so that the final archive is slightly smaller
-        find . -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+        find init-$i -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
 
-        # We need this because we can't share path inodes
-        mkdir nvidia && pushd nvidia
-        find ../. -name '*.ko' -print -exec mv {} . \;
-        popd
-        rm -rf lib
         # Create the initrd
+        pushd init-$i
         find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
 
         # TODO Sign it
