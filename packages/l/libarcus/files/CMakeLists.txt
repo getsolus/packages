@@ -18,6 +18,7 @@ endif()
 # this, which defaults to OFF. We need to force this option to ON instead.
 set(protobuf_MODULE_COMPATIBLE ON CACHE INTERNAL "" FORCE)
 find_package(Protobuf 3.0.0 REQUIRED)
+find_package(absl REQUIRED)
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON) #Required if a patch to libArcus needs to be made via templates.
 
