@@ -1,6 +1,5 @@
 #!/usr/bin/bash
 set -euo pipefail
-set -x
 
 # Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
 # This will be removed once we are ready to enable this by default
@@ -24,37 +23,47 @@ SHA256SUM="${SHA256SUM:=/usr/bin/sha256sum}"
 STAT="${STAT:=/usr/bin/stat}"
 TOUCH="${TOUCH:=/usr/bin/touch}"
 
+_checksum() {
+    local file_checksum
+    IFS=" " read -r -a file_checksum <<< "$($SHA256SUM "$1")"
+
+    echo "${file_checksum[0]}"
+}
+
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
 needs_to_be_merged () {
     local to_test="$1"
+    local target
 
-    if ! test -e $to_test; then
-        printf "$to_test does not exist\n"
+    if ! test -e "$to_test"; then
+        echo "$to_test does not exist"
         return 1
     fi
 
-    if ! test -L $to_test; then
-        printf "$to_test is not a symlink\n"
+    if ! test -L "$to_test"; then
+        echo "$to_test is not a symlink"
         return 0
     fi
-    local target=$($READLINK $to_test)
-    printf "$to_test is a symlink to $target\n"
+
+    target=$($READLINK "$to_test")
+    echo "$to_test is a symlink to $target"
 
     if [[ "$target" == "usr"$to_test ]]; then
-        printf "$to_test is the correct symlink\n"
+        echo "$to_test is the correct symlink"
         return 1
     fi
 
-    printf "$to_test needs to be changed\n"
+    echo "$to_test needs to be changed"
     return 0
 }
 
 # This takes a directory path and creates it and it's parents recursively
 create_dir_components () {
     local dir_name="$1"
+    local parent dir_stat
 
     # Test to see if the parent exists
-    local parent=$($DIRNAME "$dir_name")
+    parent="$($DIRNAME "$dir_name")"
     if ! test -e "$parent"; then
         create_dir_components "$parent"
     fi
@@ -66,9 +75,9 @@ create_dir_components () {
 
     # Get the non-merged path so that we can see what permissions it has
     local non_merged_path=${dir_name#"/usr"}
-    local dir_stat=$($STAT -c "%a" "$non_merged_path")
+    dir_stat=$($STAT -c "%a" "$non_merged_path")
 
-    printf "Creating $dir_name with $dir_stat permissions\n"
+    echo "Creating $dir_name with $dir_stat permissions"
     # Create the directory with the defined permissions. This is allowed to fail, if it does then we orphan the file instead
     $MKDIR --verbose --mode="$dir_stat" "$dir_name" || (true && action="orphan")
 }
@@ -77,17 +86,18 @@ create_dir_components () {
 create_compat_link () {
     local old_location="$1"
     local new_location="$2"
+    local file_checksum
 
     # Since the new location exists we can presumably checksum it
-    local file_checksum=($($SHA256SUM "$new_location"))
-    local temporary_name="${old_location}.tmp.${file_checksum}"
+    file_checksum="$(_checksum "$new_location")"
+    local temporary_name="${old_location}.tmp.${file_checksum[0]}"
 
     # If the temporary file already exists then delete it (?)
     if test -e "$temporary_name"; then
         $RM --verbose "$temporary_name"
     fi
 
-    printf "Creating symlink $old_location to $new_location\n"
+    echo "Creating symlink $old_location to $new_location"
     $LN --no-dereference --symbolic --verbose --relative "$new_location" "$temporary_name"
     $MV --force --no-target-directory --verbose "$temporary_name" "$old_location"
 }
@@ -97,18 +107,19 @@ create_compat_link () {
 copy_or_hard_link () {
     local file_to_move="$1"
     local destination="$2"
-    local cp_args="$3"
+    shift 2
+    local cp_args=("$@")
+    local dest_parent source_device dest_device
 
-    local dest_parent=$($DIRNAME "$destination")
-
-    local source_device=$($STAT -c "%D" "$file_to_move")
-    local dest_device=$($STAT -c "%D" "$dest_parent")
+    dest_parent=$($DIRNAME "$destination")
+    source_device=$($STAT -c "%D" "$file_to_move")
+    dest_device=$($STAT -c "%D" "$dest_parent")
 
     if [[ "$source_device" == "$dest_device" ]]; then
-        cp_args="$cp_args --link"
+        cp_args+=("--link")
     fi
 
-    $CP $cp_args "$file_to_move" "$destination"
+    $CP "${cp_args[@]}" "$file_to_move" "$destination"
 }
 
 # Take a given file path and move it to the /usr location. We copy the file first
@@ -116,6 +127,7 @@ copy_or_hard_link () {
 move_file () {
     local file_to_move="$1"
     local destination="$2"
+    local file_checksum dest_checksum
 
     # If the destination exists and is directory then orphan the file
     if test -d "$destination"; then
@@ -125,9 +137,9 @@ move_file () {
 
     # If the destination exists and is a regular file then check the checksum of it, if they're the same then we orphan the file.
     # If they are the same we can just skip the file
-    local file_checksum=($($SHA256SUM "$file_to_move"))
+    file_checksum="$(_checksum "$file_to_move")"
     if test -f "$destination"; then
-        local dest_checksum=($($SHA256SUM "$destination"))
+        dest_checksum="$(_checksum "$destination")"
         if [[ "$file_checksum" != "$dest_checksum" ]]; then
             action="orphan"
         else
@@ -140,12 +152,12 @@ move_file () {
 
     # If the temporary file already exists then delete it. We could checksum it but better to redo the copy operation
     if test -e "$temporary_name"; then
-        printf "$temporary_name already exists, deleting it\n"
+        echo "$temporary_name already exists, deleting it"
         $RM --verbose "$temporary_name"
     fi
 
-    printf "Copying file $file_to_move to $temporary_name\n"
-    copy_or_hard_link "$file_to_move" "$temporary_name" "--archive --verbose"
+    echo "Copying file $file_to_move to $temporary_name"
+    copy_or_hard_link "$file_to_move" "$temporary_name" --archive --verbose
 
     # Check if the destination is a symbolic link, if so clobber it
     local mv_mode="--no-clobber"
@@ -160,44 +172,46 @@ move_file () {
 # Take a given file and moves it to the orphaned files directory. To reduce the risk of any errors occurring or file collisions
 #  we flatten the directory path and append the file hash. An error here will halt the script
 orphan_file () {
+    local file_checksum, orphan_checksum
+
     if ! test -d "$ORPHAN_DIR"; then
         $MKDIR --verbose "$ORPHAN_DIR"
     fi
 
     local file_to_orphan="$1"
-    local file_checksum=($($SHA256SUM "$file_to_orphan"))
+    file_checksum="$(_checksum "$file_to_orphan")"
     local new_file_name="$ORPHAN_DIR/root${file_to_orphan//\//-}.$file_checksum"
 
     # Check if the orphaned file already exists
     if test -e "$new_file_name"; then
         # It somehow exists, likely from a previous invocation of this script. Make sure it was a successful copy
-        local orphan_checksum=($($SHA256SUM "$new_file_name"))
+        orphan_checksum="$(_checksum "$new_file_name")"
         if [[ "$file_checksum" == "$orphan_checksum" ]]; then
             return 0
         fi
 
         # The orphaned file exists but does not have the correct checksum. Assume it's an incomplete copy
-        printf "Deleting previously orphaned file $new_file_name\n"
+        echo "Deleting previously orphaned file $new_file_name"
         $RM --verbose "$new_file_name"
     fi
 
-    printf "Copying file $file_to_orphan to $new_file_name\n"
-    copy_or_hard_link "$file_to_orphan" "$new_file_name" "--archive --verbose"
+    echo "Copying file $file_to_orphan to $new_file_name"
+    copy_or_hard_link "$file_to_orphan" "$new_file_name" --archive --verbose
 
     # TODO: For now we're not deleting orphaned files since we want the script to fail so we can find any edge cases
 }
 
-# Detect whether or not the given directory contains only 
+# Detect whether or not the given directory contains only
 detect_ready_for_merge () {
     local dir_name="$1"
 
-    file_list=()
+    local file_list=()
     while IFS=  read -r -d $'\0'; do
         file_list+=("$REPLY")
     done < <($FIND "$dir_name" -type f -print0)
 
     if [ ${#file_list[@]} -eq 0 ]; then
-        printf "$dir_name is ready for merge\n"
+        echo "$dir_name is ready for merge"
         return 0
     fi
     return 1
@@ -207,7 +221,6 @@ detect_ready_for_merge () {
 usr_merge_directory () {
     local dir_name="$1"
     local usr_location="usr$dir_name"
-
     local temporary_name="${dir_name}.tmp-usr-merge"
 
     # Delete the temporary file if it already exists
@@ -215,7 +228,7 @@ usr_merge_directory () {
         $RM --verbose "$temporary_name"
     fi
 
-    printf "Usr-merging $dir_name to $usr_location\n"
+    echo "Usr-merging $dir_name to $usr_location"
     $LN --no-dereference --symbolic --verbose "$usr_location" "$temporary_name"
     $MV --force --exchange --no-target-directory --verbose "$temporary_name" "$dir_name"
     $RM --verbose --recursive "$temporary_name"
@@ -235,7 +248,7 @@ merge_dir () {
             # What we should do with the file, either move it or orphan it
             local new_location="/usr$old_location"
             action="move"
-            create_dir_components $($DIRNAME "$new_location")
+            create_dir_components "$($DIRNAME "$new_location")"
 
             if [[ "$action" == "move" ]]; then
                 move_file "$old_location" "$new_location"
