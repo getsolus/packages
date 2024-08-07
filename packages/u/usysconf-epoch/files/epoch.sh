@@ -53,11 +53,23 @@ if [[ -e "${EPOCH_FLAG_FILE}" ]]; then
     exit 0
 fi
 
+
+console() {
+    if [[ -e /dev/console ]]; then
+        echo -ne "$@" > /dev/console 2>/dev/null || true
+    fi
+}
+
+_echo() {
+    console "."
+    echo "$@"
+}
+
 _checksum() {
     local file_checksum
     IFS=" " read -r -a file_checksum <<< "$($SHA256SUM "$1")"
 
-    echo "${file_checksum[0]}"
+    _echo "${file_checksum[0]}"
 }
 
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
@@ -66,24 +78,24 @@ needs_to_be_merged () {
     local target
 
     if ! test -e "$to_test"; then
-        echo "$to_test does not exist"
+        _echo "$to_test does not exist"
         return 1
     fi
 
     if ! test -L "$to_test"; then
-        echo "$to_test is not a symlink"
+        _echo "$to_test is not a symlink"
         return 0
     fi
 
     target=$($READLINK "$to_test")
-    echo "$to_test is a symlink to $target"
+    _echo "$to_test is a symlink to $target"
 
     if [[ "$target" == "usr"$to_test ]]; then
-        echo "$to_test is the correct symlink"
+        _echo "$to_test is the correct symlink"
         return 1
     fi
 
-    echo "$to_test needs to be changed"
+    _echo "$to_test needs to be changed"
     return 0
 }
 
@@ -107,7 +119,7 @@ create_dir_components () {
     local non_merged_path=${dir_name#"/usr"}
     dir_stat=$($STAT -c "%a" "$non_merged_path")
 
-    echo "Creating $dir_name with $dir_stat permissions"
+    _echo "Creating $dir_name with $dir_stat permissions"
     # Create the directory with the defined permissions. This is allowed to fail, if it does then we orphan the file instead
     $MKDIR --verbose --mode="$dir_stat" "$dir_name" || (true && action="orphan")
 }
@@ -127,7 +139,7 @@ create_compat_link () {
         $RM --verbose "$temporary_name"
     fi
 
-    echo "Creating symlink $old_location to $new_location"
+    _echo "Creating symlink $old_location to $new_location"
     $LN --no-dereference --symbolic --verbose --relative "$new_location" "$temporary_name"
     $MV --force --no-target-directory --verbose "$temporary_name" "$old_location"
 }
@@ -190,7 +202,7 @@ move_file () {
     file_checksum="$(_checksum "$file_to_move")"
     if test -f "$destination"; then
         if must_migrate_file "$file_to_move"; then
-            echo "Moving special file $file_to_move"
+            _echo "Moving special file $file_to_move"
             copy "$file_to_move" "$destination"
             create_compat_link "$file_to_move" "$destination"
             return 0
@@ -209,11 +221,11 @@ move_file () {
 
     # If the temporary file already exists then delete it. We could checksum it but better to redo the copy operation
     if test -e "$temporary_name"; then
-        echo "$temporary_name already exists, deleting it"
+        _echo "$temporary_name already exists, deleting it"
         $RM --verbose "$temporary_name"
     fi
 
-    echo "Copying file $file_to_move to $temporary_name"
+    _echo "Copying file $file_to_move to $temporary_name"
     copy_or_hard_link "$file_to_move" "$temporary_name" --archive --verbose
 
     # Check if the destination is a symbolic link, if so clobber it
@@ -233,7 +245,7 @@ orphan_file () {
     local file_to_orphan="$1"
 
     if can_delete_orphan "$file_to_orphan"; then
-        echo "Deleting orphaned file $file_to_orphan"
+        _echo "Deleting orphaned file $file_to_orphan"
         $RM "$file_to_orphan"
         return 0
     fi
@@ -254,14 +266,14 @@ orphan_file () {
         fi
 
         # The orphaned file exists but does not have the correct checksum. Assume it's an incomplete copy
-        echo "Deleting previously orphaned file $new_file_name"
+        _echo "Deleting previously orphaned file $new_file_name"
         $RM --verbose "$new_file_name"
     fi
 
-    echo "Copying file $file_to_orphan to $new_file_name"
+    _echo "Copying file $file_to_orphan to $new_file_name"
     copy_or_hard_link "$file_to_orphan" "$new_file_name" --archive --verbose
 
-    echo "Deleting orphaned file $file_to_orphan"
+    _echo "Deleting orphaned file $file_to_orphan"
     $RM "$file_to_orphan"
 }
 
@@ -275,7 +287,7 @@ detect_ready_for_merge () {
     done < <($FIND "$dir_name" -type f -print0)
 
     if [ ${#file_list[@]} -eq 0 ]; then
-        echo "$dir_name is ready for merge"
+        _echo "$dir_name is ready for merge"
         return 0
     fi
     return 1
@@ -292,7 +304,7 @@ usr_merge_directory () {
         $RM --verbose "$temporary_name"
     fi
 
-    echo "Usr-merging $dir_name to $usr_location"
+    _echo "Usr-merging $dir_name to $usr_location"
     $LN --no-dereference --symbolic --verbose "$usr_location" "$temporary_name"
     $MV --force --exchange --no-target-directory --verbose "$temporary_name" "$dir_name"
     $RM --verbose --recursive "$temporary_name"
@@ -329,6 +341,10 @@ merge_dir () {
     fi
 }
 
+console "Performing important system maintenance, please wait.\n"
+console "This process may take up to 10 minutes to complete.\n"
+console "It is safe to turn off your computer if necessary.\n"
+
 merge_dir /bin
 merge_dir /sbin
 merge_dir /lib64
@@ -342,3 +358,5 @@ fi
 
 $MKDIR -p "${STATE_DIR}"
 $TOUCH "${EPOCH_FLAG_FILE}"
+
+console " Done!\n"
