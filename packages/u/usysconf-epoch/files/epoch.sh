@@ -1,6 +1,10 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+# This configures the probability that a system is usr merged
+# It should be a value from 0 to 256, with 0 being 0% chance, and 256 being 100% chance.
+USR_MERGE_CHANCE="${USR_MERGE_CHANCE:=0}"
+
 # This is where orphaned files and flag markers will be set
 STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
 ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
@@ -12,6 +16,7 @@ SLOW_WARNING_MSG="${SLOW_WARNING_MSG:=530}"
 
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
+CAT="${CAT:=/usr/bin/cat}"
 DIRNAME="${DIRNAME:=/usr/bin/dirname}"
 FIND="${FIND:=/usr/bin/find}"
 LN="${LN:=/usr/bin/ln}"
@@ -36,26 +41,26 @@ _flag_set() {
 }
 
 if _flag_set "--please-break-my-system" "$@"; then
-    I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM=1
-    I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS=1
-fi
-
-# Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
-# This will be removed once we are ready to enable this by default
-if [ -z "${I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM+set}" ]; then
-    exit 0
+    USR_MERGE_CHANCE=256
 fi
 
 # Check if eopkg is ready for the usr merge
-if [[ ! -e "${EOPKG_FLAG_FILE}" ]] && [[ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]]; then
+if [[ ! -e "${EOPKG_FLAG_FILE}" ]]; then
     exit 0
 fi
 
-# Skip execution if flag set
+# Skip execution if already performed
 if [[ -e "${EPOCH_FLAG_FILE}" ]]; then
     exit 0
 fi
 
+# Check if *this* system can be upgraded
+# Generate a number from the last two characters of the machine ID
+# and exit if it is greater or equal to the usr merge chance.
+machine_id="$(cat /etc/machine-id)"
+if [[ "$((16#${machine_id: -2}))" -ge "${USR_MERGE_CHANCE}" ]]; then
+    exit 0
+fi
 
 console() {
     if [[ -e /dev/console ]]; then
@@ -360,11 +365,6 @@ merge_dir /sbin
 merge_dir /lib64
 merge_dir /lib32
 merge_dir /lib
-
-# Have a separate variable so we can test the eopkg epoch separately from the usr-merge
-if [ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]; then
-    exit 0
-fi
 
 $MKDIR -p "${STATE_DIR}"
 $TOUCH "${EPOCH_FLAG_FILE}"
