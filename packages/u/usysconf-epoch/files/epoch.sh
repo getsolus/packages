@@ -1,8 +1,11 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-# This is where orphaned files will be moved to
-ORPHAN_DIR="${ORPHAN_DIR:=/var/usr-merge-orphaned-files}"
+# This is where orphaned files and flag markers will be set
+STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
+ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
+EOPKG_FLAG_FILE="${EOPKG_FLAG_FILE:=${STATE_DIR}/eopkg-ready}"
+EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${STATE_DIR}/epoch-ready}"
 
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
@@ -37,6 +40,16 @@ fi
 # Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
 # This will be removed once we are ready to enable this by default
 if [ -z "${I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM+set}" ]; then
+    exit 0
+fi
+
+# Check if eopkg is ready for the usr merge
+if [[ ! -e "${EOPKG_FLAG_FILE}" ]] && [[ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]]; then
+    exit 0
+fi
+
+# Skip execution if flag set
+if [[ -e "${EPOCH_FLAG_FILE}" ]]; then
     exit 0
 fi
 
@@ -327,4 +340,5 @@ if [ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]; then
     exit 0
 fi
 
-$TOUCH /run/eopkg-epoch-transition
+$MKDIR -p "${STATE_DIR}"
+$TOUCH "${EPOCH_FLAG_FILE}"
