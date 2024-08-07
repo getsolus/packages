@@ -1,12 +1,6 @@
 #!/usr/bin/bash
 set -euo pipefail
 
-# Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
-# This will be removed once we are ready to enable this by default
-if [ -z "${I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM+set}" ]; then
-    exit 0
-fi
-
 # This is where orphaned files will be moved to
 ORPHAN_DIR="${ORPHAN_DIR:=/var/usr-merge-orphaned-files}"
 
@@ -22,6 +16,28 @@ RM="${RM:=/usr/bin/rm}"
 SHA256SUM="${SHA256SUM:=/usr/bin/sha256sum}"
 STAT="${STAT:=/usr/bin/stat}"
 TOUCH="${TOUCH:=/usr/bin/touch}"
+
+_flag_set() {
+    local flag="$1"
+    shift
+
+    if [[ " $* " =~ [[:space:]]${flag}[[:space:]] ]]; then
+        return 0
+    fi
+
+    return 1
+}
+
+if _flag_set "--please-break-my-system" "$@"; then
+    I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM=1
+    I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS=1
+fi
+
+# Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
+# This will be removed once we are ready to enable this by default
+if [ -z "${I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM+set}" ]; then
+    exit 0
+fi
 
 _checksum() {
     local file_checksum
