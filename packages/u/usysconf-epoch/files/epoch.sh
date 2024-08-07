@@ -198,7 +198,8 @@ orphan_file () {
     echo "Copying file $file_to_orphan to $new_file_name"
     copy_or_hard_link "$file_to_orphan" "$new_file_name" --archive --verbose
 
-    # TODO: For now we're not deleting orphaned files since we want the script to fail so we can find any edge cases
+    echo "Deleting orphaned file $file_to_orphan"
+    $RM "$file_to_orphan"
 }
 
 # Detect whether or not the given directory contains only
