@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import subprocess
+import yaml
 
 scope_help = "# Scope and title, eg: nano: Update to 1.2.3\n"
 help_msg = """
@@ -21,6 +23,15 @@ help_msg = """
 
 def commit_scope(commit_dir: str) -> str:
     if os.path.exists(os.path.join(commit_dir, 'package.yml')):
+
+        recipe_diff_result = subprocess.run(['git', 'diff', '-U0', '--staged',
+                                            os.path.join(commit_dir, 'package.yml')],
+                                            stdout=subprocess.PIPE)
+        if "+version" in recipe_diff_result.stdout.decode('utf-8'):
+            with open(os.path.join(commit_dir, 'package.yml')) as recipe:
+                version = yaml.safe_load(recipe)['version']
+                return os.path.basename(commit_dir) + ': Update to ' + str(version)
+
         return os.path.basename(commit_dir) + ': '
 
     return ''
