@@ -7,6 +7,9 @@ ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
 EOPKG_FLAG_FILE="${EOPKG_FLAG_FILE:=${STATE_DIR}/eopkg-ready}"
 EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${STATE_DIR}/epoch-ready}"
 
+# Time until the warning is shown
+SLOW_WARNING_MSG="${SLOW_WARNING_MSG:=530}"
+
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
 DIRNAME="${DIRNAME:=/usr/bin/dirname}"
@@ -70,6 +73,12 @@ _checksum() {
     IFS=" " read -r -a file_checksum <<< "$($SHA256SUM "$1")"
 
     _echo "${file_checksum[0]}"
+}
+
+slow_warning() {
+    sleep "$SLOW_WARNING_MSG"
+    console "\n\033[1;33mThis is taking longer than expected.\033[0m\n"
+    console "Check the Solus forum or Matrix channel for guidance.\n"
 }
 
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
@@ -344,6 +353,7 @@ merge_dir () {
 console "Performing important system maintenance, please wait.\n"
 console "This process may take up to 10 minutes to complete.\n"
 console "It is safe to turn off your computer if necessary.\n"
+slow_warning &
 
 merge_dir /bin
 merge_dir /sbin
