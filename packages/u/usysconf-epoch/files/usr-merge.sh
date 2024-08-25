@@ -9,7 +9,7 @@ USR_MERGE_CHANCE="${USR_MERGE_CHANCE:=0}"
 STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
 ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
 EOPKG_FLAG_FILE="${EOPKG_FLAG_FILE:=${STATE_DIR}/eopkg-ready}"
-EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${STATE_DIR}/epoch-ready}"
+MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
 
 # Time in seconds until the warning is shown
 SLOW_WARNING_THRESHOLD="${SLOW_WARNING_THRESHOLD:=530}"
@@ -51,7 +51,7 @@ if [[ ! -f "${EOPKG_FLAG_FILE}" ]]; then
 fi
 
 # Skip execution if already performed
-if [[ -f "${EPOCH_FLAG_FILE}" ]]; then
+if [[ -f "${MERGE_FLAG_FILE}" ]]; then
     exit 0
 fi
 
@@ -376,7 +376,7 @@ merge_dir /lib32
 merge_dir /lib
 
 $MKDIR -p "${STATE_DIR}"
-$TOUCH "${EPOCH_FLAG_FILE}"
+$TOUCH "${MERGE_FLAG_FILE}"
 
 _echo "Result:"
 $LS -l /
