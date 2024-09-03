@@ -11,8 +11,8 @@ ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
 EOPKG_FLAG_FILE="${EOPKG_FLAG_FILE:=${STATE_DIR}/eopkg-ready}"
 EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${STATE_DIR}/epoch-ready}"
 
-# Time until the warning is shown
-SLOW_WARNING_MSG="${SLOW_WARNING_MSG:=530}"
+# Time in seconds until the warning is shown
+SLOW_WARNING_THRESHOLD="${SLOW_WARNING_THRESHOLD:=530}"
 
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
@@ -88,10 +88,15 @@ function _checksum() {
     echo "${file_checksum[0]}"
 }
 
+# Show a warning when the script has been running for longer than required.
+# The message is only shown when the migration hasn't completed yet.
 function slow_warning() {
-    sleep "$SLOW_WARNING_MSG"
-    console "\n\033[1;33mThis is taking longer than expected.\033[0m\n"
-    console "Check the Solus forum or Matrix channel for guidance.\n"
+    sleep "$SLOW_WARNING_THRESHOLD"
+
+    if [[ ! -f "$MERGE_FLAG_FILE" ]]; then
+        console "\n\033[1;33mThis is taking longer than expected.\033[0m\n"
+        console "Check the Solus forum or Matrix channel for guidance.\n"
+    fi
 }
 
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
