@@ -1,20 +1,26 @@
 #!/usr/bin/bash
 set -euo pipefail
 
+# This configures the probability that a system is usr merged
+# It should be a value from 0 to 256, with 0 being 0% chance, and 256 being 100% chance.
+USR_MERGE_CHANCE="${USR_MERGE_CHANCE:=0}"
+
 # This is where orphaned files and flag markers will be set
 STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
 ORPHAN_DIR="${ORPHAN_DIR:=${STATE_DIR}/orphaned-files}"
 EOPKG_FLAG_FILE="${EOPKG_FLAG_FILE:=${STATE_DIR}/eopkg-ready}"
-EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${STATE_DIR}/epoch-ready}"
+MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
 
-# Time until the warning is shown
-SLOW_WARNING_MSG="${SLOW_WARNING_MSG:=530}"
+# Time in seconds until the warning is shown
+SLOW_WARNING_THRESHOLD="${SLOW_WARNING_THRESHOLD:=530}"
 
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
+CAT="${CAT:=/usr/bin/cat}"
 DIRNAME="${DIRNAME:=/usr/bin/dirname}"
 FIND="${FIND:=/usr/bin/find}"
 LN="${LN:=/usr/bin/ln}"
+LS="${LS:=/usr/bin/ls}"
 MKDIR="${MKDIR:=/usr/bin/mkdir}"
 MV="${MV:=/usr/bin/mv}"
 READLINK="${READLINK:=/usr/bin/readlink}"
@@ -24,7 +30,7 @@ STAT="${STAT:=/usr/bin/stat}"
 TOUCH="${TOUCH:=/usr/bin/touch}"
 DEPMOD="${DEPMOD:=/usr/sbin/depmod}"
 
-_flag_set() {
+function _flag_set() {
     local flag="$1"
     shift
 
@@ -36,91 +42,103 @@ _flag_set() {
 }
 
 if _flag_set "--please-break-my-system" "$@"; then
-    I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM=1
-    I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS=1
-fi
-
-# Temp: Exit if I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM is not set
-# This will be removed once we are ready to enable this by default
-if [ -z "${I_UNDERSTAND_THAT_THIS_SCRIPT_CAN_BREAK_MY_SYSTEM+set}" ]; then
-    exit 0
+    USR_MERGE_CHANCE=256
 fi
 
 # Check if eopkg is ready for the usr merge
-if [[ ! -e "${EOPKG_FLAG_FILE}" ]] && [[ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]]; then
+if [[ ! -f "${EOPKG_FLAG_FILE}" ]]; then
     exit 0
 fi
 
-# Skip execution if flag set
-if [[ -e "${EPOCH_FLAG_FILE}" ]]; then
+# Skip execution if already performed
+if [[ -f "${MERGE_FLAG_FILE}" ]]; then
     exit 0
 fi
 
+# Check if *this* system can be upgraded
+# Generate a number from the last two characters of the machine ID
+# and exit if it is greater or equal to the usr merge chance.
+machine_id="$(cat /etc/machine-id)"
+if [[ "$((16#${machine_id: -2}))" -ge "${USR_MERGE_CHANCE}" ]]; then
+    exit 0
+fi
 
-console() {
+function console() {
     if [[ -e /dev/console ]]; then
         echo -ne "$@" > /dev/console 2>/dev/null || true
     fi
 }
 
-_echo() {
+function _echo() {
     console "."
     echo "$@"
 }
 
-_checksum() {
+function _log() {
+    file="$1"
+    shift
+
+    _echo "[$file]:" "$@"
+}
+
+function _checksum() {
     local file_checksum
     IFS=" " read -r -a file_checksum <<< "$($SHA256SUM "$1")"
 
-    _echo "${file_checksum[0]}"
+    echo "${file_checksum[0]}"
 }
 
-slow_warning() {
-    sleep "$SLOW_WARNING_MSG"
-    console "\n\033[1;33mThis is taking longer than expected.\033[0m\n"
-    console "Check the Solus forum or Matrix channel for guidance.\n"
+# Show a warning when the script has been running for longer than required.
+# The message is only shown when the migration hasn't completed yet.
+function slow_warning() {
+    sleep "$SLOW_WARNING_THRESHOLD"
+
+    if [[ ! -f "$MERGE_FLAG_FILE" ]]; then
+        console "\n\033[1;33mThis is taking longer than expected.\033[0m\n"
+        console "Check the Solus forum or Matrix channel for guidance.\n"
+    fi
 }
 
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
-needs_to_be_merged () {
+function needs_to_be_merged () {
     local to_test="$1"
     local target
 
-    if ! test -e "$to_test"; then
-        _echo "$to_test does not exist"
+    if [[ ! -e "$to_test" ]]; then
+        _log "$to_test" "does not exist"
         return 1
     fi
 
-    if ! test -L "$to_test"; then
-        _echo "$to_test is not a symlink"
+    if [[ ! -L "$to_test" ]]; then
+        _log "$to_test" "not a symlink"
         return 0
     fi
 
     target=$($READLINK "$to_test")
-    _echo "$to_test is a symlink to $target"
+    _log "$to_test" "is a symlink to $target"
 
     if [[ "$target" == "usr"$to_test ]]; then
-        _echo "$to_test is the correct symlink"
+        _log "$to_test" "is the correct symlink"
         return 1
     fi
 
-    _echo "$to_test needs to be changed"
+    _log "$to_test" "needs to be changed"
     return 0
 }
 
-# This takes a directory path and creates it and it's parents recursively
-create_dir_components () {
+# This takes a directory path and creates it and its parents recursively
+function create_dir_components () {
     local dir_name="$1"
     local parent dir_stat
 
     # Test to see if the parent exists
     parent="$($DIRNAME "$dir_name")"
-    if ! test -e "$parent"; then
+    if [[ ! -d "$parent" ]]; then
         create_dir_components "$parent"
     fi
 
     # Test to see if the current directory exists
-    if test -e "$dir_name"; then
+    if [[ -d "$dir_name" ]]; then
         return
     fi
 
@@ -128,13 +146,12 @@ create_dir_components () {
     local non_merged_path=${dir_name#"/usr"}
     dir_stat=$($STAT -c "%a" "$non_merged_path")
 
-    _echo "Creating $dir_name with $dir_stat permissions"
     # Create the directory with the defined permissions. This is allowed to fail, if it does then we orphan the file instead
-    $MKDIR --verbose --mode="$dir_stat" "$dir_name" || (true && action="orphan")
+    $MKDIR --mode="$dir_stat" "$dir_name" || (true && action="orphan")
 }
 
 # Create a symbolic link in the old location that points to the new file location. This uses atomic file operations but ultimately is a destructive operation
-create_compat_link () {
+function create_compat_link () {
     local old_location="$1"
     local new_location="$2"
     local file_checksum
@@ -144,18 +161,18 @@ create_compat_link () {
     local temporary_name="${old_location}.tmp.${file_checksum[0]}"
 
     # If the temporary file already exists then delete it (?)
-    if test -e "$temporary_name"; then
-        $RM --verbose "$temporary_name"
+    if [[ -f "$temporary_name" ]]; then
+        $RM "$temporary_name"
     fi
 
-    _echo "Creating symlink $old_location to $new_location"
-    $LN --no-dereference --symbolic --verbose --relative "$new_location" "$temporary_name"
-    $MV --force --no-target-directory --verbose "$temporary_name" "$old_location"
+    _log "$old_location" "creating compatibility symlink to $new_location"
+    $LN --no-dereference --symbolic --relative "$new_location" "$temporary_name"
+    $MV --force --no-target-directory "$temporary_name" "$old_location"
 }
 
 # Takes three arguments, the first is the source file, the second the destination, and the third the cp arguments
 # If the source and the destination would be on the same file system then it will add a cp flag to create a hard link
-copy_or_hard_link () {
+function copy_or_hard_link () {
     local file_to_move="$1"
     local destination="$2"
     shift 2
@@ -174,12 +191,12 @@ copy_or_hard_link () {
 }
 
 # Helper for the cp command
-copy() {
+function copy() {
     $CP --reflink=auto "$@"
 }
 
 # Check if the given file must be migrated (regardless of checksum).
-must_migrate_file() {
+function must_migrate_file() {
     case "$(basename "$1")" in
     # Files regenerated by depmod
     modules.*.bin|"modules.alias"|"modules.dep")
@@ -193,13 +210,13 @@ must_migrate_file() {
 
 # Take a given file path and move it to the /usr location. We copy the file first
 #  to a temporary file and then move it into place as an atomic operation
-move_file () {
+function move_file () {
     local file_to_move="$1"
     local destination="$2"
     local file_checksum dest_checksum
 
     # If the destination exists and is directory then orphan the file
-    if test -d "$destination"; then
+    if [[ -d "$destination" ]]; then
         action="orphan"
         return 0
     fi
@@ -209,10 +226,10 @@ move_file () {
     # - Link if the checksum matches
     # - Orphan if the checksum does not match
     file_checksum="$(_checksum "$file_to_move")"
-    if test -f "$destination"; then
+    if [[ -f "$destination" ]]; then
         if must_migrate_file "$file_to_move"; then
-            _echo "Moving special file $file_to_move"
-            copy "$file_to_move" "$destination"
+            _log "$file_to_move" "moving special file to $destination"
+            copy "$file_to_move" "$destination" --archive
             create_compat_link "$file_to_move" "$destination"
             return 0
         fi
@@ -228,46 +245,40 @@ move_file () {
 
     local temporary_name="${destination}.tmp.${file_checksum}"
 
+    _log "$file_to_move" "moving to $destination"
+
     # If the temporary file already exists then delete it. We could checksum it but better to redo the copy operation
-    if test -e "$temporary_name"; then
-        _echo "$temporary_name already exists, deleting it"
-        $RM --verbose "$temporary_name"
+    if [[ -e "$temporary_name" ]]; then
+        $RM "$temporary_name"
     fi
 
-    _echo "Copying file $file_to_move to $temporary_name"
-    copy_or_hard_link "$file_to_move" "$temporary_name" --archive --verbose
+    copy_or_hard_link "$file_to_move" "$temporary_name" --archive
 
     # Check if the destination is a symbolic link, if so clobber it
     local mv_mode="--no-clobber"
-    if test -L "$destination"; then
+    if [[ -L "$destination" ]]; then
         mv_mode="--force"
     fi
 
-    $MV $mv_mode --no-target-directory --verbose "$temporary_name" "$destination"
+    $MV $mv_mode --no-target-directory "$temporary_name" "$destination"
     create_compat_link "$file_to_move" "$destination"
 }
 
 # Take a given file and moves it to the orphaned files directory. To reduce the risk of any errors occurring or file collisions
 #  we flatten the directory path and append the file hash. An error here will halt the script
-orphan_file () {
+function orphan_file () {
     local file_checksum orphan_checksum
     local file_to_orphan="$1"
 
-    if can_delete_orphan "$file_to_orphan"; then
-        _echo "Deleting orphaned file $file_to_orphan"
-        $RM "$file_to_orphan"
-        return 0
-    fi
-
-    if ! test -d "$ORPHAN_DIR"; then
-        $MKDIR --verbose "$ORPHAN_DIR"
+    if [[ ! -d "$ORPHAN_DIR" ]]; then
+        $MKDIR "$ORPHAN_DIR"
     fi
 
     file_checksum="$(_checksum "$file_to_orphan")"
     local new_file_name="$ORPHAN_DIR/root${file_to_orphan//\//-}.$file_checksum"
 
     # Check if the orphaned file already exists
-    if test -e "$new_file_name"; then
+    if [[ "$new_file_name" ]]; then
         # It somehow exists, likely from a previous invocation of this script. Make sure it was a successful copy
         orphan_checksum="$(_checksum "$new_file_name")"
         if [[ "$file_checksum" == "$orphan_checksum" ]]; then
@@ -275,19 +286,19 @@ orphan_file () {
         fi
 
         # The orphaned file exists but does not have the correct checksum. Assume it's an incomplete copy
-        _echo "Deleting previously orphaned file $new_file_name"
-        $RM --verbose "$new_file_name"
+        _log "$file_to_orphan" "deleting previously orphaned file $new_file_name"
+        $RM "$new_file_name"
     fi
 
-    _echo "Copying file $file_to_orphan to $new_file_name"
-    copy_or_hard_link "$file_to_orphan" "$new_file_name" --archive --verbose
+    _log "$file_to_orphan" "copying orphan to $new_file_name"
+    copy_or_hard_link "$file_to_orphan" "$new_file_name" --archive
 
-    _echo "Deleting orphaned file $file_to_orphan"
+    _log "$file_to_orphan" "deleting orphaned file"
     $RM "$file_to_orphan"
 }
 
 # Detect whether or not the given directory contains only
-detect_ready_for_merge () {
+function detect_ready_for_merge () {
     local dir_name="$1"
 
     local file_list=()
@@ -296,30 +307,33 @@ detect_ready_for_merge () {
     done < <($FIND "$dir_name" -type f -print0)
 
     if [ ${#file_list[@]} -eq 0 ]; then
-        _echo "$dir_name is ready for merge"
+        _log "$dir_name" "ready for merge"
         return 0
     fi
     return 1
 }
 
 # Usr-merge a given directory
-usr_merge_directory () {
+function usr_merge_directory () {
     local dir_name="$1"
     local usr_location="usr$dir_name"
     local temporary_name="${dir_name}.tmp-usr-merge"
 
+    _log "$dir_name" "usr-merging to $usr_location"
+
     # Delete the temporary file if it already exists
-    if test -L "$temporary_name"; then
-        $RM --verbose "$temporary_name"
+    if [[ -L "$temporary_name" ]]; then
+        $RM "$temporary_name"
     fi
 
-    _echo "Usr-merging $dir_name to $usr_location"
-    $LN --no-dereference --symbolic --verbose "$usr_location" "$temporary_name"
-    $MV --force --exchange --no-target-directory --verbose "$temporary_name" "$dir_name"
-    $RM --verbose --recursive "$temporary_name"
+    $LN --no-dereference --symbolic "$usr_location" "$temporary_name"
+    $MV --force --exchange --no-target-directory "$temporary_name" "$dir_name"
+    $RM --recursive "$temporary_name"
+
+    _log "$dir_name" "merged"
 }
 
-merge_dir () {
+function merge_dir () {
     local dir_name="$1"
     if needs_to_be_merged "$dir_name"; then
         # Get list of files that are not symlinks
@@ -361,12 +375,10 @@ merge_dir /lib64
 merge_dir /lib32
 merge_dir /lib
 
-# Have a separate variable so we can test the eopkg epoch separately from the usr-merge
-if [ -z "${I_WANT_TO_TEST_THE_EPOCH_TRANSITION_WORKS+set}" ]; then
-    exit 0
-fi
-
 $MKDIR -p "${STATE_DIR}"
-$TOUCH "${EPOCH_FLAG_FILE}"
+$TOUCH "${MERGE_FLAG_FILE}"
+
+_echo "Result:"
+$LS -l /
 
 console " Done!\n"
