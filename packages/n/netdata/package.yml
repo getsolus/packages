@@ -1,8 +1,8 @@
 name       : netdata
-version    : 1.40.0
-release    : 16
+version    : 1.47.0
+release    : 17
 source     :
-    - https://github.com/netdata/netdata/releases/download/v1.40.0/netdata-v1.40.0.tar.gz : 73b43bada63a793bc27c940af7ef28637d76aba1c014bea01eae8cb77c168175
+    - https://github.com/netdata/netdata/releases/download/v1.47.0/netdata-v1.47.0.tar.gz : 6735222ffcff941508b92c8edddc26fbcd719b15880be4911d77fbfd9dbd9a1d
 homepage   : https://www.netdata.cloud/
 license    : GPL-3.0-or-later
 component  : network.util
@@ -10,20 +10,99 @@ summary    : Real-time performance monitoring, done right
 description: |
     netdata is the fastest way to visualize metrics. It is a resource efficient, highly optimized system for collecting and visualizing any type of realtime timeseries data, from CPU usage, disk activity, SQL queries, API calls, web site visitors, etc. netdata tries to visualize the truth of now, in its greatest detail, so that you can get insights of what is happening now and what just happened, on your systems and applications.
 builddeps  :
+    - pkgconfig(cups)
+    - pkgconfig(json-c)
+    - pkgconfig(libbpf)
+    - pkgconfig(libelf)
     - pkgconfig(libmnl)
     - pkgconfig(libuv)
     - pkgconfig(liblz4)
+    - pkgconfig(protobuf)
+    - pkgconfig(snappy)
     - pkgconfig(yaml-0.1)
+    - git
+    - golang
+networking : yes
+clang      : yes
+optimize   : thin-lto
 setup      : |
-    %configure --disable-cloud
+    %cmake_ninja \
+                 -DCMAKE_INSTALL_PREFIX=/ \
+                 -DENABLE_CLOUD=OFF \
+                 -DENABLE_PLUGIN_FREEIPMI=OFF \
+                 -DENABLE_PLUGIN_NFACCT=OFF \
+                 -DENABLE_PLUGIN_XENSTAT=OFF
 build      : |
-    %make
+    %ninja_build
 install    : |
-    %make_install
-    find  $installdir/ -name .keep -delete
-    install -dm00644 $installdir/etc/netdata/
-    install -Dm00644 $pkgfiles/netdata.conf $installdir/etc/netdata/netdata.conf
+    %ninja_install
+
     # Install netdata systemd stuff
-    install -Dm00644 $pkgfiles/netdata.service $installdir/%libdir%/systemd/system/netdata.service
+    install -Dm00644 $pkgfiles/netdata{,-setup}.service -t $installdir/%libdir%/systemd/system
     install -Dm00644 $pkgfiles/netdata.sysusers $installdir/%libdir%/sysusers.d/netdata.conf
     install -Dm00644 $pkgfiles/netdata.tmpfiles $installdir/%libdir%/tmpfiles.d/netdata.conf
+
+    ### Caps reference: https://raw.githubusercontent.com/netdata/netdata/master/netdata.spec.in
+
+    # CAP_NET_ADMIN needed for WireGuard collector
+    # CAP_NET_RAW needed for ping collector
+    setcap 'CAP_DAC_READ_SEARCH=eip CAP_NET_ADMIN=eip CAP_NET_RAW=eip' $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
+
+    # CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE needed for data collection by the plugin.
+    setcap 'CAP_DAC_READ_SEARCH=ep CAP_SYS_PTRACE=ep' $installdir/usr/libexec/netdata/plugins.d/apps.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/apps.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/apps.plugin
+
+    # CAP_DAC_READ_SEARCH needed to access the files the plugin reads to collect data.
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
+
+    # CAP_PERFMON needed for data collection
+    setcap 'CAP_PERFMON=ep' $installdir/usr/libexec/netdata/plugins.d/perf.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/perf.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/perf.plugin
+
+    # CAP_DAC_READ_SEARCH required for data collection.
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
+
+    # CAP_DAC_READ_SEARCH required for data collection.
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
+
+    # CAP_SYS_ADMIN, CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH needed for data collection.
+    setcap 'CAP_SYS_ADMIN=ep CAP_SYS_PTRACE=ep CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
+    chown root:650 $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
+    chmod 750 $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
+
+    # Stateless
+    install -dm00755 $installdir/usr/share/defaults/netdata
+    mv $installdir/etc/netdata/{.install-type,edit-config} $installdir/usr/share/defaults/netdata
+
+    rm -v $installdir/etc/logrotate.d/netdata
+    rmdir -v $installdir/etc/logrotate.d \
+             $installdir/etc/netdata/charts.d \
+             $installdir/etc/netdata/custom-plugins.d \
+             $installdir/etc/netdata/go.d \
+             $installdir/etc/netdata/health.d \
+             $installdir/etc/netdata/python.d \
+             $installdir/etc/netdata/ssl \
+             $installdir/etc/netdata/statsd.d \
+             $installdir/etc/netdata \
+             $installdir/etc \
+             $installdir/var/cache/netdata \
+             $installdir/var/cache \
+             $installdir/var/run/netdata \
+             $installdir/var/run \
+             $installdir/var/log/netdata \
+             $installdir/var/log \
+             $installdir/var/lib/netdata/cloud.d \
+             $installdir/var/lib/netdata/registry \
+             $installdir/var/lib/netdata/ \
+             $installdir/var/lib/ \
+             $installdir/var/
