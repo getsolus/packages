@@ -33,20 +33,13 @@ MOZ_DIST_BIN="$MOZ_LIB_DIR/thunderbird"
 MOZ_LANGPACKS_DIR="$MOZ_DIST_BIN/langpacks"
 MOZ_EXTENSIONS_PROFILE_DIR="$HOME/.mozilla/extensions/{3550f703-e582-4d05-9a08-453d09bdfdc6}"
 MOZ_PROGRAM="$MOZ_DIST_BIN/$MOZ_THUNDERBIRD_FILE"
-MOZ_LAUNCHER="$MOZ_DIST_BIN/run-mozilla.sh"
 
 ##
-## Enable Wayland backend?
+## Wayland is now enabled by default as of Thunderbird 128, but let's still allow users to opt out via MOZ_DISABLE_WAYLAND
+## If the user already has MOZ_ENABLE_WAYLAND set don't clobber it
 ##
-if ! [ $MOZ_DISABLE_WAYLAND ] && [ "$WAYLAND_DISPLAY" ]; then
-  if [ "$XDG_CURRENT_DESKTOP" == "GNOME" ]; then
-    export MOZ_ENABLE_WAYLAND=1
-  fi
-##  Enable Wayland on KDE/Sway
-##
-  if [ "$XDG_SESSION_TYPE" == "wayland" ]; then
-    export MOZ_ENABLE_WAYLAND=1
-  fi
+if [ $MOZ_DISABLE_WAYLAND ] && [ -z ${MOZ_ENABLE_WAYLAND+x} ]; then
+  export MOZ_ENABLE_WAYLAND=0
 fi
 
 ##
@@ -146,34 +139,19 @@ if [ $MOZILLA_DOWN -ne 0 ]; then
     create_langpack_link $MOZLOCALE || create_langpack_link $SHORTMOZLOCALE || true
 fi
 
-# Prepare command line arguments
-script_args=""
-pass_arg_count=0
-while [ $# -gt $pass_arg_count ]
-do
-  case "$1" in
-    -g | --debug)
-      script_args="$script_args -g"
-      debugging=1
-      shift
-      ;;
-    -d | --debugger)
-      if [ $# -gt 1 ]; then
-        script_args="$script_args -d $2"
-        shift 2
-      else
-        shift
-      fi
-      ;;
-    *)
-      # Move the unrecognized argument to the end of the list.
-      arg="$1"
-      shift
-      set -- "$@" "$arg"
-      pass_arg_count=`expr $pass_arg_count + 1`
-      ;;
-  esac
-done
+# MOZ_APP_REMOTINGNAME links Thunderbird with desktop file name
+if [ -z "$MOZ_APP_REMOTINGNAME" ]
+then
+  export MOZ_APP_REMOTINGNAME=thunderbird
+fi
+
+# MOZ_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
+# search provider or remote launcher
+# DBus interface name (or prefix) is org.mozilla.MOZ_DBUS_APP_NAME
+if [ -z "$MOZ_DBUS_APP_NAME" ]
+then
+  export MOZ_DBUS_APP_NAME=thunderbird
+fi
 
 # Don't throw "old profile" dialog box.
 export MOZ_ALLOW_DOWNGRADE=1
@@ -182,7 +160,7 @@ export MOZ_ALLOW_DOWNGRADE=1
 debugging=0
 if [ $debugging = 1 ]
 then
-  echo $MOZ_LAUNCHER $script_args $MOZ_PROGRAM "$@"
+  echo $MOZ_PROGRAM "$@"
 fi
 
-exec $MOZ_LAUNCHER $script_args $MOZ_PROGRAM "$@"
+exec $MOZ_PROGRAM "$@"

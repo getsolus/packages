@@ -5,7 +5,7 @@ VER=$1
 RELURL="https://ftp.mozilla.org/pub/thunderbird/releases"
 ARCH="x86_64"
 
-if [[ ! $VER =~ ^[0-9]+(\.[0-9]+)*$ ]];
+if [[ ! $VER =~ ^[0-9]+(\.[0-9]+)*(esr)?$ ]];
 then
   echo "Usage: $0 <version number>"
   echo ""
