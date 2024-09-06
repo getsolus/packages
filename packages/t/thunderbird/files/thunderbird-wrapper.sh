@@ -142,7 +142,7 @@ fi
 # MOZ_APP_REMOTINGNAME links Thunderbird with desktop file name
 if [ -z "$MOZ_APP_REMOTINGNAME" ]
 then
-  export MOZ_APP_REMOTINGNAME=thunderbird
+  export MOZ_APP_REMOTINGNAME=net.thunderbird.Thunderbird
 fi
 
 # MOZ_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
