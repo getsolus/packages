@@ -1,0 +1,123 @@
+From 1005b8157c2060ef5d97aef39085c6b6be2bdda3 Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Sun, 8 Sep 2024 21:13:33 +0200
+Subject: [PATCH] Allow disabling of mDNS announcer
+
+Add a CMAKE flag to allow for disabling the mDNS announcer.
+This allows for KDE connect to run next to existing announcers like Avahi and Systemd Resolved.
+---
+ core/CMakeLists.txt                   |  4 ++++
+ core/backends/lan/lanlinkprovider.cpp |  6 +++++-
+ core/backends/lan/mdnsdiscovery.cpp   | 15 +++++++++++----
+ core/backends/lan/mdnsdiscovery.h     |  3 ++-
+ 4 files changed, 22 insertions(+), 6 deletions(-)
+
+diff --git a/core/CMakeLists.txt b/core/CMakeLists.txt
+index 613c738d..2d788c6d 100644
+--- a/core/CMakeLists.txt
++++ b/core/CMakeLists.txt
+@@ -8,6 +8,7 @@ set(KDECONNECT_PRIVATE_DBUS_NAME DBusKDEConnectOnly)
+ configure_file(dbushelper.h.in ${CMAKE_CURRENT_BINARY_DIR}/dbushelper.h)
+ 
+ option(MDNS_ENABLED "Use MDNS for device discovery" ON)
++option(MDNS_ANNOUNCE "Enable the mDNS announcer" ON)
+ 
+ add_subdirectory(backends/lan)
+ add_subdirectory(backends/loopback)
+@@ -83,6 +84,9 @@ endif()
+ 
+ if (MDNS_ENABLED)
+     target_compile_definitions(kdeconnectcore PRIVATE -DKDECONNECT_MDNS)
++    if (MDNS_ANNOUNCE)
++        target_compile_definitions(kdeconnectcore PRIVATE -DKDECONNECT_MDNS_ANNOUNCE)
++    endif()
+ endif()
+ 
+ set_target_properties(kdeconnectcore PROPERTIES
+diff --git a/core/backends/lan/lanlinkprovider.cpp b/core/backends/lan/lanlinkprovider.cpp
+index 292adffd..b034917a 100644
+--- a/core/backends/lan/lanlinkprovider.cpp
++++ b/core/backends/lan/lanlinkprovider.cpp
+@@ -49,7 +49,11 @@ LanLinkProvider::LanLinkProvider(bool testMode)
+     , m_testMode(testMode)
+     , m_combineNetworkChangeTimer(this)
+ #ifdef KDECONNECT_MDNS
+-    , m_mdnsDiscovery(this)
++#ifdef MDNS_ANNOUNCE
++    , m_mdnsDiscovery(this, true)
++#else
++    , m_mdnsDiscovery(this, false)
++#endif
+ #endif
+ {
+     m_combineNetworkChangeTimer.setInterval(0); // increase this if waiting a single event-loop iteration is not enough
+diff --git a/core/backends/lan/mdnsdiscovery.cpp b/core/backends/lan/mdnsdiscovery.cpp
+index 43acb5b4..2a59ed04 100644
+--- a/core/backends/lan/mdnsdiscovery.cpp
++++ b/core/backends/lan/mdnsdiscovery.cpp
+@@ -14,10 +14,11 @@
+ 
+ const QString kServiceType = QStringLiteral("_kdeconnect._udp.local");
+ 
+-MdnsDiscovery::MdnsDiscovery(LanLinkProvider *lanLinkProvider)
++MdnsDiscovery::MdnsDiscovery(LanLinkProvider *lanLinkProvider, bool announce)
+     : mdnsAnnouncer(KdeConnectConfig::instance().deviceId(), kServiceType, LanLinkProvider::UDP_PORT)
+ {
+     KdeConnectConfig &config = KdeConnectConfig::instance();
++    m_announce = announce;
+     mdnsAnnouncer.putTxtRecord(QStringLiteral("id"), config.deviceId());
+     mdnsAnnouncer.putTxtRecord(QStringLiteral("name"), config.name());
+     mdnsAnnouncer.putTxtRecord(QStringLiteral("type"), config.deviceType().toString());
+@@ -40,19 +41,25 @@ MdnsDiscovery::~MdnsDiscovery()
+ 
+ void MdnsDiscovery::onStart()
+ {
+-    mdnsAnnouncer.startAnnouncing();
++    if (m_announce) {
++        mdnsAnnouncer.startAnnouncing();
++    }
+     mdnsDiscoverer.startDiscovering(kServiceType);
+ }
+ 
+ void MdnsDiscovery::onStop()
+ {
+-    mdnsAnnouncer.stopAnnouncing();
++    if (m_announce) {
++        mdnsAnnouncer.stopAnnouncing();
++    }
+     mdnsDiscoverer.stopDiscovering();
+ }
+ 
+ void MdnsDiscovery::onNetworkChange()
+ {
+-    mdnsAnnouncer.onNetworkChange();
++    if (m_announce) {
++        mdnsAnnouncer.onNetworkChange();
++    }
+     mdnsDiscoverer.stopDiscovering();
+     mdnsDiscoverer.startDiscovering(kServiceType);
+ }
+diff --git a/core/backends/lan/mdnsdiscovery.h b/core/backends/lan/mdnsdiscovery.h
+index f48cb00c..4a964676 100644
+--- a/core/backends/lan/mdnsdiscovery.h
++++ b/core/backends/lan/mdnsdiscovery.h
+@@ -20,7 +20,7 @@ class KDECONNECTCORE_EXPORT MdnsDiscovery : public QObject
+     Q_OBJECT
+ 
+ public:
+-    explicit MdnsDiscovery(LanLinkProvider *parent);
++    explicit MdnsDiscovery(LanLinkProvider *parent, bool announce);
+     ~MdnsDiscovery();
+ 
+     void onStart();
+@@ -30,6 +30,7 @@ public Q_SLOTS:
+     void onNetworkChange();
+ 
+ private:
++    bool m_announce;
+     MdnsWrapper::Discoverer mdnsDiscoverer;
+     MdnsWrapper::Announcer mdnsAnnouncer;
+ };
+-- 
+2.47.0
+
