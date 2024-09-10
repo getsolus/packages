@@ -16,3 +16,5 @@ pref("extensions.showMismatchUI",           false);
 // Match system locale
 pref("intl.locale.matchOS",                 true);
 pref("intl.locale.requested",               "");
+
+pref("spellchecker.dictionary_path", "/usr/share/hunspell");
