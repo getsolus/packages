@@ -13,6 +13,7 @@ MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
 
 # Time in seconds until the warning is shown
 SLOW_WARNING_THRESHOLD="${SLOW_WARNING_THRESHOLD:=530}"
+SLOW_WARNING_ENABLED="${SLOW_WARNING_ENABLED:=true}"
 
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
@@ -47,11 +48,13 @@ fi
 
 # Check if eopkg is ready for the usr merge
 if [[ ! -f "${EOPKG_FLAG_FILE}" ]]; then
+    echo "Skipping usr-merge: eopkg not ready"
     exit 0
 fi
 
 # Skip execution if already performed
 if [[ -f "${MERGE_FLAG_FILE}" ]]; then
+    echo "Skipping usr-merge: already done!"
     exit 0
 fi
 
@@ -59,7 +62,9 @@ fi
 # Generate a number from the last two characters of the machine ID
 # and exit if it is greater or equal to the usr merge chance.
 machine_id="$(cat /etc/machine-id)"
-if [[ "$((16#${machine_id: -2}))" -ge "${USR_MERGE_CHANCE}" ]]; then
+machine_num="$((16#${machine_id: -2}))"
+if [[ "${machine_num}" -ge "${USR_MERGE_CHANCE}" ]]; then
+    echo "Skipping usr-merge: ${machine_num} > ${USR_MERGE_CHANCE}"
     exit 0
 fi
 
@@ -91,6 +96,10 @@ function _checksum() {
 # Show a warning when the script has been running for longer than required.
 # The message is only shown when the migration hasn't completed yet.
 function slow_warning() {
+    if [ "$SLOW_WARNING_ENABLED" != true ]; then
+        return
+    fi
+
     sleep "$SLOW_WARNING_THRESHOLD"
 
     if [[ ! -f "$MERGE_FLAG_FILE" ]]; then
