@@ -1,0 +1,49 @@
+From 9680e4f1f3d2a6ec9b7495322cbec41e02d56812 Mon Sep 17 00:00:00 2001
+From: Vlad Zahorodnii <vlad.zahorodnii@kde.org>
+Date: Tue, 15 Oct 2024 14:38:48 +0000
+Subject: [PATCH] backends/drm: disable hdr if we removed the capabilities for
+ it
+
+That was the intention behind disabling it by default for some drivers, and it also
+slightly simplifes the code
+
+BUG: 494706
+
+
+(cherry picked from commit 85485a73445bfc64f49fcc86c2a4c1b55aa84c77)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@gmail.com>
+---
+ src/backends/drm/drm_output.cpp | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/drm/drm_output.cpp b/src/backends/drm/drm_output.cpp
+index 5beedae8027..5e19ceb8454 100644
+--- a/src/backends/drm/drm_output.cpp
++++ b/src/backends/drm/drm_output.cpp
+@@ -264,7 +264,7 @@ Output::Capabilities DrmOutput::computeCapabilities() const
+     if (m_connector->hdrMetadata.isValid() && m_connector->edid()->supportsPQ()) {
+         capabilities |= Capability::HighDynamicRange;
+     }
+-    if (m_connector->colorspace.isValid() && m_connector->colorspace.hasEnum(DrmConnector::Colorspace::BT2020_RGB) && m_connector->edid()->supportsBT2020()) {
++    if (m_connector->colorspace.isValid() && (m_connector->colorspace.hasEnum(DrmConnector::Colorspace::BT2020_RGB) || m_connector->colorspace.hasEnum(DrmConnector::Colorspace::BT2020_YCC)) && m_connector->edid()->supportsBT2020()) {
+         bool allowColorspace = true;
+         if (m_gpu->isI915()) {
+             allowColorspace &= s_allowColorspaceIntel;
+@@ -381,10 +381,9 @@ ColorDescription DrmOutput::createColorDescription(const std::shared_ptr<OutputC
+         const double maxBrightness = iccProfile->maxBrightness().value_or(200);
+         return ColorDescription(iccProfile->colorimetry(), TransferFunction(TransferFunction::gamma22, minBrightness, maxBrightness), maxBrightness, minBrightness, maxBrightness, maxBrightness);
+     }
+-    const bool screenSupportsHdr = m_connector->edid()->isValid() && m_connector->edid()->supportsBT2020() && m_connector->edid()->supportsPQ();
+-    const bool driverSupportsHdr = m_connector->colorspace.isValid() && m_connector->hdrMetadata.isValid() && (m_connector->colorspace.hasEnum(DrmConnector::Colorspace::BT2020_RGB) || m_connector->colorspace.hasEnum(DrmConnector::Colorspace::BT2020_YCC));
+-    const bool effectiveHdr = hdr && screenSupportsHdr && driverSupportsHdr;
+-    const bool effectiveWcg = wcg && screenSupportsHdr && driverSupportsHdr;
++    const bool supportsHdr = (capabilities() & Capability::HighDynamicRange) && (capabilities() & Capability::WideColorGamut);
++    const bool effectiveHdr = hdr && supportsHdr;
++    const bool effectiveWcg = wcg && supportsHdr;
+     const Colorimetry nativeColorimetry = m_information.edid.colorimetry().value_or(Colorimetry::fromName(NamedColorimetry::BT709));
+ 
+     const Colorimetry containerColorimetry = effectiveWcg ? Colorimetry::fromName(NamedColorimetry::BT2020) : (colorSource == ColorProfileSource::EDID ? nativeColorimetry : Colorimetry::fromName(NamedColorimetry::BT709));
+-- 
+GitLab
+
