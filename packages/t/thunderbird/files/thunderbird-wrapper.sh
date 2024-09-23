@@ -139,6 +139,19 @@ if [ $MOZILLA_DOWN -ne 0 ]; then
     create_langpack_link $MOZLOCALE || create_langpack_link $SHORTMOZLOCALE || true
 fi
 
+# THUNDERBIRD_APP_REMOTINGNAME links Thunderbird with desktop file name
+if [ -z "$THUNDERBIRD_APP_REMOTINGNAME" ]
+then
+  export THUNDERBIRD_APP_REMOTINGNAME=net.thunderbird.Thunderbird
+fi
+# THUNDERBIRD_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
+# search provider or remote launcher
+# DBus interface name (or prefix) is org.mozilla.THUNDERBIRD_DBUS_APP_NAME
+if [ -z "$THUNDERBIRD_DBUS_APP_NAME" ]
+then
+  export THUNDERBIRD_DBUS_APP_NAME=thunderbird
+fi
+
 # Don't throw "old profile" dialog box.
 export MOZ_ALLOW_DOWNGRADE=1
 
