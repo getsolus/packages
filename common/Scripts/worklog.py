@@ -117,6 +117,10 @@ class GitHubCommit:
     def cves(self) -> List[str]:
         return re.findall(r'CVE-\d{4}-\d{4,7}', self.message)
 
+    @property
+    def ghsas(self) -> List[str]:
+        return [m[0] for m in re.findall(r'(GHSA(-[23456789cfghjmpqrvwx]{4}){3})', self.message)]
+
     @staticmethod
     def __tempfile(ref: str) -> str:
         dir = os.path.join(tempfile.gettempdir(), '_solus_worklog')
@@ -301,17 +305,25 @@ class Update(Listable):
         return [cve for build in self._successful_builds
                 for cve in build.commit().cves]
 
+    @property
+    def ghsas(self) -> List[str]:
+        return [ghsa for build in self._successful_builds
+                for ghsa in build.commit().ghsas]
+
     def to_tty(self) -> str:
         authors = [TTY.url(f'@{build.commit().author}', build.tag_url)
                    for build in self._successful_builds]
         cves = [TTY.url(cve, f'https://nvd.nist.gov/vuln/detail/{cve}')
                 for cve in self.cves]
+        ghsas = [TTY.url(ghsa, f'https://github.com/advisories/{ghsa}')
+                 for ghsa in self.ghsas]
+        vulns = cves + ghsas
 
         line = (f'{TTY.Green}{self.package}{TTY.Reset} {self.v} ' +
                 f'{TTY.Blue}[{", ".join(authors)}]{TTY.Reset}')
 
-        if len(cves) > 0:
-            line += f' {TTY.Red}[{", ".join(cves)}]{TTY.Reset}'
+        if len(vulns) > 0:
+            line += f' {TTY.Red}[{", ".join(vulns)}]{TTY.Reset}'
 
         return line
 
@@ -320,10 +332,14 @@ class Update(Listable):
                    for build in self._successful_builds]
         cves = [f'[{cve}](https://nvd.nist.gov/vuln/detail/{cve})'
                 for cve in self.cves]
+        ghsas = [f'[{ghsa}](https://github.com/advisories/{ghsa})'
+                 for ghsa in self.ghsas]
+        vulns = cves + ghsas
+
         line = f'**{self.package}** was updated to **{self.v}** ({", ".join(authors)}).'
 
-        if len(cves) > 0:
-            line += f' Includes security fixes for {", ".join(cves)}.'
+        if len(vulns) > 0:
+            line += f' Includes security fixes for {", ".join(vulns)}.'
 
         return line
 
@@ -332,11 +348,15 @@ class Update(Listable):
                    for build in self._successful_builds]
         cves = [f'<a href="https://nvd.nist.gov/vuln/detail/{cve}">{cve}</a>'
                 for cve in self.cves]
+        ghsas = [f'<a href="https://github.com/advisories/{ghsa}">{ghsa}</a>'
+                 for ghsa in self.ghsas]
+        vulns = cves + ghsas
+
         line = (f'<strong>{html.escape(self.package)}</strong> was updated to <strong>{html.escape(self.v)}</strong> '
                 f'({", ".join(authors)}).')
 
-        if len(cves) > 0:
-            line += f' Includes security fixes for {", ".join(cves)}.'
+        if len(vulns) > 0:
+            line += f' Includes security fixes for {", ".join(vulns)}.'
 
         return line
 
@@ -365,7 +385,7 @@ class Builds:
 
         if security:
             updates = {pkg: update for pkg, update in updates.items()
-                       if len(update.cves) > 0}
+                       if len(update.cves) > 0 or len(update.ghsas) > 0}
 
         return list(updates.values())
 
