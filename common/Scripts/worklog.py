@@ -11,7 +11,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 from urllib import request
 
 
@@ -114,12 +114,12 @@ class GitHubCommit:
         return str(self._data['commit']['message'])
 
     @property
-    def cves(self) -> List[str]:
-        return re.findall(r'CVE-\d{4}-\d{4,7}', self.message)
+    def cves(self) -> Set[str]:
+        return {m for m in re.findall(r'CVE-\d{4}-\d{4,7}', self.message)}
 
     @property
-    def ghsas(self) -> List[str]:
-        return [m[0] for m in re.findall(r'(GHSA(-[23456789cfghjmpqrvwx]{4}){3})', self.message)]
+    def ghsas(self) -> Set[str]:
+        return {m[0] for m in re.findall(r'(GHSA(-[23456789cfghjmpqrvwx]{4}){3})', self.message)}
 
     @staticmethod
     def __tempfile(ref: str) -> str:
@@ -301,14 +301,14 @@ class Update(Listable):
         return [build for build in self.builds if build.status == "OK"]
 
     @property
-    def cves(self) -> List[str]:
-        return [cve for build in self._successful_builds
-                for cve in build.commit().cves]
+    def cves(self) -> Set[str]:
+        return {cve for build in self._successful_builds
+                for cve in build.commit().cves}
 
     @property
-    def ghsas(self) -> List[str]:
-        return [ghsa for build in self._successful_builds
-                for ghsa in build.commit().ghsas]
+    def ghsas(self) -> Set[str]:
+        return {ghsa for build in self._successful_builds
+                for ghsa in build.commit().ghsas}
 
     def to_tty(self) -> str:
         authors = [TTY.url(f'@{build.commit().author}', build.tag_url)
@@ -317,7 +317,7 @@ class Update(Listable):
                 for cve in self.cves]
         ghsas = [TTY.url(ghsa, f'https://github.com/advisories/{ghsa}')
                  for ghsa in self.ghsas]
-        vulns = cves + ghsas
+        vulns = sorted(cves + ghsas)
 
         line = (f'{TTY.Green}{self.package}{TTY.Reset} {self.v} ' +
                 f'{TTY.Blue}[{", ".join(authors)}]{TTY.Reset}')
