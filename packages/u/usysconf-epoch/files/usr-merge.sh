@@ -3,7 +3,7 @@ set -euo pipefail
 
 # This configures the probability that a system is usr merged
 # It should be a value from 0 to 256, with 0 being 0% chance, and 256 being 100% chance.
-USR_MERGE_CHANCE="${USR_MERGE_CHANCE:=64}"
+USR_MERGE_CHANCE="${USR_MERGE_CHANCE:=256}"
 
 # This is where orphaned files and flag markers will be set
 STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
