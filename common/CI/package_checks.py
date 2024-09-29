@@ -79,6 +79,10 @@ class FreezeConfig:
     start: Optional[datetime]
     end: Optional[datetime]
 
+    def __init__(self, start: Optional[Union[str|datetime]], end: Optional[Union[str|datetime]]):
+        self.start = datetime.fromisoformat(start) if isinstance(start, str) else start
+        self.end = datetime.fromisoformat(end) if isinstance(end, str) else end
+
     def active(self) -> bool:
         now = datetime.now(tz=timezone.utc)
 
