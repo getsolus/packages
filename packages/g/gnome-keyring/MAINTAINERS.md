@@ -2,6 +2,3 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Zach Bacon
   - Email: zachbacon@vba-m.com
-
-- Joshua Strobl
-  - Email: joshua@getsol.us
