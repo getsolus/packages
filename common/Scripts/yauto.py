@@ -14,6 +14,7 @@ import os
 import sys
 import os.path
 import dloader
+import mimetypes
 import shutil
 
 # What we term as needed doc files
@@ -143,12 +144,13 @@ class AutoPackage:
                 if "configure" in file:
                     # Check if we need to employ certain hacks needed in gnome packages
                     f_path = os.path.join(root, file)
-                    print("Checking %s for use of g-ir-scanner" % f_path)
-
-                    if self.check_is_gnomey(f_path):
-                        known_types.append(GNOMEY)
-                    else:
-                        known_types.append(AUTOTOOLS)
+                    # Check file type so we only scan text files
+                    if mimetypes.guess_type(f_path)[0] == "text/plain":
+                        print("Checking %s for use of g-ir-scanner" % f_path)
+                        if self.check_is_gnomey(f_path):
+                            known_types.append(GNOMEY)
+                        else:
+                            known_types.append(AUTOTOOLS)
                 if (
                     "setup.py" in file
                     or "pyproject.toml" in file
