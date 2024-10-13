@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sun, 13 Oct 2024 00:21:26 -0500
+Subject: [PATCH] Fix soname dynamic loading
+
+OpenSSL dynamically loads brotli, zlib, and zstd compression libraries by attempting to find the bare .so file. These files are only included in development packages on Solus (and most other distros) which means that none of this dynamic compression code works at all. For zlib this is especially problematic since the error handling is incorrect (see https://github.com/openssl/openssl/issues/23563) which causes crashes in kdeconnectd.
+
+Fix this in a hacky way by changing the libraries to be looked up by their actual sonames, and adding a check to the transform code to use the filename as-is if the string has `.so.` in it. This _shouldn't_ break anything since passing in those filenames would have been broken anyway if they weren't an absolute path. Hopefully.
+---
+ crypto/comp/c_brotli.c | 4 ++--
+ crypto/comp/c_zlib.c   | 2 +-
+ crypto/comp/c_zstd.c   | 2 +-
+ crypto/dso/dso_dlfcn.c | 2 +-
+ 4 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/crypto/comp/c_brotli.c b/crypto/comp/c_brotli.c
+index 07e1e76471..3d0bc66b1f 100644
+--- a/crypto/comp/c_brotli.c
++++ b/crypto/comp/c_brotli.c
+@@ -288,8 +288,8 @@ DEFINE_RUN_ONCE_STATIC(ossl_comp_brotli_init)
+ #   define LIBBROTLIENC "BROTLIENC"
+ #   define LIBBROTLIDEC "BROTLIDEC"
+ #  else
+-#   define LIBBROTLIENC "brotlienc"
+-#   define LIBBROTLIDEC "brotlidec"
++#   define LIBBROTLIENC "libbrotlienc.so.1"
++#   define LIBBROTLIDEC "libbrotlidec.so.1"
+ #  endif
+ 
+     brotli_encode_dso = DSO_load(NULL, LIBBROTLIENC, NULL, 0);
+diff --git a/crypto/comp/c_zlib.c b/crypto/comp/c_zlib.c
+index 0fbab8f014..3636a71c7d 100644
+--- a/crypto/comp/c_zlib.c
++++ b/crypto/comp/c_zlib.c
+@@ -278,7 +278,7 @@ DEFINE_RUN_ONCE_STATIC(ossl_comp_zlib_init)
+ #   elif defined(OPENSSL_SYS_VMS)
+ #    define LIBZ "LIBZ"
+ #   else
+-#    define LIBZ "z"
++#    define LIBZ "libz.so.1"
+ #   endif
+ #  endif
+ 
+diff --git a/crypto/comp/c_zstd.c b/crypto/comp/c_zstd.c
+index b4667649f3..e67722da48 100644
+--- a/crypto/comp/c_zstd.c
++++ b/crypto/comp/c_zstd.c
+@@ -364,7 +364,7 @@ DEFINE_RUN_ONCE_STATIC(ossl_comp_zstd_init)
+ #  if defined(OPENSSL_SYS_WINDOWS) || defined(OPENSSL_SYS_WIN32)
+ #   define LIBZSTD "LIBZSTD"
+ #  else
+-#   define LIBZSTD  "zstd"
++#   define LIBZSTD  "libzstd.so.1"
+ #  endif
+ 
+     zstd_dso = DSO_load(NULL, LIBZSTD, NULL, 0);
+diff --git a/crypto/dso/dso_dlfcn.c b/crypto/dso/dso_dlfcn.c
+index 76737fa7b8..4dfe5dd3c2 100644
+--- a/crypto/dso/dso_dlfcn.c
++++ b/crypto/dso/dso_dlfcn.c
+@@ -251,7 +251,7 @@ static char *dlfcn_name_converter(DSO *dso, const char *filename)
+ 
+     len = strlen(filename);
+     rsize = len + 1;
+-    transform = (strchr(filename, '/') == NULL);
++    transform = (strchr(filename, '/') == NULL) && (strstr(filename, ".so.") == NULL);
+     if (transform) {
+         /* We will convert this to "%s.so" or "lib%s.so" etc */
+         rsize += strlen(DSO_EXTENSION);    /* The length of ".so" */
