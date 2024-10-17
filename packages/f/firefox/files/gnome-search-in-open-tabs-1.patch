@@ -1,0 +1,270 @@
+diff -up firefox-131.0/browser/components/shell/moz.build.D220671 firefox-131.0/browser/components/shell/moz.build
+--- firefox-131.0/browser/components/shell/moz.build.D220671	2024-09-23 19:59:58.000000000 +0200
++++ firefox-131.0/browser/components/shell/moz.build	2024-09-25 08:55:09.196886415 +0200
+@@ -35,8 +35,11 @@ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "coco
+ elif CONFIG["MOZ_WIDGET_TOOLKIT"] == "gtk":
+     XPIDL_SOURCES += [
+         "nsIGNOMEShellService.idl",
++        "nsIOpenTabsProvider.idl",
++    ]
++    EXTRA_JS_MODULES += [
++        "OpenTabsProvider.sys.mjs",
+     ]
+-
+     SOURCES += [
+         "nsGNOMEShellService.cpp",
+     ]
+diff -up firefox-131.0/browser/components/shell/nsGNOMEShellDBusHelper.cpp.D220671 firefox-131.0/browser/components/shell/nsGNOMEShellDBusHelper.cpp
+--- firefox-131.0/browser/components/shell/nsGNOMEShellDBusHelper.cpp.D220671	2024-09-23 19:59:58.000000000 +0200
++++ firefox-131.0/browser/components/shell/nsGNOMEShellDBusHelper.cpp	2024-09-25 09:01:04.080111999 +0200
+@@ -13,6 +13,8 @@
+ #include "nsPrintfCString.h"
+ #include "mozilla/XREAppData.h"
+ #include "nsAppRunner.h"
++#include "nsImportModule.h"
++#include "nsIOpenTabsProvider.h"
+ 
+ #define DBUS_BUS_NAME_TEMPLATE "org.mozilla.%s.SearchProvider"
+ #define DBUS_OBJECT_PATH_TEMPLATE "/org/mozilla/%s/SearchProvider"
+@@ -65,12 +67,23 @@ static bool GetGnomeSearchTitle(const ch
+ }
+ 
+ int DBusGetIndexFromIDKey(const char* aIDKey) {
+-  // ID is NN:URL where NN is index to our current history
++  // ID is NN:S:URL where NN is index to our current history
+   // result container.
+   char tmp[] = {aIDKey[0], aIDKey[1], '\0'};
+   return atoi(tmp);
+ }
+ 
++char DBusGetStateFromIDKey(const char* aIDKey) {
++  // ID is NN:S:URL where NN is index to our current history
++  // result container, and S is the state, which can be 'o'pen or 'h'istory
++  if (std::strlen(aIDKey) > 3) {
++    return aIDKey[3];
++  }
++  // Should never happen, but just to avoid any possible segfault, we
++  // default to state 'history'.
++  return 'h';
++}
++
+ static void ConcatArray(nsACString& aOutputStr, const char** aStringArray) {
+   for (const char** term = aStringArray; *term; term++) {
+     aOutputStr.Append(*term);
+@@ -151,6 +164,7 @@ static already_AddRefed<GVariant> DBusAp
+       aSearchResult->GetSearchResultContainer();
+ 
+   int index = DBusGetIndexFromIDKey(aID);
++  char state = DBusGetStateFromIDKey(aID);
+   nsCOMPtr<nsINavHistoryResultNode> child;
+   container->GetChild(index, getter_AddRefs(child));
+   nsAutoCString title;
+@@ -164,6 +178,12 @@ static already_AddRefed<GVariant> DBusAp
+     }
+   }
+ 
++  // Check if the URI state is "open tab". If so, mark it with an asterisk to
++  // indicate this to the user.
++  if (state == 'o') {
++    title = "(*) "_ns + title;
++  }
++
+   GVariantBuilder b;
+   g_variant_builder_init(&b, G_VARIANT_TYPE("a{sv}"));
+ 
+@@ -265,6 +285,7 @@ static void ActivateResultID(
+         ConstructCommandLine(std::size(urlList), urlList, nullptr, &tmp);
+   } else {
+     int keyIndex = atoi(aResultID);
++    char state = DBusGetStateFromIDKey(aResultID);
+     nsCOMPtr<nsINavHistoryResultNode> child;
+     aSearchResult->GetSearchResultContainer()->GetChild(keyIndex,
+                                                         getter_AddRefs(child));
+@@ -278,6 +299,22 @@ static void ActivateResultID(
+       return;
+     }
+ 
++    // If the state of the URI is 'o'pen, we send it along to JS and let
++    // it switch the tab accordingly
++    if (state == 'o') {
++      // If we can't successfully switch to an open tab, use the existing
++      // 'open in a new tab'-mechanism as a fallback.
++      nsresult rv;
++      nsCOMPtr<nsIOpenTabsProvider> provider = do_ImportESModule(
++          "resource:///modules/OpenTabsProvider.sys.mjs", &rv);
++      if (NS_SUCCEEDED(rv)) {
++        rv = provider->SwitchToOpenTab(uri);
++        if (NS_SUCCEEDED(rv)) {
++          return;
++        }
++      }
++    }
++
+     const char* urlList[2] = {"unused", uri.get()};
+     commandLine =
+         ConstructCommandLine(std::size(urlList), urlList, nullptr, &tmp);
+diff -up firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.cpp.D220671 firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.cpp
+--- firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.cpp.D220671	2024-09-23 19:59:58.000000000 +0200
++++ firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.cpp	2024-09-25 08:55:09.197886449 +0200
+@@ -20,7 +20,8 @@
+ #include "nsServiceManagerUtils.h"
+ #include "mozilla/GUniquePtr.h"
+ #include "mozilla/UniquePtrExtensions.h"
+-
++#include "nsImportModule.h"
++#include "nsIOpenTabsProvider.h"
+ #include "imgIContainer.h"
+ #include "imgITools.h"
+ 
+@@ -70,7 +71,7 @@ class AsyncFaviconDataReady final : publ
+                         int aIconIndex, int aTimeStamp)
+       : mSearchResult(std::move(aSearchResult)),
+         mIconIndex(aIconIndex),
+-        mTimeStamp(aTimeStamp) {};
++        mTimeStamp(aTimeStamp) {}
+ 
+  private:
+   ~AsyncFaviconDataReady() {}
+@@ -412,10 +413,11 @@ nsresult nsGNOMEShellHistoryService::Que
+ }
+ 
+ static void DBusGetIDKeyForURI(int aIndex, nsAutoCString& aUri,
+-                               nsAutoCString& aIDKey) {
+-  // Compose ID as NN:URL where NN is index to our current history
+-  // result container.
+-  aIDKey = nsPrintfCString("%.2d:%s", aIndex, aUri.get());
++                               nsAutoCString& aIDKey, bool isOpen) {
++  // Compose ID as NN:S:URL where NN is index to our current history
++  // result container and S is the state, which can be 'o'pen or 'h'istory
++  aIDKey =
++      nsPrintfCString("%.2d:%c:%s", aIndex, isOpen ? 'o' : 'h', aUri.get());
+ }
+ 
+ // Send (as) rearch result reply
+@@ -456,8 +458,15 @@ void nsGNOMEShellHistorySearchResult::Ha
+           new AsyncFaviconDataReady(this, i, mTimeStamp);
+       favIconSvc->GetFaviconDataForPage(iconIri, callback, 0);
+ 
++      bool isOpen = false;
++      for (const auto& openuri : mOpenTabs) {
++        if (openuri.Equals(uri)) {
++          isOpen = true;
++          break;
++        }
++      }
+       nsAutoCString idKey;
+-      DBusGetIDKeyForURI(i, uri, idKey);
++      DBusGetIDKeyForURI(i, uri, idKey, isOpen);
+ 
+       g_variant_builder_add(&b, "s", idKey.get());
+     }
+@@ -479,8 +488,30 @@ void nsGNOMEShellHistorySearchResult::Re
+   // latest requested search timestamp).
+   if (mSearchProvider->SetSearchResult(this)) {
+     mHistResultContainer = aHistResultContainer;
+-    HandleSearchResultReply();
+   }
++
++  // Getting the currently open tabs to mark them accordingly
++  nsresult rv;
++  nsCOMPtr<nsIOpenTabsProvider> provider =
++      do_ImportESModule("resource:///modules/OpenTabsProvider.sys.mjs", &rv);
++  if (NS_FAILED(rv)) {
++    // Don't fail, just log an error message
++    NS_WARNING("Failed to determine currently open tabs. Using history only.");
++  }
++
++  nsTArray<nsCString> openTabs;
++  if (provider) {
++    rv = provider->GetOpenTabs(openTabs);
++    if (NS_FAILED(rv)) {
++      // Don't fail, just log an error message
++      NS_WARNING(
++          "Failed to determine currently open tabs. Using history only.");
++    }
++  }
++  // In case of error, we just clear out mOpenTabs with an empty new array
++  mOpenTabs = std::move(openTabs);
++
++  HandleSearchResultReply();
+ }
+ 
+ void nsGNOMEShellHistorySearchResult::SetHistoryIcon(int aTimeStamp,
+diff -up firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.h.D220671 firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.h
+--- firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.h.D220671	2024-09-23 19:59:58.000000000 +0200
++++ firefox-131.0/browser/components/shell/nsGNOMEShellSearchProvider.h	2024-09-25 08:55:09.197886449 +0200
+@@ -23,7 +23,7 @@ class nsGNOMEShellSearchProvider;
+ 
+ class GnomeHistoryIcon {
+  public:
+-  GnomeHistoryIcon() : mTimeStamp(-1), mWidth(0), mHeight(0) {};
++  GnomeHistoryIcon() : mTimeStamp(-1), mWidth(0), mHeight(0) {}
+ 
+   // From which search is this icon
+   void Set(int aTimeStamp, mozilla::UniquePtr<uint8_t[]> aData, int aWidth,
+@@ -58,7 +58,7 @@ class nsGNOMEShellHistorySearchResult :
+                                   GDBusConnection* aConnection, int aTimeStamp)
+       : mSearchProvider(aSearchProvider),
+         mConnection(aConnection),
+-        mTimeStamp(aTimeStamp) {};
++        mTimeStamp(aTimeStamp) {}
+ 
+   void SetReply(RefPtr<GDBusMethodInvocation> aReply) {
+     mReply = std::move(aReply);
+@@ -96,6 +96,7 @@ class nsGNOMEShellHistorySearchResult :
+  private:
+   nsGNOMEShellSearchProvider* mSearchProvider;
+   nsCOMPtr<nsINavHistoryContainerResultNode> mHistResultContainer;
++  nsTArray<nsCString> mOpenTabs;
+   nsAutoCString mSearchTerm;
+   RefPtr<GDBusMethodInvocation> mReply;
+   GDBusConnection* mConnection = nullptr;
+diff -up firefox-131.0/browser/components/shell/nsIOpenTabsProvider.idl.D220671 firefox-131.0/browser/components/shell/nsIOpenTabsProvider.idl
+--- firefox-131.0/browser/components/shell/nsIOpenTabsProvider.idl.D220671	2024-09-25 08:55:09.197886449 +0200
++++ firefox-131.0/browser/components/shell/nsIOpenTabsProvider.idl	2024-09-25 08:55:09.197886449 +0200
+@@ -0,0 +1,19 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#include "nsISupports.idl"
++
++[scriptable, uuid(46e3e300-a45a-45b0-ac68-016e9496bf98)]
++interface nsIOpenTabsProvider : nsISupports
++{
++  /**
++   * List of currently open public tabs
++   */
++  Array<AUTF8String> getOpenTabs();
++
++  /**
++   * Function to switch current tab to a given already open URL
++   */
++  void switchToOpenTab(in AUTF8String url);
++};
+diff -up firefox-131.0/browser/components/shell/OpenTabsProvider.sys.mjs.D220671 firefox-131.0/browser/components/shell/OpenTabsProvider.sys.mjs
+--- firefox-131.0/browser/components/shell/OpenTabsProvider.sys.mjs.D220671	2024-09-25 08:55:09.197886449 +0200
++++ firefox-131.0/browser/components/shell/OpenTabsProvider.sys.mjs	2024-09-25 08:55:09.197886449 +0200
+@@ -0,0 +1,22 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++const lazy = {};
++
++ChromeUtils.defineESModuleGetters(lazy, {
++  BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
++  UrlbarProviderOpenTabs: "resource:///modules/UrlbarProviderOpenTabs.sys.mjs",
++});
++
++export function getOpenTabs() {
++  // We only want public tabs, so isInPrivateWindow = false
++  let urls = lazy.UrlbarProviderOpenTabs.getOpenTabUrls(false);
++  return Array.from(urls.keys());
++}
++
++export function switchToOpenTab(url) {
++  // We only want public tabs, so skip private top windows
++  let win = lazy.BrowserWindowTracker.getTopWindow({ private: false });
++  win?.switchToTabHavingURI(url);
++}
