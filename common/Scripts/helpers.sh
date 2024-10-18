@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 
+BOLD='\033[1m'
+RED='\033[0;31m'
+RESET='\033[0m'
+YELLOW='\033[0;33m'
+GREEN="\033[32m"
+
 # Primitive CPE search tool
 function cpesearch() {
     function search() {
@@ -16,6 +22,45 @@ function cpesearch() {
         search "$(basename "$(pwd)")"
     else
         search "$1"
+    fi
+}
+
+function check_update() {
+    if [ ! -e "monitoring.yml" ]; then
+        echo -e "${RED}monitoring.yml file doesn't exist"
+        return 1
+    fi
+    if [ ! -e "package.yml" ]; then
+        echo -e "${RED}package.yml file doesn't exist"
+        return 1
+    fi
+
+    # Check requirements before starting
+    REQUIREMENTS="curl yq jq"
+    for i in $REQUIREMENTS; do
+        if ! which $i &> /dev/null; then
+            echo "Missing requirement: $i. Install it to continue."
+            return 1
+        fi
+    done
+
+    current_version=$(yq '.version' package.yml)
+    new_version=$(curl -s -H "Accept: application/json" https://release-monitoring.org/api/v2/versions/?project_id=`yq '.releases.id' monitoring.yml` | jq -r '.stable_versions[:1]' | jq -c '.[]')
+
+    # Strip any quotes and replace underscores with dots
+    new_version=${new_version//\"/}
+    new_version=${new_version//\'/}
+    new_version=${new_version//_/.}
+    current_version=${current_version//\"/}
+    current_version=${current_version//\'/}
+
+    echo "current version: ${current_version}"
+    if [ "$current_version" != "$new_version" ]; then
+        echo -e "${YELLOW}lastest version: ${new_version}${RESET}"
+        echo -e "${BOLD}Update available${RESET}"
+    elif [ "$current_version" == "$new_version" ]; then
+        echo -e "${GREEN}lastest version: ${new_version}${RESET}"
+        echo "Already using latest version"
     fi
 }
 
