@@ -1,0 +1,54 @@
+From d36e304cc0a0b12e61437c2062314595b8246eee Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Tue, 15 Oct 2024 23:41:01 +0100
+Subject: [PATCH 1/1] Partial Revert of "[BOLT] Fix .relr section addend
+ patching"
+
+0053cb8ef0a13b444bea598159f873fade200367
+
+something is bork on x86
+---
+ bolt/lib/Rewrite/RewriteInstance.cpp | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/bolt/lib/Rewrite/RewriteInstance.cpp b/bolt/lib/Rewrite/RewriteInstance.cpp
+index 32ec7abe8b66..f7f63b2ea956 100644
+--- a/bolt/lib/Rewrite/RewriteInstance.cpp
++++ b/bolt/lib/Rewrite/RewriteInstance.cpp
+@@ -5068,11 +5068,9 @@ void RewriteInstance::patchELFAllocatableRelrSection(
+   const uint8_t PSize = BC->AsmInfo->getCodePointerSize();
+   const uint64_t MaxDelta = ((CHAR_BIT * DynamicRelrEntrySize) - 1) * PSize;
+ 
+-  auto FixAddend = [&](const BinarySection &Section, const Relocation &Rel,
+-                       uint64_t FileOffset) {
++  auto FixAddend = [&](const BinarySection &Section, const Relocation &Rel) {
+     // Fix relocation symbol value in place if no static relocation found
+-    // on the same address. We won't check the BF relocations here since it
+-    // is rare case and no optimization is required.
++    // on the same address
+     if (Section.getRelocationAt(Rel.Offset))
+       return;
+ 
+@@ -5081,6 +5079,10 @@ void RewriteInstance::patchELFAllocatableRelrSection(
+     if (!Addend)
+       return;
+ 
++    uint64_t FileOffset = Section.getOutputFileOffset();
++    if (!FileOffset)
++      FileOffset = Section.getInputFileOffset();
++    FileOffset += Rel.Offset;
+     OS.pwrite(reinterpret_cast<const char *>(&Addend), PSize, FileOffset);
+   };
+ 
+@@ -5102,7 +5104,7 @@ void RewriteInstance::patchELFAllocatableRelrSection(
+       RelOffset = RelOffset == 0 ? SectionAddress + Rel.Offset : RelOffset;
+       assert((RelOffset & 1) == 0 && "Wrong relocation offset");
+       RelOffsets.emplace(RelOffset);
+-      FixAddend(Section, Rel, RelOffset);
++      FixAddend(Section, Rel);
+     }
+   }
+ 
+-- 
+2.47.0
+
