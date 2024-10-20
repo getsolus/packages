@@ -4,7 +4,7 @@ import os
 import subprocess
 import yaml
 
-scope_help = "# Scope and title, eg: nano: Update to 1.2.3\n"
+scope_help = "# Scope and title, eg: nano: Update to v1.2.3\n"
 help_msg = """
 
 **Summary**
@@ -31,8 +31,8 @@ def commit_scope(commit_dir: str) -> str:
             with open(os.path.join(commit_dir, 'package.yml')) as recipe:
                 data = yaml.safe_load(recipe)
                 if str(data['release']) == '1':
-                    return os.path.basename(commit_dir) + ': Add at ' + str(data['version'])
-                return os.path.basename(commit_dir) + ': Update to ' + str(data['version'])
+                    return os.path.basename(commit_dir) + ': Add at v' + str(data['version'])
+                return os.path.basename(commit_dir) + ': Update to v' + str(data['version'])
 
         # Detect non-functional changes ([NFC])
         staged_files_res = subprocess.run(['git', 'diff', '--name-only', '--staged', commit_dir],
