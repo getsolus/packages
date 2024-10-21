@@ -1,0 +1,93 @@
+From 50d48fd7ba9fb701c9d2b838e63ad36b78f1cfa0 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@gmail.com>
+Date: Tue, 15 Oct 2024 14:02:40 +0000
+Subject: [PATCH] wayland/color management: ignore obviously wrong HDR metadata
+
+Some applications provide truly nonsensical luminance values, like 10 million nits.
+This adds a basic sanity check to not use that for tone mapping
+
+BUG: 494502
+
+
+(cherry picked from commit 03b4da31c0a774d38c2d3cca6f131e4dcd270311)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@gmail.com>
+---
+ src/wayland/frog_colormanagement_v1.cpp | 35 ++++++++++++++-----------
+ src/wayland/xx_colormanagement_v4.cpp   | 14 ++++++++--
+ 2 files changed, 32 insertions(+), 17 deletions(-)
+
+diff --git a/src/wayland/frog_colormanagement_v1.cpp b/src/wayland/frog_colormanagement_v1.cpp
+index aadb79d8b4e..f5374bdbc91 100644
+--- a/src/wayland/frog_colormanagement_v1.cpp
++++ b/src/wayland/frog_colormanagement_v1.cpp
+@@ -132,21 +132,26 @@ void FrogColorManagementSurfaceV1::frog_color_managed_surface_set_hdr_metadata(R
+                                                                                uint32_t max_display_mastering_luminance, uint32_t min_display_mastering_luminance,
+                                                                                uint32_t max_cll, uint32_t max_fall)
+ {
+-    // max_display_mastering_luminance and max_cll more or less have the same meaning in practice
+-    // it seems that max_cll, if set, is more accurate, so prefer it
+-    if (max_cll != 0) {
+-        m_maxPeakBrightness = max_cll;
+-    } else if (max_display_mastering_luminance != 0) {
+-        m_maxPeakBrightness = max_display_mastering_luminance;
+-    }
+-    if (max_fall != 0 && (!m_maxPeakBrightness || max_fall <= *m_maxPeakBrightness)) {
+-        m_maxAverageLuminance = max_fall;
+-    }
+-    const double minLuminance = min_display_mastering_luminance / 10'000.0;
+-    if ((!m_maxPeakBrightness && !m_maxAverageLuminance)
+-        || (m_maxPeakBrightness && minLuminance < *m_maxPeakBrightness)
+-        || (m_maxAverageLuminance && minLuminance < *m_maxAverageLuminance)) {
+-        m_minMasteringLuminance = minLuminance;
++    // some applications provide truly nonsensical luminance values, like 10 million nits.
++    // this is just a basic sanity check to not make use of that
++    const bool hasSensibleLuminances = max_display_mastering_luminance <= 10'000 && max_cll <= 10'000 && max_fall <= 10'000;
++    if (hasSensibleLuminances) {
++        // max_display_mastering_luminance and max_cll more or less have the same meaning in practice
++        // it seems that max_cll, if set, is more accurate, so prefer it
++        if (max_cll != 0) {
++            m_maxPeakBrightness = max_cll;
++        } else if (max_display_mastering_luminance != 0) {
++            m_maxPeakBrightness = max_display_mastering_luminance;
++        }
++        if (max_fall != 0 && (!m_maxPeakBrightness || max_fall <= *m_maxPeakBrightness)) {
++            m_maxAverageLuminance = max_fall;
++        }
++        const double minLuminance = min_display_mastering_luminance / 10'000.0;
++        if ((!m_maxPeakBrightness && !m_maxAverageLuminance)
++            || (m_maxPeakBrightness && minLuminance < *m_maxPeakBrightness)
++            || (m_maxAverageLuminance && minLuminance < *m_maxAverageLuminance)) {
++            m_minMasteringLuminance = minLuminance;
++        }
+     }
+     if (mastering_display_primary_red_x > 0 && mastering_display_primary_red_y > 0 && mastering_display_primary_green_x > 0 && mastering_display_primary_green_y > 0 && mastering_display_primary_blue_x > 0 && mastering_display_primary_blue_y > 0 && mastering_white_point_x > 0 && mastering_white_point_y > 0) {
+         m_masteringColorimetry = Colorimetry{
+diff --git a/src/wayland/xx_colormanagement_v4.cpp b/src/wayland/xx_colormanagement_v4.cpp
+index 5451dda68db..46ce151a035 100644
+--- a/src/wayland/xx_colormanagement_v4.cpp
++++ b/src/wayland/xx_colormanagement_v4.cpp
+@@ -214,8 +214,18 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_create(R
+         wl_resource_post_error(resource->handle, error::error_inconsistent_set, "max_cll and max_fall must only be set with the PQ transfer function");
+         return;
+     }
+-    const std::optional<double> maxFrameAverageLuminance = m_maxFall ? m_maxFall : m_maxMasteringLuminance;
+-    const std::optional<double> maxHdrLuminance = m_maxCll ? m_maxCll : m_maxMasteringLuminance;
++    std::optional<double> maxFrameAverageLuminance = m_maxFall ? m_maxFall : m_maxMasteringLuminance;
++    std::optional<double> maxHdrLuminance = m_maxCll ? m_maxCll : m_maxMasteringLuminance;
++
++    // some applications provide truly nonsensical luminance values, like 10 million nits.
++    // this is just a basic sanity check to not make use of that
++    const bool hasSaneMetadata = m_maxFall <= 10'000 && m_maxCll <= 10'000 && m_maxMasteringLuminance <= 10'000;
++    if (!hasSaneMetadata) {
++        maxFrameAverageLuminance.reset();
++        maxHdrLuminance.reset();
++        m_minMasteringLuminance.reset();
++    }
++
+     TransferFunction func{*m_transferFunctionType};
+     double referenceLuminance = TransferFunction::defaultReferenceLuminanceFor(func.type);
+     if (m_transferFunctionLuminances) {
+-- 
+GitLab
+

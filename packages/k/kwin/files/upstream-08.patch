@@ -1,0 +1,58 @@
+From f46a1c2fdb269c8403533e34504c9a583ffb9de7 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@gmail.com>
+Date: Wed, 16 Oct 2024 18:44:33 +0000
+Subject: [PATCH] backends/drm: transform damage to match the framebuffer
+
+Otherwise, the repainted region can be completely wrong, which breaks damage tracking very badly
+
+BUG: 494837
+
+
+(cherry picked from commit 8a8c617ddde3e7a9167df1242934f4f8bbcb4945)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@gmail.com>
+---
+ src/backends/drm/drm_egl_layer_surface.cpp | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/src/backends/drm/drm_egl_layer_surface.cpp b/src/backends/drm/drm_egl_layer_surface.cpp
+index d7bf78fc8e..9f3f459b11 100644
+--- a/src/backends/drm/drm_egl_layer_surface.cpp
++++ b/src/backends/drm/drm_egl_layer_surface.cpp
+@@ -250,8 +250,10 @@ bool EglGbmLayerSurface::endRendering(const QRegion &damagedRegion, OutputFrame
+         if (logicalRepaint == infiniteRegion()) {
+             repaint = QRect(QPoint(), m_surface->gbmSwapchain->size());
+         } else {
++            const auto mapping = m_surface->currentShadowSlot->framebuffer()->colorAttachment()->contentTransform().combine(OutputTransform::FlipY);
++            const QSize rotatedSize = mapping.map(m_surface->gbmSwapchain->size());
+             for (const QRect rect : logicalRepaint) {
+-                repaint |= scaledRect(rect, m_surface->scale).toAlignedRect() & QRect(QPoint(), m_surface->gbmSwapchain->size());
++                repaint |= mapping.map(scaledRect(rect, m_surface->scale), rotatedSize).toAlignedRect() & QRect(QPoint(), m_surface->gbmSwapchain->size());
+             }
+         }
+ 
+@@ -270,8 +272,6 @@ bool EglGbmLayerSurface::endRendering(const QRegion &damagedRegion, OutputFrame
+         }
+         QMatrix4x4 mat;
+         mat.scale(1, -1);
+-        mat *= fbo->colorAttachment()->contentTransform().toMatrix();
+-        mat.scale(1, -1);
+         mat.ortho(QRectF(QPointF(), fbo->size()));
+         binder.shader()->setUniform(GLShader::Mat4Uniform::ModelViewProjectionMatrix, mat);
+         glDisable(GL_BLEND);
+@@ -671,8 +671,10 @@ std::shared_ptr<DrmFramebuffer> EglGbmLayerSurface::importWithEgl(Surface *surfa
+     if (damagedRegion == infiniteRegion()) {
+         deviceDamage = QRect(QPoint(), surface->gbmSwapchain->size());
+     } else {
+-        for (const QRect &logical : damagedRegion) {
+-            deviceDamage |= scaledRect(logical, surface->scale).toAlignedRect();
++        const auto mapping = surface->currentSlot->framebuffer()->colorAttachment()->contentTransform().combine(OutputTransform::FlipY);
++        const QSize rotatedSize = mapping.map(surface->gbmSwapchain->size());
++        for (const QRect rect : damagedRegion) {
++            deviceDamage |= mapping.map(scaledRect(rect, surface->scale), rotatedSize).toAlignedRect() & QRect(QPoint(), surface->gbmSwapchain->size());
+         }
+     }
+     const QRegion repaint = (deviceDamage | surface->importDamageJournal.accumulate(slot->age(), infiniteRegion())) & QRect(QPoint(), surface->gbmSwapchain->size());
+-- 
+GitLab
+

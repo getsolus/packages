@@ -1,0 +1,54 @@
+From d352a368e21b9c95eb738a0cbde749425906f7fe Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@gmail.com>
+Date: Wed, 16 Oct 2024 15:20:14 +0000
+Subject: [PATCH] backends/drm: don't scale infiniteRegion()
+
+It can lead to weird issues, like the resulting region being entirely in negative coordinates
+
+CCBUG: 494829
+
+
+(cherry picked from commit 12e44324d55c5c0dc8f082248d07bc818f08993a)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@gmail.com>
+---
+ src/backends/drm/drm_egl_layer_surface.cpp | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/src/backends/drm/drm_egl_layer_surface.cpp b/src/backends/drm/drm_egl_layer_surface.cpp
+index f282162ae0..d7bf78fc8e 100644
+--- a/src/backends/drm/drm_egl_layer_surface.cpp
++++ b/src/backends/drm/drm_egl_layer_surface.cpp
+@@ -247,8 +247,12 @@ bool EglGbmLayerSurface::endRendering(const QRegion &damagedRegion, OutputFrame
+         m_surface->damageJournal.add(damagedRegion);
+         m_surface->shadowDamageJournal.add(damagedRegion);
+         QRegion repaint;
+-        for (const QRect &rect : logicalRepaint) {
+-            repaint |= scaledRect(rect, m_surface->scale).toAlignedRect() & QRect(QPoint(), m_surface->gbmSwapchain->size());
++        if (logicalRepaint == infiniteRegion()) {
++            repaint = QRect(QPoint(), m_surface->gbmSwapchain->size());
++        } else {
++            for (const QRect rect : logicalRepaint) {
++                repaint |= scaledRect(rect, m_surface->scale).toAlignedRect() & QRect(QPoint(), m_surface->gbmSwapchain->size());
++            }
+         }
+ 
+         GLFramebuffer *fbo = m_surface->currentSlot->framebuffer();
+@@ -664,8 +668,12 @@ std::shared_ptr<DrmFramebuffer> EglGbmLayerSurface::importWithEgl(Surface *surfa
+     }
+ 
+     QRegion deviceDamage;
+-    for (const QRect &logical : damagedRegion) {
+-        deviceDamage |= scaledRect(logical, surface->scale).toAlignedRect();
++    if (damagedRegion == infiniteRegion()) {
++        deviceDamage = QRect(QPoint(), surface->gbmSwapchain->size());
++    } else {
++        for (const QRect &logical : damagedRegion) {
++            deviceDamage |= scaledRect(logical, surface->scale).toAlignedRect();
++        }
+     }
+     const QRegion repaint = (deviceDamage | surface->importDamageJournal.accumulate(slot->age(), infiniteRegion())) & QRect(QPoint(), surface->gbmSwapchain->size());
+     surface->importDamageJournal.add(deviceDamage);
+-- 
+GitLab
+
