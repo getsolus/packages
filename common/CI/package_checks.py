@@ -11,11 +11,11 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from ruamel.yaml import YAML
+from ruamel.yaml.compat import StringIO
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 from urllib import request
 from xml.etree import ElementTree
-
-import yaml
 
 """Package is either a Package YML file or Pspec XML file."""
 Package = Union['PackageYML', 'PspecXML']
@@ -30,7 +30,9 @@ class PackageYML:
     """Represents a Package YML file."""
 
     def __init__(self, stream: Any):
-        self._data = dict(yaml.safe_load(stream))
+        yaml = YAML(typ='safe', pure=True)
+        yaml.default_flow_style = False
+        self._data = dict(yaml.load(stream))
 
     @property
     def name(self) -> str:
@@ -105,7 +107,8 @@ class Config:
 
     @staticmethod
     def load(stream: Any) -> 'Config':
-        return Config(**yaml.safe_load(stream))
+        yaml = YAML(typ='safe', pure=True)
+        return Config(**yaml.load(stream))
 
     def __post_init__(self) -> None:
         self.freeze = FreezeConfig(**self.freeze)  # type: ignore
@@ -409,7 +412,9 @@ class Homepage(PullRequestCheck):
 
     def _includes_homepage(self, file: str) -> bool:
         with self._open(file) as f:
-            return 'homepage' in yaml.safe_load(f)
+            yaml = YAML(typ='safe', pure=True)
+            yaml.default_flow_style = False
+            return 'homepage' in yaml.load(f)
 
 
 class PackageBumped(PullRequestCheck):
@@ -467,8 +472,18 @@ class PackageDependenciesOrder(PullRequestCheck):
         exp = self._sorted(cur)
 
         if cur != exp:
+            class Dumper(YAML):
+                def dump(self, data: Any, stream: Optional[StringIO] = None, **kw: int) -> Any:
+                    self.default_flow_style = False
+                    self.indent(offset=4, sequence=4)
+                    self.prefix_colon = ' '  # type: ignore[assignment]
+                    stream = StringIO()
+                    YAML.dump(self, data, stream, **kw)
+                    return stream.getvalue()
+
+            yaml = Dumper(typ='safe', pure=True)
             return Result(file=file, level=self._level, line=self.file_line(file, '^' + deps + r'\s*:'),
-                          message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
+                          message=f'{deps} are not in order, expected: \n' + yaml.dump(exp))
 
         return None
 
