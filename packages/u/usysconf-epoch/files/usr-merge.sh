@@ -15,6 +15,9 @@ MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
 SLOW_WARNING_THRESHOLD="${SLOW_WARNING_THRESHOLD:=530}"
 SLOW_WARNING_ENABLED="${SLOW_WARNING_ENABLED:=true}"
 
+# List of dirs to be merged
+MERGED_DIRS=(/bin /sbin /lib64 /lib32 /lib)
+
 # Manually specify the path of binaries needed since we're messing with /bin and /sbin
 CP="${CP:=/usr/bin/cp}"
 CAT="${CAT:=/usr/bin/cat}"
@@ -49,12 +52,6 @@ fi
 # Check if eopkg is ready for the usr merge
 if [[ ! -f "${EOPKG_FLAG_FILE}" ]]; then
     echo "Skipping usr-merge: eopkg not ready"
-    exit 0
-fi
-
-# Skip execution if already performed
-if [[ -f "${MERGE_FLAG_FILE}" ]]; then
-    echo "Skipping usr-merge: already done!"
     exit 0
 fi
 
@@ -110,29 +107,46 @@ function slow_warning() {
 
 # Return 0 if the path needs to be modified, 1 if it doesn't exist or is already a correct symlink
 function needs_to_be_merged () {
+    local quiet=false
+    if [[ "$1" == "-q" ]]; then
+        shift
+        quiet=true
+    fi
+
     local to_test="$1"
     local target
 
-    if [[ ! -e "$to_test" ]]; then
-        _log "$to_test" "does not exist"
+    if [[ ! -e "$to_test" ]] && [[ ! -e "/usr${to_test}" ]]; then
+        [[ $quiet == false ]] && _log "$to_test" "does not exist"
         return 1
     fi
 
     if [[ ! -L "$to_test" ]]; then
-        _log "$to_test" "not a symlink"
+        [[ $quiet == false ]] && _log "$to_test" "not a symlink"
         return 0
     fi
 
     target=$($READLINK "$to_test")
-    _log "$to_test" "is a symlink to $target"
+    [[ $quiet == false ]] && _log "$to_test" "is a symlink to $target"
 
     if [[ "$target" == "usr"$to_test ]]; then
-        _log "$to_test" "is the correct symlink"
+        [[ $quiet == false ]] && _log "$to_test" "is the correct symlink"
         return 1
     fi
 
-    _log "$to_test" "needs to be changed"
+    [[ $quiet == false ]] && _log "$to_test" "needs to be changed"
     return 0
+}
+
+# Return 0 if any given argument needs to be modified or 1 if not.
+function any_needs_to_be_merged() {
+    for dir in "$@"; do
+        if needs_to_be_merged -q "$dir"; then
+            return 0
+        fi
+    done
+
+    return 1
 }
 
 # This takes a directory path and creates it and its parents recursively
@@ -344,7 +358,16 @@ function usr_merge_directory () {
 
 function merge_dir () {
     local dir_name="$1"
+    local usr_location="usr$dir_name"
+
     if needs_to_be_merged "$dir_name"; then
+        # Create symlink immediately if it doesn't exist
+        if [[ ! -e "$dir_name" ]]; then
+            _log "$dir_name" "linking to $usr_location"
+            $LN --no-dereference --symbolic "$usr_location" "$dir_name"
+            return
+        fi
+
         # Get list of files that are not symlinks
         file_list=()
         while IFS=  read -r -d $'\0'; do
@@ -373,21 +396,35 @@ function merge_dir () {
     fi
 }
 
+function merge_dirs() {
+    for dir in "$@"; do
+        merge_dir "$dir"
+    done
+}
+
+function create_merge_flag_file() {
+    if [[ ! -e "${MERGE_FLAG_FILE}" ]]; then
+        $MKDIR -p "${STATE_DIR}"
+        $TOUCH "${MERGE_FLAG_FILE}"
+    fi
+}
+
+if ! any_needs_to_be_merged "${MERGED_DIRS[@]}"; then
+    echo "Skipping usr-merge: already done!"
+    create_merge_flag_file
+    exit 0
+fi
+
 console "Performing important system maintenance, please wait.\n"
 console "This process may take up to 10 minutes to complete.\n"
 console "It is safe to turn off your computer if necessary.\n"
 slow_warning &
 
-merge_dir /bin
-merge_dir /sbin
-merge_dir /lib64
-merge_dir /lib32
-merge_dir /lib
-
-$MKDIR -p "${STATE_DIR}"
-$TOUCH "${MERGE_FLAG_FILE}"
+_echo "Starting merge:"
+merge_dirs "${MERGED_DIRS[@]}"
+create_merge_flag_file
 
 _echo "Result:"
-$LS -l /
+$LS -l "${MERGED_DIRS[@]}" 2>/dev/null || true
 
 console " Done!\n"
