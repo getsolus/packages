@@ -301,6 +301,9 @@ class PullRequestCheck:
         with self._open(path) as f:
             return str(f.read())
 
+    def _exists(self, path: str) -> bool:
+        return os.path.exists(self._path(path))
+
     def load_package_yml(self, file: str) -> PackageYML:
         with self._open(file) as f:
             return PackageYML(f)
@@ -415,6 +418,19 @@ class Homepage(PullRequestCheck):
             yaml = YAML(typ='safe', pure=True)
             yaml.default_flow_style = False
             return 'homepage' in yaml.load(f)
+
+
+class Monitoring(PullRequestCheck):
+    _error = '`monitoring.yml` is missing'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, file=f, level=self._level)
+                for f in self.package_files
+                if not self._has_monitoring_yml(f)]
+
+    def _has_monitoring_yml(self, file: str) -> bool:
+        return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yml'))
 
 
 class PackageBumped(PullRequestCheck):
@@ -782,6 +798,7 @@ class Checker:
         CommitMessage,
         FrozenPackage,
         Homepage,
+        Monitoring,
         PackageBumped,
         PackageDependenciesOrder,
         PackageDirectory,
