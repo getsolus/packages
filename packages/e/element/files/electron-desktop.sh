@@ -14,7 +14,9 @@ fi
 
 # Wayland auto-detection. If the session is a wayland session then this will launch as a Wayland window unless the ELEMENT_NO_WAYLAND variable is set
 if [ -z "${ELEMENT_NO_WAYLAND+set}" ]; then
-  ELEMENT_DESKTOP_FLAGS="$ELEMENT_DESKTOP_FLAGS --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations,WebRTCPipeWireCapturer"
+  if [ -z "${ELECTRON_OZONE_PLATFORM_HINT+set}" ]; then
+    export ELECTRON_OZONE_PLATFORM_HINT="auto"
+  fi
 fi
 
 # shellcheck disable=SC2086
