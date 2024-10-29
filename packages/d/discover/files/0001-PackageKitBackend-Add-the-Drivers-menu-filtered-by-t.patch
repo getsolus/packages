@@ -6,17 +6,17 @@ Subject: [PATCH] Allow to install hardware drivers
 ---
  libdiscover/Category/Category.cpp             | 10 ++++--
  libdiscover/Category/Category.h               |  8 ++++-
- libdiscover/appstream/AppStreamUtils.cpp      |  9 +++--
+ libdiscover/appstream/AppStreamUtils.cpp      | 23 ++++++++-----
  .../backends/KNSBackend/KNSBackend.cpp        | 11 +++---
  .../AppPackageKitResource.cpp                 | 34 ++++++++++++++++---
  .../packagekit-backend-categories.xml         | 22 ++++++++++++
- 6 files changed, 80 insertions(+), 14 deletions(-)
+ 6 files changed, 87 insertions(+), 21 deletions(-)
 
 diff --git a/libdiscover/Category/Category.cpp b/libdiscover/Category/Category.cpp
-index c40844a78..3422cbeda 100644
+index 034b33a4b..a171c7099 100644
 --- a/libdiscover/Category/Category.cpp
 +++ b/libdiscover/Category/Category.cpp
-@@ -33,7 +33,8 @@ Category::Category(const QString &name,
+@@ -62,7 +62,8 @@ Category::Category(const QString &name,
                     const CategoryFilter &filter,
                     const QSet<QString> &pluginName,
                     const QVector<Category *> &subCategories,
@@ -26,7 +26,7 @@ index c40844a78..3422cbeda 100644
      : QObject(nullptr)
      , m_name(name)
      , m_iconString(iconName)
-@@ -41,7 +42,8 @@ Category::Category(const QString &name,
+@@ -70,7 +71,8 @@ Category::Category(const QString &name,
      , m_subCategories(subCategories)
      , m_plugins(pluginName)
      , m_isAddons(isAddons)
@@ -36,7 +36,7 @@ index c40844a78..3422cbeda 100644
  {
      setObjectName(m_name);
  
-@@ -82,6 +84,10 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml)
+@@ -109,6 +111,10 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml, Localizatio
              m_isAddons = true;
              m_priority = 5;
              xml->readNext();
@@ -48,10 +48,10 @@ index c40844a78..3422cbeda 100644
              m_iconString = xml->readElementText();
          } else if (xml->name() == QLatin1String("Include") || xml->name() == QLatin1String("Categories")) {
 diff --git a/libdiscover/Category/Category.h b/libdiscover/Category/Category.h
-index 9b12d7a28..0598c2094 100644
+index caa8b4cf3..16d036fc6 100644
 --- a/libdiscover/Category/Category.h
 +++ b/libdiscover/Category/Category.h
-@@ -60,7 +60,8 @@ public:
+@@ -68,7 +68,8 @@ public:
               const CategoryFilter &filters,
               const QSet<QString> &pluginName,
               const QVector<Category *> &subCategories,
@@ -61,7 +61,7 @@ index 9b12d7a28..0598c2094 100644
      ~Category() override;
  
      QString name() const;
-@@ -87,6 +88,10 @@ public:
+@@ -95,6 +96,10 @@ public:
      {
          return m_isAddons;
      }
@@ -72,7 +72,7 @@ index 9b12d7a28..0598c2094 100644
      qint8 priority() const
      {
          return m_priority;
-@@ -119,6 +124,7 @@ private:
+@@ -129,6 +134,7 @@ private:
      CategoryFilter parseIncludes(QXmlStreamReader *xml);
      QSet<QString> m_plugins;
      bool m_isAddons = false;
@@ -81,7 +81,7 @@ index 9b12d7a28..0598c2094 100644
      QTimer *m_subCategoriesChanged;
  };
 diff --git a/libdiscover/appstream/AppStreamUtils.cpp b/libdiscover/appstream/AppStreamUtils.cpp
-index 82193691f..052b28849 100644
+index fd5f05189..874d221cc 100644
 --- a/libdiscover/appstream/AppStreamUtils.cpp
 +++ b/libdiscover/appstream/AppStreamUtils.cpp
 @@ -7,6 +7,7 @@
@@ -92,23 +92,37 @@ index 82193691f..052b28849 100644
  #include <AppStreamQt/pool.h>
  #include <AppStreamQt/release.h>
  #include <AppStreamQt/screenshot.h>
-@@ -260,8 +261,12 @@ static void kRemoveDuplicates(AppStream::ComponentBox &input, AppStream::Bundle:
- AppStream::ComponentBox AppStreamUtils::componentsByCategories(AppStream::Pool *pool, Category *cat, AppStream::Bundle::Kind kind)
- {
+@@ -197,15 +198,19 @@ QCoro::Task<AppStream::ComponentBox> AppStreamUtils::componentsByCategoriesTask(
+     }
+ 
      AppStream::ComponentBox ret(AppStream::ComponentBox::FlagNoChecks);
 -    for (const auto &categoryName : cat->involvedCategories()) {
+-        // Give the eventloop some breathing room by suspending execution for a bit. This in particular should keep the
+-        // UI more responsive while we fetch a substantial amount of components on e.g. the all apps view.
+-        constexpr auto arbitrarySuspendTime = 64ms;
+-        QTimer timer;
+-        timer.start(arbitrarySuspendTime);
+-        co_await timer;
+-
 -        ret += pool->componentsByCategories({categoryName});
 +    if (cat->isDrivers()) {
 +        ret += pool->componentsByKind(AppStream::Component::KindDriver);
 +    } else {
 +        for (const auto &categoryName : cat->involvedCategories()) {
++            // Give the eventloop some breathing room by suspending execution for a bit. This in particular should keep the
++            // UI more responsive while we fetch a substantial amount of components on e.g. the all apps view.
++            constexpr auto arbitrarySuspendTime = 64ms;
++            QTimer timer;
++            timer.start(arbitrarySuspendTime);
++            co_await timer;
++
 +            ret += pool->componentsByCategories({categoryName});
 +        }
      }
      kRemoveDuplicates(ret, kind);
-     return ret;
+     co_return ret;
 diff --git a/libdiscover/backends/KNSBackend/KNSBackend.cpp b/libdiscover/backends/KNSBackend/KNSBackend.cpp
-index 77d82ddde..89fca5241 100644
+index 090cc710c..986b2eeec 100644
 --- a/libdiscover/backends/KNSBackend/KNSBackend.cpp
 +++ b/libdiscover/backends/KNSBackend/KNSBackend.cpp
 @@ -188,9 +188,9 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
@@ -153,7 +167,7 @@ index 77d82ddde..89fca5241 100644
      }
  
 diff --git a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
-index 2c480c413..07bd9cf76 100644
+index 8f441b6eb..057aeb540 100644
 --- a/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
 +++ b/libdiscover/backends/PackageKitBackend/AppPackageKitResource.cpp
 @@ -11,6 +11,7 @@
@@ -162,8 +176,8 @@ index 2c480c413..07bd9cf76 100644
  #include <AppStreamQt/screenshot.h>
 +#include <AppStreamQt/systeminfo.h>
  #include <AppStreamQt/version.h>
- #include <KIconLoader>
  #include <KLocalizedString>
+ #include <KService>
 @@ -23,6 +24,7 @@
  #include <QStandardPaths>
  #include <QUrlQuery>
@@ -172,7 +186,7 @@ index 2c480c413..07bd9cf76 100644
  
  using namespace Qt::StringLiterals;
  
-@@ -109,13 +111,37 @@ QStringList AppPackageKitResource::mimetypes() const
+@@ -114,13 +116,37 @@ QStringList AppPackageKitResource::mimetypes() const
  
  static constexpr auto s_addonKinds = {AppStream::Component::KindAddon, AppStream::Component::KindCodec};
  
@@ -215,10 +229,10 @@ index 2c480c413..07bd9cf76 100644
  
  QString AppPackageKitResource::comment()
 diff --git a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
-index ff1a922f2..385d83c4e 100644
+index 68c8299e1..0159843b5 100644
 --- a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
 +++ b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
-@@ -548,6 +548,28 @@
+@@ -552,6 +552,28 @@
        </Or>
      </Include>
    </Menu>
