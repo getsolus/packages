@@ -106,8 +106,8 @@ Build order:
  Tier 2: cifs-utils notmuch tevent
  Tier 3: ldb
  Tier 4: samba
- Tier 5: acccheck ffmpeg python-pysmbc*
- Tier 6: budgie-control-center gvfs kio-extras mpd nautilus-share* nemo-extensions* rhythmbox vlc
+ Tier 5: *acccheck ffmpeg python-pysmbc
+ Tier 6: budgie-control-center gvfs kio-extras mpd *nautilus-share *nemo-extensions rhythmbox vlc
  Tier 7: gnome-control-center
 ```
 
