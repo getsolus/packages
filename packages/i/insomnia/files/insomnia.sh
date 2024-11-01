@@ -14,7 +14,9 @@ fi
 
 # Wayland auto-detection. If the session is a wayland session then this will launch as a Wayland window unless the INSOMNIA_NO_WAYLAND variable is set
 if [ -z "${INSOMNIA_NO_WAYLAND+set}" ]; then
-  INSOMNIA_FLAGS="$INSOMNIA_FLAGS --ozone-platform-hint=auto --enable-features=WaylandWindowDecorations"
+  if [ -z "${ELECTRON_OZONE_PLATFORM_HINT+set}" ]; then
+    export ELECTRON_OZONE_PLATFORM_HINT="auto"
+  fi
 fi
 
 exec /usr/share/insomnia/insomnia $INSOMNIA_FLAGS $@

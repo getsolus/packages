@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: "Luke D. Jones" <luke@ljones.dev>
-Date: Tue, 6 Aug 2024 14:13:03 +1200
-Subject: [PATCH 16/17] hid-asus-ally: Add full gamepad support
+Date: Mon, 26 Aug 2024 12:49:35 +1200
+Subject: [PATCH 16/18] hid-asus-ally: Add full gamepad support
 
 This driver adds full support of the ASUS ROG Ally gamepad:
 
@@ -11,8 +11,11 @@ This driver adds full support of the ASUS ROG Ally gamepad:
   * right is an XBox + A combo for steam QAM
 - force feedback is supported (Ally-X only)
 - LED brightness control (0-2)
-- LED multicolor class support
+- LED multicolor class support for all 4 LED, individually addressable
 - Support all configuration
+
+Where "Ally-X only" is mentioned, this is because the Ally 1 uses the
+existing xpad driver.
 
 The configuration options available are:
 
@@ -56,19 +59,22 @@ when `apply_all` is written to. On driver load the set calibrations are
 retrieved - this may be what you've set in Linux, Windows, or factory
 defaults.
 
+As a note: the proper way to set calibrations is to read the joystick
+voltage from the EC whcih currently is not possible.
+
 Signed-off-by: Luke D. Jones <luke@ljones.dev>
 ---
  drivers/hid/Kconfig         |    9 +
  drivers/hid/Makefile        |    1 +
- drivers/hid/hid-asus-ally.c | 2281 +++++++++++++++++++++++++++++++++++
- drivers/hid/hid-asus-ally.h |  544 +++++++++
+ drivers/hid/hid-asus-ally.c | 2316 +++++++++++++++++++++++++++++++++++
+ drivers/hid/hid-asus-ally.h |  544 ++++++++
  drivers/hid/hid-asus.c      |   20 +-
- 5 files changed, 2853 insertions(+), 2 deletions(-)
+ 5 files changed, 2888 insertions(+), 2 deletions(-)
  create mode 100644 drivers/hid/hid-asus-ally.c
  create mode 100644 drivers/hid/hid-asus-ally.h
 
 diff --git a/drivers/hid/Kconfig b/drivers/hid/Kconfig
-index 08446c89eff6e..ea0dbe9111c40 100644
+index 08446c89eff6..ea0dbe9111c4 100644
 --- a/drivers/hid/Kconfig
 +++ b/drivers/hid/Kconfig
 @@ -164,6 +164,15 @@ config HID_ASUS
@@ -88,7 +94,7 @@ index 08446c89eff6e..ea0dbe9111c40 100644
  	tristate "Aureal"
  	help
 diff --git a/drivers/hid/Makefile b/drivers/hid/Makefile
-index ce71b53ea6c54..98b346d8f7839 100644
+index e40f1ddebbb7..2b2aa8b6f828 100644
 --- a/drivers/hid/Makefile
 +++ b/drivers/hid/Makefile
 @@ -31,6 +31,7 @@ obj-$(CONFIG_HID_APPLE)		+= hid-apple.o
@@ -101,10 +107,10 @@ index ce71b53ea6c54..98b346d8f7839 100644
  obj-$(CONFIG_HID_BETOP_FF)	+= hid-betopff.o
 diff --git a/drivers/hid/hid-asus-ally.c b/drivers/hid/hid-asus-ally.c
 new file mode 100644
-index 0000000000000..9e8007fc3c19c
+index 000000000000..42a703c157f5
 --- /dev/null
 +++ b/drivers/hid/hid-asus-ally.c
-@@ -0,0 +1,2281 @@
+@@ -0,0 +1,2316 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + *  HID driver for Asus ROG laptops and Ally
@@ -117,7 +123,6 @@ index 0000000000000..9e8007fc3c19c
 +#include "linux/err.h"
 +#include "linux/input-event-codes.h"
 +#include "linux/kstrtox.h"
-+#include "linux/printk.h"
 +#include "linux/slab.h"
 +#include "linux/stddef.h"
 +#include "linux/sysfs.h"
@@ -353,9 +358,12 @@ index 0000000000000..9e8007fc3c19c
 +
 +	/* Update the RGB only to keep write efficient */
 +	bool update_rgb;
-+	uint8_t gamepad_red;
-+	uint8_t gamepad_green;
-+	uint8_t gamepad_blue;
++	uint8_t gamepad_red[4];
++	uint8_t gamepad_green[4];
++	uint8_t gamepad_blue[4];
++
++	/* Once the RGB is toggled this is set until next boot */
++	bool rgb_software_mode;
 +};
 +
 +/* ROG Ally has many settings related to the gamepad, all using the same n-key endpoint */
@@ -864,12 +872,12 @@ index 0000000000000..9e8007fc3c19c
 +		hidbuf[3] = 01;
 +		ret = asus_dev_set_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
 +		if (ret < 0)
-+			hid_warn(hdev, "ROG Ally check failed set report: %d\n", ret);
++			hid_dbg(hdev, "ROG Ally check failed set report: %d\n", ret);
 +
 +		hidbuf[0] = hidbuf[1] = hidbuf[2] = hidbuf[3] = 0;
 +		ret = asus_dev_get_report(hdev, hidbuf, FEATURE_ROG_ALLY_REPORT_SIZE);
 +		if (ret < 0)
-+			hid_warn(hdev, "ROG Ally check failed get report: %d\n", ret);
++			hid_dbg(hdev, "ROG Ally check failed get report: %d\n", ret);
 +
 +		ret = hidbuf[2] == xpad_cmd_check_ready;
 +		if (ret)
@@ -2008,7 +2016,6 @@ index 0000000000000..9e8007fc3c19c
 +	if (!led->removed)
 +		schedule_work(&led->work);
 +	spin_unlock_irqrestore(&led->lock, flags);
-+	pr_warn("5");
 +}
 +
 +static void ally_led_do_brightness(struct work_struct *work)
@@ -2016,6 +2023,7 @@ index 0000000000000..9e8007fc3c19c
 +	struct ally_rgb_leds *led = container_of(work, struct ally_rgb_leds, work);
 +	u8 buf[] = { FEATURE_ROG_ALLY_REPORT_ID, 0xba, 0xc5, 0xc4, 0x00 };
 +	unsigned long flags;
++	bool do_rgb = false;
 +
 +	spin_lock_irqsave(&led->lock, flags);
 +	if (!led->update_bright) {
@@ -2023,11 +2031,17 @@ index 0000000000000..9e8007fc3c19c
 +		return;
 +	}
 +	led->update_bright = false;
++	do_rgb = led->rgb_software_mode;
 +	buf[4] = led->brightness;
 +	spin_unlock_irqrestore(&led->lock, flags);
 +
 +	if (asus_dev_set_report(led->hdev, buf, sizeof(buf)) < 0)
 +		hid_err(led->hdev, "Ally failed to set backlight\n");
++
++	if (do_rgb) {
++		led->update_rgb = true;
++		ally_schedule_work(led);
++	}
 +}
 +
 +static void ally_led_do_rgb(struct work_struct *work)
@@ -2047,9 +2061,9 @@ index 0000000000000..9e8007fc3c19c
 +		return;
 +	}
 +	for (int i = 0; i < 4; i++) {
-+		buf[4 + i * 3] = led->gamepad_red;
-+		buf[5 + i * 3] = led->gamepad_green;
-+		buf[6 + i * 3] = led->gamepad_blue;
++		buf[4 + i * 3] = led->gamepad_red[i];
++		buf[5 + i * 3] = led->gamepad_green[i];
++		buf[6 + i * 3] = led->gamepad_blue[i];
 +	}
 +	led->update_rgb = false;
 +	spin_unlock_irqrestore(&led->lock, flags);
@@ -2102,9 +2116,12 @@ index 0000000000000..9e8007fc3c19c
 +	led_mc_calc_color_components(mc_cdev, brightness);
 +	spin_lock_irqsave(&led->lock, flags);
 +	led->update_rgb = true;
-+	led->gamepad_red = mc_cdev->subled_info[0].brightness;
-+	led->gamepad_green = mc_cdev->subled_info[1].brightness;
-+	led->gamepad_blue = mc_cdev->subled_info[2].brightness;
++	led->rgb_software_mode = true;
++	for (int i = 0; i < 4; i++) {
++		led->gamepad_red[i] = mc_cdev->subled_info[i * 3].brightness;
++		led->gamepad_green[i] = mc_cdev->subled_info[i * 3 + 1].brightness;
++		led->gamepad_blue[i] = mc_cdev->subled_info[i * 3 + 2].brightness;
++	}
 +	spin_unlock_irqrestore(&led->lock, flags);
 +
 +	ally_schedule_work(led);
@@ -2116,7 +2133,7 @@ index 0000000000000..9e8007fc3c19c
 +	struct led_classdev *led_cdev;
 +
 +	led_cdev = &led_rgb->led_bright_dev;
-+	led_cdev->name = "ally:kbd_backlight"; /* Let a desktop control it also */
++	led_cdev->name = "asus::kbd_backlight"; /* Let a desktop control it also */
 +	led_cdev->max_brightness = 3;
 +	led_cdev->brightness_set = ally_backlight_set;
 +	led_cdev->brightness_get = ally_backlight_get;
@@ -2130,7 +2147,7 @@ index 0000000000000..9e8007fc3c19c
 +	struct mc_subled *mc_led_info;
 +	struct led_classdev *led_cdev;
 +
-+	mc_led_info = devm_kmalloc_array(&hdev->dev, 3, sizeof(*mc_led_info),
++	mc_led_info = devm_kmalloc_array(&hdev->dev, 12, sizeof(*mc_led_info),
 +					 GFP_KERNEL | __GFP_ZERO);
 +	if (!mc_led_info)
 +		return -ENOMEM;
@@ -2139,11 +2156,23 @@ index 0000000000000..9e8007fc3c19c
 +	mc_led_info[1].color_index = LED_COLOR_ID_GREEN;
 +	mc_led_info[2].color_index = LED_COLOR_ID_BLUE;
 +
++	mc_led_info[3].color_index = LED_COLOR_ID_RED;
++	mc_led_info[4].color_index = LED_COLOR_ID_GREEN;
++	mc_led_info[5].color_index = LED_COLOR_ID_BLUE;
++
++	mc_led_info[6].color_index = LED_COLOR_ID_RED;
++	mc_led_info[7].color_index = LED_COLOR_ID_GREEN;
++	mc_led_info[8].color_index = LED_COLOR_ID_BLUE;
++
++	mc_led_info[9].color_index = LED_COLOR_ID_RED;
++	mc_led_info[10].color_index = LED_COLOR_ID_GREEN;
++	mc_led_info[11].color_index = LED_COLOR_ID_BLUE;
++
 +	led_rgb->led_rgb_dev.subled_info = mc_led_info;
-+	led_rgb->led_rgb_dev.num_colors = 3;
++	led_rgb->led_rgb_dev.num_colors = 3 * 4;
 +
 +	led_cdev = &led_rgb->led_rgb_dev.led_cdev;
-+	led_cdev->name = "ally:rgb:gamepad";
++	led_cdev->name = "ally:rgb:joystick_rings";
 +	led_cdev->brightness = 128;
 +	led_cdev->max_brightness = 255;
 +	led_cdev->brightness_set = ally_set_rgb_brightness;
@@ -2178,8 +2207,17 @@ index 0000000000000..9e8007fc3c19c
 +	led_rgb->brightness = 3;
 +	led_rgb->removed = false;
 +
++	for (int i = 0; i < 4; i++) {
++		led_rgb->gamepad_red[i] = 255;
++		led_rgb->gamepad_green[i] = 255;
++		led_rgb->gamepad_blue[i] = 255;
++	}
++
 +	INIT_WORK(&led_rgb->work, ally_led_work);
 +	spin_lock_init(&led_rgb->lock);
++
++	led_rgb->update_bright = true;
++	ally_schedule_work(led_rgb);
 +
 +	return led_rgb;
 +}
@@ -2353,8 +2391,10 @@ index 0000000000000..9e8007fc3c19c
 +	if (ret < 0)
 +		return ret;
 +
-+	if (drvdata.ally_x && drvdata.ally_x->output_worker_initialized)
++	if (drvdata.ally_x && drvdata.ally_x->output_worker_initialized) {
++		drvdata.ally_x->update_ff = true;
 +		schedule_work(&drvdata.ally_x->output_worker);
++	}
 +
 +	return ret;
 +}
@@ -2368,6 +2408,7 @@ index 0000000000000..9e8007fc3c19c
 +	.remove = ally_remove,
 +	.raw_event = ally_raw_event,
 +	.resume = ally_resume,
++	.reset_resume = ally_resume,
 +};
 +
 +static int __init rog_ally_cfg_init(void)
@@ -2388,7 +2429,7 @@ index 0000000000000..9e8007fc3c19c
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/hid/hid-asus-ally.h b/drivers/hid/hid-asus-ally.h
 new file mode 100644
-index 0000000000000..252d9f126e32f
+index 000000000000..252d9f126e32
 --- /dev/null
 +++ b/drivers/hid/hid-asus-ally.h
 @@ -0,0 +1,544 @@
@@ -2937,7 +2978,7 @@ index 0000000000000..252d9f126e32f
 +	btn_pair_side_right = 0x01,
 +};
 diff --git a/drivers/hid/hid-asus.c b/drivers/hid/hid-asus.c
-index e5f6664bac0f2..9f83a770de8df 100644
+index 659cf9c96e26..528c210f9e8c 100644
 --- a/drivers/hid/hid-asus.c
 +++ b/drivers/hid/hid-asus.c
 @@ -52,6 +52,10 @@ MODULE_DESCRIPTION("Asus HID Keyboard and TouchPad");
@@ -2988,5 +3029,5 @@ index e5f6664bac0f2..9f83a770de8df 100644
 -	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD },
 +	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD | QUIRK_ROG_ALLY_XPAD },
  	{ HID_USB_DEVICE(USB_VENDOR_ID_ASUSTEK,
- 	    USB_DEVICE_ID_ASUSTEK_ROG_AZOTH_KEYBOARD),
- 	  QUIRK_USE_KBD_BACKLIGHT | QUIRK_ROG_NKEY_KEYBOARD },
+ 	    USB_DEVICE_ID_ASUSTEK_ROG_CLAYMORE_II_KEYBOARD),
+ 	  QUIRK_ROG_CLAYMORE_II_KEYBOARD },

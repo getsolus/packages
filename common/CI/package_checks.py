@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import fnmatch
 import glob
 import json
 import logging
@@ -10,11 +11,11 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from ruamel.yaml import YAML
+from ruamel.yaml.compat import StringIO
 from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
 from urllib import request
 from xml.etree import ElementTree
-
-import yaml
 
 """Package is either a Package YML file or Pspec XML file."""
 Package = Union['PackageYML', 'PspecXML']
@@ -29,7 +30,9 @@ class PackageYML:
     """Represents a Package YML file."""
 
     def __init__(self, stream: Any):
-        self._data = dict(yaml.safe_load(stream))
+        yaml = YAML(typ='safe', pure=True)
+        yaml.default_flow_style = False
+        self._data = dict(yaml.load(stream))
 
     @property
     def name(self) -> str:
@@ -79,6 +82,10 @@ class FreezeConfig:
     start: Optional[datetime]
     end: Optional[datetime]
 
+    def __init__(self, start: Optional[Union[str | datetime]], end: Optional[Union[str | datetime]]):
+        self.start = datetime.fromisoformat(start) if isinstance(start, str) else start
+        self.end = datetime.fromisoformat(end) if isinstance(end, str) else end
+
     def active(self) -> bool:
         now = datetime.now(tz=timezone.utc)
 
@@ -87,15 +94,25 @@ class FreezeConfig:
 
 
 @dataclass
+class StaticLibsConfig:
+    """Configuration for the 'StaticLibs' check."""
+    allowed_packages: List[str]
+    allowed_files: List[str]
+
+
+@dataclass
 class Config:
     freeze: FreezeConfig
+    static_libs: StaticLibsConfig
 
     @staticmethod
     def load(stream: Any) -> 'Config':
-        return Config(**yaml.safe_load(stream))
+        yaml = YAML(typ='safe', pure=True)
+        return Config(**yaml.load(stream))
 
     def __post_init__(self) -> None:
         self.freeze = FreezeConfig(**self.freeze)  # type: ignore
+        self.static_libs = StaticLibsConfig(**self.static_libs)  # type: ignore
 
 
 class Git:
@@ -268,11 +285,11 @@ class PullRequestCheck:
 
     @property
     def package_files(self) -> List[str]:
-        return self._filter_packages(self.files)
+        return self.filter_files(*self._package_files)
 
-    def _filter_packages(self, files: List[str]) -> List[str]:
-        return [f for f in files
-                if os.path.basename(f) in self._package_files]
+    def filter_files(self, *allowed: str) -> List[str]:
+        return [f for f in self.files
+                if os.path.basename(f) in allowed]
 
     def _path(self, path: str) -> str:
         return os.path.join(self.git.root, path)
@@ -283,6 +300,9 @@ class PullRequestCheck:
     def _read(self, path: str) -> str:
         with self._open(path) as f:
             return str(f.read())
+
+    def _exists(self, path: str) -> bool:
+        return os.path.exists(self._path(path))
 
     def load_package_yml(self, file: str) -> PackageYML:
         with self._open(file) as f:
@@ -395,7 +415,22 @@ class Homepage(PullRequestCheck):
 
     def _includes_homepage(self, file: str) -> bool:
         with self._open(file) as f:
-            return 'homepage' in yaml.safe_load(f)
+            yaml = YAML(typ='safe', pure=True)
+            yaml.default_flow_style = False
+            return 'homepage' in yaml.load(f)
+
+
+class Monitoring(PullRequestCheck):
+    _error = '`monitoring.yml` is missing'
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, file=f, level=self._level)
+                for f in self.package_files
+                if not self._has_monitoring_yml(f)]
+
+    def _has_monitoring_yml(self, file: str) -> bool:
+        return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yml'))
 
 
 class PackageBumped(PullRequestCheck):
@@ -453,8 +488,18 @@ class PackageDependenciesOrder(PullRequestCheck):
         exp = self._sorted(cur)
 
         if cur != exp:
+            class Dumper(YAML):
+                def dump(self, data: Any, stream: Optional[StringIO] = None, **kw: int) -> Any:
+                    self.default_flow_style = False
+                    self.indent(offset=4, sequence=4)
+                    self.prefix_colon = ' '  # type: ignore[assignment]
+                    stream = StringIO()
+                    YAML.dump(self, data, stream, **kw)
+                    return stream.getvalue()
+
+            yaml = Dumper(typ='safe', pure=True)
             return Result(file=file, level=self._level, line=self.file_line(file, '^' + deps + r'\s*:'),
-                          message=f'{deps} are not in order, expected: \n' + yaml.safe_dump(exp))
+                          message=f'{deps} are not in order, expected: \n' + yaml.dump(exp))
 
         return None
 
@@ -631,6 +676,40 @@ class Pspec(PullRequestCheck):
         return self.load_pspec_xml(os.path.join(package_dir, 'pspec_x86_64.xml'))
 
 
+class StaticLibs(PullRequestCheck):
+    """
+    Checks if any static libraries have been included.
+
+    Static libraries can be allowed by adding them to the allow list.
+    """
+    _error = 'A static library has been included in the package.'
+    _level = Level.ERROR
+
+    def run(self) -> List[Result]:
+        return [self._result(pspec, file)
+                for pspec in self.filter_files('pspec_x86_64.xml')
+                if not self._allowed_package(pspec)
+                for file in self.load_pspec_xml(pspec).files
+                if self._check(file)]
+
+    def _result(self, pspec: str, file: str) -> Result:
+        return Result(message=f'A static library has been included in the package: `{file}`. '
+                              'Whitelist the package or file in `common/CI/config.yaml` if this is desired.',
+                      file=pspec, line=self.file_line(pspec, f'.*{file}.*'), level=self._level)
+
+    def _check(self, file: str) -> bool:
+        return (file.startswith('/usr/lib') and
+                file.endswith('.a') and
+                not self._allowed_path(file))
+
+    def _allowed_package(self, file: str) -> bool:
+        return self.package_for(file) in self.config.static_libs.allowed_packages
+
+    def _allowed_path(self, file: str) -> bool:
+        return any([fnmatch.filter([file], pattern)
+                    for pattern in self.config.static_libs.allowed_files])
+
+
 class SystemDependencies(PullRequestCheck):
     _components = ['system.base', 'system.devel']
 
@@ -719,6 +798,7 @@ class Checker:
         CommitMessage,
         FrozenPackage,
         Homepage,
+        Monitoring,
         PackageBumped,
         PackageDependenciesOrder,
         PackageDirectory,
@@ -726,6 +806,7 @@ class Checker:
         Patch,
         Pspec,
         SPDXLicense,
+        StaticLibs,
         SystemDependencies,
         UnwantedFiles,
     ]

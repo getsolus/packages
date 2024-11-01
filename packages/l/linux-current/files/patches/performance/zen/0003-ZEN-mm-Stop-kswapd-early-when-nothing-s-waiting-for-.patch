@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Sultan Alsawaf <sultan@kerneltoast.com>
 Date: Sun, 19 Apr 2020 19:59:18 -0700
-Subject: [PATCH 03/15] ZEN: mm: Stop kswapd early when nothing's waiting for
+Subject: [PATCH 03/14] ZEN: mm: Stop kswapd early when nothing's waiting for
  it to free pages
 
 Contains:
@@ -42,10 +42,10 @@ Contains:
  3 files changed, 28 insertions(+), 9 deletions(-)
 
 diff --git a/mm/internal.h b/mm/internal.h
-index cc2c5e07fad3b..f232fdb8ec2c4 100644
+index a963f67d3452..c36768cc72a2 100644
 --- a/mm/internal.h
 +++ b/mm/internal.h
-@@ -644,6 +644,7 @@ extern void post_alloc_hook(struct page *page, unsigned int order,
+@@ -686,6 +686,7 @@ extern void post_alloc_hook(struct page *page, unsigned int order,
  extern bool free_pages_prepare(struct page *page, unsigned int order);
  
  extern int user_min_free_kbytes;
@@ -54,7 +54,7 @@ index cc2c5e07fad3b..f232fdb8ec2c4 100644
  void free_unref_page(struct page *page, unsigned int order);
  void free_unref_folios(struct folio_batch *fbatch);
 diff --git a/mm/page_alloc.c b/mm/page_alloc.c
-index df2c442f1c47b..1afe01acc7314 100644
+index 91ace8ca97e2..e77ff0656fa1 100644
 --- a/mm/page_alloc.c
 +++ b/mm/page_alloc.c
 @@ -88,6 +88,8 @@ typedef int __bitwise fpi_t;
@@ -66,7 +66,7 @@ index df2c442f1c47b..1afe01acc7314 100644
  /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
  static DEFINE_MUTEX(pcp_batch_high_lock);
  #define MIN_PERCPU_PAGELIST_HIGH_FRACTION (8)
-@@ -4171,6 +4173,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+@@ -4186,6 +4188,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
  	unsigned int cpuset_mems_cookie;
  	unsigned int zonelist_iter_cookie;
  	int reserve_flags;
@@ -74,7 +74,7 @@ index df2c442f1c47b..1afe01acc7314 100644
  
  restart:
  	compaction_retries = 0;
-@@ -4210,8 +4213,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+@@ -4225,8 +4228,13 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
  			goto nopage;
  	}
  
@@ -89,7 +89,7 @@ index df2c442f1c47b..1afe01acc7314 100644
  
  	/*
  	 * The adjusted alloc_flags might result in immediate success, so try
-@@ -4427,9 +4435,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
+@@ -4442,9 +4450,12 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
  		goto retry;
  	}
  fail:
@@ -105,10 +105,10 @@ index df2c442f1c47b..1afe01acc7314 100644
  }
  
 diff --git a/mm/vmscan.c b/mm/vmscan.c
-index 68ac33bea3a3c..6c4fd48849b2e 100644
+index 128f307da6ee..1de8c68d75cc 100644
 --- a/mm/vmscan.c
 +++ b/mm/vmscan.c
-@@ -6295,7 +6295,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
+@@ -6317,7 +6317,7 @@ static unsigned long do_try_to_free_pages(struct zonelist *zonelist,
  	return 0;
  }
  
@@ -117,7 +117,7 @@ index 68ac33bea3a3c..6c4fd48849b2e 100644
  {
  	struct zone *zone;
  	unsigned long pfmemalloc_reserve = 0;
-@@ -6324,6 +6324,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
+@@ -6346,6 +6346,10 @@ static bool allow_direct_reclaim(pg_data_t *pgdat)
  
  	wmark_ok = free_pages > pfmemalloc_reserve / 2;
  
@@ -128,7 +128,7 @@ index 68ac33bea3a3c..6c4fd48849b2e 100644
  	/* kswapd must be awake if processes are being throttled */
  	if (!wmark_ok && waitqueue_active(&pgdat->kswapd_wait)) {
  		if (READ_ONCE(pgdat->kswapd_highest_zoneidx) > ZONE_NORMAL)
-@@ -6389,7 +6393,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+@@ -6411,7 +6415,7 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
  
  		/* Throttle based on the first usable node */
  		pgdat = zone->zone_pgdat;
@@ -137,7 +137,7 @@ index 68ac33bea3a3c..6c4fd48849b2e 100644
  			goto out;
  		break;
  	}
-@@ -6411,11 +6415,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
+@@ -6433,11 +6437,14 @@ static bool throttle_direct_reclaim(gfp_t gfp_mask, struct zonelist *zonelist,
  	 */
  	if (!(gfp_mask & __GFP_FS))
  		wait_event_interruptible_timeout(pgdat->pfmemalloc_wait,
@@ -154,7 +154,7 @@ index 68ac33bea3a3c..6c4fd48849b2e 100644
  
  	if (fatal_signal_pending(current))
  		return true;
-@@ -6916,14 +6923,14 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
+@@ -6940,14 +6947,14 @@ static int balance_pgdat(pg_data_t *pgdat, int order, int highest_zoneidx)
  		 * able to safely make forward progress. Wake them
  		 */
  		if (waitqueue_active(&pgdat->pfmemalloc_wait) &&

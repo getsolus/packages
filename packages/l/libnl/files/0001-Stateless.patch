@@ -1,0 +1,333 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sun, 27 Oct 2024 14:25:39 -0500
+Subject: [PATCH] Stateless
+
+---
+ Makefile.am          |   3 +-
+ lib/route/classid.c  | 126 +++++++++++++++++++++++++++++++++++++------
+ lib/route/nl-route.h |  12 +++++
+ lib/route/pktloc.c   |  42 +++++++++++++--
+ 4 files changed, 160 insertions(+), 23 deletions(-)
+
+diff --git a/Makefile.am b/Makefile.am
+index 227fa56..8e83022 100644
+--- a/Makefile.am
++++ b/Makefile.am
+@@ -46,6 +46,7 @@ warn_cppflags = \
+ 
+ defines_cppflags = \
+ 	-D_NL_SYSCONFDIR_LIBNL=\"$(sysconfdir)/libnl\" \
++	-D_NL_VENDORDIR_LIBNL=\"/usr/share/defaults/libnl\" \
+ 	-D_NL_PKGLIBDIR=\"$(pkglibdir)\" \
+ 	$(NULL)
+ 
+@@ -1186,7 +1187,7 @@ if ENABLE_CLI
+ pkgconfig_DATA += libnl-cli-3.0.pc
+ endif
+ 
+-pkgsysconfdir = $(sysconfdir)/libnl
++pkgsysconfdir = /usr/share/defaults/libnl
+ pkgsysconf_DATA = \
+ 	etc/pktloc \
+ 	etc/classid
+diff --git a/lib/route/classid.c b/lib/route/classid.c
+index f5a75f0..e6668de 100644
+--- a/lib/route/classid.c
++++ b/lib/route/classid.c
+@@ -11,8 +11,10 @@
+ 
+ #include "nl-default.h"
+ 
++#include <fcntl.h>
+ #include <sys/stat.h>
+ #include <search.h>
++#include <stdbool.h>
+ 
+ #include <netlink/netlink.h>
+ #include <netlink/utils.h>
+@@ -310,7 +312,9 @@ static int classid_map_add(uint32_t classid, const char *name)
+  */
+ int rtnl_tc_read_classid_file(void)
+ {
+-	static time_t last_read;
++	static time_t sc_last_read;
++	static time_t vd_last_read;
++	bool is_using_sysconffile = true;
+ 	struct stat st;
+ 	char buf[256], *path;
+ 	FILE *fd;
+@@ -322,15 +326,39 @@ int rtnl_tc_read_classid_file(void)
+ 	/* if stat fails, just (re-)read the file */
+ 	if (stat(path, &st) == 0) {
+ 		/* Don't re-read file if file is unchanged */
+-		if (last_read == st.st_mtime) {
++		if (sc_last_read == st.st_mtime) {
+ 			err = 0;
+ 			goto errout;
+ 		}
+ 	}
+ 
+ 	if (!(fd = fopen(path, "re"))) {
+-		err = -nl_syserr2nlerr(errno);
+-		goto errout;
++		if (errno != ENOENT) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++
++		free(path);
++		if (build_vendordir_path(&path, "classid") < 0) {
++			err = -NLE_NOMEM;
++			goto errout;
++		}
++
++		/* if stat fails, just (re-)read the file */
++		if (stat(path, &st) == 0) {
++			/* Don't re-read file if file is unchanged */
++			if (vd_last_read == st.st_mtime) {
++				err = 0;
++				goto errout;
++			}
++		}
++
++		if (!(fd = fopen(path, "re"))) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++
++		is_using_sysconffile = false;
+ 	}
+ 
+ 	clear_hashtable();
+@@ -362,7 +390,12 @@ int rtnl_tc_read_classid_file(void)
+ 	}
+ 
+ 	err = 0;
+-	last_read = st.st_mtime;
++	if (is_using_sysconffile)
++	{
++		sc_last_read = st.st_mtime;
++	} else {
++		vd_last_read = st.st_mtime;
++	}
+ 
+ errout_close:
+ 	fclose(fd);
+@@ -373,12 +406,56 @@ errout:
+ 
+ }
+ 
++static int copy_file_helper(char *src, char *dest)
++{
++	int src_fd, dest_fd = 0, n;
++	unsigned char buffer[4096];
++	int err = 0;
++
++	if (!(src_fd = open(src, O_RDONLY))) {
++		err = -nl_syserr2nlerr(errno);
++		goto errout;
++	}
++
++    if (!(dest_fd = open(dest, O_CREAT | O_WRONLY, 0644))) {
++		err = -nl_syserr2nlerr(errno);
++		goto errout;
++	}
++
++	while (1) {
++		n = read(src_fd, buffer, 4096);
++		if (n == -1) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++
++		if (n == 0) {
++			break;
++		}
++
++		if (write(dest_fd, buffer, n) == -1) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++	}
++
++errout:
++	if (src_fd)
++		close(src_fd);
++
++	if (dest_fd)
++		close(dest_fd);
++
++	return err;
++}
++
+ int rtnl_classid_generate(const char *name, uint32_t *result, uint32_t parent)
+ {
+ 	static uint32_t base = 0x4000 << 16;
+ 	uint32_t classid;
+-	char *path;
+-	FILE *fd;
++	char *sc_path;
++	char *vd_path = NULL;
++	FILE *sc_fd;
+ 	int err = 0;
+ 
+ 	if (parent == TC_H_ROOT || parent == TC_H_INGRESS) {
+@@ -399,20 +476,34 @@ int rtnl_classid_generate(const char *name, uint32_t *result, uint32_t parent)
+ 
+ 	NL_DBG(2, "Generated new classid %#x\n", classid);
+ 
+-	if (build_sysconf_path(&path, "classid") < 0)
++	if (build_sysconf_path(&sc_path, "classid") < 0)
+ 		return -NLE_NOMEM;
+ 
+-	if (!(fd = fopen(path, "ae"))) {
+-		err = -nl_syserr2nlerr(errno);
+-		goto errout;
++	if (!(sc_fd = fopen(sc_path, "ae"))) {
++		if (errno != ENOENT) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++
++		if (build_vendordir_path(&vd_path, "classid") < 0) {
++			err = -NLE_NOMEM;
++			goto errout;
++		}
++
++		err = copy_file_helper(vd_path, sc_path);
++		if (err)
++			goto errout;
++
++		if (!(sc_fd = fopen(sc_path, "ae"))) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
+ 	}
+ 
+-	fprintf(fd, "%x:", TC_H_MAJ(classid) >> 16);
++	fprintf(sc_fd, "%x:", TC_H_MAJ(classid) >> 16);
+ 	if (TC_H_MIN(classid))
+-		fprintf(fd, "%x", TC_H_MIN(classid));
+-	fprintf(fd, "\t\t\t%s\n", name);
+-
+-	fclose(fd);
++		fprintf(sc_fd, "%x", TC_H_MIN(classid));
++	fprintf(sc_fd, "\t\t\t%s\n", name);
+ 
+ 	if (classid_map_add(classid, name) < 0) {
+ 		/*
+@@ -426,7 +517,8 @@ int rtnl_classid_generate(const char *name, uint32_t *result, uint32_t parent)
+ 	*result = classid;
+ 	err = 0;
+ errout:
+-	free(path);
++	free(sc_path);
++	free(vd_path);
+ 
+ 	return err;
+ }
+diff --git a/lib/route/nl-route.h b/lib/route/nl-route.h
+index 3b7679b..b5987d4 100644
+--- a/lib/route/nl-route.h
++++ b/lib/route/nl-route.h
+@@ -161,6 +161,18 @@ static inline int build_sysconf_path(char **strp, const char *filename)
+ 	return asprintf(strp, "%s/%s", sysconfdir, filename);
+ }
+ 
++static inline int build_vendordir_path(char **strp, const char *filename)
++{
++	char *vendordir;
++
++	vendordir = getenv("NLVENDORDIR");
++
++	if (!vendordir)
++		vendordir = _NL_VENDORDIR_LIBNL;
++
++	return asprintf(strp, "%s/%s", vendordir, filename);
++}
++
+ /*****************************************************************************/
+ 
+ static inline int rtnl_tc_calc_txtime64(int bufsize, uint64_t rate)
+diff --git a/lib/route/pktloc.c b/lib/route/pktloc.c
+index 7f320d9..46b7615 100644
+--- a/lib/route/pktloc.c
++++ b/lib/route/pktloc.c
+@@ -28,6 +28,7 @@
+ #include "nl-default.h"
+ 
+ #include <sys/stat.h>
++#include <stdbool.h>
+ 
+ #include <netlink/netlink.h>
+ #include <netlink/utils.h>
+@@ -87,7 +88,9 @@ static int read_pktlocs(void)
+ {
+ 	YY_BUFFER_STATE buf = NULL;
+ 	yyscan_t scanner = NULL;
+-	static time_t last_read;
++	static time_t sc_last_read;
++	static time_t vd_last_read;
++	bool is_using_sysconffile = true;
+ 	struct stat st;
+ 	char *path;
+ 	int i, err;
+@@ -99,7 +102,7 @@ static int read_pktlocs(void)
+ 	/* if stat fails, just try to read the file */
+ 	if (stat(path, &st) == 0) {
+ 		/* Don't re-read file if file is unchanged */
+-		if (last_read == st.st_mtime) {
++		if (sc_last_read == st.st_mtime) {
+ 			err = 0;
+ 			goto errout;
+ 		}
+@@ -108,8 +111,32 @@ static int read_pktlocs(void)
+ 	NL_DBG(2, "Reading packet location file \"%s\"\n", path);
+ 
+ 	if (!(fd = fopen(path, "re"))) {
+-		err = -NLE_PKTLOC_FILE;
+-		goto errout;
++		if (errno != ENOENT) {
++			err = -NLE_PKTLOC_FILE;
++			goto errout;
++		}
++
++		free(path);
++		if (build_vendordir_path(&path, "pktloc") < 0) {
++			err = -NLE_NOMEM;
++			goto errout;
++		}
++
++		/* if stat fails, just try to read the file */
++		if (stat(path, &st) == 0) {
++			/* Don't re-read file if file is unchanged */
++			if (vd_last_read == st.st_mtime) {
++				err = 0;
++				goto errout;
++			}
++		}
++
++		if (!(fd = fopen(path, "re"))) {
++			err = -nl_syserr2nlerr(errno);
++			goto errout;
++		}
++
++		is_using_sysconffile = false;
+ 	}
+ 
+ 	for (i = 0; i < PKTLOC_NAME_HT_SIZ; i++) {
+@@ -135,7 +162,12 @@ static int read_pktlocs(void)
+ 		goto errout_scanner;
+ 	}
+ 
+-	last_read = st.st_mtime;
++	if (is_using_sysconffile)
++	{
++		sc_last_read = st.st_mtime;
++	} else {
++		vd_last_read = st.st_mtime;
++	}
+ 
+ errout_scanner:
+ 	pktloc_lex_destroy(scanner);

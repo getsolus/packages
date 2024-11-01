@@ -139,18 +139,18 @@ if [ $MOZILLA_DOWN -ne 0 ]; then
     create_langpack_link $MOZLOCALE || create_langpack_link $SHORTMOZLOCALE || true
 fi
 
-# MOZ_APP_REMOTINGNAME links Firefox with desktop file name
-if [ -z "$MOZ_APP_REMOTINGNAME" ]
+# FIREFOX_APP_REMOTINGNAME links Firefox with desktop file name
+if [ -z "$FIREFOX_APP_REMOTINGNAME" ]
 then
-  export MOZ_APP_REMOTINGNAME=firefox
+  export FIREFOX_APP_REMOTINGNAME=firefox
 fi
 
-# MOZ_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
+# FIREFOX_DBUS_APP_NAME sets app name for DBus services like Gnome Shell
 # search provider or remote launcher
-# DBus interface name (or prefix) is org.mozilla.MOZ_DBUS_APP_NAME
-if [ -z "$MOZ_DBUS_APP_NAME" ]
+# DBus interface name (or prefix) is org.mozilla.FIREFOX_DBUS_APP_NAME
+if [ -z "$FIREFOX_DBUS_APP_NAME" ]
 then
-  export MOZ_DBUS_APP_NAME=firefox
+  export FIREFOX_DBUS_APP_NAME=firefox
 fi
 
 # Don't throw "old profile" dialog box.

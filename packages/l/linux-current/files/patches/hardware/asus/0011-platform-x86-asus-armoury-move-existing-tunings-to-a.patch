@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: "Luke D. Jones" <luke@ljones.dev>
 Date: Thu, 30 May 2024 13:20:11 +1200
-Subject: [PATCH 11/17] platform/x86: asus-armoury: move existing tunings to
+Subject: [PATCH 11/18] platform/x86: asus-armoury: move existing tunings to
  asus-armoury module
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -32,16 +32,17 @@ Signed-off-by: Luke D. Jones <luke@ljones.dev>
 ---
  drivers/platform/x86/Kconfig               |  14 +
  drivers/platform/x86/Makefile              |   1 +
- drivers/platform/x86/asus-armoury.c        | 708 +++++++++++++++++++++
- drivers/platform/x86/asus-armoury.h        | 210 ++++++
- drivers/platform/x86/asus-wmi.c            |  48 +-
+ drivers/platform/x86/asus-armoury.c        | 706 +++++++++++++++++++++
+ drivers/platform/x86/asus-armoury.h        | 209 ++++++
+ drivers/platform/x86/asus-wmi.c            |  65 +-
+ drivers/platform/x86/asus-wmi.h            |  14 +
  include/linux/platform_data/x86/asus-wmi.h |  11 +
- 6 files changed, 990 insertions(+), 2 deletions(-)
+ 7 files changed, 1004 insertions(+), 16 deletions(-)
  create mode 100644 drivers/platform/x86/asus-armoury.c
  create mode 100644 drivers/platform/x86/asus-armoury.h
 
 diff --git a/drivers/platform/x86/Kconfig b/drivers/platform/x86/Kconfig
-index 665fa95249865..8ecc73ef26703 100644
+index ddfccc226751..d13c4085c228 100644
 --- a/drivers/platform/x86/Kconfig
 +++ b/drivers/platform/x86/Kconfig
 @@ -265,6 +265,19 @@ config ASUS_WIRELESS
@@ -73,7 +74,7 @@ index 665fa95249865..8ecc73ef26703 100644
  	select LEDS_CLASS
  	select NEW_LEDS
 diff --git a/drivers/platform/x86/Makefile b/drivers/platform/x86/Makefile
-index e1b1429470674..fe3e7e7dede8f 100644
+index e1b142947067..fe3e7e7dede8 100644
 --- a/drivers/platform/x86/Makefile
 +++ b/drivers/platform/x86/Makefile
 @@ -32,6 +32,7 @@ obj-$(CONFIG_APPLE_GMUX)	+= apple-gmux.o
@@ -86,10 +87,10 @@ index e1b1429470674..fe3e7e7dede8f 100644
  obj-$(CONFIG_ASUS_TF103C_DOCK)	+= asus-tf103c-dock.o
 diff --git a/drivers/platform/x86/asus-armoury.c b/drivers/platform/x86/asus-armoury.c
 new file mode 100644
-index 0000000000000..832217be1aa7c
+index 000000000000..0bbc85170ade
 --- /dev/null
 +++ b/drivers/platform/x86/asus-armoury.c
-@@ -0,0 +1,708 @@
+@@ -0,0 +1,706 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * Asus Armoury (WMI) attributes driver. This driver uses the fw_attributes
@@ -102,21 +103,22 @@ index 0000000000000..832217be1aa7c
 + * Copyright(C) 2024-2024 Luke Jones <luke@ljones.dev>
 + */
 +
-+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
++ #include <linux/bitfield.h>
++ #include <linux/device.h>
++ #include <linux/dmi.h>
++ #include <linux/errno.h>
++ #include <linux/fs.h>
++ #include <linux/kernel.h>
++ #include <linux/kmod.h>
++ #include <linux/kobject.h>
++ #include <linux/module.h>
++ #include <linux/mutex.h>
++ #include <linux/platform_data/x86/asus-wmi.h>
++ #include <linux/types.h>
 +
-+#include <linux/platform_data/x86/asus-wmi.h>
-+#include <linux/errno.h>
-+#include <linux/fs.h>
-+#include <linux/types.h>
-+#include <linux/dmi.h>
-+#include <linux/device.h>
-+#include <linux/kmod.h>
-+#include <linux/kobject.h>
-+#include <linux/module.h>
-+#include <linux/mutex.h>
-+#include <linux/kernel.h>
 +#include "asus-armoury.h"
 +#include "firmware_attributes_class.h"
++#include "asus-wmi.h"
 +
 +#define ASUS_NB_WMI_EVENT_GUID	"0B3CBB35-E3C2-45ED-91C2-4C5A6D195D1C"
 +
@@ -188,11 +190,11 @@ index 0000000000000..832217be1aa7c
 +};
 +
 +struct fw_attrs_group {
-+	u32 pending_reboot;
++	bool pending_reboot;
 +};
 +
 +static struct fw_attrs_group fw_attrs = {
-+	.pending_reboot = 0,
++	.pending_reboot = false,
 +};
 +
 +struct asus_attr_group {
@@ -200,18 +202,12 @@ index 0000000000000..832217be1aa7c
 +	u32 wmi_devid;
 +};
 +
-+/**
-+ * asus_wmi_is_present() - determine if a WMI interface is available.
-+ * @dev_id: The WMI function ID to use.
-+ *
-+ * Returns: Boolean state. Note that an error will also return false.
-+ */
 +static bool asus_wmi_is_present(u32 dev_id)
 +{
 +	u32 retval;
 +	int status;
 +
-+	status = asus_wmi_get_devstate_dsts(dev_id, &retval);
++	status = asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS, dev_id, 0, &retval);
 +	pr_debug("%s called (0x%08x), retval: 0x%08x\n", __func__, dev_id, retval);
 +
 +	return status == 0 && (retval & ASUS_WMI_DSTS_PRESENCE_BIT);
@@ -219,7 +215,7 @@ index 0000000000000..832217be1aa7c
 +
 +static void asus_set_reboot_and_signal_event(void)
 +{
-+	fw_attrs.pending_reboot = 1;
++	fw_attrs.pending_reboot = true;
 +	kobject_uevent(&asus_armoury.fw_attr_dev->kobj, KOBJ_CHANGE);
 +}
 +
@@ -227,7 +223,7 @@ index 0000000000000..832217be1aa7c
 +					struct kobj_attribute *attr,
 +					char *buf)
 +{
-+	return sysfs_emit(buf, "%u\n", fw_attrs.pending_reboot);
++	return sysfs_emit(buf, "%d\n", fw_attrs.pending_reboot);
 +}
 +
 +static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
@@ -303,11 +299,11 @@ index 0000000000000..832217be1aa7c
 +	if (err)
 +		return err;
 +
-+	value = value & ASUS_MINI_LED_MODE_MASK;
++	value &= ASUS_MINI_LED_MODE_MASK;
 +
 +	/*
-+	 * Remap the mode values to match previous generation mini-led. The last gen
-+	 * WMI 0 == off, while on this version WMI 2 ==off (flipped).
++	 * Remap the mode values to match previous generation mini-LED. The last gen
++	 * WMI 0 == off, while on this version WMI 2 == off (flipped).
 +	 */
 +	if (asus_armoury.mini_led_dev_id == ASUS_WMI_DEVID_MINI_LED_MODE2) {
 +		switch (value) {
@@ -413,7 +409,7 @@ index 0000000000000..832217be1aa7c
 +			return err;
 +		if (result && !optimus) {
 +			err = -ENODEV;
-+			pr_warn("Can not switch MUX to dGPU mode when dGPU is disabled: %d\n", err);
++			pr_warn("Can not switch MUX to dGPU mode when dGPU is disabled: %02X %02X %d\n", result, optimus, err);
 +			return err;
 +		}
 +	}
@@ -431,7 +427,7 @@ index 0000000000000..832217be1aa7c
 +
 +	err = asus_wmi_set_devstate(asus_armoury.gpu_mux_dev_id, optimus, &result);
 +	if (err) {
-+		pr_err("Failed to set GPU MUX mode: %d\nn", err);
++		pr_err("Failed to set GPU MUX mode: %d\n", err);
 +		return err;
 +	}
 +	/* !1 is considered a fail by ASUS */
@@ -441,6 +437,7 @@ index 0000000000000..832217be1aa7c
 +	}
 +
 +	sysfs_notify(kobj, NULL, attr->attr.name);
++	asus_set_reboot_and_signal_event();
 +
 +	return count;
 +}
@@ -448,7 +445,7 @@ index 0000000000000..832217be1aa7c
 +ATTR_GROUP_BOOL_CUSTOM(gpu_mux_mode, "gpu_mux_mode", "Set the GPU display MUX mode");
 +
 +/*
-+ * A user may be required to store the value twice, typcial store first, then
++ * A user may be required to store the value twice, typical store first, then
 + * rescan PCI bus to activate power, then store a second time to save correctly.
 + * The reason for this is that an extra code path in the ACPI is enabled when
 + * the device and bus are powered.
@@ -480,12 +477,12 @@ index 0000000000000..832217be1aa7c
 +
 +	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_DGPU, disable, &result);
 +	if (err) {
-+		pr_warn("Failed to set dgpu disable: %d\n", err);
++		pr_warn("Failed to set dGPU disable: %d\n", err);
 +		return err;
 +	}
 +
 +	if (result != 1) {
-+		pr_warn("Failed to set dgpu disable (result): 0x%x\n", result);
++		pr_warn("Failed to set dGPU disable (result): 0x%x\n", result);
 +		return -EIO;
 +	}
 +
@@ -513,14 +510,14 @@ index 0000000000000..832217be1aa7c
 +
 +	err = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_EGPU_CONNECTED, &result);
 +	if (err) {
-+		pr_warn("Failed to get egpu connection status: %d\n", err);
++		pr_warn("Failed to get eGPU connection status: %d\n", err);
 +		return err;
 +	}
 +
 +	if (asus_armoury.gpu_mux_dev_id) {
 +		err = asus_wmi_get_devstate_dsts(asus_armoury.gpu_mux_dev_id, &result);
 +		if (err) {
-+			pr_warn("Failed to get gpu mux status: %d\n", result);
++			pr_warn("Failed to get GPU MUX status: %d\n", result);
 +			return result;
 +		}
 +		if (!result && enable) {
@@ -532,12 +529,12 @@ index 0000000000000..832217be1aa7c
 +
 +	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_EGPU, enable, &result);
 +	if (err) {
-+		pr_warn("Failed to set egpu state: %d\n", err);
++		pr_warn("Failed to set eGPU state: %d\n", err);
 +		return err;
 +	}
 +
 +	if (result != 1) {
-+		pr_warn("Failed to set egpu state (retval): 0x%x\n", result);
++		pr_warn("Failed to set eGPU state (retval): 0x%x\n", result);
 +		return -EIO;
 +	}
 +
@@ -656,6 +653,11 @@ index 0000000000000..832217be1aa7c
 +		pr_warn("Failed to create sysfs-group for gpu_mux\n");
 +
 +	for (int i = 0; i < ARRAY_SIZE(armoury_attr_groups); i++) {
++		/* Do not show for the Ally devices as powersave is entirely unreliable on it */
++		if (armoury_attr_groups[i].wmi_devid == ASUS_WMI_DEVID_MCU_POWERSAVE &&
++				dmi_check_system(asus_rog_ally_device))
++			continue;
++
 +		if (!asus_wmi_is_present(armoury_attr_groups[i].wmi_devid))
 +			continue;
 +
@@ -704,7 +706,8 @@ index 0000000000000..832217be1aa7c
 +	} else if (strstr(product, "X13")) {
 +		cpu_max = 75;
 +		cpu_default = 50;
-+	} else if (strstr(product, "RC71")) {
++	} else if (strstr(product, "RC71")
++		|| strstr(product, "RC72")) {
 +		cpu_max = 50;
 +		cpu_default = 30;
 +	} else if (strstr(product, "G814")
@@ -742,7 +745,7 @@ index 0000000000000..832217be1aa7c
 +	rog->ppt_apu_sppt = cpu_default;
 +
 +	rog->ppt_platform_sppt = platform_default;
-+	rog->ppt_fppt = platform_default;
++	rog->ppt_fppt = cpu_default;
 +
 +	rog->nv_boost_default = NVIDIA_BOOST_MAX;
 +	rog->nv_boost_max = NVIDIA_BOOST_MIN;
@@ -760,19 +763,15 @@ index 0000000000000..832217be1aa7c
 +{
 +	int err;
 +
-+	fw_attrs.pending_reboot = 0;
-+
-+	mutex_lock(&asus_armoury.mutex);
++	fw_attrs.pending_reboot = false;
 +
 +	asus_armoury.rog_tunables = kzalloc(sizeof(struct rog_tunables), GFP_KERNEL);
 +	if (!asus_armoury.rog_tunables) {
-+		mutex_unlock(&asus_armoury.mutex);
 +		return -ENOMEM;
 +	}
 +	init_rog_tunables(asus_armoury.rog_tunables);
 +
 +	err = asus_fw_attr_add();
-+	mutex_unlock(&asus_armoury.mutex);
 +	if (err)
 +		return err;
 +
@@ -800,10 +799,10 @@ index 0000000000000..832217be1aa7c
 +MODULE_ALIAS("wmi:"ASUS_NB_WMI_EVENT_GUID);
 diff --git a/drivers/platform/x86/asus-armoury.h b/drivers/platform/x86/asus-armoury.h
 new file mode 100644
-index 0000000000000..c7b2d018627e0
+index 000000000000..8a357fb6e071
 --- /dev/null
 +++ b/drivers/platform/x86/asus-armoury.h
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,209 @@
 +/* SPDX-License-Identifier: GPL-2.0
 + *
 + * Definitions for kernel modules using asus-armoury driver
@@ -814,7 +813,6 @@ index 0000000000000..c7b2d018627e0
 +#ifndef _ASUS_BIOSCFG_H_
 +#define _ASUS_BIOSCFG_H_
 +
-+#include "firmware_attributes_class.h"
 +#include <linux/types.h>
 +
 +#define DRIVER_NAME	"asus-armoury"
@@ -1015,10 +1013,31 @@ index 0000000000000..c7b2d018627e0
 +
 +#endif /* _ASUS_BIOSCFG_H_ */
 diff --git a/drivers/platform/x86/asus-wmi.c b/drivers/platform/x86/asus-wmi.c
-index d53c4aff519fd..9faebd12bd492 100644
+index 26684d78625e..ece00bef3864 100644
 --- a/drivers/platform/x86/asus-wmi.c
 +++ b/drivers/platform/x86/asus-wmi.c
-@@ -549,12 +549,56 @@ static int asus_wmi_get_devstate(struct asus_wmi *asus, u32 dev_id, u32 *retval)
+@@ -155,20 +155,6 @@ static const char * const ashs_ids[] = { "ATK4001", "ATK4002", NULL };
+ 
+ static int throttle_thermal_policy_write(struct asus_wmi *);
+ 
+-static const struct dmi_system_id asus_rog_ally_device[] = {
+-	{
+-		.matches = {
+-			DMI_MATCH(DMI_BOARD_NAME, "RC71L"),
+-		},
+-	},
+-	{
+-		.matches = {
+-			DMI_MATCH(DMI_BOARD_NAME, "RC72L"),
+-		},
+-	},
+-	{ },
+-};
+-
+ static bool ashs_present(void)
+ {
+ 	int i = 0;
+@@ -552,12 +538,59 @@ static int asus_wmi_get_devstate(struct asus_wmi *asus, u32 dev_id, u32 *retval)
  	return 0;
  }
  
@@ -1040,18 +1059,21 @@ index d53c4aff519fd..9faebd12bd492 100644
 + * caught here can result in unexpected behaviour later.
 + */
 +int asus_wmi_get_devstate_dsts(u32 dev_id, u32 *retval)
-+{
++ {
 +	int err;
 +
 +	err = asus_wmi_evaluate_method(ASUS_WMI_METHODID_DSTS, dev_id, 0, retval);
++	*retval &= ~ASUS_WMI_DSTS_PRESENCE_BIT;
++
 +	if (err)
 +		return err;
 +	/* Be explicit about retval */
-+	if (*retval == 0xFFFFFFFE || *retval == 0)
++	if (*retval == ASUS_WMI_UNSUPPORTED_METHOD)
 +		return -ENODEV;
 +
 +	return 0;
-+}
++ }
++
 +EXPORT_SYMBOL_GPL(asus_wmi_get_devstate_dsts);
 +
 +/**
@@ -1077,11 +1099,34 @@ index d53c4aff519fd..9faebd12bd492 100644
  
  /* Helper for special devices with magic return codes */
  static int asus_wmi_get_devstate_bits(struct asus_wmi *asus,
+diff --git a/drivers/platform/x86/asus-wmi.h b/drivers/platform/x86/asus-wmi.h
+index d02f15fd3482..c66e970b3674 100644
+--- a/drivers/platform/x86/asus-wmi.h
++++ b/drivers/platform/x86/asus-wmi.h
+@@ -86,4 +86,18 @@ struct asus_wmi_driver {
+ int asus_wmi_register_driver(struct asus_wmi_driver *driver);
+ void asus_wmi_unregister_driver(struct asus_wmi_driver *driver);
+ 
++static const struct dmi_system_id asus_rog_ally_device[] = {
++	{
++		.matches = {
++			DMI_MATCH(DMI_BOARD_NAME, "RC71L"),
++		},
++	},
++	{
++		.matches = {
++			DMI_MATCH(DMI_BOARD_NAME, "RC72L"),
++		},
++	},
++	{ },
++};
++
+ #endif /* !_ASUS_WMI_H_ */
 diff --git a/include/linux/platform_data/x86/asus-wmi.h b/include/linux/platform_data/x86/asus-wmi.h
-index 8e7fc84a8f7db..201edfb138103 100644
+index 365e119bebaa..7caf2c7ed8c9 100644
 --- a/include/linux/platform_data/x86/asus-wmi.h
 +++ b/include/linux/platform_data/x86/asus-wmi.h
-@@ -68,6 +68,7 @@
+@@ -73,6 +73,7 @@
  #define ASUS_WMI_DEVID_THROTTLE_THERMAL_POLICY_VIVO 0x00110019
  
  /* Misc */
@@ -1089,7 +1134,7 @@ index 8e7fc84a8f7db..201edfb138103 100644
  #define ASUS_WMI_DEVID_PANEL_OD		0x00050019
  #define ASUS_WMI_DEVID_CAMERA		0x00060013
  #define ASUS_WMI_DEVID_LID_FLIP		0x00060062
-@@ -153,8 +154,18 @@
+@@ -158,8 +159,18 @@
  #define ASUS_WMI_DSTS_LIGHTBAR_MASK	0x0000000F
  
  #if IS_REACHABLE(CONFIG_ASUS_WMI)
@@ -1097,11 +1142,11 @@ index 8e7fc84a8f7db..201edfb138103 100644
 +int asus_wmi_set_devstate(u32 dev_id, u32 ctrl_param, u32 *retval);
  int asus_wmi_evaluate_method(u32 method_id, u32 arg0, u32 arg1, u32 *retval);
  #else
-+static int asus_wmi_get_devstate_dsts(u32 dev_id, u32 *retval)
++static inline int asus_wmi_get_devstate_dsts(u32 dev_id, u32 *retval)
 +{
 +	return -ENODEV;
 +}
-+static int asus_wmi_set_devstate(u32 dev_id, u32 ctrl_param, u32 *retval)
++static inline int asus_wmi_set_devstate(u32 dev_id, u32 ctrl_param, u32 *retval)
 +{
 +	return -ENODEV;
 +}

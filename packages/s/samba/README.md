@@ -102,16 +102,16 @@ When doing major version updates, create a GH PR with commits ordered per the be
 ```
 $ autobuild query -t src:packages/ samba ldb tdb tevent talloc
 Build order:
- Tier 1: talloc tdb 
- Tier 2: cifs-utils notmuch tevent 
- Tier 3: ldb 
- Tier 4: samba 
- Tier 5: acccheck ffmpeg python-pysmbc 
- Tier 6: budgie-control-center gvfs kio-extras kodi mpd nautilus-share nemo-extensions rhythmbox vlc 
- Tier 7: gnome-control-center 
+ Tier 1: talloc tdb
+ Tier 2: cifs-utils notmuch tevent
+ Tier 3: ldb
+ Tier 4: samba
+ Tier 5: *acccheck ffmpeg python-pysmbc
+ Tier 6: budgie-control-center gvfs kio-extras mpd *nautilus-share *nemo-extensions rhythmbox vlc
+ Tier 7: gnome-control-center
 ```
 
-A few of the above packages only have samba as a rundep, so can be ignored for rebuilds.
+A few of the above packages only have samba as a rundep (marked with *), so can be ignored for rebuilds.
 
 
 ### Related packages that should be checked for updates on a regular basis

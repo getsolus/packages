@@ -4,7 +4,7 @@ import os
 import subprocess
 import yaml
 
-scope_help = "# Scope and title, eg: nano: Update to 1.2.3\n"
+scope_help = "# Scope and title, eg: nano: Update to v1.2.3\n"
 help_msg = """
 
 **Summary**
@@ -29,8 +29,16 @@ def commit_scope(commit_dir: str) -> str:
                                             stdout=subprocess.PIPE)
         if "+version" in recipe_diff_result.stdout.decode('utf-8'):
             with open(os.path.join(commit_dir, 'package.yml')) as recipe:
-                version = yaml.safe_load(recipe)['version']
-                return os.path.basename(commit_dir) + ': Update to ' + str(version)
+                data = yaml.safe_load(recipe)
+                if str(data['release']) == '1':
+                    return os.path.basename(commit_dir) + ': Add at v' + str(data['version'])
+                return os.path.basename(commit_dir) + ': Update to v' + str(data['version'])
+
+        # Detect non-functional changes ([NFC])
+        staged_files_res = subprocess.run(['git', 'diff', '--name-only', '--staged', commit_dir],
+                                          stdout=subprocess.PIPE)
+        if 'pspec_x86_64.xml' not in staged_files_res.stdout.decode('utf-8'):
+            return "[NFC] " + os.path.basename(commit_dir) + ': '
 
         return os.path.basename(commit_dir) + ': '
 

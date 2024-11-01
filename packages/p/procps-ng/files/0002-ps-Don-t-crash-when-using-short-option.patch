@@ -1,0 +1,176 @@
+From 79042e07fab9956135a21b1df7a69d1fbde7ef79 Mon Sep 17 00:00:00 2001
+From: Craig Small <csmall@dropbear.xyz>
+Date: Tue, 12 Sep 2023 16:59:18 +1000
+Subject: [PATCH] ps: Don't crash when using short option
+
+ps would crash with the -si or -sf options with systemd enabled.
+The issue was the utmp wasn't filled in, the long option checked, the
+short option did not.
+
+Refactored the showinfo() function so instead of a branch with duplicate
+prints for the items in both long and short we just branch on the items
+for long output.
+
+Also, made the function prototypes not dependendent on systemd enabled,
+it was too messy that way and passing a char* NULL is not really going
+to hurt anything.
+
+References:
+ #301
+
+Signed-off-by: Craig Small <csmall@dropbear.xyz>
+---
+ NEWS    |  1 +
+ src/w.c | 61 ++++++++++++++++++++-------------------------------------
+ 2 files changed, 22 insertions(+), 40 deletions(-)
+
+diff --git a/NEWS b/NEWS
+index 4ad9f74e..883f9139 100644
+--- a/NEWS
++++ b/NEWS
+@@ -1,5 +1,6 @@
+ procps-ng-NEXT
+ ---------------
++  * w: Don't segfault with -s option                       issue #301
+ 
+ procps-ng-4.0.4
+ ---------------
+diff --git a/src/w.c b/src/w.c
+index fd6e75f7..e2d754b5 100644
+--- a/src/w.c
++++ b/src/w.c
+@@ -207,9 +207,7 @@ static void print_display_or_interface(const char *restrict host, int len, int r
+ 
+ /* This routine prints either the hostname or the IP address of the remote */
+ static void print_from(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+ 		       const char *session,
+-#endif
+ 		       const utmp_t *restrict const u, const int ip_addresses, const int fromlen) {
+ #if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+         if (session) {
+@@ -508,11 +506,10 @@ static int find_best_proc(
+ #undef PIDS_GETSTR
+ }
+ 
++
+ static void showinfo(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+             const char *session, const char *name,
+-#endif
+-            utmp_t * u, int formtype, int maxcmd, int from,
++            utmp_t * u, const int longform, int maxcmd, int from,
+             const int userlen, const int fromlen, const int ip_addresses,
+             const int pids)
+ {
+@@ -575,25 +572,20 @@ static void showinfo(
+     /* force NUL term for printf */
+     uname[UT_NAMESIZE] = '\0';
+ 
+-    if (formtype) {
+-        printf("%-*.*s%-9.8s", userlen + 1, userlen, uname, tty + 5);
++    printf("%-*.*s%-9.8s", userlen + 1, userlen, uname, tty + 5);
++    if (from)
++        print_from(session, NULL, ip_addresses, fromlen);
++
++    /* login time */
++    if (longform) {
+ #if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+         if (session) {
+             uint64_t ltime;
+ 
+-            if (from)
+-              print_from(session, NULL, ip_addresses, fromlen);
+-
+             sd_session_get_start_time(session, &ltime);
+             print_logintime(ltime/((uint64_t) 1000000ULL), stdout);
+         } else {
+ #endif
+-            if (from)
+-                print_from(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+-			   NULL,
+-#endif
+-			   u, ip_addresses, fromlen);
+ 
+ #ifdef HAVE_UTMPX_H
+             print_logintime(u->ut_tv.tv_sec, stdout);
+@@ -603,11 +595,16 @@ static void showinfo(
+ #if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+         }
+ #endif
+-        if (u && *u->ut_line == ':')
+-            /* idle unknown for xdm logins */
+-            printf(" ?xdm? ");
+-        else
+-            print_time_ival7(idletime(tty), 0, stdout);
++    }
++    /* idle */
++    if (u && *u->ut_line == ':')
++        /* idle unknown for xdm logins */
++        printf(" ?xdm? ");
++    else
++        print_time_ival7(idletime(tty), 0, stdout);
++
++    /* jpcpu/pcpu */
++    if (longform) {
+         print_time_ival7(jcpu / hertz, (jcpu % hertz) * (100. / hertz),
+                  stdout);
+         if (pcpu > 0)
+@@ -616,20 +613,8 @@ static void showinfo(
+                              stdout);
+         else
+             printf("   ?   ");
+-    } else {
+-        printf("%-*.*s%-9.8s", userlen + 1, userlen, uname, tty + 5);
+-        if (from)
+-	    print_from(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+-		       NULL,
+-#endif
+-		       u, ip_addresses, fromlen);
+-        if (u && *u->ut_line == ':')
+-            /* idle unknown for xdm logins */
+-            printf(" ?xdm? ");
+-        else
+-            print_time_ival7(idletime(tty), 0, stdout);
+     }
++    /* what */
+     if (pids) {
+         pid_t ut_pid = -1;
+         if (u)
+@@ -798,9 +783,9 @@ int main(int argc, char **argv)
+ 		 * headers. Try to keep alignment intact.  */
+ 		printf(_("%-*s TTY      "), userlen, _("USER"));
+ 		if (from)
+-			printf("%-*s", fromlen - 1, _("FROM"));
++			printf("%-*s", fromlen, _("FROM"));
+ 		if (longform)
+-			printf(_("  LOGIN@   IDLE   JCPU   PCPU WHAT\n"));
++			printf(_(" LOGIN@   IDLE   JCPU   PCPU  WHAT\n"));
+ 		else
+ 			printf(_("   IDLE WHAT\n"));
+ 	}
+@@ -857,9 +842,7 @@ int main(int argc, char **argv)
+ 				continue;
+ 			if (!strncmp(u->ut_user, user, UT_NAMESIZE))
+ 				showinfo(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+ 					 NULL, NULL,
+-#endif
+ 					 u, longform, maxcmd, from, userlen,
+ 					 fromlen, ip_addresses, pids);
+ 		}
+@@ -876,9 +859,7 @@ int main(int argc, char **argv)
+ 				continue;
+ 			if (*u->ut_user)
+ 				showinfo(
+-#if (defined(WITH_SYSTEMD) || defined(WITH_ELOGIND)) && defined(HAVE_SD_SESSION_GET_LEADER)
+ 					 NULL, NULL,
+-#endif
+ 					 u, longform, maxcmd, from, userlen,
+ 					 fromlen, ip_addresses, pids);
+ 		}
+-- 
+GitLab
+

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: "Luke D. Jones" <luke@ljones.dev>
 Date: Sun, 2 Jun 2024 16:21:32 +1200
-Subject: [PATCH 14/17] platform/x86: asus-armoury: add core count control
+Subject: [PATCH 14/18] platform/x86: asus-armoury: add core count control
 
 Implement Intel core enablement under the asus-armoury module using the
 fw_attributes class.
@@ -11,19 +11,22 @@ depending on their requirements. After change a reboot is required.
 
 Signed-off-by: Luke D. Jones <luke@ljones.dev>
 ---
- drivers/platform/x86/asus-armoury.c        | 206 +++++++++++++++++++++
+ drivers/platform/x86/asus-armoury.c        | 218 +++++++++++++++++++++
  drivers/platform/x86/asus-armoury.h        |  29 +++
  include/linux/platform_data/x86/asus-wmi.h |   4 +
- 3 files changed, 239 insertions(+)
+ 3 files changed, 251 insertions(+)
 
 diff --git a/drivers/platform/x86/asus-armoury.c b/drivers/platform/x86/asus-armoury.c
-index 56a3e624f8930..aa784b6b94834 100644
+index 10764c04232a..a445bd6f57a4 100644
 --- a/drivers/platform/x86/asus-armoury.c
 +++ b/drivers/platform/x86/asus-armoury.c
-@@ -39,6 +39,18 @@
+@@ -40,6 +40,21 @@
  #define ASUS_MINI_LED_2024_STRONG	0x01
  #define ASUS_MINI_LED_2024_OFF		0x02
  
++#define ASUS_POWER_CORE_MASK GENMASK(15, 8)
++#define ASUS_PERF_CORE_MASK GENMASK(7, 0)
++
 +enum cpu_core_type {
 +	CPU_CORE_PERF = 0,
 +	CPU_CORE_POWER,
@@ -39,18 +42,21 @@ index 56a3e624f8930..aa784b6b94834 100644
  /* Default limits for tunables available on ASUS ROG laptops */
  #define PPT_CPU_LIMIT_MIN	5
  #define PPT_CPU_LIMIT_MAX	150
-@@ -84,6 +96,10 @@ struct rog_tunables {
+@@ -85,6 +100,13 @@ struct rog_tunables {
  	u32 dgpu_tgp_min;
  	u32 dgpu_tgp_max;
  	u32 dgpu_tgp;
 +
++	u32 cur_perf_cores;
 +	u32 min_perf_cores;
 +	u32 max_perf_cores;
++	u32 cur_power_cores;
++	u32 min_power_cores;
 +	u32 max_power_cores;
  };
  
  static const struct class *fw_attr_class;
-@@ -151,6 +167,8 @@ static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
+@@ -146,6 +168,8 @@ static struct kobj_attribute pending_reboot = __ATTR_RO(pending_reboot);
  static bool asus_bios_requires_reboot(struct kobj_attribute *attr)
  {
  	return !strcmp(attr->attr.name, "gpu_mux_mode") ||
@@ -59,7 +65,7 @@ index 56a3e624f8930..aa784b6b94834 100644
  		!strcmp(attr->attr.name, "panel_hd_mode");
  }
  
-@@ -578,6 +596,191 @@ static ssize_t apu_mem_possible_values_show(struct kobject *kobj,
+@@ -574,6 +598,197 @@ static ssize_t apu_mem_possible_values_show(struct kobject *kobj,
  }
  ATTR_GROUP_ENUM_CUSTOM(apu_mem, "apu_mem", "Set the available system memory for the APU to use");
  
@@ -70,15 +76,26 @@ index 56a3e624f8930..aa784b6b94834 100644
 +
 +	asus_armoury.rog_tunables->min_perf_cores = 4;
 +	asus_armoury.rog_tunables->max_perf_cores = 4;
++	asus_armoury.rog_tunables->cur_perf_cores = 4;
++	asus_armoury.rog_tunables->min_power_cores = 0;
 +	asus_armoury.rog_tunables->max_power_cores = 8;
++	asus_armoury.rog_tunables->cur_power_cores = 8;
 +
 +	err = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_CORES_MAX, &cores);
 +	if (err)
 +		return err;
 +
 +	cores &= ~ASUS_WMI_DSTS_PRESENCE_BIT;
-+	asus_armoury.rog_tunables->max_power_cores = (cores & 0xff00) >> 8;
-+	asus_armoury.rog_tunables->max_perf_cores = cores & 0xff;
++	asus_armoury.rog_tunables->max_power_cores = FIELD_GET(ASUS_POWER_CORE_MASK, cores);
++	asus_armoury.rog_tunables->max_perf_cores = FIELD_GET(ASUS_PERF_CORE_MASK, cores);
++
++	cores = 0;
++	err = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_CORES, &cores);
++	if (err)
++		return err;
++
++	asus_armoury.rog_tunables->cur_perf_cores = FIELD_GET(ASUS_PERF_CORE_MASK, cores);
++	asus_armoury.rog_tunables->cur_power_cores = FIELD_GET(ASUS_POWER_CORE_MASK, cores);
 +
 +	return 0;
 +}
@@ -89,7 +106,6 @@ index 56a3e624f8930..aa784b6b94834 100644
 +					enum cpu_core_value core_value)
 +{
 +	u32 cores;
-+	int err;
 +
 +	switch (core_value) {
 +	case CPU_CORE_DEFAULT:
@@ -102,20 +118,16 @@ index 56a3e624f8930..aa784b6b94834 100644
 +		if (core_type == CPU_CORE_PERF)
 +			return sysfs_emit(buf, "%d\n", asus_armoury.rog_tunables->min_perf_cores);
 +		else
-+			return sysfs_emit(buf, "%d\n", 0);
++			return sysfs_emit(buf, "%d\n", asus_armoury.rog_tunables->min_power_cores);
 +	default:
-+	break;
++		break;
 +	}
 +
-+	err = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_CORES, &cores);
-+	if (err)
-+		return err;
-+
-+	cores &= ~ASUS_WMI_DSTS_PRESENCE_BIT;
 +	if (core_type == CPU_CORE_PERF)
-+		cores &= 0xff;
++		cores = asus_armoury.rog_tunables->cur_perf_cores;
 +	else
-+		cores = (cores & 0xff00) >> 8;
++		cores = asus_armoury.rog_tunables->cur_power_cores;
++
 +	return sysfs_emit(buf, "%d\n", cores);
 +}
 +
@@ -124,35 +136,35 @@ index 56a3e624f8930..aa784b6b94834 100644
 +				enum cpu_core_type core_type)
 +{
 +	int result, err;
-+	u32 cores, currentv, min, max;
++	u32 new_cores, perf_cores, powr_cores, out_val, min, max;
 +
-+	result = kstrtou32(buf, 10, &cores);
++	result = kstrtou32(buf, 10, &new_cores);
 +	if (result)
 +		return result;
 +
 +	if (core_type == CPU_CORE_PERF) {
++		perf_cores = new_cores;
++		powr_cores = out_val = asus_armoury.rog_tunables->cur_power_cores;
 +		min = asus_armoury.rog_tunables->min_perf_cores;
 +		max = asus_armoury.rog_tunables->max_perf_cores;
 +	} else {
-+		min = 0;
++		perf_cores = asus_armoury.rog_tunables->cur_perf_cores;
++		powr_cores = out_val = new_cores;
++		min = asus_armoury.rog_tunables->min_power_cores;
 +		max = asus_armoury.rog_tunables->max_power_cores;
 +	}
-+	if (cores < min || cores > max)
++
++	if (new_cores < min || new_cores > max)
 +		return -EINVAL;
 +
-+	err = asus_wmi_get_devstate_dsts(ASUS_WMI_DEVID_CORES, &currentv);
-+	if (err)
-+		return err;
++	out_val = 0;
++	out_val |= FIELD_PREP(ASUS_PERF_CORE_MASK, perf_cores);
++	out_val |= FIELD_PREP(ASUS_POWER_CORE_MASK, powr_cores);
 +
-+	if (core_type == CPU_CORE_PERF)
-+		cores |= (currentv & 0xff00);
-+	else
-+		cores |= currentv & 0xff;
++	mutex_lock(&asus_armoury.mutex);
++	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_CORES, out_val, &result);
++	mutex_unlock(&asus_armoury.mutex);
 +
-+	if (cores == currentv)
-+		return 0;
-+
-+	err = asus_wmi_set_devstate(ASUS_WMI_DEVID_CORES, cores, &result);
 +	if (err) {
 +		pr_warn("Failed to set CPU core count: %d\n", err);
 +		return err;
@@ -251,7 +263,7 @@ index 56a3e624f8930..aa784b6b94834 100644
  /* Simple attribute creation */
  ATTR_GROUP_ROG_TUNABLE(ppt_pl1_spl, "ppt_pl1_spl", ASUS_WMI_DEVID_PPT_PL1_SPL,
  		cpu_default, cpu_min, cpu_max, 1, "Set the CPU slow package limit");
-@@ -629,6 +832,8 @@ static const struct asus_attr_group armoury_attr_groups[] = {
+@@ -625,6 +840,8 @@ static const struct asus_attr_group armoury_attr_groups[] = {
  	{ &dgpu_base_tgp_attr_group, ASUS_WMI_DEVID_DGPU_BASE_TGP },
  	{ &dgpu_tgp_attr_group, ASUS_WMI_DEVID_DGPU_SET_TGP },
  	{ &apu_mem_attr_group, ASUS_WMI_DEVID_APU_MEM },
@@ -260,19 +272,19 @@ index 56a3e624f8930..aa784b6b94834 100644
  
  	{ &charge_mode_attr_group, ASUS_WMI_DEVID_CHARGE_MODE },
  	{ &boot_sound_attr_group, ASUS_WMI_DEVID_BOOT_SOUND },
-@@ -813,6 +1018,7 @@ static int __init asus_fw_init(void)
+@@ -812,6 +1029,7 @@ static int __init asus_fw_init(void)
  		return -ENOMEM;
  	}
  	init_rog_tunables(asus_armoury.rog_tunables);
 +	init_max_cpu_cores();
  
  	err = asus_fw_attr_add();
- 	mutex_unlock(&asus_armoury.mutex);
+ 	if (err)
 diff --git a/drivers/platform/x86/asus-armoury.h b/drivers/platform/x86/asus-armoury.h
-index 8b3ead4f1cc21..25b2c055930e9 100644
+index 1652c44c3c9f..78c9278b2e75 100644
 --- a/drivers/platform/x86/asus-armoury.h
 +++ b/drivers/platform/x86/asus-armoury.h
-@@ -170,6 +170,35 @@ static const struct attribute_group _attrname##_attr_group = {		\
+@@ -169,6 +169,35 @@ static const struct attribute_group _attrname##_attr_group = {		\
  			.attrs = _attrname##_attrs			\
  }
  
@@ -309,10 +321,10 @@ index 8b3ead4f1cc21..25b2c055930e9 100644
   * ROG PPT attributes need a little different in setup as they
   * require rog_tunables members.
 diff --git a/include/linux/platform_data/x86/asus-wmi.h b/include/linux/platform_data/x86/asus-wmi.h
-index d83a1863f2ec3..a23cc8624218b 100644
+index e1aeafdf05d5..8964e601543a 100644
 --- a/include/linux/platform_data/x86/asus-wmi.h
 +++ b/include/linux/platform_data/x86/asus-wmi.h
-@@ -129,6 +129,10 @@
+@@ -134,6 +134,10 @@
  /* dgpu on/off */
  #define ASUS_WMI_DEVID_DGPU		0x00090020
  
