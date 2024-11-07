@@ -3,3 +3,7 @@ This file is used to indicate primary maintainership for this package. A package
 - Joey Riches
   - Email: josephriches@gmail.com
   - Matrix: @joebonrichie:matrix.org
+
+- Tracey Clark
+  - Email: traceyc.dev@tlcnet.info
+  - Matrix: @traceyc:matrix.org
