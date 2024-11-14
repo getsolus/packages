@@ -1,8 +1,8 @@
 name       : bitwarden-desktop
-version    : 2024.8.2
-release    : 30
+version    : 2024.11.0
+release    : 31
 source     :
-    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2024.8.2.tar.gz : b9e06927eb04e4b4f94af56039c9d332211c44c807b9d38afdee8300a0450732
+    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2024.11.0.tar.gz : 03d3c926ed6ed27492db2b1577642a984909c809dfae9a29f7c39359a8e1cbab
 license    : GPL-3.0-only
 component  : security
 homepage   : https://bitwarden.com/
@@ -13,6 +13,7 @@ builddeps  :
     - pkgconfig(cups)
     - pkgconfig(gbm)
     - pkgconfig(gtk+-3.0)
+    - pkgconfig(libargon2)
     - pkgconfig(libdrm)
     - pkgconfig(libnotify)
     - pkgconfig(libsecret-1)
@@ -25,37 +26,42 @@ builddeps  :
 rundeps    :
     - nodejs
 setup      : |
-    # export ELECTRON_VERSION=28.3.0
-    # npm install electron@$ELECTRON_VERSION
-
     pushd apps/desktop
-    tmp=$(mktemp)
-    # jq ".electronVersion = \"${ELECTRON_VERSION}\"" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
-
-    # Create an unpacked distribution, allowing us to more easily see changes to shipped files
-    jq ".linux.asar = false" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
-
-    # Fix appId on Wayland
-    jq ".productName = \"com.bitwarden.desktop\"" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
-    jq ".linux.desktop.Name = \"com.bitwarden.desktop\"" electron-builder.json > "$tmp" && mv "$tmp" electron-builder.json
-
     %patch --strip=1 src/main/messaging.main.ts -i $pkgfiles/messaging.main.ts.patch
-    %patch --strip=3 -i $pkgfiles/0001-Solus-Use-glibc-instead-of-musl.patch
+    %patch --strip=3 -i $pkgfiles/0001-nativelib.patch
+    %patch --strip=3 -i $pkgfiles/0001-Update-proxy-location.patch
+    %patch --strip=3 -i $pkgfiles/0001-Don-t-pack-package.json-and-proxy-bin.patch
     popd
 
-    %patch -p1 -i $pkgfiles/fix-argon-simd.patch
+    # OpenSUSE patches
+    %patch -p1 -i $pkgfiles/remove-argon2-browser.patch
+    %patch -p1 -i $pkgfiles/no-sourcemaps.patch
 
     npm ci
+
+    # Also from OpenSUSE, needs to run after deps are downloaded
+    %patch -p1 -i $pkgfiles/system-libargon2.patch
+
+    cd apps/desktop/desktop_native/napi
+    %cargo_fetch
 build      : |
     export npm_config_build_from_source=true
+    # Rebuild the argon2 module so it uses the system argon2
+    npm rebuild argon2
 
     cd apps/desktop
-    unset LD_PRELOAD
-    pushd desktop_native/napi
-    npm run build
+    pushd desktop_native
+    cargo rustc --frozen --release --package desktop_napi --lib --crate-type cdylib
+    RUSTFLAGS="$RUSTFLAGS -Crelocation-model=pie" cargo rustc --frozen --release --package desktop_proxy --bin desktop_proxy
+    mv -v target/release/*.so napi/desktop_napi.node
     popd
+
     npm run build && npm run clean:dist
+    mv -v desktop_native/target/release/desktop_proxy build/desktop_proxy
     npm exec -c "electron-builder --linux --x64 --dir"
+
+    # I don't have any idea where it's coming from but we need to use our modified argon2 instead of wherever electron-builder is getting it
+    cp ../../node_modules/argon2/build/Release/argon2.node dist/linux-unpacked/resources/app.asar.unpacked/node_modules/argon2/build/Release/argon2.node
 install    : |
     export bwdir=/usr/share/bitwarden-desktop
     install -dm00755 $installdir/usr/bin
@@ -70,7 +76,7 @@ install    : |
     install -Dm00644 $pkgfiles/com.bitwarden.desktop.metainfo.xml $installdir/usr/share/metainfo/com.bitwarden.desktop.metainfo.xml
 
     # Fix appid since we can't seem to do this during the build
-    package_json=$installdir/$bwdir/resources/app/package.json
+    package_json=$installdir/$bwdir/resources/app.asar.unpacked/package.json
     tmp=$(mktemp)
     jq ".productName = \"com.bitwarden.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
     jq ".desktopName = \"com.bitwarden.desktop.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
