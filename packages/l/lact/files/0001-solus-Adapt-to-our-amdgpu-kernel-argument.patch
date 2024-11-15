@@ -5,21 +5,21 @@ Subject: [PATCH] solus: Adapt to our amdgpu kernel argument
 
 Signed-off-by: Reilly Brogan <reilly@reillybrogan.com>
 ---
- lact-client/src/lib.rs                     |  2 -
- lact-daemon/src/server/mod.rs              |  2 -
- lact-daemon/src/server/system.rs           | 86 +++-------------------
- lact-gui/src/app/header.rs                 |  3 +-
- lact-gui/src/app/mod.rs                    | 59 ---------------
- lact-gui/src/app/msg.rs                    |  2 -
- lact-gui/src/app/root_stack/oc_page/mod.rs | 20 ++---
- lact-schema/src/request.rs                 |  2 -
- 8 files changed, 17 insertions(+), 159 deletions(-)
+ lact-client/src/lib.rs                |  2 -
+ lact-daemon/src/server.rs             |  2 -
+ lact-daemon/src/server/system.rs      | 86 ++++-----------------------
+ lact-gui/src/app.rs                   | 57 ------------------
+ lact-gui/src/app/header.rs            |  3 +-
+ lact-gui/src/app/msg.rs               |  2 -
+ lact-gui/src/app/pages/oc_page/mod.rs | 20 ++-----
+ lact-schema/src/request.rs            |  2 -
+ 8 files changed, 17 insertions(+), 157 deletions(-)
 
 diff --git a/lact-client/src/lib.rs b/lact-client/src/lib.rs
-index 4c65a99..6d97448 100644
+index d327850..e99d1bf 100644
 --- a/lact-client/src/lib.rs
 +++ b/lact-client/src/lib.rs
-@@ -112,8 +112,6 @@ impl DaemonClient {
+@@ -129,8 +129,6 @@ impl DaemonClient {
      }
  
      request_plain!(get_system_info, SystemInfo, SystemInfo);
@@ -27,15 +27,15 @@ index 4c65a99..6d97448 100644
 -    request_plain!(disable_overdrive, DisableOverdrive, String);
      request_plain!(generate_debug_snapshot, GenerateSnapshot, String);
      request_plain!(reset_config, RestConfig, ());
-     request_with_id!(get_device_info, DeviceInfo, DeviceInfo);
-diff --git a/lact-daemon/src/server/mod.rs b/lact-daemon/src/server/mod.rs
-index a450056..6178acf 100644
---- a/lact-daemon/src/server/mod.rs
-+++ b/lact-daemon/src/server/mod.rs
-@@ -164,8 +164,6 @@ async fn handle_request<'a>(request: Request<'a>, handler: &'a Handler) -> anyho
-             ok_response(handler.set_enabled_power_states(id, kind, states).await?)
-         }
-         Request::VbiosDump { id } => ok_response(handler.vbios_dump(id)?),
+     request_plain!(list_profiles, ListProfiles, ProfilesInfo);
+diff --git a/lact-daemon/src/server.rs b/lact-daemon/src/server.rs
+index 7668f81..072c5a2 100644
+--- a/lact-daemon/src/server.rs
++++ b/lact-daemon/src/server.rs
+@@ -168,8 +168,6 @@ async fn handle_request<'a>(request: Request<'a>, handler: &'a Handler) -> anyho
+         Request::SetProfile { name } => ok_response(handler.set_profile(name).await?),
+         Request::CreateProfile { name, base } => ok_response(handler.create_profile(name, base)?),
+         Request::DeleteProfile { name } => ok_response(handler.delete_profile(name).await?),
 -        Request::EnableOverdrive => ok_response(system::enable_overdrive().await?),
 -        Request::DisableOverdrive => ok_response(system::disable_overdrive().await?),
          Request::GenerateSnapshot => ok_response(handler.generate_snapshot().await?),
@@ -159,33 +159,15 @@ index c972ccc..4bd8ef1 100644
      }
  }
  
-diff --git a/lact-gui/src/app/header.rs b/lact-gui/src/app/header.rs
-index 48e7fb0..0c4096f 100644
---- a/lact-gui/src/app/header.rs
-+++ b/lact-gui/src/app/header.rs
-@@ -1,4 +1,4 @@
--use super::{AppMsg, DebugSnapshot, DisableOverdrive, DumpVBios, ResetConfig, ShowGraphsWindow};
-+use super::{AppMsg, DebugSnapshot, DumpVBios, ResetConfig, ShowGraphsWindow};
- use gtk::prelude::*;
- use gtk::*;
- use lact_client::schema::DeviceListEntry;
-@@ -46,7 +46,6 @@ impl SimpleComponent for Header {
-                 "Dump VBIOS" => DumpVBios,
-             } ,
-             section! {
--                "Disable overclocking support" => DisableOverdrive,
-                 "Reset all configuration" => ResetConfig,
-             }
-         }
-diff --git a/lact-gui/src/app/mod.rs b/lact-gui/src/app/mod.rs
-index b266921..0711f7e 100644
---- a/lact-gui/src/app/mod.rs
-+++ b/lact-gui/src/app/mod.rs
-@@ -149,21 +149,6 @@ impl AsyncComponent for AppModel {
+diff --git a/lact-gui/src/app.rs b/lact-gui/src/app.rs
+index 7d667ff..c72114b 100644
+--- a/lact-gui/src/app.rs
++++ b/lact-gui/src/app.rs
+@@ -197,21 +197,6 @@ impl AsyncComponent for AppModel {
              }
          ));
  
--        if let Some(ref button) = root_stack.oc_page.enable_overclocking_button {
+-        if let Some(ref button) = oc_page.enable_overclocking_button {
 -            button.connect_clicked(clone!(
 -                #[strong]
 -                sender,
@@ -203,22 +185,20 @@ index b266921..0711f7e 100644
          let graphs_window = GraphsWindow::new();
  
          let model = AppModel {
-@@ -271,14 +256,6 @@ impl AppModel {
+@@ -336,12 +321,6 @@ impl AppModel {
+             AppMsg::DebugSnapshot => {
                  self.generate_debug_snapshot(root).await;
-                 Ok(())
              }
 -            AppMsg::EnableOverdrive => {
 -                toggle_overdrive(&self.daemon_client, true, root.clone()).await;
--                Ok(())
 -            }
 -            AppMsg::DisableOverdrive => {
 -                toggle_overdrive(&self.daemon_client, false, root.clone()).await;
--                Ok(())
 -            }
              AppMsg::ResetConfig => {
                  self.daemon_client.reset_config().await?;
                  sender.input(AppMsg::ReloadData { full: true });
-@@ -914,32 +891,6 @@ fn confirmation_text(seconds_left: u64) -> String {
+@@ -952,32 +931,6 @@ fn confirmation_text(seconds_left: u64) -> String {
      format!("Do you want to keep the new settings? (Reverting in {seconds_left} seconds)")
  }
  
@@ -251,7 +231,7 @@ index b266921..0711f7e 100644
  fn spinner_dialog(parent: &ApplicationWindow, title: &str) -> MessageDialog {
      let spinner = gtk::Spinner::new();
      spinner.start();
-@@ -980,15 +931,6 @@ fn register_actions(sender: &AsyncComponentSender<AppModel>) {
+@@ -1018,15 +971,6 @@ fn register_actions(sender: &AsyncComponentSender<AppModel>) {
          (ShowGraphsWindow, AppMsg::ShowGraphsWindow),
          (DumpVBios, AppMsg::DumpVBios),
          (DebugSnapshot, AppMsg::DebugSnapshot),
@@ -267,7 +247,7 @@ index b266921..0711f7e 100644
          (
              ResetConfig,
              AppMsg::ask_confirmation(
-@@ -1007,7 +949,6 @@ relm4::new_action_group!(AppActionGroup, "app");
+@@ -1045,7 +989,6 @@ relm4::new_action_group!(AppActionGroup, "app");
  relm4::new_stateless_action!(ShowGraphsWindow, AppActionGroup, "show-graphs-window");
  relm4::new_stateless_action!(DumpVBios, AppActionGroup, "dump-vbios");
  relm4::new_stateless_action!(DebugSnapshot, AppActionGroup, "generate-debug-snapshot");
@@ -275,24 +255,44 @@ index b266921..0711f7e 100644
  relm4::new_stateless_action!(ResetConfig, AppActionGroup, "reset-config");
  
  async fn create_connection() -> anyhow::Result<(DaemonClient, Option<anyhow::Error>)> {
+diff --git a/lact-gui/src/app/header.rs b/lact-gui/src/app/header.rs
+index 533ea24..9b9f955 100644
+--- a/lact-gui/src/app/header.rs
++++ b/lact-gui/src/app/header.rs
+@@ -1,6 +1,6 @@
+ mod new_profile_dialog;
+ 
+-use super::{AppMsg, DebugSnapshot, DisableOverdrive, DumpVBios, ResetConfig, ShowGraphsWindow};
++use super::{AppMsg, DebugSnapshot, DumpVBios, ResetConfig, ShowGraphsWindow};
+ use glib::clone;
+ use gtk::prelude::*;
+ use gtk::*;
+@@ -133,7 +133,6 @@ impl Component for Header {
+                 "Dump VBIOS" => DumpVBios,
+             } ,
+             section! {
+-                "Disable overclocking support" => DisableOverdrive,
+                 "Reset all configuration" => ResetConfig,
+             }
+         }
 diff --git a/lact-gui/src/app/msg.rs b/lact-gui/src/app/msg.rs
-index dc44893..a16c02e 100644
+index f137aee..0b52e16 100644
 --- a/lact-gui/src/app/msg.rs
 +++ b/lact-gui/src/app/msg.rs
-@@ -14,8 +14,6 @@ pub enum AppMsg {
+@@ -15,8 +15,6 @@ pub enum AppMsg {
      ShowGraphsWindow,
      DumpVBios,
      DebugSnapshot,
 -    EnableOverdrive,
 -    DisableOverdrive,
      ResetConfig,
-     AskConfirmation(ConfirmationOptions, Box<AppMsg>),
- }
-diff --git a/lact-gui/src/app/root_stack/oc_page/mod.rs b/lact-gui/src/app/root_stack/oc_page/mod.rs
-index 7e1a8ad..48b8f3f 100644
---- a/lact-gui/src/app/root_stack/oc_page/mod.rs
-+++ b/lact-gui/src/app/root_stack/oc_page/mod.rs
-@@ -19,7 +19,8 @@ use std::collections::HashMap;
+     ReloadProfiles,
+     SelectProfile(Option<String>),
+diff --git a/lact-gui/src/app/pages/oc_page/mod.rs b/lact-gui/src/app/pages/oc_page/mod.rs
+index 4ccd6fb..c83fafe 100644
+--- a/lact-gui/src/app/pages/oc_page/mod.rs
++++ b/lact-gui/src/app/pages/oc_page/mod.rs
+@@ -20,7 +20,8 @@ use std::collections::HashMap;
  use tracing::warn;
  
  const OVERCLOCKING_DISABLED_TEXT: &str = "Overclocking support is not enabled! \
@@ -302,7 +302,7 @@ index 7e1a8ad..48b8f3f 100644
  
  #[derive(Clone)]
  pub struct OcPage {
-@@ -30,7 +31,6 @@ pub struct OcPage {
+@@ -31,7 +32,6 @@ pub struct OcPage {
      power_cap_section: PowerCapSection,
      pub power_states_frame: PowerStatesFrame,
      pub clocks_frame: ClocksFrame,
@@ -310,7 +310,7 @@ index 7e1a8ad..48b8f3f 100644
  }
  
  impl OcPage {
-@@ -46,11 +46,8 @@ impl OcPage {
+@@ -47,11 +47,8 @@ impl OcPage {
              .margin_end(20)
              .build();
  
@@ -323,7 +323,7 @@ index 7e1a8ad..48b8f3f 100644
              vbox.append(&warning_frame);
          }
  
-@@ -86,7 +83,6 @@ impl OcPage {
+@@ -87,7 +84,6 @@ impl OcPage {
              performance_frame: performance_level_frame,
              clocks_frame,
              power_cap_section,
@@ -331,7 +331,7 @@ index 7e1a8ad..48b8f3f 100644
              power_states_frame,
          }
      }
-@@ -184,7 +180,7 @@ impl OcPage {
+@@ -185,7 +181,7 @@ impl OcPage {
      }
  }
  
@@ -340,7 +340,7 @@ index 7e1a8ad..48b8f3f 100644
      let container = Frame::new(Some("Overclocking information"));
  
      container.set_label_align(0.3);
-@@ -205,15 +201,9 @@ fn oc_warning_frame() -> (Frame, Button) {
+@@ -206,15 +202,9 @@ fn oc_warning_frame() -> (Frame, Button) {
          .wrap_mode(pango::WrapMode::Word)
          .build();
  
@@ -358,12 +358,12 @@ index 7e1a8ad..48b8f3f 100644
 +    (container)
  }
 diff --git a/lact-schema/src/request.rs b/lact-schema/src/request.rs
-index cf38695..42b4bfb 100644
+index 8afc65f..19aa649 100644
 --- a/lact-schema/src/request.rs
 +++ b/lact-schema/src/request.rs
-@@ -57,8 +57,6 @@ pub enum Request<'a> {
-     VbiosDump {
-         id: &'a str,
+@@ -70,8 +70,6 @@ pub enum Request<'a> {
+     DeleteProfile {
+         name: String,
      },
 -    EnableOverdrive,
 -    DisableOverdrive,
