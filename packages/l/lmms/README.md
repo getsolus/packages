@@ -24,7 +24,7 @@ To test effect plugins, open FX-Mixer, click Add effect button on the effects ch
 
 The dependency discover phase shows errors for these libraries:
 - libZynAddSubFxCore.so
-- libgig.so.9
+- libgig.so.11
 - libvstbase.so
 - libZynAddSubFxCore.so
 These can be ignored as they're private libraries used only by LMMS.
