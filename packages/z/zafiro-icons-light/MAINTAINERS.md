@@ -2,3 +2,4 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Grzegorz Głowacz
 - Email: ggwiazdor@wp.pl
+- Matrix: @pomon:matrix.org
