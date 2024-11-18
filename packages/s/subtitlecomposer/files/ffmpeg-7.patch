@@ -1,0 +1,718 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Fri, 18 Nov 2022 15:59:10 +0100
+Subject: [PATCH 1/8] Replaced deprecated FFmpeg channel layout code
+
+---
+ src/CMakeLists.txt                        |  8 ++++
+ src/streamprocessor/streamprocessor.cpp   | 48 ++++++++++++-------
+ src/streamprocessor/streamprocessor.h     | 17 +++----
+ src/videoplayer/backend/audiodecoder.cpp  | 57 ++++++++++++-----------
+ src/videoplayer/backend/audiodecoder.h    |  5 +-
+ src/videoplayer/backend/streamdemuxer.cpp | 22 +++++----
+ src/videoplayer/backend/videostate.cpp    |  2 +-
+ 7 files changed, 92 insertions(+), 67 deletions(-)
+
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index bf0043e..bacf025 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -5,6 +5,14 @@ endif()
+ 
+ if(CMAKE_COMPILER_IS_GNUCC)
+ 	message(STATUS "GNU C compiler detected")
++	if(SC_NO_DEPRECATED)
++		set(CMAKE_C_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wno-deprecated-declarations")
++		set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wno-deprecated-declarations")
++	endif()
++	if(SC_WARN_ERRORS)
++		set(CMAKE_C_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Werror")
++		set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Werror")
++	endif()
+ 	set(CMAKE_C_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Og -g")
+ 	set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -Og -g")
+ 	set(CMAKE_C_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall -O3")
+diff --git a/src/streamprocessor/streamprocessor.cpp b/src/streamprocessor/streamprocessor.cpp
+index 1e88378..aa27a66 100644
+--- a/src/streamprocessor/streamprocessor.cpp
++++ b/src/streamprocessor/streamprocessor.cpp
+@@ -35,13 +35,15 @@ StreamProcessor::StreamProcessor(QObject *parent)
+ 	  m_avFormat(nullptr),
+ 	  m_avStream(nullptr),
+ 	  m_codecCtx(nullptr),
+-	  m_swResample(nullptr)
++	  m_swResample(nullptr),
++	  m_audioChLayout(new AVChannelLayout{})
+ {
+ }
+ 
+ StreamProcessor::~StreamProcessor()
+ {
+ 	close();
++	delete m_audioChLayout;
+ }
+ 
+ bool
+@@ -81,7 +83,7 @@ StreamProcessor::open(const QString &filename)
+ 
+ 	m_opened = true;
+ 
+-    return true;
++	return true;
+ }
+ 
+ void
+@@ -92,6 +94,7 @@ StreamProcessor::close()
+ 		wait();
+ 	}
+ 
++	av_channel_layout_uninit(m_audioChLayout);
+ 	if(m_swResample)
+ 		swr_free(&m_swResample);
+ 	if(m_codecCtx)
+@@ -273,28 +276,40 @@ StreamProcessor::initAudio(int streamIndex, const WaveFormat &waveFormat)
+ 		return false;
+ 	}
+ 
++	av_channel_layout_uninit(m_audioChLayout);
++
+ 	// figure channel layout or update stream format
+-	if(!m_codecCtx->channel_layout)
+-		m_codecCtx->channel_layout = av_get_default_channel_layout(m_codecCtx->channels);;
++	if(m_codecCtx->ch_layout.order != AV_CHANNEL_ORDER_NATIVE) {
++		const int cc = m_codecCtx->ch_layout.nb_channels;
++		av_channel_layout_uninit(&m_codecCtx->ch_layout);
++		av_channel_layout_default(&m_codecCtx->ch_layout, cc);
++	}
+ 
+ 	if(m_audioStreamFormat.channels() == 0) {
+-		m_audioStreamFormat.setChannels(m_codecCtx->channels);
+-		m_audioChannelLayout = m_codecCtx->channel_layout;
++		m_audioStreamFormat.setChannels(m_codecCtx->ch_layout.nb_channels);
++		av_channel_layout_copy(m_audioChLayout, &m_codecCtx->ch_layout);
+ 	} else {
+-		m_audioChannelLayout = av_get_default_channel_layout(m_audioStreamFormat.channels());
++		av_channel_layout_default(m_audioChLayout, m_audioStreamFormat.channels());
+ 	}
+ 
+ 	// setup resampler if needed
+-	const bool convChannels = m_codecCtx->channel_layout != m_audioChannelLayout;
++	const bool convChannels = av_channel_layout_compare(&m_codecCtx->ch_layout, m_audioChLayout) != 0;
+ 	const bool convSampleRate = m_codecCtx->sample_rate != m_audioStreamFormat.sampleRate();
+ 	const bool convSampleFormat = m_codecCtx->sample_fmt != m_audioSampleFormat;
+ 	if(convChannels || convSampleRate || convSampleFormat) {
+-		m_swResample = swr_alloc_set_opts(nullptr,
+-			m_audioChannelLayout, static_cast<AVSampleFormat>(m_audioSampleFormat), m_audioStreamFormat.sampleRate(),
+-			m_codecCtx->channel_layout, m_codecCtx->sample_fmt, m_codecCtx->sample_rate,
+-			0, nullptr);
++		swr_alloc_set_opts2(&m_swResample,
++							m_audioChLayout, AVSampleFormat(m_audioSampleFormat), m_audioStreamFormat.sampleRate(),
++							&m_codecCtx->ch_layout, m_codecCtx->sample_fmt, m_codecCtx->sample_rate,
++							0, nullptr);
+ 		// NOTE: swr_convert_frame() will call swr_init() and swr_config_frame() which is better as it seems m_codecCtx can
+-		// end up with different config that what is actually in the stream
++		// end up with different config than what is actually in the stream
++		if(!m_swResample) {
++				av_log(nullptr, AV_LOG_ERROR,
++					   "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
++					   m_codecCtx->sample_rate, av_get_sample_fmt_name(m_codecCtx->sample_fmt), m_codecCtx->ch_layout.nb_channels,
++					   m_audioStreamFormat.sampleRate(), av_get_sample_fmt_name(AVSampleFormat(m_audioSampleFormat)), m_audioChLayout->nb_channels);
++				return false;
++		}
+ 	}
+ 
+ 	return true;
+@@ -363,7 +378,8 @@ StreamProcessor::processAudio()
+ 	if(m_swResample) {
+ 		frameResampled = av_frame_alloc();
+ 		Q_ASSERT(frameResampled != nullptr);
+-		frameResampled->channel_layout = m_audioChannelLayout;
++		av_channel_layout_uninit(&frameResampled->ch_layout);
++		av_channel_layout_copy(&frameResampled->ch_layout, m_audioChLayout);
+ 		frameResampled->sample_rate = m_audioStreamFormat.sampleRate();
+ 		frameResampled->format = m_audioSampleFormat;
+ 	}
+@@ -448,12 +464,12 @@ StreamProcessor::processAudio()
+ 
+ 					if(m_swResample) {
+ 						Q_ASSERT(frameResampled != nullptr);
+-						emit audioDataAvailable(frameResampled->data[0], qint32(frameSize * frameResampled->channels),
++						emit audioDataAvailable(frameResampled->data[0], qint32(frameSize * frameResampled->ch_layout.nb_channels),
+ 							&m_audioStreamFormat, qint64(timeFrameStart + timeResampleDelay), qint64(timeFrameDuration));
+ 
+ 						drainSampleBuffer = swr_get_out_samples(m_swResample, 0) > 1000;
+ 					} else {
+-						emit audioDataAvailable(frame->data[0], qint32(frameSize * frame->channels),
++						emit audioDataAvailable(frame->data[0], qint32(frameSize * frame->ch_layout.nb_channels),
+ 							&m_audioStreamFormat, qint64(timeFrameStart), qint64(timeFrameDuration));
+ 					}
+ 				} while(!conversionComplete && !isInterruptionRequested() && drainSampleBuffer);
+diff --git a/src/streamprocessor/streamprocessor.h b/src/streamprocessor/streamprocessor.h
+index 152a985..02e7f3b 100644
+--- a/src/streamprocessor/streamprocessor.h
++++ b/src/streamprocessor/streamprocessor.h
+@@ -16,14 +16,11 @@
+ 
+ QT_FORWARD_DECLARE_CLASS(QTimer)
+ 
+-QT_FORWARD_DECLARE_STRUCT(AVFormatContext)
+-typedef struct AVFormatContext AVFormatContext;
+-QT_FORWARD_DECLARE_STRUCT(AVCodecContext)
+-typedef struct AVCodecContext AVCodecContext;
+-QT_FORWARD_DECLARE_STRUCT(AVStream)
+-typedef struct AVStream AVStream;
+-QT_FORWARD_DECLARE_STRUCT(SwrContext)
+-typedef struct SwrContext SwrContext;
++struct AVFormatContext;
++struct AVCodecContext;
++struct AVStream;
++struct SwrContext;
++struct AVChannelLayout;
+ 
+ namespace SubtitleComposer {
+ 
+@@ -59,7 +56,7 @@ protected:
+ 	int findStream(int streamType, int streamIndex, bool imageSub);
+ 	void processAudio();
+ 	void processText();
+-    virtual void run() override;
++	virtual void run() override;
+ 
+ private:
+ 	bool m_opened;
+@@ -86,7 +83,7 @@ private:
+ 	AVCodecContext *m_codecCtx;
+ 	SwrContext *m_swResample;
+ 	int m_audioSampleFormat;
+-	uint64_t m_audioChannelLayout;
++	AVChannelLayout *m_audioChLayout;
+ };
+ 
+ }
+diff --git a/src/videoplayer/backend/audiodecoder.cpp b/src/videoplayer/backend/audiodecoder.cpp
+index c0c99bb..8c0b943 100644
+--- a/src/videoplayer/backend/audiodecoder.cpp
++++ b/src/videoplayer/backend/audiodecoder.cpp
+@@ -37,6 +37,8 @@ using namespace SubtitleComposer;
+ AudioDecoder::AudioDecoder(VideoState *state, QObject *parent)
+ 	: Decoder(parent),
+ 	  m_vs(state),
++	  m_fmtSrc({}),
++	  m_fmtTgt({}),
+ 	  m_swrCtx(nullptr),
+ 	  m_audioBuf(nullptr),
+ 	  m_bufSize(0),
+@@ -147,7 +149,7 @@ AudioDecoder::close()
+ }
+ 
+ bool
+-AudioDecoder::open(int64_t wantChLayout, int wantNbChan, int wantSampleRate)
++AudioDecoder::open(AVChannelLayout *wantChLayout, int wantSampleRate)
+ {
+ 	const static QMap<int, const char *> bufFmtMap = {
+ 		{ 4, "AL_FORMAT_QUAD16" },
+@@ -158,12 +160,12 @@ AudioDecoder::open(int64_t wantChLayout, int wantNbChan, int wantSampleRate)
+ 
+ 	int err;
+ 
+-	if(wantSampleRate <= 0 || wantNbChan <= 0) {
++	if(wantSampleRate <= 0 || !wantChLayout || wantChLayout->nb_channels <= 0) {
+ 		av_log(nullptr, AV_LOG_ERROR, "openal: invalid sample rate or channel count!\n");
+ 		return false;
+ 	}
+ 
+-	int availNbChan = wantNbChan;
++	int availNbChan = wantChLayout->nb_channels;
+ 	for(;;) {
+ 		while(availNbChan > 2 && !bufFmtMap.contains(availNbChan))
+ 			availNbChan--;
+@@ -171,15 +173,15 @@ AudioDecoder::open(int64_t wantChLayout, int wantNbChan, int wantSampleRate)
+ 			m_bufFmt = availNbChan == 2 ? AL_FORMAT_STEREO16 : AL_FORMAT_MONO16;
+ 			break;
+ 		}
+-		m_bufFmt = alGetEnumValue(bufFmtMap[wantNbChan]);
++		m_bufFmt = alGetEnumValue(bufFmtMap[wantChLayout->nb_channels]);
+ 		if(m_bufFmt)
+ 			break;
+ 		availNbChan--;
+ 	}
+ 
+-	if(!wantChLayout || wantNbChan != availNbChan || wantNbChan != av_get_channel_layout_nb_channels(wantChLayout)) {
+-		wantChLayout = av_get_default_channel_layout(availNbChan);
+-		wantChLayout &= ~AV_CH_LAYOUT_STEREO_DOWNMIX;
++	if(wantChLayout->nb_channels != availNbChan || wantChLayout->order != AV_CHANNEL_ORDER_NATIVE) {
++		av_channel_layout_uninit(wantChLayout);
++		av_channel_layout_default(wantChLayout, availNbChan);
+ 	}
+ 
+ 	m_alDev = alcOpenDevice(nullptr);
+@@ -212,10 +214,14 @@ AudioDecoder::open(int64_t wantChLayout, int wantNbChan, int wantSampleRate)
+ 
+ 	m_fmtTgt.fmt = AV_SAMPLE_FMT_S16;
+ 	m_fmtTgt.freq = wantSampleRate;
+-	m_fmtTgt.channelLayout = wantChLayout;
+-	m_fmtTgt.channels = availNbChan;
+-	m_fmtTgt.frameSize = av_samples_get_buffer_size(nullptr, m_fmtTgt.channels, 1, m_fmtTgt.fmt, 1);
+-	m_fmtTgt.bytesPerSec = av_samples_get_buffer_size(nullptr, m_fmtTgt.channels, m_fmtTgt.freq, m_fmtTgt.fmt, 1);
++	if((err = av_channel_layout_copy(&m_fmtTgt.chLayout, wantChLayout)) < 0) {
++		av_log(nullptr, AV_LOG_ERROR, "av_channel_layout_copy() failed (errL %d).\n", err);
++		close();
++		return false;
++	}
++
++	m_fmtTgt.frameSize = av_samples_get_buffer_size(nullptr, m_fmtTgt.chLayout.nb_channels, 1, m_fmtTgt.fmt, 1);
++	m_fmtTgt.bytesPerSec = av_samples_get_buffer_size(nullptr, m_fmtTgt.chLayout.nb_channels, m_fmtTgt.freq, m_fmtTgt.fmt, 1);
+ 	if(m_fmtTgt.bytesPerSec <= 0 || m_fmtTgt.frameSize <= 0) {
+ 		av_log(nullptr, AV_LOG_ERROR, "av_samples_get_buffer_size failed\n");
+ 		close();
+@@ -349,47 +355,44 @@ AudioDecoder::syncAudio(int nbSamples)
+ int
+ AudioDecoder::decodeFrame(Frame *af)
+ {
++	// CONVERTED maxrd2
+ 	if(af->serial != m_queue->serial())
+ 		return -1;
+ 
+-	int dataSize = av_samples_get_buffer_size(nullptr, af->frame->channels,
++	int dataSize = av_samples_get_buffer_size(nullptr, af->frame->ch_layout.nb_channels,
+ 										   af->frame->nb_samples,
+ 										   (AVSampleFormat)af->frame->format, 1);
+ 	int resampledDataSize;
+ 
+-	uint64_t decChannelLayout =
+-		(af->frame->channel_layout &&
+-		 af->frame->channels == av_get_channel_layout_nb_channels(af->frame->channel_layout)) ?
+-		af->frame->channel_layout : av_get_default_channel_layout(af->frame->channels);
+ 	int wantedNbSamples = syncAudio(af->frame->nb_samples);
+ 
+ 	if(af->frame->format != m_fmtSrc.fmt
+-	|| decChannelLayout != m_fmtSrc.channelLayout
++	|| av_channel_layout_compare(&af->frame->ch_layout, &m_fmtSrc.chLayout)
+ 	|| af->frame->sample_rate != m_fmtSrc.freq
+ 	|| (wantedNbSamples != af->frame->nb_samples && !m_swrCtx)) {
+ 		swr_free(&m_swrCtx);
+-		m_swrCtx = swr_alloc_set_opts(nullptr,
+-										 m_fmtTgt.channelLayout, m_fmtTgt.fmt, m_fmtTgt.freq,
+-										 decChannelLayout, (AVSampleFormat)af->frame->format, af->frame->sample_rate,
+-										 0, nullptr);
++		swr_alloc_set_opts2(&m_swrCtx,
++							&m_fmtTgt.chLayout, m_fmtTgt.fmt, m_fmtTgt.freq,
++							&af->frame->ch_layout, AVSampleFormat(af->frame->format), af->frame->sample_rate,
++							0, nullptr);
+ 		if(!m_swrCtx || swr_init(m_swrCtx) < 0) {
+ 			av_log(nullptr, AV_LOG_ERROR,
+ 				   "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+ 				   af->frame->sample_rate, av_get_sample_fmt_name((AVSampleFormat)af->frame->format),
+-				   af->frame->channels,
+-				   m_fmtTgt.freq, av_get_sample_fmt_name(m_fmtTgt.fmt), m_fmtTgt.channels);
++				   af->frame->ch_layout.nb_channels,
++				   m_fmtTgt.freq, av_get_sample_fmt_name(m_fmtTgt.fmt), m_fmtTgt.chLayout.nb_channels);
+ 			swr_free(&m_swrCtx);
+ 			return -1;
+ 		}
+-		m_fmtSrc.channelLayout = decChannelLayout;
+-		m_fmtSrc.channels = af->frame->channels;
++		if(av_channel_layout_copy(&m_fmtSrc.chLayout, &af->frame->ch_layout) < 0)
++			return -1;
+ 		m_fmtSrc.freq = af->frame->sample_rate;
+ 		m_fmtSrc.fmt = (AVSampleFormat)af->frame->format;
+ 	}
+ 
+ 	if(m_swrCtx) {
+ 		const int outCount = (int64_t)wantedNbSamples * m_fmtTgt.freq / af->frame->sample_rate + 256;
+-		const int outSize = av_samples_get_buffer_size(nullptr, m_fmtTgt.channels, outCount, m_fmtTgt.fmt, 0);
++		const int outSize = av_samples_get_buffer_size(nullptr, m_fmtTgt.chLayout.nb_channels, outCount, m_fmtTgt.fmt, 0);
+ 		if(outSize < 0) {
+ 			av_log(nullptr, AV_LOG_ERROR, "av_samples_get_buffer_size() failed\n");
+ 			return -1;
+@@ -417,7 +420,7 @@ AudioDecoder::decodeFrame(Frame *af)
+ 				swr_free(&m_swrCtx);
+ 		}
+ 		m_audioBuf = m_audioBuf1;
+-		resampledDataSize = outSamplesPerChannel * m_fmtTgt.channels * av_get_bytes_per_sample(m_fmtTgt.fmt);
++		resampledDataSize = outSamplesPerChannel * m_fmtTgt.chLayout.nb_channels * av_get_bytes_per_sample(m_fmtTgt.fmt);
+ 	} else {
+ 		m_audioBuf = af->frame->data[0];
+ 		resampledDataSize = dataSize;
+diff --git a/src/videoplayer/backend/audiodecoder.h b/src/videoplayer/backend/audiodecoder.h
+index ae57907..5b32b9a 100644
+--- a/src/videoplayer/backend/audiodecoder.h
++++ b/src/videoplayer/backend/audiodecoder.h
+@@ -37,8 +37,7 @@ private:
+ 
+ 	struct Params {
+ 		int freq;
+-		int channels;
+-		uint64_t channelLayout;
++		AVChannelLayout chLayout;
+ 		AVSampleFormat fmt;
+ 		int frameSize;
+ 		int bytesPerSec;
+@@ -50,7 +49,7 @@ private:
+ 	void queueBuffer(uint8_t *data, int len);
+ 	int syncAudio(int nbSamples);
+ 
+-	bool open(int64_t wanted_channel_layout, int wanted_nb_channels, int wanted_sample_rate);
++	bool open(AVChannelLayout *wantChLayout, int wantSampleRate);
+ 	void close();
+ 	void flush();
+ 	void play();
+diff --git a/src/videoplayer/backend/streamdemuxer.cpp b/src/videoplayer/backend/streamdemuxer.cpp
+index 72d2189..2eb59af 100644
+--- a/src/videoplayer/backend/streamdemuxer.cpp
++++ b/src/videoplayer/backend/streamdemuxer.cpp
+@@ -233,9 +233,9 @@ StreamDemuxer::componentOpen(int streamIndex)
+ 	AVCodecContext *avCtx;
+ 	const AVCodec *codec;
+ 	AVDictionary *opts = nullptr;
+-	AVDictionaryEntry *t = nullptr;
+-	int sampleRate, nbChannels;
+-	int64_t channelLayout;
++	const AVDictionaryEntry *t = nullptr;
++	int sampleRate;
++	AVChannelLayout chLayout = {};
+ 	int ret = 0;
+ 	int stream_lowres = m_vs->lowres;
+ 
+@@ -301,19 +301,21 @@ StreamDemuxer::componentOpen(int streamIndex)
+ 	switch(avCtx->codec_type) {
+ 	case AVMEDIA_TYPE_AUDIO:
+ 		sampleRate = avCtx->sample_rate;
+-		nbChannels = avCtx->channels;
+-		channelLayout = avCtx->channel_layout;
++		if((ret = av_channel_layout_copy(&chLayout, &avCtx->ch_layout)) < 0) {
++			av_log(nullptr, AV_LOG_ERROR, "av_channel_layout_copy() failed (errL %d).\n", ret);
++			goto fail;
++		}
+ 
+ 		// prepare audio output
+-		if(!m_vs->audDec.open(channelLayout, nbChannels, sampleRate))
++		if(!m_vs->audDec.open(&chLayout, sampleRate))
+ 			goto fail;
+ 
+ 		m_vs->audStreamIdx = streamIndex;
+ 		m_vs->audStream = ic->streams[streamIndex];
+ 
+ 		m_vs->audDec.init(avCtx, &m_vs->audPQ, nullptr, m_vs->continueReadThread);
+-		if((m_vs->fmtContext->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK)) &&
+-		   !m_vs->fmtContext->iformat->read_seek) {
++		if((m_vs->fmtContext->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK))
++			&& !m_vs->fmtContext->iformat->read_seek) {
+ 			m_vs->audDec.startPts(m_vs->audStream->start_time, m_vs->audStream->time_base);
+ 		}
+ 		m_vs->audDec.start();
+@@ -342,6 +344,7 @@ StreamDemuxer::componentOpen(int streamIndex)
+ fail:
+ 	avcodec_free_context(&avCtx);
+ out:
++	av_channel_layout_uninit(&chLayout);
+ 	av_dict_free(&opts);
+ 
+ 	return ret;
+@@ -397,8 +400,7 @@ StreamDemuxer::cycleStream(int codecType)
+ 			/* check that parameters are OK */
+ 			switch(codecType) {
+ 			case AVMEDIA_TYPE_AUDIO:
+-				if(st->codecpar->sample_rate != 0 &&
+-				   st->codecpar->channels != 0)
++				if(st->codecpar->sample_rate != 0 && st->codecpar->ch_layout.nb_channels != 0)
+ 					goto the_end;
+ 				break;
+ 			case AVMEDIA_TYPE_VIDEO:
+diff --git a/src/videoplayer/backend/videostate.cpp b/src/videoplayer/backend/videostate.cpp
+index e34399d..a09f246 100644
+--- a/src/videoplayer/backend/videostate.cpp
++++ b/src/videoplayer/backend/videostate.cpp
+@@ -131,7 +131,7 @@ VideoState::notifyLoaded()
+ 			continue;
+ 
+ 		*streamName += QStringLiteral(": ");
+-		AVDictionaryEntry *tag = av_dict_get(stream->metadata, "lang", nullptr, AV_DICT_IGNORE_SUFFIX);
++		const AVDictionaryEntry *tag = av_dict_get(stream->metadata, "lang", nullptr, AV_DICT_IGNORE_SUFFIX);
+ 		*streamName += tag ? QString("%2 (%3)").arg(LanguageCode::nameFromIso(tag->value)).arg(tag->value) : QStringLiteral("Unknown");
+ 
+ 		if((tag = av_dict_get(stream->metadata, "title", nullptr, 0)) != nullptr)
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:06:12 +0200
+Subject: [PATCH 2/8] VideoPlayer: check AVFMT_NO_BYTE_SEEK flag for
+ seek_by_bytes
+
+Applied ffplay release/5.1 patches
+---
+ src/videoplayer/backend/streamdemuxer.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/videoplayer/backend/streamdemuxer.cpp b/src/videoplayer/backend/streamdemuxer.cpp
+index 2eb59af..3fb7476 100644
+--- a/src/videoplayer/backend/streamdemuxer.cpp
++++ b/src/videoplayer/backend/streamdemuxer.cpp
+@@ -529,7 +529,7 @@ StreamDemuxer::run()
+ 		ic->pb->eof_reached = 0; // FIXME hack, ffplay maybe should not use avio_feof() to test for the end
+ 
+ 	if(m_vs->seek_by_bytes < 0)
+-		m_vs->seek_by_bytes = !!(ic->iformat->flags & AVFMT_TS_DISCONT) && strcmp("ogg", ic->iformat->name);
++		m_vs->seek_by_bytes = !(ic->iformat->flags & AVFMT_NO_BYTE_SEEK) && !!(ic->iformat->flags & AVFMT_TS_DISCONT) && strcmp("ogg", ic->iformat->name);
+ 
+ 	m_vs->maxFrameDuration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
+ 
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:26:07 +0200
+Subject: [PATCH 3/8] VideoPlayer: drop an unused function argument
+
+---
+ src/videoplayer/backend/renderthread.cpp | 4 ++--
+ src/videoplayer/backend/renderthread.h   | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/videoplayer/backend/renderthread.cpp b/src/videoplayer/backend/renderthread.cpp
+index d6a044c..99c374b 100644
+--- a/src/videoplayer/backend/renderthread.cpp
++++ b/src/videoplayer/backend/renderthread.cpp
+@@ -103,7 +103,7 @@ retry:
+ 
+ 			m_vs->vidFQ.m_mutex->lock();
+ 			if(!std::isnan(vp->pts))
+-				updateVideoPts(vp->pts, vp->pos, vp->serial);
++				updateVideoPts(vp->pts, vp->serial);
+ 			m_vs->vidFQ.m_mutex->unlock();
+ 
+ 			if(m_vs->vidFQ.nbRemaining() > 1) {
+@@ -187,7 +187,7 @@ RenderThread::vpDuration(Frame *vp, Frame *nextvp)
+ }
+ 
+ void
+-RenderThread::updateVideoPts(double pts, int64_t /*pos*/, int serial)
++RenderThread::updateVideoPts(double pts, int serial)
+ {
+ 	// update current video pts
+ 	m_vs->vidClk.set(pts, serial);
+diff --git a/src/videoplayer/backend/renderthread.h b/src/videoplayer/backend/renderthread.h
+index 80fc66d..7768886 100644
+--- a/src/videoplayer/backend/renderthread.h
++++ b/src/videoplayer/backend/renderthread.h
+@@ -33,7 +33,7 @@ private:
+ 	void videoRefresh(double *remainingTime);
+ 	void videoDisplay();
+ 	double vpDuration(Frame *vp, Frame *nextvp);
+-	void updateVideoPts(double pts, int64_t pos, int serial);
++	void updateVideoPts(double pts, int serial);
+ 	double computeTargetDelay(double delay);
+ 	void updateSampleDisplay(short *samples, int samplesSize);
+ 	void toggleAudioDisplay();
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:46:54 +0200
+Subject: [PATCH 4/8] VideoPlayer: stop using AVFrame.pkt_pos
+
+This field is ad-hoc and will be deprecated. Use the recently-added
+AV_CODEC_FLAG_COPY_OPAQUE to pass arbitrary user data from packets to
+frames.
+---
+ src/videoplayer/backend/audiodecoder.cpp |  4 +++-
+ src/videoplayer/backend/decoder.cpp      | 17 +++++++++++++----
+ src/videoplayer/backend/decoder.h        |  4 ++++
+ src/videoplayer/backend/videodecoder.cpp |  4 +++-
+ 4 files changed, 23 insertions(+), 6 deletions(-)
+
+diff --git a/src/videoplayer/backend/audiodecoder.cpp b/src/videoplayer/backend/audiodecoder.cpp
+index 8c0b943..3514496 100644
+--- a/src/videoplayer/backend/audiodecoder.cpp
++++ b/src/videoplayer/backend/audiodecoder.cpp
+@@ -490,8 +490,10 @@ AudioDecoder::run()
+ 			if(!(af->frame = av_frame_alloc()))
+ 				break;
+ 
++			Decoder::FrameData *fd = reinterpret_cast<Decoder::FrameData*>(frame->opaque_ref ? frame->opaque_ref->data : nullptr);
++
+ 			af->pts = frame->pts == AV_NOPTS_VALUE ? NAN : double(frame->pts) / frame->sample_rate;
+-			af->pos = frame->pkt_pos;
++			af->pos = fd ? fd->pkt_pos : -1;
+ 			af->serial = m_pktSerial;
+ 			af->duration = double(frame->nb_samples) / frame->sample_rate;
+ 
+diff --git a/src/videoplayer/backend/decoder.cpp b/src/videoplayer/backend/decoder.cpp
+index 80fb993..222056d 100644
+--- a/src/videoplayer/backend/decoder.cpp
++++ b/src/videoplayer/backend/decoder.cpp
+@@ -133,10 +133,19 @@ Decoder::decodeFrame(AVFrame *frame, AVSubtitle *sub)
+ 			} else {
+ 				ret = pkt->data ? AVERROR(EAGAIN) : AVERROR_EOF;
+ 			}
+-		} else if(avcodec_send_packet(m_avCtx, pkt) == AVERROR(EAGAIN)) {
+-			av_log(m_avCtx, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
+-			m_pkt = pkt;
+-			pkt = nullptr;
++		} else {
++			if(pkt->buf && !pkt->opaque_ref) {
++				pkt->opaque_ref = av_buffer_allocz(sizeof(Decoder::FrameData));
++				if(!pkt->opaque_ref)
++					return AVERROR(ENOMEM);
++				Decoder::FrameData *fd = reinterpret_cast<Decoder::FrameData*>(pkt->opaque_ref->data);
++				fd->pkt_pos = pkt->pos;
++			}
++			if(avcodec_send_packet(m_avCtx, pkt) == AVERROR(EAGAIN)) {
++				av_log(m_avCtx, AV_LOG_ERROR, "Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n");
++				m_pkt = pkt;
++				pkt = nullptr;
++			}
+ 		}
+ 		av_packet_free(&pkt);
+ 	}
+diff --git a/src/videoplayer/backend/decoder.h b/src/videoplayer/backend/decoder.h
+index 5597066..f4dd8c7 100644
+--- a/src/videoplayer/backend/decoder.h
++++ b/src/videoplayer/backend/decoder.h
+@@ -55,6 +55,10 @@ protected:
+ 	AVRational m_startPtsTb;
+ 	int64_t m_nextPts;
+ 	AVRational m_nextPtsTb;
++
++	struct FrameData {
++		int64_t pkt_pos;
++	};
+ };
+ }
+ 
+diff --git a/src/videoplayer/backend/videodecoder.cpp b/src/videoplayer/backend/videodecoder.cpp
+index 851f626..d5bd111 100644
+--- a/src/videoplayer/backend/videodecoder.cpp
++++ b/src/videoplayer/backend/videodecoder.cpp
+@@ -101,8 +101,10 @@ VideoDecoder::run()
+ 		if(!ret)
+ 			continue;
+ 
++		Decoder::FrameData *fd = reinterpret_cast<Decoder::FrameData*>(frame->opaque_ref ? frame->opaque_ref->data : nullptr);
++
+ 		double pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * m_timeBase;
+-		ret = queuePicture(frame, pts, frameDuration, frame->pkt_pos, pktSerial());
++		ret = queuePicture(frame, pts, frameDuration, fd ? fd->pkt_pos : -1, pktSerial());
+ 		av_frame_unref(frame);
+ 
+ 		if(ret < 0)
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 4 Jul 2024 01:54:10 +0200
+Subject: [PATCH 5/8] VideoPlayer: remove usage of internal
+ AVInputFormat.read_seek field
+
+It's an internal field, so it should not be touched.
+---
+ src/videoplayer/backend/streamdemuxer.cpp | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
+
+diff --git a/src/videoplayer/backend/streamdemuxer.cpp b/src/videoplayer/backend/streamdemuxer.cpp
+index 3fb7476..9c949fa 100644
+--- a/src/videoplayer/backend/streamdemuxer.cpp
++++ b/src/videoplayer/backend/streamdemuxer.cpp
+@@ -314,10 +314,8 @@ StreamDemuxer::componentOpen(int streamIndex)
+ 		m_vs->audStream = ic->streams[streamIndex];
+ 
+ 		m_vs->audDec.init(avCtx, &m_vs->audPQ, nullptr, m_vs->continueReadThread);
+-		if((m_vs->fmtContext->iformat->flags & (AVFMT_NOBINSEARCH | AVFMT_NOGENSEARCH | AVFMT_NO_BYTE_SEEK))
+-			&& !m_vs->fmtContext->iformat->read_seek) {
++		if(m_vs->fmtContext->iformat->flags & AVFMT_NOTIMESTAMPS)
+ 			m_vs->audDec.startPts(m_vs->audStream->start_time, m_vs->audStream->time_base);
+-		}
+ 		m_vs->audDec.start();
+ 		m_vs->audDec.pause();
+ 		break;
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:56:02 +0200
+Subject: [PATCH 6/8] VideoPlayer: stop injecting stream side data in packets
+
+This is no longer needed as the side data is available for decoders in the
+AVCodecContext.
+---
+ src/videoplayer/backend/streamdemuxer.cpp | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/src/videoplayer/backend/streamdemuxer.cpp b/src/videoplayer/backend/streamdemuxer.cpp
+index 9c949fa..eda2b26 100644
+--- a/src/videoplayer/backend/streamdemuxer.cpp
++++ b/src/videoplayer/backend/streamdemuxer.cpp
+@@ -501,8 +501,6 @@ StreamDemuxer::run()
+ 	if(m_vs->genpts)
+ 		ic->flags |= AVFMT_FLAG_GENPTS;
+ 
+-	av_format_inject_global_side_data(ic);
+-
+ 	{ // find_stream_info
+ 		const int origNbStreams = ic->nb_streams;
+ 		AVDictionary **opts = (AVDictionary **)av_calloc(origNbStreams, sizeof(*opts));
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:18:38 +0200
+Subject: [PATCH 7/8] VideoPlayer: check return of swr_alloc_set_opts2()
+
+This probably makes no difference but its more correct
+---
+ src/videoplayer/backend/audiodecoder.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/videoplayer/backend/audiodecoder.cpp b/src/videoplayer/backend/audiodecoder.cpp
+index 3514496..d4675a5 100644
+--- a/src/videoplayer/backend/audiodecoder.cpp
++++ b/src/videoplayer/backend/audiodecoder.cpp
+@@ -371,11 +371,11 @@ AudioDecoder::decodeFrame(Frame *af)
+ 	|| af->frame->sample_rate != m_fmtSrc.freq
+ 	|| (wantedNbSamples != af->frame->nb_samples && !m_swrCtx)) {
+ 		swr_free(&m_swrCtx);
+-		swr_alloc_set_opts2(&m_swrCtx,
++		int ret = swr_alloc_set_opts2(&m_swrCtx,
+ 							&m_fmtTgt.chLayout, m_fmtTgt.fmt, m_fmtTgt.freq,
+ 							&af->frame->ch_layout, AVSampleFormat(af->frame->format), af->frame->sample_rate,
+ 							0, nullptr);
+-		if(!m_swrCtx || swr_init(m_swrCtx) < 0) {
++		if(ret < 0 || !m_swrCtx || swr_init(m_swrCtx) < 0) {
+ 			av_log(nullptr, AV_LOG_ERROR,
+ 				   "Cannot create sample rate converter for conversion of %d Hz %s %d channels to %d Hz %s %d channels!\n",
+ 				   af->frame->sample_rate, av_get_sample_fmt_name((AVSampleFormat)af->frame->format),
+--
+
+
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Mladen Milinkovic <maxrd2@smoothware.net>
+Date: Thu, 1 Aug 2024 10:51:08 +0200
+Subject: [PATCH 8/8] StreamProcessor: stop using pkt_duration
+
+Fixes compilation with FFmpeg6
+---
+ src/streamprocessor/streamprocessor.cpp | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/streamprocessor/streamprocessor.cpp b/src/streamprocessor/streamprocessor.cpp
+index aa27a66..b30c963 100644
+--- a/src/streamprocessor/streamprocessor.cpp
++++ b/src/streamprocessor/streamprocessor.cpp
+@@ -447,8 +447,8 @@ StreamProcessor::processAudio()
+ 						timeFrameDuration = frameResampled->nb_samples * 1000 / frameResampled->sample_rate;
+ 					} else {
+ 						frameSize = frame->nb_samples * av_get_bytes_per_sample(static_cast<AVSampleFormat>(frame->format));
+-						if(frame->pkt_duration)
+-							timeFrameDuration = frame->pkt_duration * 1000 * m_avStream->time_base.num / m_avStream->time_base.den;
++						if(frame->duration)
++							timeFrameDuration = frame->duration * 1000 * m_avStream->time_base.num / m_avStream->time_base.den;
+ 					}
+ 					timeFrameEnd = timeFrameStart + timeFrameDuration;
+ 
