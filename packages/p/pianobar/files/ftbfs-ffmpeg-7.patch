@@ -1,0 +1,72 @@
+From 8bf4c1bbaa6a533f34d74f83d72eecc0beb61d4f Mon Sep 17 00:00:00 2001
+From: Lars-Dominik Braun <lars@6xq.net>
+Date: Fri, 29 Mar 2024 09:48:36 +0100
+Subject: [PATCH] player: Adapt to new ffmpeg channel layout API.
+
+Bumps required ffmpeg version to at least 5.1.
+---
+ INSTALL      |  2 +-
+ src/player.c | 13 +++++++------
+ 2 files changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/INSTALL b/INSTALL
+index e1708236..fa18296d 100644
+--- a/INSTALL
++++ b/INSTALL
+@@ -10,7 +10,7 @@ Dependencies
+ - libcurl>=7.32.0
+ - gcrypt[1]
+ - json-c
+-- ffmpeg>=3.3 [2]
++- ffmpeg>=5.1 [2]
+ - UTF-8 console/locale
+ 
+ [1] with blowfish cipher enabled
+diff --git a/src/player.c b/src/player.c
+index 94d3cee0..3a9cefe2 100644
+--- a/src/player.c
++++ b/src/player.c
+@@ -235,7 +235,7 @@ static bool openStream (player_t * const player) {
+ 		softfail ("avcodec_parameters_to_context");
+ 	}
+ 
+-	AVCodec * const decoder = avcodec_find_decoder (cp->codec_id);
++	const AVCodec * const decoder = avcodec_find_decoder (cp->codec_id);
+ 	if (decoder == NULL) {
+ 		softfail ("find_decoder");
+ 	}
+@@ -282,11 +282,13 @@ static bool openFilter (player_t * const player) {
+ 	/* abuffer */
+ 	AVRational time_base = player->st->time_base;
+ 
++	char channelLayout[128];
++	av_channel_layout_describe(&player->cctx->ch_layout, channelLayout, sizeof(channelLayout));
+ 	snprintf (strbuf, sizeof (strbuf),
+-			"time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=0x%"PRIx64, 
++			"time_base=%d/%d:sample_rate=%d:sample_fmt=%s:channel_layout=%s",
+ 			time_base.num, time_base.den, cp->sample_rate,
+ 			av_get_sample_fmt_name (player->cctx->sample_fmt),
+-			cp->channel_layout);
++			channelLayout);
+ 	if ((ret = avfilter_graph_create_filter (&player->fabuf,
+ 			avfilter_get_by_name ("abuffer"), "source", strbuf, NULL,
+ 			player->fgraph)) < 0) {
+@@ -340,7 +342,7 @@ static bool openDevice (player_t * const player) {
+ 	memset (&aoFmt, 0, sizeof (aoFmt));
+ 	aoFmt.bits = av_get_bytes_per_sample (avformat) * 8;
+ 	assert (aoFmt.bits > 0);
+-	aoFmt.channels = cp->channels;
++	aoFmt.channels = cp->ch_layout.nb_channels;
+ 	aoFmt.rate = getSampleRate (player);
+ 	aoFmt.byte_format = AO_FMT_NATIVE;
+ 
+@@ -585,8 +587,7 @@ void *BarAoPlayThread (void *data) {
+ 		}
+ 		pthread_mutex_unlock (&player->aoplayLock);
+ 
+-		const int numChannels = av_get_channel_layout_nb_channels (
+-				filteredFrame->channel_layout);
++		const int numChannels = filteredFrame->ch_layout.nb_channels;
+ 		const int bps = av_get_bytes_per_sample (filteredFrame->format);
+ 		ao_play (player->aoDev, (char *) filteredFrame->data[0],
+ 				filteredFrame->nb_samples * numChannels * bps);
