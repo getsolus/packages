@@ -1,0 +1,105 @@
+From 8363bd7ba39e37fcea0f120a31b7f627435c6953 Mon Sep 17 00:00:00 2001
+From: Vlad Zahorodnii <vlad.zahorodnii@kde.org>
+Date: Wed, 20 Nov 2024 15:23:37 +0200
+Subject: [PATCH] Handle multiple configure events before configure
+ aknowledgment
+
+If multiple moveResize is called multiple times before its
+configure event is acknowledged, new configure events will now
+be sent instead of waiting for acknowledgement of the first.
+
+BUG:489086
+
+Co-authored-by: Niccolo Venerandi <niccolo@venerandi.com>
+---
+ src/layershellv1window.cpp | 26 +++++++++++++++++++++++---
+ src/layershellv1window.h   |  8 ++++++++
+ 2 files changed, 31 insertions(+), 3 deletions(-)
+
+diff --git a/src/layershellv1window.cpp b/src/layershellv1window.cpp
+index eb896521661..f2acb9ccd7c 100644
+--- a/src/layershellv1window.cpp
++++ b/src/layershellv1window.cpp
+@@ -76,6 +76,8 @@ LayerShellV1Window::LayerShellV1Window(LayerSurfaceV1Interface *shellSurface,
+             this, &LayerShellV1Window::scheduleRearrange);
+     connect(shellSurface, &LayerSurfaceV1Interface::acceptsFocusChanged,
+             this, &LayerShellV1Window::handleAcceptsFocusChanged);
++    connect(shellSurface, &LayerSurfaceV1Interface::configureAcknowledged,
++            this, &LayerShellV1Window::handleConfigureAcknowledged);
+ }
+ 
+ LayerSurfaceV1Interface *LayerShellV1Window::shellSurface() const
+@@ -239,9 +241,17 @@ bool LayerShellV1Window::acceptsFocus() const
+ 
+ void LayerShellV1Window::moveResizeInternal(const QRectF &rect, MoveResizeMode mode)
+ {
+-    const QSizeF requestedClientSize = frameSizeToClientSize(rect.size());
+-    if (requestedClientSize != clientSize()) {
+-        m_shellSurface->sendConfigure(rect.size().toSize());
++    const QSize requestedClientSize = frameSizeToClientSize(rect.size()).toSize();
++
++    if (!m_configureEvents.isEmpty()) {
++        const LayerShellV1ConfigureEvent &lastLayerShellV1ConfigureEvent = m_configureEvents.constLast();
++        if (lastLayerShellV1ConfigureEvent.size != requestedClientSize) {
++            const quint32 serial = m_shellSurface->sendConfigure(requestedClientSize);
++            m_configureEvents.append({serial, requestedClientSize});
++        }
++    } else if (requestedClientSize != clientSize()) {
++        const quint32 serial = m_shellSurface->sendConfigure(requestedClientSize);
++        m_configureEvents.append({serial, requestedClientSize});
+     } else {
+         updateGeometry(rect);
+         return;
+@@ -277,6 +287,16 @@ void LayerShellV1Window::doSetPreferredColorDescription()
+     surface()->setPreferredColorDescription(preferredColorDescription());
+ }
+ 
++void LayerShellV1Window::handleConfigureAcknowledged(quint32 serial)
++{
++    while (!m_configureEvents.isEmpty()) {
++        const LayerShellV1ConfigureEvent head = m_configureEvents.takeFirst();
++        if (head.serial == serial) {
++            break;
++        }
++    }
++}
++
+ void LayerShellV1Window::handleSizeChanged()
+ {
+     updateGeometry(QRectF(pos(), clientSizeToFrameSize(surface()->size())));
+diff --git a/src/layershellv1window.h b/src/layershellv1window.h
+index b188cdee2d0..c886b2d156b 100644
+--- a/src/layershellv1window.h
++++ b/src/layershellv1window.h
+@@ -11,6 +11,12 @@
+ namespace KWin
+ {
+ 
++struct LayerShellV1ConfigureEvent
++{
++    quint32 serial;
++    QSize size;
++};
++
+ class AutoHideScreenEdgeV1Interface;
+ class LayerSurfaceV1Interface;
+ class Output;
+@@ -55,6 +61,7 @@ protected:
+     void doSetPreferredColorDescription() override;
+ 
+ private:
++    void handleConfigureAcknowledged(quint32 serial);
+     void handleSizeChanged();
+     void handleUnmapped();
+     void handleCommitted();
+@@ -72,6 +79,7 @@ private:
+     QPointer<AutoHideScreenEdgeV1Interface> m_screenEdge;
+     bool m_screenEdgeActive = false;
+     WindowType m_windowType;
++    QList<LayerShellV1ConfigureEvent> m_configureEvents;
+ };
+ 
+ } // namespace KWin
+-- 
+GitLab
+
