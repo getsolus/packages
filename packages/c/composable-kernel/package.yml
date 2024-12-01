@@ -1,69 +1,78 @@
 name       : composable-kernel
-version    : 6.0.0
-release    : 2
+version    : 6.2.4
+release    : 3
 source     :
-    - https://github.com/ROCm/composable_kernel/archive/refs/tags/rocm-6.0.0.tar.gz : a8f736f2f2a8afa4cddd06301205be27774d85f545429049b4a2bbbe6fcd67df
+    # - https://github.com/ROCm/composable_kernel/archive/refs/tags/rocm-6.0.0.tar.gz : a8f736f2f2a8afa4cddd06301205be27774d85f545429049b4a2bbbe6fcd67df
+    # tag: rocm-6.2.4
+    - git|https://github.com/ROCm/composable_kernel : 6d90a7cf2eb64f6c956460ea94341e32ab4de7a5
 homepage   : https://github.com/ROCm/composable_kernel
 license    : MIT
 component  : programming.library
 summary    : Performance Portable Programming Model for Machine Learning Tensor Operators
 description: |
     The Composable Kernel (CK) library provides a programming model for writing performance-critical kernels for machine learning workloads across multiple architectures (GPUs, CPUs, etc.). The CK library uses general purpose kernel languages, such as HIP C++.
-patterns   : /*
+# patterns   : /*
 builddeps  :
     - rocm-cmake
     - rocm-hip
-    # Unfortunately the Git binary must be present
-    - git
 debug      : no
 environment: |
     # Speed up the process abit
     unset LD_PRELOAD
 
-    unset CFLAGS CXXFLAGS LDFLAGS
+    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+    export CXXFLAGS="${CXXFLAGS/-g2/}"
     # Too noisy
-    export CFLAGS="-w"
-    export CXXFLAGS="-w"
+    export CXXFLAGS+=" -w"
     export CLANG_IGNORE_WERROR=1
 
     export ROCM_PATH=/usr
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
-    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export DEVICE_LIB_PATH=$HIP_DEVICE_LIB_PATH
     # Check include/ck/ck.hpp for supported architectures
     export AMDGPU_TARGETS="%AMDGPUTARGETS%"
 
-    export HIP_CLANG_LAUNCHER=sccache
+    if [ -e /usr/bin/sccache ]; then
+        export HIP_CLANG_LAUNCHER=/usr/bin/sccache
+        export CMAKE_CXX_COMPILER_LAUNCHER=$HIP_CLANG_LAUNCHER
+        export CMAKE_HIP_COMPILER_LAUNCHER=$HIP_CLANG_LAUNCHER
+    fi
     export SCCACHE_IDLE_TIMEOUT=0
+
+    # Compress GPU code so we don't get linking errors due to large file size
+    export OFFLOAD_BUNDLER_COMPRESS=1
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-Rename-device_operations-and-utility-to-prevent-name.patch
+    # %patch -p1 -i $pkgfiles/0001-Rename-device_operations-and-utility-to-prevent-name.patch
     # MIOpen is not ready yet
     # %patch -p1 -i $pkgfiles/0002-Split-the-static-library-into-several-files.patch
     # TODO(GZGavinZhao): it's a little tricky
     # %patch -p1 -i $pkgfiles/0003-Me-no-like-static-libs.patch
 
-    # They put commas in a CMake macro!
-    sed -i 's|USE_BITINT_EXTENSION_INT4,|USE_BITINT_EXTENSION_INT4|g' CMakeLists.txt
-    sed -i 's|USE_OPT_NAVI3X,|USE_OPT_NAVI3X|g' CMakeLists.txt
+    # # Support gfx101*
+    # sed -i 's/defined(__gfx900__)/defined(__gfx900__) || defined(__gfx1010__)/g' include/ck/ck.hpp
 
-    # Support gfx101*
-    sed -i 's/defined(__gfx900__)/defined(__gfx900__) || defined(__gfx1010__)/g' include/ck/ck.hpp
+    %patch -p1 -i $pkgfiles/0001-Add-ck_-prefix-to-library-names-to-prevent-conflicts.patch
+    %patch -p1 -i $pkgfiles/0002-Allow-compilation-for-RDNA1-__gfx101__.patch
+    %patch -p1 -i $pkgfiles/0003-Allow-building-as-shared-libs.patch
+    %patch -p1 -i $pkgfiles/0004-Add-SOVERSION-to-libraries.patch
 
     %cmake_ninja -L \
-      -DCMAKE_C_COMPILER=hipcc \
-      -DCMAKE_CXX_COMPILER=hipcc \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
+      -DCMAKE_HIP_COMPILER=$HIP_CLANG_PATH/clang++ \
       -DROCM_SYMLINK_LIBS=OFF \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DINSTALL_GTEST=OFF \
       -DBUILD_DEV=OFF \
       -DBUILD_GMOCK=OFF \
       -DINSTANCES_ONLY=ON \
-      -DUSE_BITINT_EXTENSION_INT4=OFF \
-      -DUSE_OPT_NAVI3X=ON \
+      -DUSE_BITINT_EXTENSION_INT4=ON \
+      -DUSE_OPT_GFX11=ON \
       -DDL_KERNELS=ON \
+      -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
       -DGPU_TARGETS="$AMDGPU_TARGETS" \
-      -DDTYPES="fp64;fp32;fp16;bf16;fp8;bf8;int8" \
-      # -DBUILD_SHARED_LIBS=ON
+      -DBUILD_SHARED_LIBS=ON
 build      : |
     %ninja_build
 install    : |
