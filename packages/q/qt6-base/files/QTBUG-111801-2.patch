@@ -1,0 +1,569 @@
+From aa7d479be0df3e118580e87f30e061445dfb37e3 Mon Sep 17 00:00:00 2001
+From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+Date: Fri, 02 Feb 2024 15:45:20 +0100
+Subject: [PATCH] Introduce emoji-segmenter to 3rdparty code
+
+This is a parser for emoji sequences developed by Google
+which is used in multiple other projects for parsing
+sequences of characters to see if they should be represented
+as color emojis or as monochrome text.
+
+[ChangeLog][Third-Party Code] Added the emoji-segmenter to
+third party code, for supporting complex emoji sequences.
+This can be configured using the -emojisegmenter option.
+
+Task-number: QTBUG-111801
+Change-Id: I7f87b0751415024d29f074d133850027f0003e29
+Reviewed-by: Volker Hilsheimer <volker.hilsheimer@qt.io>
+---
+
+diff --git a/config_help.txt b/config_help.txt
+index 039582da..417c2067 100644
+--- a/config_help.txt
++++ b/config_help.txt
+@@ -295,6 +295,7 @@ Gui, printing, widget options:
+ 
+   -cups ................ Enable CUPS support [auto] (Unix only)
+ 
++  -emojisegmenter ...... Enable complex emoji sequences [yes]
+   -fontconfig .......... Enable Fontconfig support [auto] (Unix only)
+   -freetype ............ Select used FreeType [system/qt/no]
+   -harfbuzz ............ Select used HarfBuzz-NG [system/qt/no]
+diff --git a/src/3rdparty/emoji-segmenter/CONTRIBUTING.md b/src/3rdparty/emoji-segmenter/CONTRIBUTING.md
+new file mode 100644
+index 00000000..db177d4a
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/CONTRIBUTING.md
+@@ -0,0 +1,28 @@
++# How to Contribute
++
++We'd love to accept your patches and contributions to this project. There are
++just a few small guidelines you need to follow.
++
++## Contributor License Agreement
++
++Contributions to this project must be accompanied by a Contributor License
++Agreement. You (or your employer) retain the copyright to your contribution;
++this simply gives us permission to use and redistribute your contributions as
++part of the project. Head over to <https://cla.developers.google.com/> to see
++your current agreements on file or to sign a new one.
++
++You generally only need to submit a CLA once, so if you've already submitted one
++(even if it was for a different project), you probably don't need to do it
++again.
++
++## Code reviews
++
++All submissions, including submissions by project members, require review. We
++use GitHub pull requests for this purpose. Consult
++[GitHub Help](https://help.github.com/articles/about-pull-requests/) for more
++information on using pull requests.
++
++## Community Guidelines
++
++This project follows
++[Google's Open Source Community Guidelines](https://opensource.google.com/conduct/).
+diff --git a/src/3rdparty/emoji-segmenter/NEWS b/src/3rdparty/emoji-segmenter/NEWS
+new file mode 100644
+index 00000000..3fd07f1c
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/NEWS
+@@ -0,0 +1,28 @@
++Overview of changes leading to 0.4.0
++Friday, November 15, 2024
++====================================
++
++* Add `make size` targe to
++  determine binary size.
++* Set has_vs for
++  emoji_keycap_sequence
++
++Overview of changes leading to 0.3.0
++Tuesday, September 5, 2024
++====================================
++
++* Add segmentation for variation
++  selector pairs, VS15 and VS16,
++  needed for font-variant-emoji.
++
++Overview of changes leading to 0.2.0
++Tuesday, Februar 20, 2024
++====================================
++
++* Change Ragel mode to -F1
++
++Overview of changes leading to 0.1.0
++Tuesday, January 29, 2019
++====================================
++
++* Initial release
+diff --git a/src/3rdparty/emoji-segmenter/README.md b/src/3rdparty/emoji-segmenter/README.md
+new file mode 100644
+index 00000000..571a1a45
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/README.md
+@@ -0,0 +1,103 @@
++Emoji Segmenter
++===
++
++This repository contains a Ragel grammar and generated C code for segmenting
++runs of text into text-presentation and emoji-presentation runs. It is currently
++used in projects such as Chromium and Pango for deciding which preferred
++presentation, color or text, a run of text should have.
++
++The goal is to stay very close to the grammar definitions in [Unicode Technical
++Standard #51](http://www.unicode.org/reports/tr51/).
++
++API
++===
++
++By including the `emoji_presentation_scanner.c` file, you will be able to call
++the following API
++
++```
++scan_emoji_presentation (emoji_text_iter_t p,
++    const emoji_text_iter_t pe,
++    bool* is_emoji,
++    bool* has_vs)
++```
++
++This API call will scan `emoji_text_iter_t p` for the next grammar-token and
++return an iterator that points to the end of the next token. An end iterator
++needs be specified as `pe` so that the scanner can compare against this and
++knows where to stop. In the reference parameter `is_emoji` it returns whether
++this token has emoji-presentation text-presentation, `has_vs` is set to true
++if the token contains a variation selector.
++
++A grammar token is either a combination of an emoji plus variation selector 15
++for text presentation, an emoji presentation sequence (emoji + VS16), an emoji
++presentation emoji or emoji sequence, or a single text presentation character.
++
++`emoji_text_iter_t` is an iterator type over a buffer of the character classes
++that are defined at the beginning of the the Ragel file, e.g. `EMOJI`,
++`EMOJI_TEXT_PRESENTATION`, `REGIONAL_INDICATOR`, `KEYCAP_BASE`, etc.
++
++By typedef'ing `emoji_text_iter_t` to your own iterator type, you can implement
++an adapter class that iterates over an input text buffer in any encoding, and on
++dereferencing returns the correct Ragel class by implementing something similar
++to the following Unicode character class to Ragel class mapping, example taken
++from Chromium:
++
++```
++char EmojiSegmentationCategory(UChar32 codepoint) {
++  // Specific ones first.
++  if (codepoint == kCombiningEnclosingKeycapCharacter)
++    return COMBINING_ENCLOSING_KEYCAP;
++  if (codepoint == kCombiningEnclosingCircleBackslashCharacter)
++    return COMBINING_ENCLOSING_CIRCLE_BACKSLASH;
++  if (codepoint == kZeroWidthJoinerCharacter)
++    return ZWJ;
++  if (codepoint == kVariationSelector15Character)
++    return VS15;
++  if (codepoint == kVariationSelector16Character)
++    return VS16;
++  if (codepoint == 0x1F3F4)
++    return TAG_BASE;
++  if ((codepoint >= 0xE0030 && codepoint <= 0xE0039) ||
++      (codepoint >= 0xE0061 && codepoint <= 0xE007A))
++    return TAG_SEQUENCE;
++  if (codepoint == 0xE007F)
++    return TAG_TERM;
++  if (Character::IsEmojiModifierBase(codepoint))
++    return EMOJI_MODIFIER_BASE;
++  if (Character::IsModifier(codepoint))
++    return EMOJI_MODIFIER;
++  if (Character::IsRegionalIndicator(codepoint))
++    return REGIONAL_INDICATOR;
++  if (Character::IsEmojiKeycapBase(codepoint))
++    return KEYCAP_BASE;
++
++  if (Character::IsEmojiEmojiDefault(codepoint))
++    return EMOJI_EMOJI_PRESENTATION;
++  if (Character::IsEmojiTextDefault(codepoint))
++    return EMOJI_TEXT_PRESENTATION;
++  if (Character::IsEmoji(codepoint))
++    return EMOJI;
++
++  // Ragel state machine will interpret unknown category as "any".
++  return kMaxEmojiScannerCategory;
++}
++```
++
++Update/Build requisites
++===
++
++You need to have ragel installed if you want to modify the grammar and generate a new C file as output.
++
++`apt-get install ragel`
++
++then run
++
++`make`
++
++to update the `emoji_presentation_scanner.c` and `emoji_presentation_scanner_vs.c` output C source file.
++
++Contributing
++===
++
++See the CONTRIBUTING.md file for how to contribute.
+diff --git a/src/3rdparty/emoji-segmenter/REUSE.toml b/src/3rdparty/emoji-segmenter/REUSE.toml
+new file mode 100644
+index 00000000..53d2dc47
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/REUSE.toml
+@@ -0,0 +1,7 @@
++version = 1
++
++[[annotations]]
++path = ["**"]
++precedence = "closest"
++SPDX-FileCopyrightText = "Copyright 2019 Google LLC"
++SPDX-License-Identifier = "Apache-2.0"
+diff --git a/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c b/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c
+new file mode 100644
+index 00000000..00b7700a
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c
+@@ -0,0 +1,251 @@
++
++#line 1 "emoji_presentation_scanner.rl"
++/* Copyright 2019 Google LLC
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     https://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#include <stdbool.h>
++
++#ifndef EMOJI_LINKAGE
++#define EMOJI_LINKAGE static
++#endif
++
++
++#line 23 "emoji_presentation_scanner.c"
++static const unsigned char _emoji_presentation_trans_keys[] = {
++	0u, 13u, 14u, 15u, 0u, 13u, 9u, 12u, 10u, 12u, 10u, 10u, 4u, 12u, 4u, 12u, 
++	6u, 6u, 9u, 12u, 8u, 8u, 8u, 10u, 9u, 14u, 0
++};
++
++static const char _emoji_presentation_key_spans[] = {
++	14, 2, 14, 4, 3, 1, 9, 9, 
++	1, 4, 1, 3, 6
++};
++
++static const char _emoji_presentation_index_offsets[] = {
++	0, 15, 18, 33, 38, 42, 44, 54, 
++	64, 66, 71, 73, 77
++};
++
++static const char _emoji_presentation_indicies[] = {
++	1, 1, 1, 2, 0, 0, 0, 1, 
++	0, 0, 0, 0, 0, 1, 0, 4, 
++	5, 3, 6, 6, 7, 8, 9, 9, 
++	10, 11, 9, 9, 9, 9, 9, 12, 
++	9, 5, 13, 14, 15, 0, 13, 16, 
++	17, 16, 13, 0, 17, 16, 16, 16, 
++	16, 16, 13, 16, 17, 16, 17, 16, 
++	16, 16, 16, 5, 13, 14, 15, 16, 
++	5, 18, 5, 13, 19, 20, 18, 14, 
++	21, 23, 22, 13, 22, 5, 13, 14, 
++	15, 16, 4, 16, 0
++};
++
++static const char _emoji_presentation_trans_targs[] = {
++	2, 4, 6, 2, 1, 2, 3, 3, 
++	7, 2, 8, 9, 12, 0, 2, 5, 
++	2, 5, 2, 10, 11, 2, 2, 2
++};
++
++static const char _emoji_presentation_trans_actions[] = {
++	1, 2, 2, 3, 0, 4, 7, 2, 
++	2, 8, 0, 7, 2, 0, 9, 10, 
++	11, 2, 12, 0, 10, 13, 14, 15
++};
++
++static const char _emoji_presentation_to_state_actions[] = {
++	0, 0, 5, 0, 0, 0, 0, 0, 
++	0, 0, 0, 0, 0
++};
++
++static const char _emoji_presentation_from_state_actions[] = {
++	0, 0, 6, 0, 0, 0, 0, 0, 
++	0, 0, 0, 0, 0
++};
++
++static const char _emoji_presentation_eof_trans[] = {
++	1, 4, 0, 1, 17, 1, 17, 17, 
++	19, 19, 22, 23, 17
++};
++
++static const int emoji_presentation_start = 2;
++
++static const int emoji_presentation_en_text_and_emoji_run = 2;
++
++
++#line 26 "emoji_presentation_scanner.rl"
++
++
++
++#line 100 "emoji_presentation_scanner.rl"
++
++
++EMOJI_LINKAGE emoji_text_iter_t
++scan_emoji_presentation (emoji_text_iter_t p,
++    const emoji_text_iter_t pe,
++    bool* is_emoji,
++    bool* has_vs)
++{
++  emoji_text_iter_t ts;
++  emoji_text_iter_t te;
++  const emoji_text_iter_t eof = pe;
++
++  (void)ts;
++
++  unsigned act;
++  int cs;
++
++  
++#line 100 "emoji_presentation_scanner.c"
++	{
++	cs = emoji_presentation_start;
++	ts = 0;
++	te = 0;
++	act = 0;
++	}
++
++#line 106 "emoji_presentation_scanner.c"
++	{
++	int _slen;
++	int _trans;
++	const unsigned char *_keys;
++	const char *_inds;
++	if ( p == pe )
++		goto _test_eof;
++_resume:
++	switch ( _emoji_presentation_from_state_actions[cs] ) {
++	case 6:
++#line 1 "NONE"
++	{ts = p;}
++	break;
++#line 118 "emoji_presentation_scanner.c"
++	}
++
++	_keys = _emoji_presentation_trans_keys + (cs<<1);
++	_inds = _emoji_presentation_indicies + _emoji_presentation_index_offsets[cs];
++
++	_slen = _emoji_presentation_key_spans[cs];
++	_trans = _inds[ _slen > 0 && _keys[0] <=(*p) &&
++		(*p) <= _keys[1] ?
++		(*p) - _keys[0] : _slen ];
++
++_eof_trans:
++	cs = _emoji_presentation_trans_targs[_trans];
++
++	if ( _emoji_presentation_trans_actions[_trans] == 0 )
++		goto _again;
++
++	switch ( _emoji_presentation_trans_actions[_trans] ) {
++	case 9:
++#line 94 "emoji_presentation_scanner.rl"
++	{te = p+1;{ *is_emoji = false; *has_vs = true; return te; }}
++	break;
++	case 15:
++#line 95 "emoji_presentation_scanner.rl"
++	{te = p+1;{ *is_emoji = true; *has_vs = true; return te; }}
++	break;
++	case 4:
++#line 96 "emoji_presentation_scanner.rl"
++	{te = p+1;{ *is_emoji = true; *has_vs = false; return te; }}
++	break;
++	case 8:
++#line 97 "emoji_presentation_scanner.rl"
++	{te = p+1;{ *is_emoji = false; *has_vs = false; return te; }}
++	break;
++	case 13:
++#line 94 "emoji_presentation_scanner.rl"
++	{te = p;p--;{ *is_emoji = false; *has_vs = true; return te; }}
++	break;
++	case 14:
++#line 95 "emoji_presentation_scanner.rl"
++	{te = p;p--;{ *is_emoji = true; *has_vs = true; return te; }}
++	break;
++	case 11:
++#line 96 "emoji_presentation_scanner.rl"
++	{te = p;p--;{ *is_emoji = true; *has_vs = false; return te; }}
++	break;
++	case 12:
++#line 97 "emoji_presentation_scanner.rl"
++	{te = p;p--;{ *is_emoji = false; *has_vs = false; return te; }}
++	break;
++	case 3:
++#line 96 "emoji_presentation_scanner.rl"
++	{{p = ((te))-1;}{ *is_emoji = true; *has_vs = false; return te; }}
++	break;
++	case 1:
++#line 1 "NONE"
++	{	switch( act ) {
++	case 2:
++	{{p = ((te))-1;} *is_emoji = true; *has_vs = true; return te; }
++	break;
++	case 3:
++	{{p = ((te))-1;} *is_emoji = true; *has_vs = false; return te; }
++	break;
++	case 4:
++	{{p = ((te))-1;} *is_emoji = false; *has_vs = false; return te; }
++	break;
++	}
++	}
++	break;
++	case 10:
++#line 1 "NONE"
++	{te = p+1;}
++#line 95 "emoji_presentation_scanner.rl"
++	{act = 2;}
++	break;
++	case 2:
++#line 1 "NONE"
++	{te = p+1;}
++#line 96 "emoji_presentation_scanner.rl"
++	{act = 3;}
++	break;
++	case 7:
++#line 1 "NONE"
++	{te = p+1;}
++#line 97 "emoji_presentation_scanner.rl"
++	{act = 4;}
++	break;
++#line 188 "emoji_presentation_scanner.c"
++	}
++
++_again:
++	switch ( _emoji_presentation_to_state_actions[cs] ) {
++	case 5:
++#line 1 "NONE"
++	{ts = 0;}
++	break;
++#line 195 "emoji_presentation_scanner.c"
++	}
++
++	if ( ++p != pe )
++		goto _resume;
++	_test_eof: {}
++	if ( p == eof )
++	{
++	if ( _emoji_presentation_eof_trans[cs] > 0 ) {
++		_trans = _emoji_presentation_eof_trans[cs] - 1;
++		goto _eof_trans;
++	}
++	}
++
++	}
++
++#line 118 "emoji_presentation_scanner.rl"
++
++
++  /* Should not be reached. */
++  *is_emoji = false;
++  *has_vs = false;
++  return p;
++}
+diff --git a/src/3rdparty/emoji-segmenter/patch/0001-Compile-with-warnings-are-errors.patch b/src/3rdparty/emoji-segmenter/patch/0001-Compile-with-warnings-are-errors.patch
+new file mode 100644
+index 00000000..0cc1868c
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/patch/0001-Compile-with-warnings-are-errors.patch
+@@ -0,0 +1,26 @@
++From 4ced1426e27320e00b0dd28693df5d95c648d230 Mon Sep 17 00:00:00 2001
++From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
++Date: Thu, 14 Nov 2024 09:42:11 +0100
++Subject: [PATCH] Compile with warnings-are-errors
++
++Change-Id: Icea8febefc90f3f047143e5b76ff511145c0dcae
++---
++ src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c | 2 ++
++ 1 file changed, 2 insertions(+)
++
++diff --git a/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c b/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c
++index 56e2e78033..ce7e01846c 100644
++--- a/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c
+++++ b/src/3rdparty/emoji-segmenter/emoji_presentation_scanner.c
++@@ -101,6 +101,8 @@ scan_emoji_presentation (emoji_text_iter_t p,
++   emoji_text_iter_t te;
++   const emoji_text_iter_t eof = pe;
++ 
+++  (void)ts;
+++
++   unsigned act;
++   int cs;
++ 
++-- 
++2.40.0.windows.1
++
+diff --git a/src/3rdparty/emoji-segmenter/qt_attribution.json b/src/3rdparty/emoji-segmenter/qt_attribution.json
+new file mode 100644
+index 00000000..64083381
+--- /dev/null
++++ b/src/3rdparty/emoji-segmenter/qt_attribution.json
+@@ -0,0 +1,16 @@
++{
++    "Id": "emoji-segmenter",
++    "Name": "Emoji Segmenter",
++    "QDocModule": "qtgui",
++    "QtUsage": "Used in QtGui for parsing complex emoji sequences. Can be configured using the -emojisegmenter option.",
++    "SecurityCritical": true,
++
++    "Description": "A parser for emoji sequences.",
++    "Homepage": "https://github.com/google/emoji-segmenter",
++    "Version": "0.4.0",
++    "DownloadLocation": "https://github.com/google/emoji-segmenter/releases/tag/0.4.0",
++
++    "License": "Apache License 2.0",
++    "LicenseId": "Apache-2.0",
++    "Copyright": "Copyright 2019 Google LLC"
++}
+diff --git a/src/gui/configure.cmake b/src/gui/configure.cmake
+index 0e53f512..44bef7d3 100644
+--- a/src/gui/configure.cmake
++++ b/src/gui/configure.cmake
+@@ -689,6 +689,12 @@ qt_feature("direct2d1_1" PRIVATE
+     LABEL "Direct 2D 1.1"
+     CONDITION QT_FEATURE_direct2d AND TEST_d2d1_1
+ )
++qt_feature("emojisegmenter" PUBLIC PRIVATE
++    SECTION "Fonts"
++    LABEL "Emoji Segmenter"
++    PURPOSE "Supports parsing complex emoji sequences for better font resolution."
++)
++qt_feature_definition("emojisegmenter" "QT_NO_EMOJISEGMENTER" NEGATE VALUE "1")
+ qt_feature("evdev" PRIVATE
+     LABEL "evdev"
+     CONDITION QT_FEATURE_thread AND TEST_evdev
+@@ -1285,6 +1291,7 @@ qt_feature("wayland" PUBLIC
+ 
+ qt_configure_add_summary_section(NAME "Qt Gui")
+ qt_configure_add_summary_entry(ARGS "accessibility")
++qt_configure_add_summary_entry(ARGS "emojisegmenter")
+ qt_configure_add_summary_entry(ARGS "freetype")
+ qt_configure_add_summary_entry(ARGS "system-freetype")
+ qt_configure_add_summary_entry(ARGS "harfbuzz")
+diff --git a/src/gui/qt_cmdline.cmake b/src/gui/qt_cmdline.cmake
+index 446618eb..5465b2c6 100644
+--- a/src/gui/qt_cmdline.cmake
++++ b/src/gui/qt_cmdline.cmake
+@@ -10,6 +10,7 @@ qt_commandline_option(eglfs TYPE boolean)
+ qt_commandline_option(evdev TYPE boolean)
+ qt_commandline_option(fontconfig TYPE boolean)
+ qt_commandline_option(freetype TYPE enum VALUES no qt system)
++qt_commandline_option(emojisegmenter TYPE boolean)
+ qt_commandline_option(gbm TYPE boolean)
+ qt_commandline_option(gif TYPE boolean)
+ qt_commandline_option(harfbuzz TYPE enum VALUES no qt system)
