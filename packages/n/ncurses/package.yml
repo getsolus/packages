@@ -1,9 +1,9 @@
 name       : ncurses
-version    : 6.5.20241006
-release    : 29
+version    : 6.5.20241130
+release    : 30
 source     :
     # They seem to prune these from time to time. Might be smarter to host the archives ourselves
-    - https://invisible-island.net/archives/ncurses/current/ncurses-6.5-20241006.tgz : fefd7f516ba7a236239d3213f698fa9736c394bece176671411e94dac83eadfd
+    - https://invisible-island.net/archives/ncurses/current/ncurses-6.5-20241130.tgz : cf395c6f9799a4f99f2cb290a18154f98bbb9d6f3af42920fe32540fdb7d936c
 homepage   : http://www.gnu.org/software/ncurses
 license    : GPL-3.0-or-later
 component  : system.base
@@ -23,17 +23,17 @@ optimize   :
 setup      : |
     %patch -p1 -i $pkgfiles/pkgconfig.patch
 
-    %configure --libdir=%libdir% \
+    %configure \
                --with-cxx-binding \
                --with-cxx-shared \
-               --with-manpage-format=gzip \
+               --with-manpage-format=normal \
                --with-pkg-config-libdir=%libdir%/pkgconfig \
                --with-shared \
-               --with-rcs-ids \
-               --with-terminfo-dirs='/usr/share/terminfo:/etc/terminfo' \
+               --with-terminfo-dirs='/etc/terminfo:/usr/share/terminfo' \
                --with-versioned-syms \
                --without-ada \
                --without-debug \
+               --without-normal \
                --enable-colorfgbg \
                --enable-hard-tabs \
                --enable-largefile \
@@ -43,39 +43,35 @@ setup      : |
                --disable-rpath \
                --disable-root-access \
                --disable-root-environ \
-               --disable-setuid-environ
+               --disable-setuid-environ \
+               --disable-stripping
 build      : |
     %make
 install    : |
+    # Ensure that the later symlink of terminfo succeeds
+    install -dm00755 $installdir/usr/lib
+
     %make_install
 
-    # wide vs non-wide, we'll demote non-wide at some point
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        for i in ncurses ncursesw ; do
-            install -d $installdir/usr/include/${i}
-            for j in $installdir/usr/include/*.h ; do
-                ln -sv ../$(basename ${j}) $installdir/usr/include/${i}/$(basename ${j})
-            done
-        done
-
-        # Make these guys visible to musl
-        install -D -d -m 00755 $installdir/usr/include/musl
-        for i in $installdir/usr/include/*.h ; do
-            ln -sv ../$(basename $i) $installdir/usr/include/musl/.
-        done
-    fi
-
-    # link nonwide..
-    for f in $installdir/%libdir%/*w.* ; do
-        src=$(basename ${f})
-        dst=`echo "$src" | sed 's@w\.@.@g'`
-        ln -sv "$src" $installdir/%libdir%/${dst}
+    # Link against wide if anything otherwise tries to link against non-wide
+    for lib in ncurses ncurses++ form panel menu; do
+        ln -sv lib${lib}w.so $installdir/%libdir%/lib${lib}.so
+        ln -sv ${lib}w.pc $installdir/%libdir%/pkgconfig/${lib}.pc
     done
 
-    # last compat symlinks
+    # Compat links for anything trying to link with -lcurses
     ln -sv libncurses.so $installdir/%libdir%/libcurses.so
-    ln -sv libncurses.a $installdir/%libdir%/libcurses.a
     ln -sv libncursesw.so $installdir/%libdir%/libcursesw.so
-    ln -sv libncursesw.a $installdir/%libdir%/libcursesw.a
 
-    ln -sv libncurses.so.6 $installdir/%libdir%/libtinfo.so.6
+    # Needs to match ABI version
+    abi=6
+    # tic and tinfo are built in by default
+    for lib in tic tinfo; do
+        ln -sv libncursesw.so.${abi} $installdir/%libdir%/lib${lib}.so.${abi}
+        ln -sv lib${lib}.so.${abi} $installdir/%libdir%/lib${lib}.so
+        ln -sv ncursesw.pc $installdir/%libdir%/pkgconfig/${lib}.pc
+    done
+patterns   :
+    - devel :
+        - /usr/bin/ncursesw6-config
+        - /usr/share/man/man1/ncursesw6-config*
