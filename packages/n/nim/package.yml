@@ -1,8 +1,11 @@
 name       : nim
-version    : 1.6.20
-release    : 18
+version    : 2.2.0
+release    : 19
 source     :
-    - https://nim-lang.org/download/nim-1.6.20.tar.xz : ffed047504d1fcaf610f0dd7cf3e027be91a292b0c9c51161504c2f3b984ffb9
+    - https://nim-lang.org/download/nim-2.2.0.tar.xz : ce9842849c9760e487ecdd1cdadf7c0f2844cafae605401c7c72ae257644893c
+    # See koch.nim for correct commits
+    - https://github.com/nim-lang/atlas/archive/5faec3e9a33afe99a7d22377dd1b45a5391f5504.tar.gz#atlas.tar.gz : bc7404f72aeb7608538beba03e1f9cc3ee3691e5d57480314371703728dbd8ce
+    - https://github.com/nim-lang/sat/archive/faf1617f44d7632ee9601ebc13887644925dcc01.tar.gz#sat.tar.gz : dfb90aa7fa629bb7bd395ae041410362439492600d06978d29ba726c16ef4077
 homepage   : https://nim-lang.org
 license    : MIT
 component  : programming
@@ -14,24 +17,34 @@ rundeps    :
     - linux-headers
 checkdeps  :
     - libpcre
-    - nodejs-18
-environment: |
-    # Test suite fails with nodejs 20
-    export PATH=/usr/lib64/nodejs-18/bin:$PATH
+    - nodejs-22
 setup      : |
     %patch -p1 -i $pkgfiles/0001-Change-to-correct-dirs.patch
-    %patch -p1 -i $pkgfiles/0002-change-nim-gdb-shebang.patch
     %patch -p1 -i $pkgfiles/Stateless.patch
+
+    mkdir dist/atlas
+    tar --strip-components=1 -xf $sources/atlas.tar.gz -C dist/atlas
+
+    mkdir -p dist/atlas/dist/sat
+    tar --strip-components=1 -xf $sources/sat.tar.gz -C dist/atlas/dist/sat
 build      : |
+    # Build nim
     ./build.sh
-    bin/nim c koch
-    ./koch boot -d:release
+
+    # Build koch
+    bin/nim c -d:release koch
+    ./koch boot -d:release -d:nativeStacktrace -d:nimUseLinenoise
+
+    # Build libs
+    pushd lib
+    ../bin/nim c --app:lib -d:createNimRtl -d:release nimrtl.nim
+    popd
+
+    # Build tools
     ./koch tools -d:release
 install    : |
-    ./install.sh %installroot%
-    install -dm00755 $installdir/usr/share/defaults/nim
-    mv $installdir/etc/nim $installdir/usr/share/defaults
-    rmdir $installdir/etc
+    ./koch install "$installdir"
+
     install -Dm00755 bin/* $installdir/usr/bin
 
     install -Dm00644 tools/nim.bash-completion $installdir/usr/share/bash-completion/completions/nim
@@ -40,15 +53,18 @@ install    : |
     install -Dm00644 dist/nimble/nimble.zsh-completion $installdir/usr/share/zsh/site-functions/_nimble
 
     # Compiler directory should not be part of binary package according to https://nim-lang.github.io/Nim/packaging.html
-    # mv $installdir/%libdir%/nim/compiler.nimble $installdir/%libdir%/nim/compiler
-    rm -rv $installdir/%libdir%/nim/compiler
+    rm -rv $installdir/%libdir%/nim/pkgs/compiler
+
+    # Error: invalid package name
+    rm -rv $installdir/%libdir%/nim/pkgs/doc
 
     # Remove doc directory.
     rm -r $installdir/usr/share/nim
 check      : |
     # Don't test everything because it takes too long.
     export PATH=$workdir/bin:$PATH
-    for cat in lib async float io bind js debugger global threads
+    export PATH=/usr/lib64/nodejs-22/bin:$PATH
+    for cat in lib async float io js debugger global threads
     do
         ./koch tests --pedantic category $cat -d:nimCoroutines || (echo "$cat test category failed" &&  exit 1)
     done
