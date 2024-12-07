@@ -1,0 +1,282 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ismael Asensio <isma.af@gmail.com>
+Date: Thu, 21 Nov 2024 20:51:50 +0100
+Subject: [PATCH] applets/brightness: Improve integration with dbus service
+ availability
+
+Let's only try to initialize the DBus connections when the required
+service is available, and then watch for changes in avilability, so
+the UI always reflects the current status
+
+BUG: 486067
+FIXED-IN: 6.3.0
+---
+ .../plugin/keyboardbrightnesscontrol.cpp      | 41 ++++++++++++--
+ .../plugin/keyboardbrightnesscontrol.h        |  8 ++-
+ .../plugin/screenbrightnesscontrol.cpp        | 53 ++++++++++++++++---
+ .../plugin/screenbrightnesscontrol.h          |  6 ++-
+ 4 files changed, 96 insertions(+), 12 deletions(-)
+
+diff --git a/applets/brightness/plugin/keyboardbrightnesscontrol.cpp b/applets/brightness/plugin/keyboardbrightnesscontrol.cpp
+index 74c0cba9..e353910b 100644
+--- a/applets/brightness/plugin/keyboardbrightnesscontrol.cpp
++++ b/applets/brightness/plugin/keyboardbrightnesscontrol.cpp
+@@ -12,6 +12,7 @@
+ #include <QDBusMetaType>
+ #include <QDBusPendingCall>
+ #include <QDBusReply>
++#include <QDBusServiceWatcher>
+ #include <QPointer>
+ 
+ using namespace Qt::StringLiterals;
+@@ -24,7 +25,17 @@ constexpr QLatin1String SOLID_POWERMANAGEMENT_SERVICE("org.kde.Solid.PowerManage
+ KeyboardBrightnessControl::KeyboardBrightnessControl(QObject *parent)
+     : QObject(parent)
+ {
+-    init();
++    m_serviceWatcher = std::make_unique<QDBusServiceWatcher>(SOLID_POWERMANAGEMENT_SERVICE,
++                                                             QDBusConnection::sessionBus(),
++                                                             QDBusServiceWatcher::WatchForRegistration | QDBusServiceWatcher::WatchForUnregistration);
++    connect(m_serviceWatcher.get(), &QDBusServiceWatcher::serviceRegistered, this, &KeyboardBrightnessControl::onServiceRegistered);
++    connect(m_serviceWatcher.get(), &QDBusServiceWatcher::serviceUnregistered, this, &KeyboardBrightnessControl::onServiceUnregistered);
++
++    if (QDBusConnection::sessionBus().interface()->isServiceRegistered(SOLID_POWERMANAGEMENT_SERVICE)) {
++        onServiceRegistered();
++    } else {
++        qDebug() << "D-Bus service not available:" << SOLID_POWERMANAGEMENT_SERVICE;
++    }
+ }
+ 
+ KeyboardBrightnessControl::~KeyboardBrightnessControl()
+@@ -75,15 +86,17 @@ void KeyboardBrightnessControl::onBrightnessMaxChanged(int value)
+     m_isBrightnessAvailable = value > 0;
+ }
+ 
+-QCoro::Task<void> KeyboardBrightnessControl::init()
++QCoro::Task<void> KeyboardBrightnessControl::onServiceRegistered()
+ {
++    m_serviceRegistered = true;
++
+     QDBusMessage brightnessMax = QDBusMessage::createMethodCall(u"org.kde.Solid.PowerManagement"_s,
+                                                                 u"/org/kde/Solid/PowerManagement/Actions/KeyboardBrightnessControl"_s,
+                                                                 u"org.kde.Solid.PowerManagement.Actions.KeyboardBrightnessControl"_s,
+                                                                 u"keyboardBrightnessMax"_s);
+     QPointer<KeyboardBrightnessControl> alive{this};
+     const QDBusReply<int> brightnessMaxReply = co_await QDBusConnection::sessionBus().asyncCall(brightnessMax);
+-    if (!alive || !brightnessMaxReply.isValid()) {
++    if (!alive || !brightnessMaxReply.isValid() || !m_serviceRegistered) {
+         qDebug() << "error getting max keyboard brightness via dbus" << brightnessMaxReply.error();
+         co_return;
+     }
+@@ -94,7 +107,7 @@ QCoro::Task<void> KeyboardBrightnessControl::init()
+                                                              u"org.kde.Solid.PowerManagement.Actions.KeyboardBrightnessControl"_s,
+                                                              u"keyboardBrightness"_s);
+     const QDBusReply<int> brightnessReply = co_await QDBusConnection::sessionBus().asyncCall(brightness);
+-    if (!alive || !brightnessReply.isValid()) {
++    if (!alive || !brightnessReply.isValid() || !m_serviceRegistered) {
+         qDebug() << "error getting keyboard brightness via dbus" << brightnessReply.error();
+         co_return;
+     }
+@@ -123,4 +136,24 @@ QCoro::Task<void> KeyboardBrightnessControl::init()
+     m_isBrightnessAvailable = true;
+ }
+ 
++void KeyboardBrightnessControl::onServiceUnregistered()
++{
++    m_serviceRegistered = false;
++
++    QDBusConnection::sessionBus().disconnect(SOLID_POWERMANAGEMENT_SERVICE,
++                                             u"/org/kde/Solid/PowerManagement/Actions/KeyboardBrightnessControl"_s,
++                                             u"org.kde.Solid.PowerManagement.Actions.KeyboardBrightnessControl"_s,
++                                             u"keyboardBrightnessChanged"_s,
++                                             this,
++                                             SLOT(onBrightnessChanged(int)));
++    QDBusConnection::sessionBus().disconnect(SOLID_POWERMANAGEMENT_SERVICE,
++                                             u"/org/kde/Solid/PowerManagement/Actions/KeyboardBrightnessControl"_s,
++                                             u"org.kde.Solid.PowerManagement.Actions.KeyboardBrightnessControl"_s,
++                                             u"keyboardBrightnessMaxChanged"_s,
++                                             this,
++                                             SLOT(onBrightnessMaxChanged(int)));
++
++    m_isBrightnessAvailable = false;
++}
++
+ #include "moc_keyboardbrightnesscontrol.cpp"
+diff --git a/applets/brightness/plugin/keyboardbrightnesscontrol.h b/applets/brightness/plugin/keyboardbrightnesscontrol.h
+index c61e2c5f..f331cb8a 100644
+--- a/applets/brightness/plugin/keyboardbrightnesscontrol.h
++++ b/applets/brightness/plugin/keyboardbrightnesscontrol.h
+@@ -11,6 +11,8 @@
+ #include <QObject>
+ #include <qqmlregistration.h>
+ 
++class QDBusServiceWatcher;
++
+ class KeyboardBrightnessControl : public QObject
+ {
+     Q_OBJECT
+@@ -42,7 +44,10 @@ private Q_SLOTS:
+     void onBrightnessMaxChanged(int value);
+ 
+ private:
+-    QCoro::Task<void> init();
++    QCoro::Task<void> onServiceRegistered();
++    void onServiceUnregistered();
++
++    std::unique_ptr<QDBusServiceWatcher> m_serviceWatcher;
+ 
+     Q_OBJECT_BINDABLE_PROPERTY_WITH_ARGS(KeyboardBrightnessControl,
+                                          bool,
+@@ -53,4 +58,5 @@ private:
+     Q_OBJECT_BINDABLE_PROPERTY_WITH_ARGS(KeyboardBrightnessControl, int, m_maxBrightness, 0, &KeyboardBrightnessControl::brightnessMaxChanged);
+ 
+     bool m_isSilent = false;
++    bool m_serviceRegistered = false;
+ };
+diff --git a/applets/brightness/plugin/screenbrightnesscontrol.cpp b/applets/brightness/plugin/screenbrightnesscontrol.cpp
+index 7b00422a..44e72285 100644
+--- a/applets/brightness/plugin/screenbrightnesscontrol.cpp
++++ b/applets/brightness/plugin/screenbrightnesscontrol.cpp
+@@ -11,6 +11,7 @@
+ #include <QDBusMessage>
+ #include <QDBusPendingCall>
+ #include <QDBusReply>
++#include <QDBusServiceWatcher>
+ #include <QPointer>
+ #include <QScopeGuard>
+ 
+@@ -33,7 +34,17 @@ ScreenBrightnessControl::ScreenBrightnessControl(QObject *parent)
+     ++pluginId;
+     m_alreadyChangedContext = QStringLiteral("AlreadyChanged-%1").arg(pluginId);
+ 
+-    init();
++    m_serviceWatcher = std::make_unique<QDBusServiceWatcher>(SCREENBRIGHTNESS_SERVICE,
++                                                             QDBusConnection::sessionBus(),
++                                                             QDBusServiceWatcher::WatchForRegistration | QDBusServiceWatcher::WatchForUnregistration);
++    connect(m_serviceWatcher.get(), &QDBusServiceWatcher::serviceRegistered, this, &ScreenBrightnessControl::onServiceRegistered);
++    connect(m_serviceWatcher.get(), &QDBusServiceWatcher::serviceUnregistered, this, &ScreenBrightnessControl::onServiceUnregistered);
++
++    if (QDBusConnection::sessionBus().interface()->isServiceRegistered(SCREENBRIGHTNESS_SERVICE)) {
++        onServiceRegistered();
++    } else {
++        qDebug() << "D-Bus service not available:" << SCREENBRIGHTNESS_SERVICE;
++    }
+ }
+ 
+ ScreenBrightnessControl::~ScreenBrightnessControl()
+@@ -130,8 +141,9 @@ void ScreenBrightnessControl::onBrightnessRangeChanged(const QString &displayNam
+     m_isBrightnessAvailable = firstDisplayMax.isValid() && firstDisplayMax.toInt() > 0;
+ }
+ 
+-QCoro::Task<void> ScreenBrightnessControl::init()
++QCoro::Task<void> ScreenBrightnessControl::onServiceRegistered()
+ {
++    m_serviceRegistered = true;
+     QPointer<ScreenBrightnessControl> alive{this};
+ 
+     if (!co_await queryAndUpdateDisplays()) {
+@@ -139,7 +151,7 @@ QCoro::Task<void> ScreenBrightnessControl::init()
+         co_return;
+     }
+ 
+-    if (!alive) {
++    if (!alive || !m_serviceRegistered) {
+         qDebug() << "ScreenBrightnessControl destroyed during initialization, returning early";
+         co_return;
+     }
+@@ -177,6 +189,35 @@ QCoro::Task<void> ScreenBrightnessControl::init()
+     m_isBrightnessAvailable = true;
+ }
+ 
++void ScreenBrightnessControl::onServiceUnregistered()
++{
++    m_serviceRegistered = false;
++
++    QDBusConnection::sessionBus().disconnect(SCREENBRIGHTNESS_SERVICE,
++                                             SCREENBRIGHTNESS_PATH,
++                                             DBUS_PROPERTIES_IFACE,
++                                             u"PropertiesChanged"_s,
++                                             this,
++                                             SLOT(onGlobalPropertiesChanged(QString, QVariantMap, QStringList)));
++
++    QDBusConnection::sessionBus().disconnect(SCREENBRIGHTNESS_SERVICE,
++                                             SCREENBRIGHTNESS_PATH,
++                                             SCREENBRIGHTNESS_IFACE,
++                                             u"BrightnessChanged"_s,
++                                             this,
++                                             SLOT(onBrightnessChanged(QString, int, QString, QString)));
++
++    QDBusConnection::sessionBus().disconnect(SCREENBRIGHTNESS_SERVICE,
++                                             SCREENBRIGHTNESS_PATH,
++                                             SCREENBRIGHTNESS_IFACE,
++                                             u"BrightnessRangeChanged"_s,
++                                             this,
++                                             SLOT(onBrightnessRangeChanged(QString, int, int)));
++
++    m_displays.removeMissingDisplays({});
++    m_isBrightnessAvailable = false;
++}
++
+ QCoro::Task<bool> ScreenBrightnessControl::queryAndUpdateDisplays()
+ {
+     m_shouldRecheckDisplays = true;
+@@ -200,7 +241,7 @@ QCoro::Task<bool> ScreenBrightnessControl::queryAndUpdateDisplays()
+         msg << SCREENBRIGHTNESS_IFACE << u"DisplaysDBusNames"_s;
+ 
+         const QDBusReply<QVariant> reply = co_await QDBusConnection::sessionBus().asyncCall(msg);
+-        if (!alive || !reply.isValid()) {
++        if (!alive || !reply.isValid() || !m_serviceRegistered) {
+             qDebug() << "error getting display ids via dbus:" << reply.error();
+             co_return false;
+         }
+@@ -211,7 +252,7 @@ QCoro::Task<bool> ScreenBrightnessControl::queryAndUpdateDisplays()
+         for (const QString &displayName : displayNames) {
+             if (m_displays.displayIndex(displayName) == QModelIndex()) {
+                 co_await queryAndInsertDisplay(displayName, QModelIndex());
+-                if (!alive) {
++                if (!alive || !m_serviceRegistered) {
+                     qDebug() << "ScreenBrightnessControl destroyed while querying displays, returning early";
+                     co_return false;
+                 }
+@@ -230,7 +271,7 @@ QCoro::Task<void> ScreenBrightnessControl::queryAndInsertDisplay(const QString &
+     msg << SCREENBRIGHTNESS_DISPLAY_IFACE;
+     QPointer<ScreenBrightnessControl> alive{this};
+     const QDBusReply<QVariantMap> reply = co_await QDBusConnection::sessionBus().asyncCall(msg);
+-    if (!alive || !reply.isValid()) {
++    if (!alive || !reply.isValid() || !m_serviceRegistered) {
+         qDebug() << "error getting display properties via dbus:" << reply.error();
+         co_return;
+     }
+diff --git a/applets/brightness/plugin/screenbrightnesscontrol.h b/applets/brightness/plugin/screenbrightnesscontrol.h
+index 45eb1dfa..b3f9bfc4 100644
+--- a/applets/brightness/plugin/screenbrightnesscontrol.h
++++ b/applets/brightness/plugin/screenbrightnesscontrol.h
+@@ -17,6 +17,7 @@
+ #include <qqmlregistration.h>
+ 
+ class QDBusPendingCallWatcher;
++class QDBusServiceWatcher;
+ 
+ class ScreenBrightnessControl : public QObject
+ {
+@@ -71,7 +72,8 @@ private Q_SLOTS:
+     void onBrightnessRangeChanged(const QString &displayName, int max, int value);
+ 
+ private:
+-    QCoro::Task<void> init();
++    QCoro::Task<void> onServiceRegistered();
++    void onServiceUnregistered();
+     QCoro::Task<bool> queryAndUpdateDisplays();
+     QCoro::Task<void> queryAndInsertDisplay(const QString &displayNames, const QModelIndex &index);
+ 
+@@ -80,8 +82,10 @@ private:
+     ScreenBrightnessDisplayModel m_displays;
+     QString m_alreadyChangedContext;
+     std::unique_ptr<QDBusPendingCallWatcher> m_brightnessChangeWatcher;
++    std::unique_ptr<QDBusServiceWatcher> m_serviceWatcher;
+ 
+     bool m_isSilent = false;
+     bool m_displaysUpdating = false;
+     bool m_shouldRecheckDisplays = false;
++    bool m_serviceRegistered = false;
+ };
