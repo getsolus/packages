@@ -1,8 +1,8 @@
 name       : netdata
-version    : 1.47.0
-release    : 17
+version    : 2.0.3
+release    : 18
 source     :
-    - https://github.com/netdata/netdata/releases/download/v1.47.0/netdata-v1.47.0.tar.gz : 6735222ffcff941508b92c8edddc26fbcd719b15880be4911d77fbfd9dbd9a1d
+    - https://github.com/netdata/netdata/releases/download/v2.0.3/netdata-v2.0.3.tar.gz : f75c3829bf50bfaca436afcafe99f6c64ca5a89bcdd67ca22acd35c42a4b4fb5
 homepage   : https://www.netdata.cloud/
 license    : GPL-3.0-or-later
 component  : network.util
@@ -13,10 +13,11 @@ builddeps  :
     - pkgconfig(cups)
     - pkgconfig(json-c)
     - pkgconfig(libbpf)
+    - pkgconfig(libcurl)
     - pkgconfig(libelf)
+    - pkgconfig(liblz4)
     - pkgconfig(libmnl)
     - pkgconfig(libuv)
-    - pkgconfig(liblz4)
     - pkgconfig(protobuf)
     - pkgconfig(snappy)
     - pkgconfig(yaml-0.1)
@@ -25,10 +26,23 @@ builddeps  :
 networking : yes
 clang      : yes
 optimize   : thin-lto
+environment: |
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GO_LDFLAGS="-linkmode=external"
+    export GOFLAGS='-buildmode=pie -trimpath -mod=readonly -modcacherw'
 setup      : |
+    %patch -p1 -i $pkgfiles/0001-Move-to-libdir.patch
+    %patch -p1 -i $pkgfiles/0001-Ensure-that-edit-config-works-even-if-called-from-di.patch
+    %patch -p1 -i $pkgfiles/0001-Better-confirm-to-go-standards.patch
+
+    pushd src/go
+    go mod vendor
+    popd
+
     %cmake_ninja \
+                 -DBUILD_FOR_PACKAGING=ON \
                  -DCMAKE_INSTALL_PREFIX=/ \
-                 -DENABLE_CLOUD=OFF \
+                 -DENABLE_LEGACY_EBPF_PROGRAMS=OFF \
                  -DENABLE_PLUGIN_FREEIPMI=OFF \
                  -DENABLE_PLUGIN_NFACCT=OFF \
                  -DENABLE_PLUGIN_XENSTAT=OFF
@@ -37,55 +51,90 @@ build      : |
 install    : |
     %ninja_install
 
+    %python3_compile $installdir/usr/libexec/netdata/python.d/
+
     # Install netdata systemd stuff
-    install -Dm00644 $pkgfiles/netdata{,-setup}.service -t $installdir/%libdir%/systemd/system
-    install -Dm00644 $pkgfiles/netdata.sysusers $installdir/%libdir%/sysusers.d/netdata.conf
-    install -Dm00644 $pkgfiles/netdata.tmpfiles $installdir/%libdir%/tmpfiles.d/netdata.conf
+    install -Dm00644 $pkgfiles/netdata{,-setup}.service -t $installdir/usr/lib/systemd/system
+    install -Dm00644 $pkgfiles/netdata.sysusers $installdir/usr/lib/sysusers.d/netdata.conf
+    install -Dm00644 $pkgfiles/netdata.tmpfiles $installdir/usr/lib/tmpfiles.d/netdata.conf
 
     ### Caps reference: https://raw.githubusercontent.com/netdata/netdata/master/netdata.spec.in
 
     # CAP_NET_ADMIN needed for WireGuard collector
     # CAP_NET_RAW needed for ping collector
-    setcap 'CAP_DAC_READ_SEARCH=eip CAP_NET_ADMIN=eip CAP_NET_RAW=eip' $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/go.d.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/go.d.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/go.d.plugin
+    setcap 'CAP_DAC_READ_SEARCH=eip CAP_NET_ADMIN=eip CAP_NET_RAW=eip' $installdir/usr/lib64/netdata/plugins.d/go.d.plugin
+
+    # Part of go.d.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/ndsudo
+    chmod 4750 $installdir/usr/lib64/netdata/plugins.d/ndsudo
+    setcap 'CAP_SETUID=ep' $installdir/usr/lib64/netdata/plugins.d/ndsudo
 
     # CAP_DAC_READ_SEARCH and CAP_SYS_PTRACE needed for data collection by the plugin.
-    setcap 'CAP_DAC_READ_SEARCH=ep CAP_SYS_PTRACE=ep' $installdir/usr/libexec/netdata/plugins.d/apps.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/apps.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/apps.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/apps.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/apps.plugin
+    setcap 'CAP_DAC_READ_SEARCH=ep CAP_SYS_PTRACE=ep' $installdir/usr/lib64/netdata/plugins.d/apps.plugin
 
     # CAP_DAC_READ_SEARCH needed to access the files the plugin reads to collect data.
-    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/slabinfo.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/slabinfo.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/slabinfo.plugin
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/lib64/netdata/plugins.d/slabinfo.plugin
 
     # CAP_PERFMON needed for data collection
-    setcap 'CAP_PERFMON=ep' $installdir/usr/libexec/netdata/plugins.d/perf.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/perf.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/perf.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/perf.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/perf.plugin
+    setcap 'CAP_PERFMON=ep' $installdir/usr/lib64/netdata/plugins.d/perf.plugin
+
+    # setuid needed to run as root for ebpf
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/ebpf.plugin
+    chmod 4750 $installdir/usr/lib64/netdata/plugins.d/ebpf.plugin
 
     # CAP_DAC_READ_SEARCH required for data collection.
-    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/debugfs.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/debugfs.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/debugfs.plugin
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/lib64/netdata/plugins.d/debugfs.plugin
 
     # CAP_DAC_READ_SEARCH required for data collection.
-    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/systemd-journal.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/systemd-journal.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/systemd-journal.plugin
+    setcap 'CAP_DAC_READ_SEARCH=ep' $installdir/usr/lib64/netdata/plugins.d/systemd-journal.plugin
 
     # CAP_SYS_ADMIN, CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH needed for data collection.
-    setcap 'CAP_SYS_ADMIN=ep CAP_SYS_PTRACE=ep CAP_DAC_READ_SEARCH=ep' $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
-    chown root:650 $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
-    chmod 750 $installdir/usr/libexec/netdata/plugins.d/network-viewer.plugin
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/network-viewer.plugin
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/network-viewer.plugin
+    setcap 'CAP_SYS_ADMIN=ep CAP_SYS_PTRACE=ep CAP_DAC_READ_SEARCH=ep' $installdir/usr/lib64/netdata/plugins.d/network-viewer.plugin
+
+    # cgroup-network detects the network interfaces of CGROUPs
+    # it must be able to use setns() and run cgroup-network-helper.sh as root
+    # the helper script reads /proc/PID/fdinfo/* files, runs virsh, etc.
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/cgroup-network{,-helper.sh}
+    chmod 4750 $installdir/usr/lib64/netdata/plugins.d/cgroup-network
+    chmod 750 $installdir/usr/lib64/netdata/plugins.d/cgroup-network-helper.sh
+
+    # local-listeners detects the local processes that are listening for connections
+    chown root:650 $installdir/usr/lib64/netdata/plugins.d/local-listeners
+    chmod 4750 $installdir/usr/lib64/netdata/plugins.d/local-listeners
+
+    # Better in the libdir
+    mv $installdir/etc/netdata/{.install-type,edit-config} $installdir/usr/lib64/netdata
+
+    # Not needed
+    rm -rfv $installdir/usr/share/doc/
+
+    # This plugin is designed poorly and shouldn't be used
+    rm -rfv $installdir/usr/lib64/netdata/plugins.d/ioping.plugin \
+            $installdir/usr/lib/netdata/conf.d/health.d/ioping.conf \
+            $installdir/usr/lib/netdata/conf.d/ioping.conf \
+            $installdir/usr/lib/systemd/journald@netdata.conf.d/
 
     # Stateless
-    install -dm00755 $installdir/usr/share/defaults/netdata
-    mv $installdir/etc/netdata/{.install-type,edit-config} $installdir/usr/share/defaults/netdata
-
-    rm -v $installdir/etc/logrotate.d/netdata
-    rmdir -v $installdir/etc/logrotate.d \
+    rm -v $installdir/etc/default/netdata \
+          $installdir/etc/init.d/netdata \
+          $installdir/etc/netdata/netdata.conf
+    
+    rmdir -v $installdir/etc/default \
+             $installdir/etc/init.d \
              $installdir/etc/netdata/charts.d \
              $installdir/etc/netdata/custom-plugins.d \
              $installdir/etc/netdata/go.d \
