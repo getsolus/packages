@@ -1,8 +1,9 @@
 name       : crystal
-version    : 1.12.1
-release    : 15
+version    : 1.14.0
+release    : 16
 source     :
-    - https://github.com/crystal-lang/crystal/archive/refs/tags/1.12.1.tar.gz : 8f464ec302696c6a60410c4234569989c10bcd5004f1563b8047c5e3e1c8ba1f
+    - https://github.com/crystal-lang/crystal/archive/refs/tags/1.14.0.tar.gz : 85c74d8654a0e111e2eaec6de38470bc9cb6762bc5b799dd3693d18cce4bc807
+    - https://github.com/crystal-lang/crystal/releases/download/1.14.0/crystal-1.14.0-1-linux-x86_64-bundled.tar.gz : 9d738dfd870899b418b05b4d1abbe3bde066337aeabaa07f6aa2f7d8c3e3bbcc
 homepage   : https://crystal-lang.org
 license    : Apache-2.0
 component  : programming
@@ -16,33 +17,43 @@ builddeps  :
     - pkgconfig(libevent)
     - pkgconfig(libxml-2.0)
     - pkgconfig(yaml-0.1)
-    - crystal
-    - git
+    # Do not de-bootstrap until the final LLVM 19.1 rebuild
+    # - crystal
     - llvm-devel
 rundeps    :
     - bdwgc-devel
     - libevent-devel
+checkdeps  :
+    - git
+environment: |
+    CRYSTAL_OPTS="CRYSTAL_WORKERS=%YJOBS% CRYSTAL_CONFIG_TARGET=x86_64-linux-gnu FLAGS=-Dpreview_mt"
 setup      : |
-    %patch -p1 -i $pkgfiles/ssl.patch
+    # When not bootstrapping comment this out don't delete it. We want to keep the knowledge to delete the static libs
+    mkdir crystal-prebuilt
+    tar --strip-components=2 -xf $sources/crystal-*-linux-x86_64-bundled.tar.gz -C crystal-prebuilt
+    # Prevent it from using the included static libs for bootstrapping
+    rm -rv crystal-prebuilt/lib/crystal/*.a
 build      : |
     %make \
       release=1 \
       interpreter=1 \
+      CRYSTAL=$workdir/crystal-prebuilt/bin/crystal \
       CRYSTAL_PATH="lib:$workdir/src" \
       CRYSTAL_CONFIG_VERSION="$version" \
       CRYSTAL_CONFIG_PATH="lib:%libdir%/crystal/src" \
-      CRYSTAL_CONFIG_TARGET=x86_64-linux-gnu
+      $CRYSTAL_OPTS
 install    : |
     %make_install \
       DATADIR=$installdir%libdir%/crystal \
       BINDIR=$installdir/usr/bin \
-      PREFIX=/usr
+      PREFIX=/usr \
+      $CRYSTAL_OPTS
 
-    rm -r $installdir/usr/share/licenses
+    rm -rv $installdir/usr/share/licenses
 check      : |
-    rm spec/std/file_spec.cr spec/compiler/ffi/ffi_spec.cr  # tests fail in solbuild
-    rm spec/std/socket/udp_socket_spec.cr # ipv6 UDP sockets don't work in v1.12.1
-    %make std_spec CRYSTAL_CONFIG_TARGET=x86_64-linux-gnu
+    rm spec/std/socket/udp_socket_spec.cr # ipv6 UDP sockets don't work in v1.14.0
+    %make std_spec \
+      $CRYSTAL_OPTS
 
-    git init --quiet  # for some reason compiler specs need a git repo
-    %make compiler_spec CRYSTAL_CONFIG_TARGET=x86_64-linux-gnu
+    %make compiler_spec \
+      $CRYSTAL_OPTS
