@@ -1,6 +1,6 @@
 name       : llvm
 version    : 19.1.5
-release    : 126
+release    : 127
 source     :
     - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.5/llvm-project-19.1.5.src.tar.xz : bd8445f554aae33d50d3212a15e993a667c0ad1b694ac1977f3463db3338e542
 homepage   : http://llvm.org/
@@ -251,6 +251,7 @@ patterns   :
     - ^lld :
         - /usr/bin/*lld*
         - /usr/bin/wasm-ld
+        - /usr/share/man/man1/ld.lld.1
     - ^lld-devel :
         - /usr/lib64/liblld*.so
         - /usr/lib64/cmake/lld
@@ -360,14 +361,13 @@ environment: |
         export _RUNTIMES="compiler-rt"
         export _TARGETS="host"
     fi
-    # if [[ ! -z "${PGO_USE_BUILD}" ]]; then
-        # PGO_PATH="/home/build/YPKG/root/llvm/pgo/default.profdata"
-        # export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-use=$PGO_PATH"
-        export PGOFLAGS="${_LLVM_FLAGS_FINAL}"
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+        PGO_PATH="/home/build/YPKG/root/llvm/pgo/default.profdata"
+        export PGOFLAGS="${_LLVM_FLAGS_FINAL} -fprofile-instr-use=$PGO_PATH"
         export _PROJECTS="clang;clang-tools-extra;lld;llvm;mlir;polly"
         export _RUNTIMES="libcxxabi;libcxx;compiler-rt;openmp;offload"
         export _TARGETS="all"
-    # fi
+    fi
 
     # Set common build options here
     export CMAKE_COMMON_OPTIONS="
@@ -380,8 +380,10 @@ environment: |
         -DCOMPILER_RT_BUILTINS_ENABLE_PIC=ON \
         -DCOMPILER_RT_USE_LLVM_UNWINDER=OFF \
         -DENABLE_LINKER_BUILD_ID=ON \
+        -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
         -DLIBCXXABI_USE_LLVM_UNWINDER=OFF \
         -DLIBOMP_INSTALL_ALIASES=OFF \
+        -DLLVM_APPEND_VC_REV=OFF \
         -DLLVM_BINUTILS_INCDIR=/usr/include \
         -DLLVM_BUILD_LLVM_DYLIB=ON \
         -DLLVM_DYLIB_COMPONENTS="all" \
@@ -393,9 +395,12 @@ environment: |
         -DLLVM_ENABLE_RTTI=ON \
         -DLLVM_ENABLE_ZLIB=ON \
         -DLLVM_ENABLE_ZSTD=ON \
+        -DLLVM_INCLUDE_BENCHMARKS=OFF \
         -DLLVM_INCLUDE_TESTS=OFF \
         -DLLVM_INSTALL_UTILS=ON \
         -DLLVM_LINK_LLVM_DYLIB=ON \
+        -DLLVM_USE_PERF=ON \
+        -DMLIR_BUILD_MLIR_C_DYLIB=ON \
         -DMLIR_INSTALL_AGGREGATE_OBJECTS=OFF"
 
     # Used by everything except emul32 build
@@ -447,11 +452,17 @@ setup      : |
     %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
     # Allow us to ignore -Werror even when projects force append them
     %patch -p1 -i $pkgfiles/0001-clang-lib-Ignore-Werror-if-CLANG_IGNORE_WERROR-is-se.patch
+    %patch -p1 -i $pkgfiles/0001-Solus-Make-it-easier-to-set-version-from-ypkg.patch
 
     # Pull lld in line with binutils linkers for consistency
     %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
     %patch -p1 -i $pkgfiles/0001-Make-gnuhash-the-default-when-not-specified.patch
     %patch -p1 -i $pkgfiles/0001-Update-default-binutils-version.patch
+    %patch -p1 -i $pkgfiles/0001-lld-Always-enable-build-id-and-use-20-byte-hashes.patch
+    %patch -p1 -i $pkgfiles/0001-Solus-Use-zstd-compression-for-debug-symbols-by-defa.patch
+
+    # Set the Solus version string
+    sed -i "s|@@SOLUS_VERSION_STRING@@|Solus ${version}-${release}|g" clang/CMakeLists.txt
 
     ### Bootstrap compiler (optional)
     if [[ ! -z "${PGO_GEN_BUILD}" && ${BOOTSTRAP} == "1" ]]; then
@@ -495,25 +506,21 @@ build      : |
     %ninja_build -v
 
     # Build this target explicitly, otherwise it won't happen until the install phase
-    # if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
         %ninja_build -v runtimes
-    # fi
+    fi
 
     ### EMUL32 Build
     # Reusing profile data from amd64 build saving a bunch of time (but slightly inaccurate).
-    # if [[ ! -z "${PGO_USE_BUILD}" ]]; then
+    if [[ ! -z "${PGO_USE_BUILD}" ]]; then
         export PKG_CONFIG_PATH=/usr/lib32/pkgconfig:/usr/share/pkgconfig:/usr/lib/pkgconfig
         export LT_SYS_LIBRARY_PATH=/usr/lib32
 
-        # export CC="$workdir/solusBuildDir/bin/clang -m32"
-        # export CXX="$workdir/solusBuildDir/bin/clang++ -m32"
-        export CC="clang -m32"
-        export CXX="clang++ -m32"
+        export CC="$workdir/solusBuildDir/bin/clang -m32"
+        export CXX="$workdir/solusBuildDir/bin/clang++ -m32"
 
-        # export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-objects"
-        # export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-object
-        export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -m32 -fPIC -ffat-lto-objects"
-        export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -m32 -fPIC -ffat-lto-objects"
+        export CFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-objects"
+        export CXXFLAGS="-march=i686 -msse2 -mtune=generic -O3 -fstack-protector -pipe -fprofile-instr-use=$PGO_PATH -m32 -fPIC -ffat-lto-objects"
 
         cmake -G Ninja -B emul32 -S llvm \
           ${CMAKE_COMMON_OPTIONS} \
@@ -529,19 +536,18 @@ build      : |
           -DLLVM_CCACHE_BUILD=ON
         ninja %JOBS% -C emul32 -v
         ninja %JOBS% -C emul32 -v runtimes
-    # fi
-# profile    : |
-#     # Profiling with the instrumented compiler is very slow...
-#     # Building runtimes is only ~1200 files and we still get most of the benefits.
-#     cmake -G Ninja -B profile -S runtimes \
-#         ${CMAKE_COMMON_OPTIONS} \
-#         ${CMAKE_X84_64_OPTIONS} \
-#         ${CMAKE_USE_COMPILER} \
-#         -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' \
-#         -DCMAKE_C_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
-#         -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL"
-#     ninja %JOBS% -C profile -v
-#     ninja %JOBS% -C profile -v runtimes
+    fi
+profile    : |
+    # Profiling with the instrumented compiler is very slow...
+    # Building runtimes is only ~1200 files and we still get most of the benefits.
+    cmake -G Ninja -B profile -S runtimes \
+        ${CMAKE_COMMON_OPTIONS} \
+        ${CMAKE_X84_64_OPTIONS} \
+        ${CMAKE_USE_COMPILER} \
+        -DLLVM_ENABLE_RUNTIMES='libcxx;libcxxabi' \
+        -DCMAKE_C_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL" \
+        -DCMAKE_CXX_FLAGS_RELEASE="$_LLVM_FLAGS_FINAL"
+    ninja %JOBS% -C profile -v
 install    : |
     # Install emul32 build
     DESTDIR="%installroot%" ninja install -C emul32 -v
@@ -608,6 +614,9 @@ install    : |
 
     # Don't seem to correspond to something used
     rm -v $installdir/usr/share/man/man1/{lit,lldb-tblgen}.1
+
+    # Seems to not have an install section for some reason (https://github.com/llvm/llvm-project/issues/41800)
+    install -Dm00644 lld/docs/ld.lld.1 -t $installdir/usr/share/man/man1
 
     # LTO Plugin
     install -d -D -m 00755 $installdir/%libdir%/bfd-plugins
