@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: liushuyu <liushuyu011@gmail.com>
+Date: Sat, 2 Nov 2024 13:39:27 +0100
+Subject: [PATCH 05/11] gen/llvm.h: add a type parameter to GET_INTRINSIC_DECL
+ macro ...
+
+... because now LLVM requires most intrinsics to have parameter types
+specified
+---
+ gen/arrays.cpp          | 2 +-
+ gen/functions.cpp       | 4 ++--
+ gen/llvm.h              | 7 ++++++-
+ gen/pgo_ASTbased.cpp    | 4 ++--
+ gen/runtime.cpp         | 2 +-
+ gen/tocall.cpp          | 4 ++--
+ gen/toir.cpp            | 6 +++---
+ gen/trycatchfinally.cpp | 2 +-
+ 8 files changed, 18 insertions(+), 13 deletions(-)
+
+diff --git a/gen/arrays.cpp b/gen/arrays.cpp
+index 716026331..507281ca5 100644
+--- a/gen/arrays.cpp
++++ b/gen/arrays.cpp
+@@ -1090,7 +1090,7 @@ static void emitRangeErrorImpl(IRState *irs, const Loc &loc,
+     DtoCAssert(module, loc, DtoConstCString(cAssertMsg));
+     break;
+   case CHECKACTION_halt:
+-    irs->ir->CreateCall(GET_INTRINSIC_DECL(trap), {});
++    irs->ir->CreateCall(GET_INTRINSIC_DECL(trap, {}), {});
+     irs->ir->CreateUnreachable();
+     break;
+   case CHECKACTION_context:
+diff --git a/gen/functions.cpp b/gen/functions.cpp
+index ada3c8141..f177445cd 100644
+--- a/gen/functions.cpp
++++ b/gen/functions.cpp
+@@ -1259,7 +1259,7 @@ void DtoDefineFunction(FuncDeclaration *fd, bool linkageAvailableExternally) {
+     // initialize _argptr with a call to the va_start intrinsic
+     DLValue argptrVal(tvalist, argptrMem);
+     LLValue *llAp = gABI->prepareVaStart(&argptrVal);
+-    llvm::CallInst::Create(GET_INTRINSIC_DECL(vastart), llAp, "",
++    llvm::CallInst::Create(GET_INTRINSIC_DECL(vastart, llAp->getType()), llAp, "",
+                            gIR->scopebb());
+ 
+     // copy _arguments to a memory location
+@@ -1270,7 +1270,7 @@ void DtoDefineFunction(FuncDeclaration *fd, bool linkageAvailableExternally) {
+       auto *vaendBB = llvm::BasicBlock::Create(gIR->context(), "vaend", func);
+       const auto savedInsertPoint = gIR->saveInsertPoint();
+       gIR->ir->SetInsertPoint(vaendBB);
+-      gIR->ir->CreateCall(GET_INTRINSIC_DECL(vaend), llAp);
++      gIR->ir->CreateCall(GET_INTRINSIC_DECL(vaend, llAp->getType()), llAp);
+       funcGen.scopes.pushCleanup(vaendBB, gIR->scopebb());
+     }
+   }
+diff --git a/gen/llvm.h b/gen/llvm.h
+index 6cd420340..6dc2c5154 100644
+--- a/gen/llvm.h
++++ b/gen/llvm.h
+@@ -35,8 +35,13 @@ using llvm::APFloat;
+ using llvm::APInt;
+ using llvm::IRBuilder;
+ 
+-#define GET_INTRINSIC_DECL(_X)                                                 \
++#if LDC_LLVM_VER >= 1900
++#define GET_INTRINSIC_DECL(_X, _TY)                                              \
++  (llvm::Intrinsic::getDeclaration(&gIR->module, llvm::Intrinsic::_X, _TY))
++#else
++#define GET_INTRINSIC_DECL(_X, _TY)                                              \
+   (llvm::Intrinsic::getDeclaration(&gIR->module, llvm::Intrinsic::_X))
++#endif
+ 
+ // shortcuts for the common llvm types
+ 
+diff --git a/gen/pgo_ASTbased.cpp b/gen/pgo_ASTbased.cpp
+index 031bdf36b..723cabdd9 100644
+--- a/gen/pgo_ASTbased.cpp
++++ b/gen/pgo_ASTbased.cpp
+@@ -909,7 +909,7 @@ void CodeGenPGO::emitCounterIncrement(const RootObject *S) const {
+   assert(counter_it != (*RegionCounterMap).end() &&
+          "Statement not found in PGO counter map!");
+   unsigned counter = counter_it->second;
+-  gIR->ir->CreateCall(GET_INTRINSIC_DECL(instrprof_increment),
++  gIR->ir->CreateCall(GET_INTRINSIC_DECL(instrprof_increment, {}),
+                       {FuncNameVar, gIR->ir->getInt64(FunctionHash),
+                        gIR->ir->getInt32(NumRegionCounters),
+                        gIR->ir->getInt32(counter)});
+@@ -1118,7 +1118,7 @@ void CodeGenPGO::valueProfile(uint32_t valueKind, llvm::Instruction *valueSite,
+     llvm::Value *Args[5] = {FuncNameVar, gIR->ir->getInt64(FunctionHash), value,
+                             gIR->ir->getInt32(valueKind),
+                             gIR->ir->getInt32(NumValueSites[valueKind])};
+-    gIR->ir->CreateCall(GET_INTRINSIC_DECL(instrprof_value_profile), Args);
++    gIR->ir->CreateCall(GET_INTRINSIC_DECL(instrprof_value_profile, {}), Args);
+ 
+     gIR->ir->restoreIP(savedInsertPoint);
+ 
+diff --git a/gen/runtime.cpp b/gen/runtime.cpp
+index 06b0ecab2..bff273174 100644
+--- a/gen/runtime.cpp
++++ b/gen/runtime.cpp
+@@ -887,7 +887,7 @@ static void emitInstrumentationFn(const char *name) {
+ 
+   // Grab the address of the calling function
+   auto *caller =
+-      gIR->ir->CreateCall(GET_INTRINSIC_DECL(returnaddress), DtoConstInt(0));
++      gIR->ir->CreateCall(GET_INTRINSIC_DECL(returnaddress, {}), DtoConstInt(0));
+   auto callee = gIR->topfunc();
+ 
+   gIR->ir->CreateCall(fn, {callee, caller});
+diff --git a/gen/tocall.cpp b/gen/tocall.cpp
+index fc77c5f55..f19042355 100644
+--- a/gen/tocall.cpp
++++ b/gen/tocall.cpp
+@@ -273,7 +273,7 @@ bool DtoLowerMagicIntrinsic(IRState *p, FuncDeclaration *fndecl, CallExp *e,
+       gABI->vaCopy(ap, &argptr);
+     } else {
+       LLValue *llAp = gABI->prepareVaStart(ap);
+-      p->ir->CreateCall(GET_INTRINSIC_DECL(vastart), llAp, "");
++      p->ir->CreateCall(GET_INTRINSIC_DECL(vastart, llAp->getType()), llAp, "");
+     }
+     result = nullptr;
+     return true;
+@@ -321,7 +321,7 @@ bool DtoLowerMagicIntrinsic(IRState *p, FuncDeclaration *fndecl, CallExp *e,
+     DLValue *ap = toElem((*e->arguments)[0])->isLVal(); // va_list
+     assert(ap);
+     LLValue *llAp = gABI->prepareVaArg(ap);
+-    p->ir->CreateCall(GET_INTRINSIC_DECL(vaend), llAp);
++    p->ir->CreateCall(GET_INTRINSIC_DECL(vaend, llAp->getType()), llAp);
+     result = nullptr;
+     return true;
+   }
+diff --git a/gen/toir.cpp b/gen/toir.cpp
+index 003143f14..4d6abd902 100644
+--- a/gen/toir.cpp
++++ b/gen/toir.cpp
+@@ -808,7 +808,7 @@ public:
+       // access to the type of the class to do a GEP).
+       auto vtable = DtoLoad(dfnval->vtable->getType(), dfnval->vthis);
+       auto cmp = p->ir->CreateICmpEQ(vtable, dfnval->vtable);
+-      p->ir->CreateCall(GET_INTRINSIC_DECL(assume), {cmp});
++      p->ir->CreateCall(GET_INTRINSIC_DECL(assume, {}), {cmp});
+     }
+ 
+     if (delayedDtorVar) {
+@@ -1765,7 +1765,7 @@ public:
+     p->ir->SetInsertPoint(failedbb);
+ 
+     if (global.params.checkAction == CHECKACTION_halt) {
+-      p->ir->CreateCall(GET_INTRINSIC_DECL(trap), {});
++      p->ir->CreateCall(GET_INTRINSIC_DECL(trap, {}), {});
+       p->ir->CreateUnreachable();
+     } else {
+       /* DMD Bugzilla 8360: If the condition is evaluated to true,
+@@ -1922,7 +1922,7 @@ public:
+     IF_LOG Logger::print("HaltExp::toElem: %s\n", e->toChars());
+     LOG_SCOPE;
+ 
+-    p->ir->CreateCall(GET_INTRINSIC_DECL(trap), {});
++    p->ir->CreateCall(GET_INTRINSIC_DECL(trap, {}), {});
+     p->ir->CreateUnreachable();
+ 
+     // this terminated the basicblock, start a new one
+diff --git a/gen/trycatchfinally.cpp b/gen/trycatchfinally.cpp
+index 59d79213e..d92a26a43 100644
+--- a/gen/trycatchfinally.cpp
++++ b/gen/trycatchfinally.cpp
+@@ -730,7 +730,7 @@ llvm::BasicBlock *TryCatchFinallyScopes::emitLandingPad() {
+       // "Call" llvm.eh.typeid.for, which gives us the eh selector value to
+       // compare the landing pad selector value with.
+       llvm::Value *ehTypeId = irs.ir->CreateCall(
+-          GET_INTRINSIC_DECL(eh_typeid_for), cb.classInfoPtr);
++          GET_INTRINSIC_DECL(eh_typeid_for, cb.classInfoPtr->getType()), cb.classInfoPtr);
+ 
+       // Compare the selector value from the unwinder against the expected
+       // one and branch accordingly.
