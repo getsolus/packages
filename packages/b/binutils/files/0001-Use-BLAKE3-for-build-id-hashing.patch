@@ -1,0 +1,358 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Sun, 15 Dec 2024 17:00:00 -0600
+Subject: [PATCH] Use BLAKE3 for build-id hashing
+
+---
+ ld/Makefile.am  |   6 +--
+ ld/Makefile.in  |   8 ++--
+ ld/config.in    |   3 ++
+ ld/configure    | 124 ++++++++++++++++++++++++++++++++++++++++++++++++
+ ld/configure.ac |  12 +++++
+ ld/ldbuildid.c  |  25 ++++++++++
+ 6 files changed, 172 insertions(+), 6 deletions(-)
+
+diff --git a/ld/Makefile.am b/ld/Makefile.am
+index 6a9833e577..7d3b7a4a11 100644
+--- a/ld/Makefile.am
++++ b/ld/Makefile.am
+@@ -45,7 +45,7 @@ ELF_CFLAGS=-DELF_LIST_OPTIONS=@elf_list_options@ \
+ 	   -DELF_PLT_UNWIND_LIST_OPTIONS=@elf_plt_unwind_list_options@
+ WARN_CFLAGS = @WARN_CFLAGS@
+ NO_WERROR = @NO_WERROR@
+-AM_CFLAGS = $(WARN_CFLAGS) $(ELF_CFLAGS) $(JANSSON_CFLAGS) $(ZSTD_CFLAGS)
++AM_CFLAGS = $(WARN_CFLAGS) $(ELF_CFLAGS) $(JANSSON_CFLAGS) $(ZSTD_CFLAGS) $(BLAKE3_CFLAGS)
+ 
+ # We put the scripts in the directory $(scriptdir)/ldscripts.
+ # We can't put the scripts in $(datadir) because the SEARCH_DIR
+@@ -660,7 +660,7 @@ ld_new_SOURCES = ldgram.y ldlex-wrapper.c lexsup.c ldlang.c mri.c ldctor.c ldmai
+ ld_new_DEPENDENCIES = $(EMULATION_OFILES) $(EMUL_EXTRA_OFILES) \
+ 		      $(BFDLIB) $(LIBCTF) $(LIBIBERTY) $(LIBINTL_DEP)
+ ld_new_LDADD = $(EMULATION_OFILES) $(EMUL_EXTRA_OFILES) $(BFDLIB) $(LIBCTF) \
+-	       $(LIBIBERTY) $(LIBINTL) $(ZLIB) $(ZSTD_LIBS) $(JANSSON_LIBS)
++	       $(LIBIBERTY) $(LIBINTL) $(ZLIB) $(ZSTD_LIBS) $(JANSSON_LIBS) $(BLAKE3_LIBS)
+ 
+ # Dependency tracking for the generated emulation files.
+ EXTRA_ld_new_SOURCES += $(ALL_EMULATION_SOURCES) $(ALL_64_EMULATION_SOURCES)
+@@ -687,7 +687,7 @@ check-DEJAGNU: site.exp
+ 		CXXFLAGS_FOR_TARGET="$(filter-out -ffile-prefix-map=%,$(CXXFLAGS_FOR_TARGET))" \
+ 		OFILES="$(OFILES)" BFDLIB="$(TESTBFDLIB)" CTFLIB="$(TESTCTFLIB) $(ZLIB)" \
+ 		SFRAMELIB="$(TESTSFRAMELIB)" \
+-		JANSSON_LIBS="$(JANSSON_LIBS)" ZSTD_LIBS="$(ZSTD_LIBS)" \
++		JANSSON_LIBS="$(JANSSON_LIBS)" ZSTD_LIBS="$(ZSTD_LIBS)" BLAKE3_LIBS="$(BLAKE3_LIBS)" \
+ 		LIBIBERTY="$(LIBIBERTY) $(LIBINTL)" LIBS="$(LIBS)" \
+ 		DO_COMPARE="`echo '$(do_compare)' | sed -e 's,\\$$,,g'`" \
+ 		$(RUNTESTFLAGS); \
+diff --git a/ld/Makefile.in b/ld/Makefile.in
+index 8639e782cd..652a4dd1ea 100644
+--- a/ld/Makefile.in
++++ b/ld/Makefile.in
+@@ -375,6 +375,8 @@ AUTOCONF = @AUTOCONF@
+ AUTOHEADER = @AUTOHEADER@
+ AUTOMAKE = @AUTOMAKE@
+ AWK = @AWK@
++BLAKE3_CFLAGS = @BLAKE3_CFLAGS@
++BLAKE3_LIBS = @BLAKE3_LIBS@
+ CATALOGS = @CATALOGS@
+ CATOBJEXT = @CATOBJEXT@
+ CC = @CC@
+@@ -578,7 +580,7 @@ ELF_CFLAGS = -DELF_LIST_OPTIONS=@elf_list_options@ \
+ 	   -DELF_SHLIB_LIST_OPTIONS=@elf_shlib_list_options@ \
+ 	   -DELF_PLT_UNWIND_LIST_OPTIONS=@elf_plt_unwind_list_options@
+ 
+-AM_CFLAGS = $(WARN_CFLAGS) $(ELF_CFLAGS) $(JANSSON_CFLAGS) $(ZSTD_CFLAGS)
++AM_CFLAGS = $(WARN_CFLAGS) $(ELF_CFLAGS) $(JANSSON_CFLAGS) $(ZSTD_CFLAGS) $(BLAKE3_CFLAGS)
+ 
+ # We put the scripts in the directory $(scriptdir)/ldscripts.
+ # We can't put the scripts in $(datadir) because the SEARCH_DIR
+@@ -1039,7 +1041,7 @@ ld_new_DEPENDENCIES = $(EMULATION_OFILES) $(EMUL_EXTRA_OFILES) \
+ 		      $(BFDLIB) $(LIBCTF) $(LIBIBERTY) $(LIBINTL_DEP)
+ 
+ ld_new_LDADD = $(EMULATION_OFILES) $(EMUL_EXTRA_OFILES) $(BFDLIB) $(LIBCTF) \
+-	       $(LIBIBERTY) $(LIBINTL) $(ZLIB) $(ZSTD_LIBS) $(JANSSON_LIBS)
++	       $(LIBIBERTY) $(LIBINTL) $(ZLIB) $(ZSTD_LIBS) $(JANSSON_LIBS) $(BLAKE3_LIBS)
+ 
+ #
+ #
+@@ -2399,7 +2401,7 @@ check-DEJAGNU: site.exp
+ 		CXXFLAGS_FOR_TARGET="$(filter-out -ffile-prefix-map=%,$(CXXFLAGS_FOR_TARGET))" \
+ 		OFILES="$(OFILES)" BFDLIB="$(TESTBFDLIB)" CTFLIB="$(TESTCTFLIB) $(ZLIB)" \
+ 		SFRAMELIB="$(TESTSFRAMELIB)" \
+-		JANSSON_LIBS="$(JANSSON_LIBS)" ZSTD_LIBS="$(ZSTD_LIBS)" \
++		JANSSON_LIBS="$(JANSSON_LIBS)" ZSTD_LIBS="$(ZSTD_LIBS)" BLAKE3_LIBS="$(BLAKE3_LIBS)" \
+ 		LIBIBERTY="$(LIBIBERTY) $(LIBINTL)" LIBS="$(LIBS)" \
+ 		DO_COMPARE="`echo '$(do_compare)' | sed -e 's,\\$$,,g'`" \
+ 		$(RUNTESTFLAGS); \
+diff --git a/ld/config.in b/ld/config.in
+index f7c9da3d02..c736f614a5 100644
+--- a/ld/config.in
++++ b/ld/config.in
+@@ -80,6 +80,9 @@
+ /* Define to choose default GOT handling scheme */
+ #undef GOT_HANDLING_DEFAULT
+ 
++/* Define to 1 if blake3 is available. */
++#undef HAVE_BLAKE3
++
+ /* Define to 1 if you have the Mac OS X function
+    CFLocaleCopyPreferredLanguages in the CoreFoundation framework. */
+ #undef HAVE_CFLOCALECOPYPREFERREDLANGUAGES
+diff --git a/ld/configure b/ld/configure
+index cb3bcae4d3..2c66874623 100755
+--- a/ld/configure
++++ b/ld/configure
+@@ -651,6 +651,8 @@ ZSTD_LIBS
+ ZSTD_CFLAGS
+ zlibinc
+ zlibdir
++BLAKE3_LIBS
++BLAKE3_CFLAGS
+ NATIVE_LIB_DIRS
+ HDEFINES
+ do_compare
+@@ -872,6 +874,7 @@ with_libiconv_prefix
+ with_libiconv_type
+ with_libintl_prefix
+ with_libintl_type
++with_blake3
+ with_system_zlib
+ with_zstd
+ '
+@@ -895,6 +898,8 @@ JANSSON_CFLAGS
+ JANSSON_LIBS
+ YACC
+ YFLAGS
++BLAKE3_CFLAGS
++BLAKE3_LIBS
+ ZSTD_CFLAGS
+ ZSTD_LIBS'
+ 
+@@ -1589,6 +1594,8 @@ Optional Packages:
+   --with-libintl-prefix[=DIR]  search for libintl in DIR/include and DIR/lib
+   --without-libintl-prefix     don't search for libintl in includedir and libdir
+   --with-libintl-type=TYPE     type of library to search for (auto/static/shared)
++  --with-blake3           Enable blake3 for build-id hashing instead of
++                          md5/sha1 (auto/yes/no)
+   --with-system-zlib      use installed libz
+   --with-zstd             support zstd compressed debug sections
+                           (default=auto)
+@@ -1620,6 +1627,9 @@ Some influential environment variables:
+   YFLAGS      The list of arguments that will be passed by default to $YACC.
+               This script will default YFLAGS to the empty string to avoid a
+               default value of `-d' given by some make applications.
++  BLAKE3_CFLAGS
++              C compiler flags for BLAKE3, overriding pkg-config
++  BLAKE3_LIBS linker flags for BLAKE3, overriding pkg-config
+   ZSTD_CFLAGS C compiler flags for ZSTD, overriding pkg-config
+   ZSTD_LIBS   linker flags for ZSTD, overriding pkg-config
+ 
+@@ -19086,6 +19096,120 @@ $as_echo "#define HAVE_DECL_GETOPT 1" >>confdefs.h
+ 
+ fi
+ 
++# Support for the blake3.
++
++# Check whether --with-blake3 was given.
++if test "${with_blake3+set}" = set; then :
++  withval=$with_blake3;
++else
++  with_blake3=auto
++fi
++
++
++if test "$with_blake3" != no; then :
++
++pkg_failed=no
++{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for libblake3" >&5
++$as_echo_n "checking for libblake3... " >&6; }
++
++if test -n "$BLAKE3_CFLAGS"; then
++    pkg_cv_BLAKE3_CFLAGS="$BLAKE3_CFLAGS"
++ elif test -n "$PKG_CONFIG"; then
++    if test -n "$PKG_CONFIG" && \
++    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libblake3\""; } >&5
++  ($PKG_CONFIG --exists --print-errors "libblake3") 2>&5
++  ac_status=$?
++  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
++  test $ac_status = 0; }; then
++  pkg_cv_BLAKE3_CFLAGS=`$PKG_CONFIG --cflags "libblake3" 2>/dev/null`
++		      test "x$?" != "x0" && pkg_failed=yes
++else
++  pkg_failed=yes
++fi
++ else
++    pkg_failed=untried
++fi
++if test -n "$BLAKE3_LIBS"; then
++    pkg_cv_BLAKE3_LIBS="$BLAKE3_LIBS"
++ elif test -n "$PKG_CONFIG"; then
++    if test -n "$PKG_CONFIG" && \
++    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libblake3\""; } >&5
++  ($PKG_CONFIG --exists --print-errors "libblake3") 2>&5
++  ac_status=$?
++  $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
++  test $ac_status = 0; }; then
++  pkg_cv_BLAKE3_LIBS=`$PKG_CONFIG --libs "libblake3" 2>/dev/null`
++		      test "x$?" != "x0" && pkg_failed=yes
++else
++  pkg_failed=yes
++fi
++ else
++    pkg_failed=untried
++fi
++
++if test $pkg_failed = no; then
++  pkg_save_LDFLAGS="$LDFLAGS"
++  LDFLAGS="$LDFLAGS $pkg_cv_BLAKE3_LIBS"
++  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
++/* end confdefs.h.  */
++
++int
++main ()
++{
++
++  ;
++  return 0;
++}
++_ACEOF
++if ac_fn_c_try_link "$LINENO"; then :
++
++else
++  pkg_failed=yes
++fi
++rm -f core conftest.err conftest.$ac_objext \
++    conftest$ac_exeext conftest.$ac_ext
++  LDFLAGS=$pkg_save_LDFLAGS
++fi
++
++
++
++if test $pkg_failed = yes; then
++        { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
++$as_echo "no" >&6; }
++
++if $PKG_CONFIG --atleast-pkgconfig-version 0.20; then
++        _pkg_short_errors_supported=yes
++else
++        _pkg_short_errors_supported=no
++fi
++        if test $_pkg_short_errors_supported = yes; then
++	        BLAKE3_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libblake3" 2>&1`
++        else
++	        BLAKE3_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libblake3" 2>&1`
++        fi
++	# Put the nasty error message in config.log where it belongs
++	echo "$BLAKE3_PKG_ERRORS" >&5
++
++	if test "$with_blake3" = yes; then :
++  as_fn_error $? "--with-blake3 was given, but blake3 is missing or unusable." "$LINENO" 5
++fi
++elif test $pkg_failed = untried; then
++        { $as_echo "$as_me:${as_lineno-$LINENO}: result: no" >&5
++$as_echo "no" >&6; }
++	if test "$with_blake3" = yes; then :
++  as_fn_error $? "--with-blake3 was given, but blake3 is missing or unusable." "$LINENO" 5
++fi
++else
++	BLAKE3_CFLAGS=$pkg_cv_BLAKE3_CFLAGS
++	BLAKE3_LIBS=$pkg_cv_BLAKE3_LIBS
++        { $as_echo "$as_me:${as_lineno-$LINENO}: result: yes" >&5
++$as_echo "yes" >&6; }
++
++$as_echo "#define HAVE_BLAKE3 1" >>confdefs.h
++
++fi
++fi
++
+ # Link in zlib/zstd if we can.  This allows us to read and write
+ # compressed debug sections.
+ 
+diff --git a/ld/configure.ac b/ld/configure.ac
+index bdf51a062f..ae0c7ad1e7 100644
+--- a/ld/configure.ac
++++ b/ld/configure.ac
+@@ -424,6 +424,18 @@ if test $ld_cv_decl_getopt_unistd_h = yes; then
+ 	    [Is the prototype for getopt in <unistd.h> in the expected format?])
+ fi
+ 
++# Support for the blake3.
++AC_ARG_WITH([blake3],
++	    AS_HELP_STRING([--with-blake3], [Enable blake3 for build-id hashing instead of md5/sha1 (auto/yes/no)]),
++	    [],
++	    [with_blake3=auto])
++
++AS_IF([test "$with_blake3" != no],
++  [PKG_CHECK_MODULES(BLAKE3, libblake3,
++    [AC_DEFINE([HAVE_BLAKE3], [1], [Define to 1 if blake3 is available.])],
++    [AS_IF([test "$with_blake3" = yes],
++      [AC_MSG_ERROR([--with-blake3 was given, but blake3 is missing or unusable.])])])])
++
+ # Link in zlib/zstd if we can.  This allows us to read and write
+ # compressed debug sections.
+ AM_ZLIB
+diff --git a/ld/ldbuildid.c b/ld/ldbuildid.c
+index 5ba9e503c7..6aa5f0b2d4 100644
+--- a/ld/ldbuildid.c
++++ b/ld/ldbuildid.c
+@@ -23,6 +23,9 @@
+ #include "safe-ctype.h"
+ #include "md5.h"
+ #include "sha1.h"
++#ifdef HAVE_BLAKE3
++#include <blake3.h>
++#endif
+ #include "ldbuildid.h"
+ #ifdef __MINGW32__
+ #include <windows.h>
+@@ -93,6 +96,14 @@ read_hex (const char xdigit)
+   return 0;
+ }
+ 
++#ifdef HAVE_BLAKE3
++static void
++blake3_process_bytes(const void* buffer, size_t size, void* state)
++{
++  blake3_hasher_update ((blake3_hasher*) state, buffer, size);
++}
++#endif
++
+ bool
+ generate_build_id (bfd *abfd,
+ 		   const char *style,
+@@ -102,15 +113,28 @@ generate_build_id (bfd *abfd,
+ {
+   if (streq (style, "md5"))
+     {
++#ifdef HAVE_BLAKE3
++      blake3_hasher hasher;
++      blake3_hasher_init(&hasher);
++      (*checksum_contents) (abfd, &blake3_process_bytes, &hasher);
++      blake3_hasher_finalize(&hasher, id_bits, 16);
++#else
+       struct md5_ctx ctx;
+ 
+       md5_init_ctx (&ctx);
+       if (!(*checksum_contents) (abfd, (sum_fn) &md5_process_bytes, &ctx))
+ 	return false;
+       md5_finish_ctx (&ctx, id_bits);
++#endif
+     }
+   else if (streq (style, "sha1"))
+     {
++#ifdef HAVE_BLAKE3
++      blake3_hasher hasher;
++      blake3_hasher_init(&hasher);
++      (*checksum_contents) (abfd, &blake3_process_bytes, &hasher);
++      blake3_hasher_finalize(&hasher, id_bits, 20);
++#else
+       struct sha1_ctx ctx;
+ 
+       sha1_init_ctx (&ctx);
+@@ -118,6 +142,7 @@ generate_build_id (bfd *abfd,
+ 				 &ctx))
+ 	return false;
+       sha1_finish_ctx (&ctx, id_bits);
++#endif
+     }
+   else if (streq (style, "uuid"))
+     {
