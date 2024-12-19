@@ -16,7 +16,8 @@ unset FG
 unset BG
 unset AT
 unset HCOLOR
-if [ $SHELL != "/bin/zsh" ]; then
+# shopt is bash only
+if [ $SHELL = "/usr/bin/bash" ]; then
     shopt -s checkwinsize
 fi
 
