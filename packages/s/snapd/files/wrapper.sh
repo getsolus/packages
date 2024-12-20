@@ -36,9 +36,11 @@ if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" 
           --urgency normal \
           --icon dialog-warning \
           "Snap has ${CONFINEMENT} confinement" \
+          "Snaps will stop working in early January 2025." \
           "See ${URL} for details."
   else
       echo -e "${YELLOW}WARNING:${NC} snap is running with ${CONFINEMENT} confinement." \
+        "Snaps will stop working in early January 2025." \
         "See ${URL} for details"
   fi
 fi
