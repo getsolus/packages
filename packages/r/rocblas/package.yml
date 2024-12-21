@@ -1,16 +1,15 @@
 name       : rocblas
-version    : 4.0.0
-release    : 5
+version    : 4.2.4
+release    : 6
 source     :
-    - https://github.com/ROCm/rocBLAS/archive/refs/tags/rocm-6.0.0.tar.gz : befa4a75f1de0ea37f2358d4c2de5406d7bce671ca9936e2294b64d3b3bafb60
-    - https://github.com/ROCm/Tensile/archive/refs/tags/rocm-6.0.0.tar.gz#tensile.tar.gz : 5d90add62d1439b7daf0527316e950e454e5d8beefb4f723865fe9ab26c7aa42
+    - git|https://github.com/ROCm/rocBLAS.git: 3171316ae7f642952fccbffc2ae0368bf67394f5
+    - https://github.com/ROCm/Tensile/archive/refs/tags/rocm-6.2.4.tar.gz#tensile.tar.gz : dd0721e4371c8752aa4b14362f75d7ebb7805f57dcb990e03ae08cef4a291383
 homepage   : https://github.com/ROCmSoftwarePlatform/rocBLAS
 license    : MIT
 component  : programming.library
 summary    : Next generation BLAS implementation for ROCm platform
 description: |
     rocBLAS is the AMD library for Basic Linear Algebra Subprograms (BLAS) on the ROCm platform. It is implemented in the HIP programming language and optimized for AMD GPUs.
-# networking : yes
 builddeps  :
     - msgpack-cxx
     - python-joblib
@@ -19,7 +18,6 @@ builddeps  :
     - libboost-devel
     - rocm-cmake
     - rocm-hip
-    - git
     - virtualenv
 environment: |
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
@@ -32,7 +30,7 @@ environment: |
     export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
     export TENSILE_ROCM_ASSEMBLER_PATH=$HIP_CLANG_PATH/clang
     export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=$HIP_CLANG_PATH/clang-offload-bundler
-    export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=%YJOBS%"
+    export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=4"
 
     # Speed up the build
     unset LD_PRELOAD
@@ -43,17 +41,8 @@ environment: |
 setup      : |
     mkdir tensile
     tar xf $sources/tensile.tar.gz --strip-components=1 -C tensile
-    pushd tensile
-        # Upstream is still using msgpack-cxx's old name
-        sed -i "s|find_package(msgpack REQUIRED)|find_package(msgpack-cxx REQUIRED)|" Tensile/Source/lib/CMakeLists.txt
-        %patch -p1 -i $pkgfiles/0001-Extend-Tensile-HIP-ISA-compatibility.patch
-        # Borked, see https://github.com/ROCm/Tensile/pull/1862
-        # %patch -p1 -i $pkgfiles/lazy-fallback.patch
-    popd
 
     %patch -p1 -i $pkgfiles/0001-Extend-rocBLAS-HIP-ISA-compatibility.patch
-    # Packagers: change Tensile_CPU_THREADS to around numcpu/4 or appropriate.
-    # Each job can consume up to 3~4GB of memory.
     %cmake_ninja -Wno-dev -L \
       -DCMAKE_C_COMPILER=hipcc \
       -DCMAKE_CXX_COMPILER=hipcc \
@@ -67,12 +56,10 @@ setup      : |
       -DBUILD_WITH_TENSILE=ON \
       -DTensile_PRINT_DEBUG=ON \
       -DTensile_LIBRARY_FORMAT=msgpack \
-      -DTensile_CPU_THREADS=%YJOBS% \
-      -DTensile_LAZY_LIBRARY_LOADING=OFF \
-      -DTensile_SEPARATE_ARCHITECTURES=ON \
+      -DTensile_CPU_THREADS=$((%YJOBS% / 4)) \
       -DTensile_TEST_LOCAL_PATH=$workdir/tensile \
       -DAMDGPU_TARGETS="%AMDGPUTARGETS%"
 build      : |
-    %ninja_build
+    %ninja_build -j $((%YJOBS% / 4))
 install    : |
     %ninja_install

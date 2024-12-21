@@ -1,9 +1,9 @@
 name       : rocm-llvm
-version    : 6.0.0
-release    : 3
+version    : 6.2.4
+release    : 4
 source     :
-    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.0.0.tar.gz : c673708d413d60ca8606ee75c77e9871b6953c59029c987b92f2f6e85f683626
-    - https://github.com/ROCm/hip-tests/archive/refs/tags/rocm-6.0.0.tar.gz#hip-tests-6.0.0.tar.gz : e8f92a0f5d1f6093ca1fb24ff1b7140128900fcdc6e9f01f153d6907e5c2d807
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.2.4.tar.gz : 7af782bf5835fcd0928047dbf558f5000e7f0207ca39cf04570969343e789528
+    # - https://github.com/ROCm/hip-tests/archive/refs/tags/rocm-6.0.0.tar.gz#hip-tests-6.0.0.tar.gz : e8f92a0f5d1f6093ca1fb24ff1b7140128900fcdc6e9f01f153d6907e5c2d807
 homepage   : https://github.com/ROCm/llvm-project
 license    : Apache-2.0-with-LLVM-exception
 summary    : ROCm's patched LLVM
@@ -19,8 +19,8 @@ builddeps  :
     - binutils-devel
 rundeps    :
     - zstd-devel
-checkdeps  :
-    - rocm-hip
+# checkdeps  :
+#     - rocm-hip
 environment: |
     # Decontaminate build environment
     unset LDFLAGS
@@ -85,9 +85,9 @@ setup      : |
     %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
     # Allow us to force ignore -Werror
     %patch -p1 -i $pkgfiles/ignore-werror.patch
-    # This warning appears during profiling phase, not sure if it affects
-    # profile data generation
-    %patch -p1 -i $pkgfiles/fix-inconsistent-md5-checksum.patch
+    # # This warning appears during profiling phase, not sure if it affects
+    # # profile data generation
+    # %patch -p1 -i $pkgfiles/fix-inconsistent-md5-checksum.patch
 
     # Patch cfe for Solus specific options
     pushd clang
@@ -100,33 +100,37 @@ setup      : |
         %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
     popd
 
+    # This API is required to extend HIP ISA compatibility for compressed GPU
+    # code object bundles (used in composable_kernel, rocSOLVER, and MIOpen)
+    %patch -p1 -i $pkgfiles/0001-ClangOffloadBundler-Add-GetBundleIDsInFile-to-Offloa.patch
+
     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
                  $CMAKE_COMMON_OPTIONS \
                  -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
                  -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
                  -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
                  -DLLVM_BUILD_DOCS=OFF \
-                 -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
-build      : |
-    ninja -C solusBuildDir install %JOBS%
-    cp -TRv $PGO_INSTALL_DIR/lib $PGO_INSTALL_DIR/lib64
-profile    : |
-    mkdir -p $HIP_TESTS_DIR
-    tar --strip-components=1 -C $HIP_TESTS_DIR -xf $sources/hip-tests-6.0.0.tar.gz
-    pushd $HIP_TESTS_DIR
-        %patch -p1 -i $pkgfiles/hip-tests.diff
-    popd
-
-    %cmake_ninja -B profile -S $HIP_TESTS_DIR/catch -L \
-      -DOFFLOAD_ARCH_STR="$OFFLOAD_ARCH_STR" \
-      -DHIP_PLATFORM=$HIP_PLATFORM \
-      -DROCM_PATH=$ROCM_PATH
-
-    %ninja_build -C profile build_tests
-
-    llvm-profdata merge -output=$PROF_DIR/code.profdata $PROF_DIR/default-*.profraw
+                 # -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+                 # -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+                 # -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
+# build      : |
+#     # ninja -C solusBuildDir install %JOBS%
+#     # cp -TRv $PGO_INSTALL_DIR/lib $PGO_INSTALL_DIR/lib64
+# profile    : |
+#     mkdir -p $HIP_TESTS_DIR
+#     tar --strip-components=1 -C $HIP_TESTS_DIR -xf $sources/hip-tests-6.0.0.tar.gz
+#     pushd $HIP_TESTS_DIR
+#         %patch -p1 -i $pkgfiles/hip-tests.diff
+#     popd
+#
+#     %cmake_ninja -B profile -S $HIP_TESTS_DIR/catch -L \
+#       -DOFFLOAD_ARCH_STR="$OFFLOAD_ARCH_STR" \
+#       -DHIP_PLATFORM=$HIP_PLATFORM \
+#       -DROCM_PATH=$ROCM_PATH
+#
+#     %ninja_build -C profile build_tests
+#
+#     llvm-profdata merge -output=$PROF_DIR/code.profdata $PROF_DIR/default-*.profraw
 install    : |
     rm -rf solusBuildDir
     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
@@ -135,8 +139,8 @@ install    : |
                  -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
                  -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
                  -DLLVM_BUILD_DOCS=OFF \
-                 -DCMAKE_C_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata" \
-                 -DCMAKE_CXX_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata"
+                 # -DCMAKE_C_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata" \
+                 # -DCMAKE_CXX_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata"
 
     %ninja_install
 
