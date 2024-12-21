@@ -1,7 +1,10 @@
 # Begin /usr/share/defaults/etc/profile.d/50-history.sh
 
 # Append to history file on exit instead of overwrite (parallel terminals)
-shopt -s histappend
+# shopt is bash only
+if [ $SHELL = "/usr/bin/bash" ]; then
+    shopt -s histappend
+fi
 
 export HISTSIZE=1500
 export HISTIGNORE="&:[bf]g:exit"
