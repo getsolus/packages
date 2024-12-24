@@ -1,8 +1,8 @@
 name       : pytorch
-version    : 2.2.2
-release    : 34
+version    : 2.5.1
+release    : 35
 source     :
-    - https://github.com/pytorch/pytorch/releases/download/v2.2.2/pytorch-v2.2.2.tar.gz : 57a1136095bdfe769acb87876dce77212da2c995c61957a67a1f16172d235d17
+    - https://github.com/pytorch/pytorch/releases/download/v2.5.1/pytorch-v2.5.1.tar.gz : 740eb5fff95e33cfe699bad43be83523f569c7cc7f9c285c2a255416443dd266
 homepage   : https://pytorch.org/
 license    : BSD-3-Clause
 component  :
@@ -20,7 +20,9 @@ patterns   :
         - /usr/lib64/cmake
         - /usr/include
 avx2       : yes
-clang      : yes
+# networking : yes
+# clang      : yes
+ccache     : no
 builddeps  :
     - pkgconfig(eigen3)
     - pkgconfig(fftw3)
@@ -56,11 +58,12 @@ builddeps  :
     - rocm-cmake
     - rocm-hip
     - hipblas-devel
+    - hipblaslt-devel
     - hipcub
     - hipfft-devel
     - hipsolver-devel
     - hipsparse-devel
-    # - hipmagma-devel
+    - hipmagma-devel
     - miopen-devel
     - miopengemm-devel
     - rccl-devel
@@ -93,11 +96,12 @@ rundeps    :
         - rocm-core-devel
         - rocm-hip
         - hipblas-devel
+        - hipblaslt-devel
         - hipcub
         - hipfft-devel
         - hipsolver-devel
         - hipsparse-devel
-        # - hipmagma-devel
+        - hipmagma-devel
         - miopen-devel
         - miopengemm-devel
         - rccl-devel
@@ -129,6 +133,7 @@ environment: |
         USE_CCACHE=0 \
         USE_CUDA=0 \
         USE_DISTRIBUTED=1 \
+        USE_FLASH_ATTENTION=0 \
         USE_FBGEMM=0 \
         USE_FFTW=1 \
         USE_FFMPEG=0 \
@@ -137,16 +142,17 @@ environment: |
         USE_LEVELDB=1 \
         USE_LAPACK=1 \
         USE_LMDB=1 \
-        USE_MAGMA=0 \
+        USE_MAGMA=1 \
+        USE_MEM_EFF_ATTENTION=0 \
         USE_MKLDNN=0 \
         USE_BLAS=1 \
         USE_OPENCV=1 \
         USE_ROCM=1 \
         USE_REDIS=1 \
         USE_ROCKSDB=1 \
-        USE_SCCACHE=0 \
         USE_TBB=1 \
         USE_VULKAN=1 \
+        USE_XPU=0 \
         USE_ZMQ=1 \
         USE_ZSTD=1 \
         USE_SYSTEM_EIGEN_INSTALL=1 \
@@ -156,21 +162,25 @@ environment: |
         REL_WITH_DEB_INFO=1 \
 
     export ROCM_PATH=/usr
-    export HIP_PATH=/usr
+    export HIP_PATH=$ROCM_PATH
+    export ROCM_SOURCE_DIR=$ROCM_PATH
     export HIP_COMPILER=clang
     export HIP_RUNTIME=amd
     export HIP_ROCCLR_HOME=/usr/lib64/llvm-rocm
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export HIP_CXX_COMPILER=/usr/bin/hipcc
-    export DEVICE_LIB_PATH="/usr/lib64/amdgcn/bitcode"
-    export PYTORCH_ROCM_ARCH="%AMDGPUTARGETS%"
+    export HIP_DEVICE_LIB_PATH="/usr/lib64/amdgcn/bitcode"
+    export DEVICE_LIB_PATH=$HIP_DEVICE_LIB_PATH
+    export AMDGPU_TARGETS="%AMDGPUTARGETS%"
+    export GPU_TARGETS="$AMDGPU_TARGETS"
+    export PYTORCH_ROCM_ARCH="$AMDGPU_TARGETS"
     export HIP_CLANG_LAUNCHER=/usr/bin/sccache
-    export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=4"
+    # export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=4"
 
     # Needs llvm in order to find system zstd
     export CMAKE_MODULE_PATH="/usr/lib64/cmake/hip;/usr/lib64/cmake/llvm"
 
-    # Cannot compile C code with clang due to https://github.com/pytorch/pytorch/issues/103222
+    # # Cannot compile C code with clang due to https://github.com/pytorch/pytorch/issues/103222
     export CC=gcc
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
     # Too noisy
@@ -180,25 +190,14 @@ environment: |
 
     # Set it in case your computer starts chocking horribly
     # export MAX_JOBS=$((%YJOBS%/4))
+    export MAX_JOBS=%YJOBS%
     # For packagers. The default 5G is barely enough for a single build.
     # export CCACHE_MAXSIZE=20G
 setup      : |
+    echo %version% > version.txt
+
     # Make sure lapack is detected.
     sed -i 's|(BLAS_INFO STREQUAL "generic")|TRUE|' cmake/Modules/FindLAPACK.cmake
-
-    # kineto is still using old include paths
-    sed -i "s|#include <roctracer|#include <roctracer/roctracer|g" third_party/kineto/libkineto/src/*.h
-
-    # Too strict, Vulcan doesn't like that
-    sed -i 's|append_cxx_flag_if_supported("-Werror=cast-function-type" CMAKE_CXX_FLAGS)||' CMakeLists.txt
-
-    # They forgot to include iostream and some other standard libraries
-    sed -i 's|<fstream>|<bits/stdc++.h>|' binaries/dump_operator_names.cc 
-
-    # Backports from ROCm 6.0
-    # %patch -p1 -i $pkgfiles/fully-disable-rocm-kernel-asserts.patch
-    %patch -p1 -i $pkgfiles/rocm-6.0.patch
-    %patch -p1 -i $pkgfiles/upstream-01.patch
 
     # The CMake option HIP_CXX_COMPILER is set by default to CMAKE_CXX_COMPILER
     # by HIP, so we have to cheeze this option to CMake using PyTorch existing
@@ -208,26 +207,10 @@ setup      : |
     sed -i 's|CMAKE_CUDA_COMPILER|HIP_CXX_COMPILER|' tools/setup_helpers/cmake.py
     sed -i 's|CUDACXX|HIPCXX|' tools/setup_helpers/cmake.py
 
-    # __HIP_PLATFORM_HCC__ no longer recognized in ROCm 6
-    sed -i 's|__HIP_PLATFORM_HCC__|__HIP_PLATFORM_AMD__|g' \
-        cmake/Dependencies.cmake \
-        torch/CMakeLists.txt \
-        torch/utils/cpp_extension.py \
-        caffe2/CMakeLists.txt \
-        aten/src/ATen/native/cuda/layer_norm_kernel.cu \
-
+    %patch -p1 -i $pkgfiles/remove-run_plan_mpi.patch
+    sed -i 's|Python_EXECUTABLE=sys.executable,|Python_EXECUTABLE=sys.executable,PYTHON_EXECUTABLE=sys.executable,|' tools/setup_helpers/cmake.py
+    sed -i 's|caffe2_hip_binary_target("hip/inspect_gpu.cc")||' binaries/CMakeLists.txt
     python3 ./tools/amd_build/build_amd.py
-
-    # Patches from Arch.
-    %patch -p1 -i $pkgfiles/protobuf-23.patch
-
-    # For some reason, I cannot consistently reproduce build failures without 
-    # this patch. Let's just have it for good measure.
-    %patch -p1 -i $pkgfiles/pytorch-rocm-jit.patch
-
-    %patch -p1 -i $pkgfiles/python-pytorch-ffmpeg6.patch
-
-    echo %version% > version.txt
 build      : |
     %python3_setup
 install    : |
