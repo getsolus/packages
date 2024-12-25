@@ -29,15 +29,18 @@ fi
 
 if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" != "y" ]]
   then
-  if [[ -n "${BAMF_DESKTOP_FILE_HINT+x}" ]] && [[ -n "${GIO_LAUNCHED_DESKTOP_FILE+x}" ]]
+  # This prevents the warning from showing on KDE Plasma
+  # if [[ -n "${BAMF_DESKTOP_FILE_HINT+x}" ]] && [[ -n "${GIO_LAUNCHED_DESKTOP_FILE+x}" ]]
+
+  if [[ -n "${BAMF_DESKTOP_FILE_HINT+x}" ]]
   then
       notify-send \
           --app-name Snap \
-          --urgency normal \
+          --urgency critical \
           --icon dialog-warning \
           "Snap has ${CONFINEMENT} confinement" \
-          "Snaps will stop working in early January 2025." \
-          "See ${URL} for details."
+          "Snaps will stop working in early January 2025. For details see<br> \
+          ${URL}"
   else
       echo -e "${YELLOW}WARNING:${NC} snap is running with ${CONFINEMENT} confinement." \
         "Snaps will stop working in early January 2025." \
