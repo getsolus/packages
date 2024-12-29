@@ -1,9 +1,9 @@
 name       : rocprofiler
-version    : 6.0.0
-release    : 4
+version    : 6.2.4
+release    : 5
 source     :
-    - https://github.com/ROCm-Developer-Tools/rocprofiler/archive/refs/tags/rocm-6.0.0.tar.gz : 6aca327a6ba302b5957002e55ac640dd185d51a354da3859e957448a5fc36b14
-    - https://github.com/ROCm-Developer-Tools/roctracer/archive/refs/tags/rocm-6.0.0.tar.gz#roctracer-6.0.0.tar.gz : 941166a0363c5689bfec118d54e986c43fb1ec8cbf18d95721d9a824bd52c0f8
+    - git|https://github.com/ROCm/rocprofiler.git : 5a416bd54e92ac6cb8a58784bedc888896087bc4
+    - https://github.com/ROCm/roctracer/archive/refs/tags/rocm-6.2.4.tar.gz#roctracer-6.2.4.tar.gz : b94c7db8ac57a4a1d7f8115020c36551220c20f33289fd06830495b4914a7d7b
 homepage   : https://github.com/ROCm-Developer-Tools/rocprofiler
 license    : MIT
 component  : programming.library
@@ -21,7 +21,7 @@ builddeps  :
     - rocm-hip
     - rocprim
     - hsa-amd-aqlprofile-devel
-    # TODO(GZGavinZhao): build plugins too
+    # TODO(GZGavinZhao): enable once python-barectf is included
     # - python-barectf
     - python-lxml
     - python-cppheaderparser
@@ -29,27 +29,22 @@ builddeps  :
 environment: |
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
     # Too noisy
-    export CXXFLAGS="$CXXFLAGS -w"
+    export CXXFLAGS+=" -w"
 
     export ROCM_PATH=/usr
+    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
 
     export ROCTRACER_DIR=$sources/roctracer-rocm-%version%
 setup      : |
-    sed -i 's|OUTPUT_NAME rocprofiler64|OUTPUT_NAME rocprofiler64-v2|' src/api/CMakeLists.txt
-
     tar xf $sources/roctracer-%version%.tar.gz -C $sources
 
-    sed -i "s/add_subdirectory(plugin)//" CMakeLists.txt
     sed -i 's|set(ROCPROFILER_BUILD_CI ON)||' CMakeLists.txt
     sed -i 's|set(ROCPROFILER_BUILD_TESTS ON)||' CMakeLists.txt
 
-    # Technically hipcc is not needed, but I would need a patch to build with
-    # GCC/system Clang, so I'll just use hipcc here
-    %cmake_ninja -L \
-      -DCMAKE_C_COMPILER=hipcc \
-      -DCMAKE_CXX_COMPILER=hipcc \
+    %cmake -B build -L \
+      -DROCM_PATH=$ROCM_PATH \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DROCM_SYMLINK_LIBS=OFF \
       -DPROF_API_HEADER_PATH="$ROCTRACER_DIR/inc/ext" \
@@ -57,9 +52,11 @@ setup      : |
       -DROCPROFILER_BUILD_TESTS=OFF \
       -DROCPROFILER_BUILD_SAMPLES=OFF \
       -DROCPROFILER_BUILD_CODECOV=OFF \
+      -DROCPROFILER_BUILD_PLUGIN_CTF=OFF \
+      -DBUILD_TESTING=OFF \
       -DAMDGPU_TARGETS="%AMDGPUTARGETS%" \
       -DGPU_TARGETS="%AMDGPUTARGETS%"
 build      : |
-    %ninja_build
+    %make -C build
 install    : |
-    %ninja_install
+    %make_install -C build

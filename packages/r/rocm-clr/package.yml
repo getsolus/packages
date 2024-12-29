@@ -1,18 +1,17 @@
 name       : rocm-clr
-version    : 6.0.0
-release    : 8
+version    : 6.2.4
+release    : 9
 source     :
-    - https://github.com/ROCm/clr/archive/refs/tags/rocm-6.0.0.tar.gz : 798b55b5b5fb90dd19db54f136d8d8e1da9ae1e408d5b12b896101d635f97e50
-    - https://github.com/ROCm/HIP/archive/refs/tags/rocm-6.0.0.tar.gz#HIP-6.0.0.tar.gz : 0d575788e0b731124a8489a36652014a165b9ebab92d5456ec3c976e062f3a82
-    - https://github.com/ROCm/roctracer/archive/refs/tags/rocm-6.0.0.tar.gz#roctracer-6.0.0.tar.gz : 941166a0363c5689bfec118d54e986c43fb1ec8cbf18d95721d9a824bd52c0f8
-    - https://github.com/ROCm/HIPCC/archive/refs/tags/rocm-6.0.0.tar.gz#HIPCC-6.0.0.tar.gz : e9cfaaecaf0e6ed363946439197f340c115e8e1189f96dbd716cf20245c29255
+    - https://github.com/ROCm/clr/archive/refs/tags/rocm-6.2.4.tar.gz : 0a3164af7f997a4111ade634152957378861b95ee72d7060eb01c86c87208c54
+    - https://github.com/ROCm/HIP/archive/refs/tags/rocm-6.2.4.tar.gz#HIP-6.2.4.tar.gz : 76e4583ae3d31786270fd92abbb2e3dc5e665b22fdedb5ceff0093131d4dc0ca
+    - https://github.com/ROCm/roctracer/archive/refs/tags/rocm-6.2.4.tar.gz#roctracer-6.2.4.tar.gz : b94c7db8ac57a4a1d7f8115020c36551220c20f33289fd06830495b4914a7d7b
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.2.4.tar.gz#HIPCC-6.2.4.tar.gz : 7af782bf5835fcd0928047dbf558f5000e7f0207ca39cf04570969343e789528
 homepage   : https://github.com/ROCm/clr
 license    : MIT
 component  : programming.library
 summary    : AMD Common Language Runtime for HIP and OpenCL
 description: |
     AMD Common Language Runtime contains source code for AMD's HIP and OpenCL compute languages runtimes.
-clang      : yes
 builddeps  :
     - pkgconfig(OpenCL)
     - pkgconfig(d3d)
@@ -26,6 +25,7 @@ builddeps  :
     - rocm-device-libs-devel
     - rocm-llvm
     - rocm-runtime-devel
+    - rocprofiler-register-devel
 rundeps    :
     - ^rocm-hip:
       - rocm-clr
@@ -60,6 +60,7 @@ environment: |
     export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
     export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export HIP_PLATFORM=amd
 
     export HIP_DIR="$sources/HIP-rocm-%version%"
     export ROCTRACER_DIR="$sources/roctracer-rocm-%version%"
@@ -72,23 +73,14 @@ setup      : |
         tar -xf $sources/HIP-%version%.tar.gz
 
         mkdir -p $HIPCC_DIR
-        tar --strip-components=1 -C $HIPCC_DIR -xf $sources/HIPCC-%version%.tar.gz 
+        tar --strip-components=3 -C $HIPCC_DIR -xf $sources/HIPCC-%version%.tar.gz llvm-project-rocm-%version%/amd/hipcc
     popd
 
     pushd $HIPCC_DIR
-        %patch -p1 -i $pkgfiles/0001-Remove-isystem-include-paths.patch
         %patch -p3 -i $pkgfiles/0001-Add-HIP_CLANG_LAUNCHER-for-caching.patch
-        %cmake_ninja
+        %cmake_ninja -DHIPCC_BACKWARD_COMPATIBILITY=OFF
         %ninja_build
     popd
-
-    %apply_patches
-    # pushd rocclr
-    #     # # Enable experimental pre vega platforms
-    #     # %patch -p1 -i $pkgfiles/0001-enable-gfx800.patch
-    #     # Better ISA compatibility
-    #     %patch -p1 -i $pkgfiles/0022-improve-rocclr-isa-compatibility-check.patch
-    # popd
 
     pushd opencl
         # Add soname to amdocl and cltrace:
@@ -102,13 +94,10 @@ setup      : |
             >> tools/cltrace/CMakeLists.txt
     popd
 
-    # pushd hipamd
-    #     %patch -p1 -i $pkgfiles/0023-extend-hip-isa-compatibility-check.patch
-    # popd
-
-    # We're not Windows!!!
-    sed -i 's|install(PROGRAMS ${HIPCC_BIN_DIR}/hipcc.bat DESTINATION bin)||' hipamd/CMakeLists.txt
-    sed -i 's|install(PROGRAMS ${HIPCC_BIN_DIR}/hipconfig.bat DESTINATION bin)||' hipamd/CMakeLists.txt
+    # ISA compatibility
+    # This is essentially why Solus is one of the best distros to run ROCm!
+    %patch -p1 -i $pkgfiles/0001-improve-rocclr-isa-compatibility-check.patch
+    %patch -p1 -i $pkgfiles/0002-Improve-hipamd-compat-check.patch
 
     %cmake_ninja -L \
       -DROCM_PATH=$ROCM_PATH \
@@ -117,8 +106,8 @@ setup      : |
       -DCLR_BUILD_HIP=ON \
       -DCLR_BUILD_OCL=ON \
       -DBUILD_ICD=OFF \
-      -DOpenGL_GL_PREFERENCE=GLVND \
       -DPROF_API_HEADER_PATH=$ROCTRACER_DIR/inc/ext \
+      -DHIP_ENABLE_ROCPROFILER_REGISTER=ON \
       -DBUILD_TESTS=OFF
 build      : |
     %ninja_build

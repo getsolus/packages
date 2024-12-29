@@ -1,69 +1,68 @@
 name       : hipmagma
-version    : 2.7.2
-release    : 1
+version    : 2.8.0
+release    : 2
 source     :
-    - https://icl.utk.edu/projectsfiles/magma/downloads/magma-2.7.2.tar.gz : 729bc1a70e518a7422fe7a3a54537a4741035a77be3349f66eac5c362576d560
+    # tag: v2.8.0
+    - git|https://github.com/icl-utk-edu/magma.git : 06368d9b817710566f654b96114549216f8cee70
 homepage   : https://icl.utk.edu/magma/
-license    : Custom
+license    : BSD-3-Clause
 component  : programming.library
 summary    : Matrix Algebra on GPU and Multicore Architectures (ROCm/HIP Backend)
 description: |
     Matrix Algebra on GPU and Multicore Architectures
-clang      : yes
 builddeps  :
     - pkgconfig(lapack)
     - pkgconfig(openblas)
-    - rocm-cmake
-    - rocm-hip-devel
+    - rocblas-devel
+    - rocm-core-devel
+    - rocsparse-devel
     - hipblas-devel
     - hipsparse-devel
+    - rocm-cmake
+    - rocm-hip
 environment: |
-    declare -A rocm_vars
-    rocm_vars=(
-        ["HIP_DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["DEVICE_LIB_PATH"]="/usr/lib64/amdgcn/bitcode"
-        ["HIP_CLANG_PATH"]="/usr/bin"
-        ["HIP_COMPILER"]="clang"
-        ["HIP_LIB_PATH"]="/usr/lib64"
-        ["HIP_PATH"]="/usr"
-        ["HIP_PLATFORM"]="amd"
-        ["HIP_ROCCLR_HOME"]="/usr"
-        ["ROCM_PATH"]="/usr"
-        ["BUILD_FILE_REORG_BACKWARD_COMPATIBILITY"]="OFF"
-        ["HIPCC_VERBOSE"]="0"
-        ["MAGMA_HONE"]="/usr"
-    )
-
-    for name in "${!rocm_vars[@]}"; do
-        export "$name"="${rocm_vars[$name]}";
-        export ROCM_CMAKE_FLAGS="$ROCM_CMAKE_FLAGS -D$name=${rocm_vars[$name]}";
-    done
-
-    # I don't want to bother with bash variables interpolations, so I'm just
-    # going to specify this manually.
-    # Note that HCC_AMDGPU_TARGET uses a comma as the separator.
-    export AMDGPU_TARGETS="gfx803;gfx900;gfx906:xnack-;gfx908:xnack-;gfx90a:xnack+;gfx90a:xnack-;gfx1010;gfx1012;gfx1030;gfx1100;gfx1101;gfx1102"
-    export HCC_AMDGPU_TARGET="gfx803,gfx900,gfx906:xnack-,gfx908:xnack-,gfx90a:xnack+,gfx90a:xnack-,gfx1010,gfx1012,gfx1030,gfx1100,gfx1101,gfx1102"
-
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
     # Enabling debug causes relocation out of range error
     export CXXFLAGS="${CXXFLAGS/ -g2/}"
-    export CXXFLAGS="$CXXFLAGS -I/usr/include/hipsparse -I/usr/include/hipblas"
+    # Too noisy
+    export CXXFLAGS+=" -w"
+
+    export ROCM_PATH=/usr
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
+
+    export AMDGPU_TARGETS="%AMDGPUTARGETS%"
+
+    if [ -e /usr/bin/sccache ]; then
+        export HIP_CLANG_LAUNCHER=/usr/bin/sccache
+    fi
 setup      : |
-    echo "set_target_properties(magma_sparse PROPERTIES VERSION %version% SOVERSION 2.7)" >> CMakeLists.txt
-    echo "set_target_properties(magma PROPERTIES VERSION %version% SOVERSION 2.7)" >> CMakeLists.txt
+    echo "set_target_properties(magma PROPERTIES VERSION %version% SOVERSION 2.8)" >> CMakeLists.txt
+    echo "set_target_properties(magma_sparse PROPERTIES VERSION %version% SOVERSION 2.8)" >> CMakeLists.txt
+
+    cp make.inc-examples/make.inc.hip-gcc-openblas make.inc
+    %make OPENBLASDIR=/usr ROCM_PATH=$ROCM_PATH generate
+
+    %patch -p1 -i $pkgfiles/add-hip-device-to-magma.patch
 
     # Similarly, use Release instead of RelWithDbgInfo to prevent 
     # relocation out of range error
-    %cmake_ninja -L -DCMAKE_BUILD_TYPE=Release $ROCM_CMAKE_FLAGS \
-                 -DCMAKE_CXX_COMPILER=hipcc \
-                 -DMAGMA_ENABLE_CUDA=OFF \
-                 -DMAGMA_ENABLE_HIP=ON \
-                 -DBUILD_SHARED_LIBS=ON \
-                 -DGPU_TARGET="$AMDGPU_TARGETS" \
-                 -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
+    %cmake_ninja -L \
+      -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DROCM_CORE=$ROCM_PATH \
+      -DCMAKE_CXX_COMPILER=hipcc \
+      -DMAGMA_ENABLE_CUDA=OFF \
+      -DMAGMA_ENABLE_HIP=ON \
+      -DBUILD_SHARED_LIBS=ON \
+      -DGPU_TARGET="$AMDGPU_TARGETS" \
+      -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
 build      : |
-    %ninja_build
+    # We don't need to build for all architectures during setup/install phase.
+    # This makes CMake compiler checks much faster.
+    # export HCC_AMDGPU_TARGET="$(echo $AMDGPU_TARGETS | tr ";" ",")"
+    %ninja_build lib sparse-lib
 install    : |
     %ninja_install
     mv $installdir/usr/lib $installdir/%libdir%
