@@ -2,3 +2,6 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Jacek Jagosz
   - Email: jacek.jagosz@outlook.com
+- Muhammad Alfi Syahrin
+  - Matrix: @alfisya:matrix.org
+  - Email: malfisya.dev@hotmail.com
