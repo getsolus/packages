@@ -421,7 +421,7 @@ class Homepage(PullRequestCheck):
 
 
 class Monitoring(PullRequestCheck):
-    _error = '`monitoring.yml` is missing'
+    _error = '`monitoring.yaml` is missing'
     _level = Level.WARNING
 
     def run(self) -> List[Result]:
@@ -430,7 +430,7 @@ class Monitoring(PullRequestCheck):
                 if not self._has_monitoring_yml(f)]
 
     def _has_monitoring_yml(self, file: str) -> bool:
-        return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yml'))
+        return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yaml'))
 
 
 class PackageBumped(PullRequestCheck):
