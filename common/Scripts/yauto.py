@@ -164,10 +164,9 @@ class AutoPackage:
                     )
                 # Handle python modules respecting PEP517.
                 if "pyproject.toml" in file or "setup.cfg" in file:
-                    self.build_deps = (
-                        "- python-build\n    - python-installer\n    - python-packaging\n    - "
-                        "python-wheel"
-                    )
+                    self.build_deps.extend(self.extra_build_deps(["python-build", "python-installer",
+                                                                  "python-packaging", "python-wheel"]))
+
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
@@ -273,6 +272,15 @@ class AutoPackage:
                         deps.append(dep)
 
         return deps
+
+    @staticmethod
+    def extra_build_deps(deps):
+        extra_deps = list()
+        for entry in deps:
+            dep = DepObject()
+            dep.name = entry
+            extra_deps.append(dep)
+        return extra_deps
 
     def create_yaml(self):
         """Attempt creation of a package.yml..."""
