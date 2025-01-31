@@ -7,8 +7,8 @@
  * manually if you want anything else than the defaults.
  */
 
-#ifndef _CONFIG_UNIX_H
-#define _CONFIG_UNIX_H
+#ifndef CONFIG_UNIX_H_
+#define CONFIG_UNIX_H_
 
 /* Directory where the UQM game data is located */
 #define CONTENTDIR "/usr/share/uqm/content"
@@ -59,5 +59,5 @@
 /* Defined if your system has _Bool of its own */
 #define HAVE__BOOL
 
-#endif  /* _CONFIG_UNIX_H */
+#endif  /* CONFIG_UNIX_H_ */
 
