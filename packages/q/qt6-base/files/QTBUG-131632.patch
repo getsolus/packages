@@ -1,0 +1,96 @@
+From 486bbc7a5bc4483ecc2a6b8927543725e3d38722 Mon Sep 17 00:00:00 2001
+From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+Date: Tue, 26 Nov 2024 14:39:44 +0100
+Subject: Fix regression when looking up fallback fonts
+
+This amends 16850709306589a2433c0038605d365a6b6bedad.
+
+In that change, the final pass for looking up fallback
+fonts was turned into a lambda so that we could run it
+an additional time at the very end. However, when making
+a lambda from the code, some of the logic was accidentally
+changed.
+
+Specifically, for multi engines the original code would pass
+Script_Common instead of the requested script to the match()
+function, but it would still pass the actual script to
+loadEngine() as well as store it in the key. In the changed
+code, Script_Common would be used for all of these when multi
+was true.
+
+This change was not intentional and it caused us to fail to
+load certain fallback fonts, for instance the Bengali font
+on Windows.
+
+Fixes: QTBUG-131632
+Change-Id: Id215ee4dc2851e846be27a3a25a31cad57b8f67d
+Reviewed-by: Lars Knoll <lars@knoll.priv.no>
+
+diff --git a/src/gui/text/qfontdatabase.cpp b/src/gui/text/qfontdatabase.cpp
+index 96c2337e..0c2a4b66 100644
+--- a/src/gui/text/qfontdatabase.cpp
++++ b/src/gui/text/qfontdatabase.cpp
+@@ -2734,17 +2734,23 @@ QFontEngine *QFontDatabasePrivate::findFont(const QFontDef &req,
+             if (script > QChar::Script_Common)
+                 fallbacks += QString(); // Find the first font matching the specified script.
+ 
+-            auto findMatchingFallback = [&](int xscript) {
++            auto findMatchingFallback = [&fallbacks,
++                                         &index,
++                                         &multi,
++                                         &fontCache,
++                                         &blackListed,
++                                         &request](int lookupScript, int cacheScript) {
++                QFontEngine *engine = nullptr;
+                 for (int i = 0; !engine && i < fallbacks.size(); i++) {
+                     QFontDef def = request;
+ 
+                     def.families = QStringList(fallbacks.at(i));
+-                    QFontCache::Key key(def, xscript, multi ? 1 : 0);
++                    QFontCache::Key key(def, cacheScript, multi ? 1 : 0);
+                     engine = fontCache->findEngine(key);
+                     if (!engine) {
+                         QtFontDesc desc;
+                         do {
+-                            index = match(xscript,
++                            index = match(lookupScript,
+                                           def,
+                                           def.families.constFirst(),
+                                           ""_L1,
+@@ -2755,7 +2761,12 @@ QFontEngine *QFontDatabasePrivate::findFont(const QFontDef &req,
+                                 QFontDef loadDef = def;
+                                 if (loadDef.families.isEmpty())
+                                     loadDef.families = QStringList(desc.family->name);
+-                                engine = loadEngine(xscript, loadDef, desc.family, desc.foundry, desc.style, desc.size);
++                                engine = loadEngine(cacheScript,
++                                                    loadDef,
++                                                    desc.family,
++                                                    desc.foundry,
++                                                    desc.style,
++                                                    desc.size);
+                                 if (engine)
+                                     initFontDef(desc, loadDef, &engine->fontDef, multi);
+                                 else
+@@ -2764,15 +2775,20 @@ QFontEngine *QFontDatabasePrivate::findFont(const QFontDef &req,
+                         } while (index >= 0 && !engine);
+                     }
+                 }
++
++                return engine;
+             };
+ 
+-            findMatchingFallback(multi && script != QFontDatabasePrivate::Script_Emoji ? QChar::Script_Common: script);
++            engine = findMatchingFallback(multi && script != QFontDatabasePrivate::Script_Emoji
++                                          ? QChar::Script_Common
++                                          : script,
++                                          script);
+ 
+             // If we are looking for a color font and there are no color fonts on the system,
+             // we will end up here, for one final pass. This is a rare occurrence so we accept
+             // and extra pass on the fallbacks for this.
+             if (!engine && script == QFontDatabasePrivate::Script_Emoji)
+-                findMatchingFallback(QChar::Script_Common);
++                engine = findMatchingFallback(QChar::Script_Common, script);
+         }
+ 
+         if (!engine)

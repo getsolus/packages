@@ -1,0 +1,45 @@
+From 0acbd22508cb793461c01979d89c529f86a24bc3 Mon Sep 17 00:00:00 2001
+From: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+Date: Wed, 15 Jan 2025 15:12:41 +0100
+Subject: [PATCH] Request actual font family request in final color font fail safe
+
+When we're trying to resolve a font for color emojis, we will
+prefer any color font over the selected font (since a normal
+font may have monochrome glyphs for emoji characters and that's
+not what we are after).
+
+If there are no color fonts on the system at all, we need to do
+a final match where we ignore whether the font is in color or
+not and just return it anyway.
+
+In this final pass we would find the first best match among the
+fallbacks (typically the first one), but never actually check
+the font that was requested in the first place. This was a
+mistake. Unless it does not exist, we should just return the
+requested font family.
+
+Pick-to: 6.9
+Task-number: QTBUG-132377
+Change-Id: Ie53a6bd665ebdaaca92bf0c33fabf5195e1aa5fe
+---
+
+diff --git a/src/gui/text/qfontdatabase.cpp b/src/gui/text/qfontdatabase.cpp
+index 0c2a4b66..03f29009 100644
+--- a/src/gui/text/qfontdatabase.cpp
++++ b/src/gui/text/qfontdatabase.cpp
+@@ -2787,8 +2787,14 @@ QFontEngine *QFontDatabasePrivate::findFont(const QFontDef &req,
+             // If we are looking for a color font and there are no color fonts on the system,
+             // we will end up here, for one final pass. This is a rare occurrence so we accept
+             // and extra pass on the fallbacks for this.
+-            if (!engine && script == QFontDatabasePrivate::Script_Emoji)
++            if (!engine && script == QFontDatabasePrivate::Script_Emoji) {
+                 engine = findMatchingFallback(QChar::Script_Common, script);
++
++                // Since we no longer require color fonts, we need to retry to check if the
++                // actual requested font is available as a non-color font.
++                if (!requestFamily.isEmpty())
++                    fallbacks.prepend(requestFamily);
++            }
+         }
+ 
+         if (!engine)
