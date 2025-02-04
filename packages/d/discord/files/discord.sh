@@ -19,4 +19,5 @@ if [ -z "${DISCORD_NO_WAYLAND+set}" ]; then
   fi
 fi
 
+/usr/share/discord/disable-breaking-updates.py
 exec /usr/share/discord/Discord $DISCORD_FLAGS "$@"
