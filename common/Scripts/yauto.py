@@ -42,6 +42,7 @@ MESON = 9
 YARN = 10
 WAF = 11
 QMAKE = 12
+PEP517 = 13
 
 
 class DepObject:
@@ -164,9 +165,11 @@ class AutoPackage:
                     )
                 # Handle python modules respecting PEP517.
                 if "pyproject.toml" in file or "setup.cfg" in file:
-                    self.build_deps.extend(self.extra_build_deps(["python-build", "python-installer",
-                                                                  "python-packaging", "python-wheel"]))
-
+                    if PEP517 not in known_types:
+                        known_types.append(PEP517)
+                        pyproject_deps = ["python-build", "python-installer",
+                                          "python-packaging", "python-wheel"]
+                        self.build_deps.extend(self.extra_build_deps(pyproject_deps))
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
@@ -234,6 +237,9 @@ class AutoPackage:
             self.compile_type = YARN
             self.networking = True
             print("yarn")
+        elif PEP517 in known_types:
+            self.compile_type = PYTHON_MODULES
+            print("PEP517")
         else:
             print("unknown")
 
@@ -320,8 +326,11 @@ description: |
 
             total_str += "\nbuilddeps  :\n"
             if self.build_deps is not None and len(self.build_deps) > 0:
-                if self.compile_type == PYTHON_MODULES:
-                    total_str += self.build_deps
+                if self.compile_type == PYTHON_MODULES or self.component == "programming.python":
+                    for dep in self.build_deps:
+                        if len(dep.name.strip()) == 0:
+                            continue
+                        total_str += "    - %s\n" % dep.name
                 else:
                     for dep in self.build_deps:
                         if len(dep.name.strip()) == 0:
