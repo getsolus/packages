@@ -4,17 +4,15 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import argparse
+import atexit
 import glob
 import os
 import shutil
 import sys
 import unittest
 from importlib.metadata import Distribution
-from importlib.metadata import distribution
-from importlib.metadata import PackageNotFoundError
 
 from packaging.requirements import Requirement
-from packaging.markers import Marker
 from ruamel.yaml import YAML
 from pisi.api import fetch
 from pisi.package import Package
@@ -26,6 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("location", type=str, nargs='?', help="Location of .egg-info or .dist-info directory")
 
 eopkg_already_exists = False
+
 
 @staticmethod
 def get_dependencies(dependencies: list, env=None) -> list:
@@ -46,12 +45,14 @@ def get_dependencies(dependencies: list, env=None) -> list:
                 sanitized.append(req.name)
     return sanitized
 
+
 def usage(msg=None, ex=1):
     if msg:
         print(msg, file=sys.stderr)
     else:
         parser.print_help()
     sys.exit(ex)
+
 
 def parse_recipe(path) -> tuple:
     yaml = YAML()
@@ -63,6 +64,7 @@ def parse_recipe(path) -> tuple:
     release = data.get('release')
 
     return f"{name}-{version}-{release}-1-x86_64.eopkg", name
+
 
 def init_recipe_parse_path():
     for i in SOLUS_RECIPE_FILE:
@@ -76,6 +78,7 @@ def init_recipe_parse_path():
             extract_eopkg(eopkg_path)
             find_python_files("install")
 
+
 def find_python_files(path):
     target_dirs = [".egg-info", ".dist-info"]
 
@@ -84,6 +87,7 @@ def find_python_files(path):
             for substring in target_dirs:
                 if substring in dir_name:
                     print_dependencies(os.path.join(root, dir_name))
+
 
 def extract_eopkg(eopkg=str):
 
@@ -100,16 +104,19 @@ def extract_eopkg(eopkg=str):
     if os.listdir("install") == []:
         os.rmdir("install")
 
+
 def init_location_path(path):
     if not (os.path.exists(os.path.join(path, 'METADATA')) or os.path.exists(os.path.join(path, 'PKG-INFO'))):
         usage("Unable to find PKG-INFO or METADATA files in specified directory")
     print_dependencies(path)
+
 
 def find_mismatched_elements(list1, list2):
     normalized_list1 = {item.lower().removeprefix("python-").replace("-", "_") for item in list1}
     normalized_list2 = {item.lower().replace("-", "_") for item in list2}
 
     return normalized_list1 ^ normalized_list2
+
 
 def check_against_rundeps(deps):
     yaml = YAML()
@@ -124,6 +131,7 @@ def check_against_rundeps(deps):
             print("Mismatched dependencies:", missing_elements)
             print("NOTE: The 'python-' prefix is removed and '-' '_' are equivalently compared.")
 
+
 def print_dependencies(path):
     dependencies = Distribution.at(path).requires
 
@@ -131,6 +139,7 @@ def print_dependencies(path):
 
     if printed_deps:
         check_against_rundeps(printed_deps)
+
 
 if __name__ == "__main__":
     args = parser.parse_args()
@@ -146,8 +155,8 @@ if __name__ == "__main__":
     else:
         init_location_path(args.location)
 
+
 # Cleanup on exit
-import atexit
 @atexit.register
 def cleanuponexit():
     if eopkg_already_exists is False:
@@ -160,6 +169,7 @@ def cleanuponexit():
         os.unlink("files.xml")
     if os.path.exists("metadata.xml"):
         os.unlink("metadata.xml")
+
 
 class Tests(unittest.TestCase):
 
@@ -180,7 +190,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(get_dependencies(['Babel>=2.7; extra == "i18n"', 'pytest; extra == "testing"']), [])
 
     def test_excludes_extras_comprehensive(self):
-        list2 = ['MarkupSafe>=0.9.2', 'Babel; extra == "babel"', 'lingua; extra == "lingua"', 'pytest; extra == "testing"']
+        list2 = ['MarkupSafe>=0.9.2', 'Babel; extra == "babel"',
+                 'lingua; extra == "lingua"', 'pytest; extra == "testing"']
         self.assertEqual(get_dependencies(list2), ['MarkupSafe'])
 
     def test_ignore_satisfied_evaluate_markers(self):
@@ -195,9 +206,12 @@ class Tests(unittest.TestCase):
 
     def test_comprehensive1(self):
         env = {'python_version': '3.11'}
-        list5 = ['pytest; extra == "testing"', 'editables>=0.3', 'packaging>=21.3', 'pathspec>=0.10.1', 'pluggy>=1.0.0', "tomli>=1.2.2; python_version < '3.12'", 'trove-classifiers']
-        self.assertEqual(get_dependencies(list5, env), ['editables', 'packaging', 'pathspec', 'pluggy', 'tomli', 'trove-classifiers'])
+        list5 = ['pytest; extra == "testing"', 'editables>=0.3', 'packaging>=21.3',
+                 'pathspec>=0.10.1', 'pluggy>=1.0.0', "tomli>=1.2.2; python_version < '3.12'", 'trove-classifiers']
+        self.assertEqual(get_dependencies(list5, env), ['editables', 'packaging', 'pathspec',
+                                                        'pluggy', 'tomli', 'trove-classifiers'])
 
     def test_comprehensive2(self):
-        list6 = ["brotli; implementation_name == 'cpython'", "brotlicffi; implementation_name != 'cpython'", 'certifi', 'mutagen', 'pycryptodomex', 'requests<3,>=2.32.2', 'urllib3<3,>=1.26.17', 'websockets>=12.0', "build; extra == 'build'", "hatchling; extra == 'build'", "pip; extra == 'build'", "setuptools>=71.0.2; extra == 'build'", "wheel; extra == 'build'", "curl-cffi!=0.6.*,<0.8,>=0.5.10; (os_name != 'nt' and implementation_name == 'cpython') and extra == 'curl-cffi'", "curl-cffi==0.5.10; (os_name == 'nt' and implementation_name == 'cpython') and extra == 'curl-cffi'", "pre-commit; extra == 'dev'", "yt-dlp[static-analysis]; extra == 'dev'", "yt-dlp[test]; extra == 'dev'", "py2exe>=0.12; extra == 'py2exe'", "pyinstaller>=6.7.0; extra == 'pyinstaller'", "cffi; extra == 'secretstorage'", "secretstorage; extra == 'secretstorage'", "autopep8~=2.0; extra == 'static-analysis'", "ruff~=0.5.0; extra == 'static-analysis'", "pytest~=8.1; extra == 'test'"]
-        self.assertEqual(get_dependencies(list6), ['brotli', 'certifi', 'mutagen', 'pycryptodomex', 'requests', 'urllib3', 'websockets'])
+        list6 = ["brotli; implementation_name == 'cpython'", "brotlicffi; implementation_name != 'cpython'", 'certifi', 'mutagen', 'pycryptodomex', 'requests<3,>=2.32.2', 'urllib3<3,>=1.26.17', 'websockets>=12.0', "build; extra == 'build'", "hatchling; extra == 'build'", "pip; extra == 'build'", "setuptools>=71.0.2; extra == 'build'", "wheel; extra == 'build'", "curl-cffi!=0.6.*,<0.8,>=0.5.10; (os_name != 'nt' and implementation_name == 'cpython') and extra == 'curl-cffi'", "curl-cffi==0.5.10; (os_name == 'nt' and implementation_name == 'cpython') and extra == 'curl-cffi'", "pre-commit; extra == 'dev'", "yt-dlp[static-analysis]; extra == 'dev'", "yt-dlp[test]; extra == 'dev'", "py2exe>=0.12; extra == 'py2exe'", "pyinstaller>=6.7.0; extra == 'pyinstaller'", "cffi; extra == 'secretstorage'", "secretstorage; extra == 'secretstorage'", "autopep8~=2.0; extra == 'static-analysis'", "ruff~=0.5.0; extra == 'static-analysis'", "pytest~=8.1; extra == 'test'"]  # noqa: E501 There is no sane way to split all of this up into short enough lines
+        self.assertEqual(get_dependencies(list6), ['brotli', 'certifi', 'mutagen', 'pycryptodomex',
+                                                   'requests', 'urllib3', 'websockets'])
