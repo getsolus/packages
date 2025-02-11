@@ -1,0 +1,3100 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@gmail.com>
+Date: Mon, 28 Oct 2024 23:07:18 +0100
+Subject: [PATCH 2/2] wayland: switch to the upstream color management protocol
+
+This adapts to changes that were made vs. the experimental v4,
+- add a done event
+- removed the protocol error for invalid primaries
+- ignore custom max. luminance with PQ
+- change the primaries unit to be 1'000'000
+- add a Windows scRGB image description
+- add a parametric-only preferred image description getter
+- require valid non-zero image description IDs
+- changed the min. luminance of the linear transfer function
+
+The other changes are just straight forward renames.
+
+(cherry picked from commit cc49de8f653bbb88108c741354400c99b7109ccb)
+---
+ autotests/integration/CMakeLists.txt          |   2 +-
+ autotests/integration/kwin_wayland_test.h     |  10 +-
+ .../integration/test_colormanagement.cpp      | 138 ++--
+ autotests/integration/test_helpers.cpp        |  16 +-
+ autotests/test_colorspaces.cpp                |   8 +-
+ src/core/colorspace.cpp                       |  40 +-
+ src/core/colorspace.h                         |   9 +-
+ src/wayland/CMakeLists.txt                    |  12 +-
+ ...nagement_v4.cpp => colormanagement_v1.cpp} | 297 ++++----
+ src/wayland/colormanagement_v1.h              | 140 ++++
+ ...agement-v4.xml => color-management-v1.xml} | 632 +++++++++++-------
+ src/wayland/surface.cpp                       |   4 +-
+ src/wayland/surface_p.h                       |   8 +-
+ src/wayland/xx_colormanagement_v4.h           | 137 ----
+ src/wayland_server.cpp                        |   4 +-
+ src/wayland_server.h                          |   4 +-
+ 16 files changed, 862 insertions(+), 599 deletions(-)
+ rename src/wayland/{xx_colormanagement_v4.cpp => colormanagement_v1.cpp} (52%)
+ create mode 100644 src/wayland/colormanagement_v1.h
+ rename src/wayland/protocols/{xx-color-management-v4.xml => color-management-v1.xml} (69%)
+ delete mode 100644 src/wayland/xx_colormanagement_v4.h
+
+diff --git a/autotests/integration/CMakeLists.txt b/autotests/integration/CMakeLists.txt
+index a719660020..872ba038bb 100644
+--- a/autotests/integration/CMakeLists.txt
++++ b/autotests/integration/CMakeLists.txt
+@@ -15,7 +15,7 @@ qt6_generate_wayland_protocol_client_sources(KWinIntegrationTestFramework
+     ${private_code_option}
+     FILES
+         ${CMAKE_SOURCE_DIR}/src/wayland/protocols/wlr-layer-shell-unstable-v1.xml
+-        ${CMAKE_SOURCE_DIR}/src/wayland/protocols/xx-color-management-v4.xml
++        ${PROJECT_SOURCE_DIR}/src/wayland/protocols/color-management-v1.xml
+         ${WaylandProtocols_DATADIR}/stable/xdg-shell/xdg-shell.xml
+         ${WaylandProtocols_DATADIR}/staging/cursor-shape/cursor-shape-v1.xml
+         ${WaylandProtocols_DATADIR}/staging/fractional-scale/fractional-scale-v1.xml
+diff --git a/autotests/integration/kwin_wayland_test.h b/autotests/integration/kwin_wayland_test.h
+index 1f0fa05732..646a95d691 100644
+--- a/autotests/integration/kwin_wayland_test.h
++++ b/autotests/integration/kwin_wayland_test.h
+@@ -20,6 +20,7 @@
+ #include <KWayland/Client/surface.h>
+ #include <optional>
+ 
++#include "qwayland-color-management-v1.h"
+ #include "qwayland-cursor-shape-v1.h"
+ #include "qwayland-fake-input.h"
+ #include "qwayland-fractional-scale-v1.h"
+@@ -34,7 +35,6 @@
+ #include "qwayland-xdg-decoration-unstable-v1.h"
+ #include "qwayland-xdg-dialog-v1.h"
+ #include "qwayland-xdg-shell.h"
+-#include "qwayland-xx-color-management-v4.h"
+ #include "qwayland-zkde-screencast-unstable-v1.h"
+ 
+ namespace KWayland
+@@ -674,11 +674,11 @@ private:
+     bool m_tabletTool = false;
+ };
+ 
+-class XXColorManagerV4 : public QtWayland::xx_color_manager_v4
++class ColorManagerV1 : public QtWayland::wp_color_manager_v1
+ {
+ public:
+-    explicit XXColorManagerV4(::wl_registry *registry, uint32_t id, int version);
+-    ~XXColorManagerV4() override;
++    explicit ColorManagerV1(::wl_registry *registry, uint32_t id, int version);
++    ~ColorManagerV1() override;
+ };
+ 
+ void keyboardKeyPressed(quint32 key, quint32 time);
+@@ -739,7 +739,7 @@ ScreencastingV1 *screencasting();
+ QList<WaylandOutputDeviceV2 *> waylandOutputDevicesV2();
+ FakeInput *waylandFakeInput();
+ SecurityContextManagerV1 *waylandSecurityContextManagerV1();
+-XXColorManagerV4 *colorManager();
++ColorManagerV1 *colorManager();
+ 
+ bool waitForWaylandSurface(Window *window);
+ 
+diff --git a/autotests/integration/test_colormanagement.cpp b/autotests/integration/test_colormanagement.cpp
+index 47fc558944..9710c6a423 100644
+--- a/autotests/integration/test_colormanagement.cpp
++++ b/autotests/integration/test_colormanagement.cpp
+@@ -22,7 +22,7 @@
+ #include <KWayland/Client/surface.h>
+ #include <format>
+ 
+-#include "qwayland-xx-color-management-v4.h"
++#include "qwayland-color-management-v1.h"
+ 
+ using namespace std::chrono_literals;
+ 
+@@ -31,26 +31,26 @@ namespace KWin
+ 
+ static const QString s_socketName = QStringLiteral("wayland_test_color_management-0");
+ 
+-class ImageDescription : public QObject, public QtWayland::xx_image_description_v4
++class ImageDescription : public QObject, public QtWayland::wp_image_description_v1
+ {
+     Q_OBJECT
+ public:
+-    explicit ImageDescription(::xx_image_description_v4 *descr)
+-        : QtWayland::xx_image_description_v4(descr)
++    explicit ImageDescription(::wp_image_description_v1 *descr)
++        : QtWayland::wp_image_description_v1(descr)
+     {
+     }
+ 
+     ~ImageDescription() override
+     {
+-        xx_image_description_v4_destroy(object());
++        wp_image_description_v1_destroy(object());
+     }
+ 
+-    void xx_image_description_v4_ready(uint32_t identity) override
++    void wp_image_description_v1_ready(uint32_t identity) override
+     {
+         Q_EMIT ready();
+     }
+ 
+-    void xx_image_description_v4_failed(uint32_t cause, const QString &msg) override
++    void wp_image_description_v1_failed(uint32_t cause, const QString &msg) override
+     {
+         Q_EMIT failed();
+     }
+@@ -60,18 +60,18 @@ Q_SIGNALS:
+     void failed();
+ };
+ 
+-class ColorManagementSurface : public QObject, public QtWayland::xx_color_management_surface_v4
++class ColorManagementSurface : public QObject, public QtWayland::wp_color_management_surface_v1
+ {
+     Q_OBJECT
+ public:
+-    explicit ColorManagementSurface(::xx_color_management_surface_v4 *obj)
+-        : QtWayland::xx_color_management_surface_v4(obj)
++    explicit ColorManagementSurface(::wp_color_management_surface_v1 *obj)
++        : QtWayland::wp_color_management_surface_v1(obj)
+     {
+     }
+ 
+     ~ColorManagementSurface() override
+     {
+-        xx_color_management_surface_v4_destroy(object());
++        wp_color_management_surface_v1_destroy(object());
+     }
+ };
+ 
+@@ -89,7 +89,6 @@ private Q_SLOTS:
+     void testUnsupportedPrimaries();
+     void testNoPrimaries();
+     void testNoTf();
+-    void testNonsensePrimaries();
+ };
+ 
+ void ColorManagementTest::initTestCase()
+@@ -131,15 +130,44 @@ void ColorManagementTest::testSetImageDescription_data()
+     QTest::addColumn<ColorDescription>("input");
+     QTest::addColumn<bool>("protocolError");
+     QTest::addColumn<bool>("shouldSucceed");
+-
+-    QTest::addRow("sRGB") << ColorDescription::sRGB << false << true;
+-    QTest::addRow("rec.2020 PQ") << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer), 203, 0, 400, 400) << false << true;
+-    QTest::addRow("scRGB") << ColorDescription(NamedColorimetry::BT709, TransferFunction(TransferFunction::linear, 0, 80), 80, 0, 80, 80) << false << true;
+-    QTest::addRow("custom") << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::gamma22, 0.05, 400), 203, 0, 400, 400) << false << true;
+-    QTest::addRow("invalid tf") << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::gamma22, 204, 205), 203, 0, 400, 400) << true << false;
+-    // TODO this should fail with the wp protocol version
+-    QTest::addRow("invalid HDR metadata") << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer), 203, 500, 400, 400) << false << true;
+-    QTest::addRow("rec.2020 PQ with out of bounds white point") << ColorDescription(Colorimetry::fromName(NamedColorimetry::BT2020).withWhitepoint(xyY{0.9, 0.9, 1}), TransferFunction(TransferFunction::PerceptualQuantizer), 203, 0, 400, 400) << false << false;
++    QTest::addColumn<std::optional<ColorDescription>>("expectedResult");
++
++    QTest::addRow("sRGB")
++        << ColorDescription::sRGB
++        << false << true
++        << std::optional<ColorDescription>();
++    QTest::addRow("rec.2020 PQ")
++        << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer), 203, 0, 400, 400)
++        << false << true
++        << std::optional<ColorDescription>();
++    QTest::addRow("scRGB")
++        << ColorDescription(NamedColorimetry::BT709, TransferFunction(TransferFunction::linear, 0, 80), 80, 0, 80, 80)
++        << false << true
++        << std::optional<ColorDescription>();
++    QTest::addRow("custom")
++        << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::gamma22, 0.05, 400), 203, 0, 400, 400)
++        << false << true
++        << std::optional<ColorDescription>();
++    QTest::addRow("invalid tf")
++        << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::gamma22, 204, 205), 203, 0, 400, 400)
++        << true << false
++        << std::optional<ColorDescription>();
++    QTest::addRow("invalid HDR metadata")
++        << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer), 203, 500, 400, 400)
++        << true << false
++        << std::optional<ColorDescription>();
++    QTest::addRow("rec.2020 PQ with out of bounds white point")
++        << ColorDescription(Colorimetry::fromName(NamedColorimetry::BT2020).withWhitepoint(xyY{0.9, 0.9, 1}), TransferFunction(TransferFunction::PerceptualQuantizer), 203, 0, 400, 400)
++        << false << false
++        << std::optional<ColorDescription>();
++    QTest::addRow("nonsense primaries")
++        << ColorDescription(Colorimetry(xy{0, 0}, xy{0, 0}, xy{0, 0}, xy{0, 0}), TransferFunction(TransferFunction::PerceptualQuantizer), 203, 0, 400, 400)
++        << false << false
++        << std::optional<ColorDescription>();
++    QTest::addRow("custom PQ luminances are ignored")
++        << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer, 10, 100), 203, 0, 400, 400)
++        << false << true
++        << std::make_optional<ColorDescription>(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer, 10, 10'010), 203, 0, 400, 400);
+ }
+ 
+ void ColorManagementTest::testSetImageDescription()
+@@ -151,40 +179,38 @@ void ColorManagementTest::testSetImageDescription()
+ 
+     auto cmSurf = std::make_unique<ColorManagementSurface>(Test::colorManager()->get_surface(*surface));
+ 
+-    QtWayland::xx_image_description_creator_params_v4 creator(Test::colorManager()->new_parametric_creator());
++    QtWayland::wp_image_description_creator_params_v1 creator(Test::colorManager()->create_parametric_creator());
+ 
+     QFETCH(ColorDescription, input);
+ 
+-    creator.set_primaries(std::round(10'000 * input.containerColorimetry().red().toxyY().x),
+-                          std::round(10'000 * input.containerColorimetry().red().toxyY().y),
+-                          std::round(10'000 * input.containerColorimetry().green().toxyY().x),
+-                          std::round(10'000 * input.containerColorimetry().green().toxyY().y),
+-                          std::round(10'000 * input.containerColorimetry().blue().toxyY().x),
+-                          std::round(10'000 * input.containerColorimetry().blue().toxyY().y),
+-                          std::round(10'000 * input.containerColorimetry().white().toxyY().x),
+-                          std::round(10'000 * input.containerColorimetry().white().toxyY().y));
++    creator.set_primaries(std::round(1'000'000.0 * input.containerColorimetry().red().toxyY().x),
++                          std::round(1'000'000.0 * input.containerColorimetry().red().toxyY().y),
++                          std::round(1'000'000.0 * input.containerColorimetry().green().toxyY().x),
++                          std::round(1'000'000.0 * input.containerColorimetry().green().toxyY().y),
++                          std::round(1'000'000.0 * input.containerColorimetry().blue().toxyY().x),
++                          std::round(1'000'000.0 * input.containerColorimetry().blue().toxyY().y),
++                          std::round(1'000'000.0 * input.containerColorimetry().white().toxyY().x),
++                          std::round(1'000'000.0 * input.containerColorimetry().white().toxyY().y));
+     switch (input.transferFunction().type) {
+     case TransferFunction::sRGB:
+-        creator.set_tf_named(XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_SRGB);
+-        creator.set_luminances(std::round(input.transferFunction().minLuminance * 10'000), std::round(input.transferFunction().maxLuminance), std::round(input.referenceLuminance()));
++        creator.set_tf_named(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB);
+         break;
+     case TransferFunction::gamma22:
+-        creator.set_tf_named(XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA22);
+-        creator.set_luminances(std::round(input.transferFunction().minLuminance * 10'000), std::round(input.transferFunction().maxLuminance), std::round(input.referenceLuminance()));
++        creator.set_tf_named(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22);
+         break;
+     case TransferFunction::linear:
+-        creator.set_tf_named(XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR);
+-        creator.set_luminances(std::round(input.transferFunction().minLuminance * 10'000), std::round(input.transferFunction().maxLuminance), std::round(input.referenceLuminance()));
++        creator.set_tf_named(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR);
+         break;
+     case TransferFunction::PerceptualQuantizer:
+-        creator.set_tf_named(XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ);
+-        creator.set_max_fall(std::round(input.maxAverageLuminance().value_or(0)));
+-        creator.set_max_cll(std::round(input.maxHdrLuminance().value_or(0)));
++        creator.set_tf_named(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ);
+         break;
+     }
++    creator.set_luminances(std::round(input.transferFunction().minLuminance * 10'000), std::round(input.transferFunction().maxLuminance), std::round(input.referenceLuminance()));
++    creator.set_max_fall(std::round(input.maxAverageLuminance().value_or(0)));
++    creator.set_max_cll(std::round(input.maxHdrLuminance().value_or(0)));
+     creator.set_mastering_luminance(std::round(input.minLuminance() * 10'000), std::round(input.maxHdrLuminance().value_or(0)));
+ 
+-    ImageDescription imageDescr(xx_image_description_creator_params_v4_create(creator.object()));
++    ImageDescription imageDescr(wp_image_description_creator_params_v1_create(creator.object()));
+ 
+     QFETCH(bool, protocolError);
+     if (protocolError) {
+@@ -194,60 +220,52 @@ void ColorManagementTest::testSetImageDescription()
+     }
+ 
+     QFETCH(bool, shouldSucceed);
++    QFETCH(std::optional<ColorDescription>, expectedResult);
+     if (shouldSucceed) {
+         QSignalSpy ready(&imageDescr, &ImageDescription::ready);
+         QVERIFY(ready.wait(50ms));
+ 
+-        cmSurf->set_image_description(imageDescr.object(), XX_COLOR_MANAGER_V4_RENDER_INTENT_PERCEPTUAL);
++        cmSurf->set_image_description(imageDescr.object(), WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+         surface->commit(KWayland::Client::Surface::CommitFlag::None);
+ 
+         QSignalSpy colorChange(window->surface(), &SurfaceInterface::colorDescriptionChanged);
+         QVERIFY(colorChange.wait());
+ 
+-        QCOMPARE(window->surface()->colorDescription(), input);
++        QCOMPARE(window->surface()->colorDescription(), expectedResult.value_or(input));
+     } else {
+         QSignalSpy fail(&imageDescr, &ImageDescription::failed);
+         QVERIFY(fail.wait(50ms));
+ 
+         // trying to use a failed image description should cause an error
+         QSignalSpy error(Test::waylandConnection(), &KWayland::Client::ConnectionThread::errorOccurred);
+-        cmSurf->set_image_description(imageDescr.object(), XX_COLOR_MANAGER_V4_RENDER_INTENT_PERCEPTUAL);
++        cmSurf->set_image_description(imageDescr.object(), WP_COLOR_MANAGER_V1_RENDER_INTENT_PERCEPTUAL);
+         QVERIFY(error.wait(50ms));
+     }
+ }
+ 
+ void ColorManagementTest::testUnsupportedPrimaries()
+ {
+-    QtWayland::xx_image_description_creator_params_v4 creator = QtWayland::xx_image_description_creator_params_v4(Test::colorManager()->new_parametric_creator());
++    QtWayland::wp_image_description_creator_params_v1 creator = QtWayland::wp_image_description_creator_params_v1(Test::colorManager()->create_parametric_creator());
+     creator.set_primaries_named(-1);
+-    xx_image_description_creator_params_v4_create(creator.object());
++    wp_image_description_creator_params_v1_create(creator.object());
+     QSignalSpy error(Test::waylandConnection(), &KWayland::Client::ConnectionThread::errorOccurred);
+     QVERIFY(error.wait(50ms));
+ }
+ 
+ void ColorManagementTest::testNoPrimaries()
+ {
+-    QtWayland::xx_image_description_creator_params_v4 creator = QtWayland::xx_image_description_creator_params_v4(Test::colorManager()->new_parametric_creator());
+-    creator.set_tf_named(XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR);
+-    xx_image_description_creator_params_v4_create(creator.object());
++    QtWayland::wp_image_description_creator_params_v1 creator = QtWayland::wp_image_description_creator_params_v1(Test::colorManager()->create_parametric_creator());
++    creator.set_tf_named(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR);
++    wp_image_description_creator_params_v1_create(creator.object());
+     QSignalSpy error(Test::waylandConnection(), &KWayland::Client::ConnectionThread::errorOccurred);
+     QVERIFY(error.wait(50ms));
+ }
+ 
+ void ColorManagementTest::testNoTf()
+ {
+-    QtWayland::xx_image_description_creator_params_v4 creator = QtWayland::xx_image_description_creator_params_v4(Test::colorManager()->new_parametric_creator());
+-    creator.set_primaries_named(XX_COLOR_MANAGER_V4_PRIMARIES_CIE1931_XYZ);
+-    xx_image_description_creator_params_v4_create(creator.object());
+-    QSignalSpy error(Test::waylandConnection(), &KWayland::Client::ConnectionThread::errorOccurred);
+-    QVERIFY(error.wait(50ms));
+-}
+-
+-void ColorManagementTest::testNonsensePrimaries()
+-{
+-    QtWayland::xx_image_description_creator_params_v4 creator = QtWayland::xx_image_description_creator_params_v4(Test::colorManager()->new_parametric_creator());
+-    creator.set_primaries(0, 0, 0, 0, 0, 0, 0, 0);
+-    xx_image_description_creator_params_v4_create(creator.object());
++    QtWayland::wp_image_description_creator_params_v1 creator = QtWayland::wp_image_description_creator_params_v1(Test::colorManager()->create_parametric_creator());
++    creator.set_primaries_named(WP_COLOR_MANAGER_V1_PRIMARIES_CIE1931_XYZ);
++    wp_image_description_creator_params_v1_create(creator.object());
+     QSignalSpy error(Test::waylandConnection(), &KWayland::Client::ConnectionThread::errorOccurred);
+     QVERIFY(error.wait(50ms));
+ }
+diff --git a/autotests/integration/test_helpers.cpp b/autotests/integration/test_helpers.cpp
+index 31e20fc5ad..21eaeee420 100644
+--- a/autotests/integration/test_helpers.cpp
++++ b/autotests/integration/test_helpers.cpp
+@@ -319,7 +319,7 @@ static struct
+     FakeInput *fakeInput = nullptr;
+     SecurityContextManagerV1 *securityContextManagerV1 = nullptr;
+     XdgWmDialogV1 *xdgWmDialogV1;
+-    std::unique_ptr<XXColorManagerV4> colorManager;
++    std::unique_ptr<ColorManagerV1> colorManager;
+ } s_waylandConnection;
+ 
+ MockInputMethod *inputMethod()
+@@ -542,8 +542,8 @@ bool setupWaylandConnection(AdditionalWaylandInterfaces flags)
+             }
+         }
+         if (flags & AdditionalWaylandInterface::ColorManagement) {
+-            if (interface == xx_color_manager_v4_interface.name) {
+-                s_waylandConnection.colorManager = std::make_unique<XXColorManagerV4>(*registry, name, version);
++            if (interface == wp_color_manager_v1_interface.name) {
++                s_waylandConnection.colorManager = std::make_unique<ColorManagerV1>(*registry, name, version);
+             }
+         }
+     });
+@@ -790,7 +790,7 @@ SecurityContextManagerV1 *waylandSecurityContextManagerV1()
+     return s_waylandConnection.securityContextManagerV1;
+ }
+ 
+-XXColorManagerV4 *colorManager()
++ColorManagerV1 *colorManager()
+ {
+     return s_waylandConnection.colorManager.get();
+ }
+@@ -1756,14 +1756,14 @@ bool VirtualInputDevice::isLidSwitch() const
+     return m_lidSwitch;
+ }
+ 
+-XXColorManagerV4::XXColorManagerV4(::wl_registry *registry, uint32_t id, int version)
+-    : QtWayland::xx_color_manager_v4(registry, id, version)
++ColorManagerV1::ColorManagerV1(::wl_registry *registry, uint32_t id, int version)
++    : QtWayland::wp_color_manager_v1(registry, id, version)
+ {
+ }
+ 
+-XXColorManagerV4::~XXColorManagerV4()
++ColorManagerV1::~ColorManagerV1()
+ {
+-    xx_color_manager_v4_destroy(object());
++    wp_color_manager_v1_destroy(object());
+ }
+ 
+ void keyboardKeyPressed(quint32 key, quint32 time)
+diff --git a/autotests/test_colorspaces.cpp b/autotests/test_colorspaces.cpp
+index 3b2046ed53..e2d7d49392 100644
+--- a/autotests/test_colorspaces.cpp
++++ b/autotests/test_colorspaces.cpp
+@@ -161,15 +161,15 @@ void TestColorspaces::testColorPipeline_data()
+     QTest::addRow("sRGB -> rec.2020 relative colorimetric")
+         << ColorDescription(NamedColorimetry::BT709, TransferFunction(TransferFunction::gamma22), TransferFunction::defaultReferenceLuminanceFor(TransferFunction::gamma22), 0, std::nullopt, std::nullopt)
+         << ColorDescription(NamedColorimetry::BT2020, TransferFunction(TransferFunction::PerceptualQuantizer), 500, 0, std::nullopt, std::nullopt)
+-        << QVector3D(0.06729, 0.06729, 0.06729)
+-        << QVector3D(0.51667, 0.51667, 0.51667)
++        << QVector3D(0.161408, 0.161408, 0.161408)
++        << QVector3D(0.517483, 0.517483, 0.517483)
+         << QVector3D(0.67658, 0.67658, 0.67658)
+         << RenderingIntent::RelativeColorimetric;
+     QTest::addRow("sRGB -> scRGB relative colorimetric")
+         << ColorDescription(NamedColorimetry::BT709, TransferFunction(TransferFunction::gamma22), TransferFunction::defaultReferenceLuminanceFor(TransferFunction::gamma22), 0, std::nullopt, std::nullopt)
+         << ColorDescription(NamedColorimetry::BT709, TransferFunction(TransferFunction::linear, 0, 80), 80, 0, std::nullopt, std::nullopt)
+-        << QVector3D(0.00025, 0.00025, 0.00025)
+-        << QVector3D(0.217833, 0.217833, 0.217833)
++        << QVector3D(0.0025, 0.0025, 0.0025)
++        << QVector3D(0.219594, 0.219594, 0.219594)
+         << QVector3D(1, 1, 1)
+         << RenderingIntent::RelativeColorimetric;
+     QTest::addRow("sRGB -> rec.2020 relative colorimetric with bpc")
+diff --git a/src/core/colorspace.cpp b/src/core/colorspace.cpp
+index 6746b53a45..c2c9f12d6b 100644
+--- a/src/core/colorspace.cpp
++++ b/src/core/colorspace.cpp
+@@ -43,6 +43,17 @@ QVector2D xy::asVector() const
+     return QVector2D(x, y);
+ }
+ 
++bool xy::operator==(const xy &other) const
++{
++    return qFuzzyCompare(x, other.x)
++        && qFuzzyCompare(y, other.y);
++}
++
++bool xy::operator!=(const xy &other) const
++{
++    return !(*this == other);
++}
++
+ XYZ xyY::toXYZ() const
+ {
+     if (y == 0) {
+@@ -55,6 +66,18 @@ XYZ xyY::toXYZ() const
+     };
+ }
+ 
++bool xyY::operator==(const xyY &other) const
++{
++    return qFuzzyCompare(x, other.x)
++        && qFuzzyCompare(y, other.y)
++        && qFuzzyCompare(Y, other.Y);
++}
++
++bool xyY::operator!=(const xyY &other) const
++{
++    return !(*this == other);
++}
++
+ xyY XYZ::toxyY() const
+ {
+     const double sum = X + Y + Z;
+@@ -130,6 +153,18 @@ XYZ XYZ::fromVector(const QVector3D &vector)
+     };
+ }
+ 
++bool XYZ::operator==(const XYZ &other) const
++{
++    return qFuzzyCompare(X, other.X)
++        && qFuzzyCompare(Y, other.Y)
++        && qFuzzyCompare(Z, other.Z);
++}
++
++bool XYZ::operator!=(const XYZ &other) const
++{
++    return !(*this == other);
++}
++
+ QMatrix4x4 Colorimetry::chromaticAdaptationMatrix(XYZ sourceWhitepoint, XYZ destinationWhitepoint)
+ {
+     static const QMatrix4x4 bradford = []() {
+@@ -623,9 +658,8 @@ double TransferFunction::defaultMinLuminanceFor(Type type)
+     switch (type) {
+     case Type::sRGB:
+     case Type::gamma22:
+-        return 0.02;
+     case Type::linear:
+-        return 0;
++        return 0.2;
+     case Type::PerceptualQuantizer:
+         return 0.005;
+     }
+@@ -637,7 +671,6 @@ double TransferFunction::defaultMaxLuminanceFor(Type type)
+     switch (type) {
+     case Type::sRGB:
+     case Type::gamma22:
+-        return 80;
+     case Type::linear:
+         return 80;
+     case Type::PerceptualQuantizer:
+@@ -652,7 +685,6 @@ double TransferFunction::defaultReferenceLuminanceFor(Type type)
+     case Type::PerceptualQuantizer:
+         return 203;
+     case Type::linear:
+-        return 80;
+     case Type::sRGB:
+     case Type::gamma22:
+         return 80;
+diff --git a/src/core/colorspace.h b/src/core/colorspace.h
+index a553ac3769..77dfd25a5a 100644
+--- a/src/core/colorspace.h
++++ b/src/core/colorspace.h
+@@ -54,7 +54,8 @@ struct KWIN_EXPORT xy
+ 
+     XYZ toXYZ() const;
+     QVector2D asVector() const;
+-    auto operator<=>(const xy &) const = default;
++    bool operator==(const xy &other) const;
++    bool operator!=(const xy &other) const;
+ };
+ struct KWIN_EXPORT xyY
+ {
+@@ -63,7 +64,8 @@ struct KWIN_EXPORT xyY
+     double Y;
+ 
+     XYZ toXYZ() const;
+-    auto operator<=>(const xyY &) const = default;
++    bool operator==(const xyY &other) const;
++    bool operator!=(const xyY &other) const;
+ };
+ struct KWIN_EXPORT XYZ
+ {
+@@ -77,7 +79,8 @@ struct KWIN_EXPORT XYZ
+     XYZ operator*(double factor) const;
+     XYZ operator/(double factor) const;
+     XYZ operator+(const XYZ &other) const;
+-    auto operator<=>(const XYZ &) const = default;
++    bool operator==(const XYZ &other) const;
++    bool operator!=(const XYZ &other) const;
+ 
+     static XYZ fromVector(const QVector3D &vector);
+ };
+diff --git a/src/wayland/CMakeLists.txt b/src/wayland/CMakeLists.txt
+index e82ae898a8..b4123a5007 100644
+--- a/src/wayland/CMakeLists.txt
++++ b/src/wayland/CMakeLists.txt
+@@ -279,8 +279,8 @@ ecm_add_qtwayland_server_protocol_kde(WaylandProtocols_xml
+ )
+ ecm_add_qtwayland_server_protocol_kde(WaylandProtocols_xml
+     PRIVATE_CODE
+-    PROTOCOL ${PROJECT_SOURCE_DIR}/src/wayland/protocols/xx-color-management-v4.xml
+-    BASENAME xx-color-management-v4
++    PROTOCOL ${PROJECT_SOURCE_DIR}/src/wayland/protocols/color-management-v1.xml
++    BASENAME color-management-v1
+ )
+ ecm_add_qtwayland_server_protocol_kde(WaylandProtocols_xml
+     PRIVATE_CODE
+@@ -321,6 +321,7 @@ target_sources(kwin PRIVATE
+     appmenu.cpp
+     blur.cpp
+     clientconnection.cpp
++    colormanagement_v1.cpp
+     compositor.cpp
+     contenttype_v1.cpp
+     contrast.cpp
+@@ -401,7 +402,6 @@ target_sources(kwin PRIVATE
+     xdgtoplevelicon_v1.cpp
+     xwaylandkeyboardgrab_v1.cpp
+     xwaylandshell_v1.cpp
+-    xx_colormanagement_v4.cpp
+ )
+ 
+ install(FILES
+@@ -409,6 +409,7 @@ install(FILES
+     appmenu.h
+     blur.h
+     clientconnection.h
++    colormanagement_v1.h
+     compositor.h
+     contenttype_v1.h
+     contrast.h
+@@ -481,21 +482,20 @@ install(FILES
+     xdgtoplevelicon_v1.h
+     xwaylandkeyboardgrab_v1.h
+     xwaylandshell_v1.h
+-    xx_colormanagement_v4.h
+ 
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-alpha-modifier-v1.h
++    ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-color-management-v1.h
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-content-type-v1.h
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-frog-color-management-v1.h
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-kde-external-brightness-v1.h
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-linux-drm-syncobj-v1.h
+     ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-presentation-time.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/qwayland-server-xx-color-management-v4.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-alpha-modifier-v1-server-protocol.h
++    ${CMAKE_CURRENT_BINARY_DIR}/wayland-color-management-v1-server-protocol.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-content-type-v1-server-protocol.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-frog-color-management-v1-server-protocol.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-kde-external-brightness-v1-server-protocol.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-linux-drm-syncobj-v1-server-protocol.h
+     ${CMAKE_CURRENT_BINARY_DIR}/wayland-presentation-time-server-protocol.h
+-    ${CMAKE_CURRENT_BINARY_DIR}/wayland-xx-color-management-v4-server-protocol.h
+ 
+     DESTINATION ${KDE_INSTALL_INCLUDEDIR}/kwin/wayland COMPONENT Devel)
+diff --git a/src/wayland/xx_colormanagement_v4.cpp b/src/wayland/colormanagement_v1.cpp
+similarity index 52%
+rename from src/wayland/xx_colormanagement_v4.cpp
+rename to src/wayland/colormanagement_v1.cpp
+index c83a853a7c..3cb3d90ee8 100644
+--- a/src/wayland/xx_colormanagement_v4.cpp
++++ b/src/wayland/colormanagement_v1.cpp
+@@ -3,7 +3,7 @@
+ 
+     SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
+ */
+-#include "xx_colormanagement_v4.h"
++#include "colormanagement_v1.h"
+ #include "display.h"
+ #include "surface.h"
+ #include "surface_p.h"
+@@ -13,19 +13,20 @@
+ namespace KWin
+ {
+ 
+-XXColorManagerV4::XXColorManagerV4(Display *display, QObject *parent)
++ColorManagerV1::ColorManagerV1(Display *display, QObject *parent)
+     : QObject(parent)
+-    , QtWaylandServer::xx_color_manager_v4(*display, 1)
++    , QtWaylandServer::wp_color_manager_v1(*display, 1)
+ {
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_bind_resource(Resource *resource)
++void ColorManagerV1::wp_color_manager_v1_bind_resource(Resource *resource)
+ {
+     send_supported_feature(resource->handle, feature::feature_parametric);
+     send_supported_feature(resource->handle, feature::feature_extended_target_volume);
+     send_supported_feature(resource->handle, feature::feature_set_mastering_display_primaries);
+     send_supported_feature(resource->handle, feature::feature_set_primaries);
+     send_supported_feature(resource->handle, feature::feature_set_luminances);
++    send_supported_feature(resource->handle, feature::feature_windows_scrgb);
+ 
+     send_supported_primaries_named(resource->handle, primaries::primaries_srgb);
+     send_supported_primaries_named(resource->handle, primaries::primaries_pal_m);
+@@ -41,112 +42,134 @@ void XXColorManagerV4::xx_color_manager_v4_bind_resource(Resource *resource)
+     send_supported_tf_named(resource->handle, transfer_function::transfer_function_gamma22);
+     send_supported_tf_named(resource->handle, transfer_function::transfer_function_srgb);
+     send_supported_tf_named(resource->handle, transfer_function::transfer_function_st2084_pq);
+-    send_supported_tf_named(resource->handle, transfer_function::transfer_function_linear);
++    send_supported_tf_named(resource->handle, transfer_function::transfer_function_ext_linear);
+ 
+     send_supported_intent(resource->handle, render_intent::render_intent_perceptual);
+     send_supported_intent(resource->handle, render_intent::render_intent_relative);
+     send_supported_intent(resource->handle, render_intent::render_intent_absolute);
+     send_supported_intent(resource->handle, render_intent::render_intent_relative_bpc);
+     // TODO implement saturation intent
++
++    send_done(resource->handle);
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_destroy(Resource *resource)
++void ColorManagerV1::wp_color_manager_v1_destroy(Resource *resource)
+ {
+     wl_resource_destroy(resource->handle);
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_get_output(Resource *resource, uint32_t id, struct ::wl_resource *output)
++void ColorManagerV1::wp_color_manager_v1_get_output(Resource *resource, uint32_t id, struct ::wl_resource *output)
+ {
+-    new XXColorManagementOutputV4(resource->client(), id, resource->version(), OutputInterface::get(output)->handle());
++    new ColorManagementOutputV1(resource->client(), id, resource->version(), OutputInterface::get(output)->handle());
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_get_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface)
++void ColorManagerV1::wp_color_manager_v1_get_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface)
+ {
+     const auto surf = SurfaceInterface::get(surface);
+     const auto priv = SurfaceInterfacePrivate::get(surf);
+-    if (priv->frogColorManagement || priv->xxColorSurface) {
+-        wl_resource_post_error(resource->handle, 0, "there's already a color management surface for this wl_surface");
++    if (priv->frogColorManagement || priv->colorSurface) {
++        wl_resource_post_error(resource->handle, error_surface_exists, "there's already a color management surface for this wl_surface");
+         return;
+     }
+-    priv->xxColorSurface = new XXColorSurfaceV4(resource->client(), id, resource->version(), surf);
++    priv->colorSurface = new ColorSurfaceV1(resource->client(), id, resource->version(), surf);
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_get_feedback_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface)
++void ColorManagerV1::wp_color_manager_v1_get_surface_feedback(Resource *resource, uint32_t id, struct ::wl_resource *surface)
+ {
+     const auto surf = SurfaceInterface::get(surface);
+     const auto priv = SurfaceInterfacePrivate::get(surf);
+-    priv->xxColorFeedbacks.push_back(new XXColorFeedbackSurfaceV4(resource->client(), id, resource->version(), surf));
++    priv->colorFeedbackSurfaces.push_back(new ColorFeedbackSurfaceV1(resource->client(), id, resource->version(), surf));
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_new_icc_creator(Resource *resource, uint32_t obj)
++void ColorManagerV1::wp_color_manager_v1_create_icc_creator(Resource *resource, uint32_t obj)
+ {
+     wl_resource_post_error(resource->handle, error::error_unsupported_feature, "ICC profiles are not supported");
+ }
+ 
+-void XXColorManagerV4::xx_color_manager_v4_new_parametric_creator(Resource *resource, uint32_t obj)
++void ColorManagerV1::wp_color_manager_v1_create_parametric_creator(Resource *resource, uint32_t obj)
++{
++    new ColorParametricCreatorV1(resource->client(), obj, resource->version());
++}
++
++void ColorManagerV1::wp_color_manager_v1_create_windows_scrgb(Resource *resource, uint32_t image_description)
+ {
+-    new XXColorParametricCreatorV4(resource->client(), obj, resource->version());
++    const auto scrgb = ColorDescription{
++        NamedColorimetry::BT709,
++        TransferFunction(TransferFunction::linear, 0, 80),
++        80,
++        0,
++        std::nullopt,
++        std::nullopt,
++        Colorimetry::fromName(NamedColorimetry::BT2020),
++        Colorimetry::fromName(NamedColorimetry::BT709),
++    };
++    new ImageDescriptionV1(resource->client(), image_description, resource->version(), scrgb);
+ }
+ 
+-XXColorFeedbackSurfaceV4::XXColorFeedbackSurfaceV4(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface)
+-    : QtWaylandServer::xx_color_management_feedback_surface_v4(client, id, version)
++ColorFeedbackSurfaceV1::ColorFeedbackSurfaceV1(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface)
++    : QtWaylandServer::wp_color_management_surface_feedback_v1(client, id, version)
+     , m_surface(surface)
+     , m_preferred(SurfaceInterfacePrivate::get(surface)->preferredColorDescription.value_or(ColorDescription::sRGB))
+ {
+ }
+ 
+-XXColorFeedbackSurfaceV4::~XXColorFeedbackSurfaceV4()
++ColorFeedbackSurfaceV1::~ColorFeedbackSurfaceV1()
+ {
+     if (m_surface) {
+-        SurfaceInterfacePrivate::get(m_surface)->xxColorFeedbacks.removeOne(this);
++        SurfaceInterfacePrivate::get(m_surface)->colorFeedbackSurfaces.removeOne(this);
+     }
+ }
+ 
+-void XXColorFeedbackSurfaceV4::setPreferredColorDescription(const ColorDescription &descr)
++void ColorFeedbackSurfaceV1::setPreferredColorDescription(const ColorDescription &descr)
+ {
+     if (m_preferred != descr) {
+         m_preferred = descr;
+-        send_preferred_changed(resource()->handle);
++        send_preferred_changed(resource()->handle, ImageDescriptionV1::s_idCounter++);
+     }
+ }
+ 
+-void XXColorFeedbackSurfaceV4::xx_color_management_feedback_surface_v4_destroy_resource(Resource *resource)
++void ColorFeedbackSurfaceV1::wp_color_management_surface_feedback_v1_destroy_resource(Resource *resource)
+ {
+     delete this;
+ }
+ 
+-void XXColorFeedbackSurfaceV4::xx_color_management_feedback_surface_v4_destroy(Resource *resource)
++void ColorFeedbackSurfaceV1::wp_color_management_surface_feedback_v1_destroy(Resource *resource)
+ {
+     wl_resource_destroy(resource->handle);
+ }
+ 
+-void XXColorFeedbackSurfaceV4::xx_color_management_feedback_surface_v4_get_preferred(Resource *resource, uint32_t image_description)
++void ColorFeedbackSurfaceV1::wp_color_management_surface_feedback_v1_get_preferred(Resource *resource, uint32_t image_description)
++{
++    new ImageDescriptionV1(resource->client(), image_description, resource->version(), m_preferred);
++}
++
++void ColorFeedbackSurfaceV1::wp_color_management_surface_feedback_v1_get_preferred_parametric(Resource *resource, uint32_t image_description)
+ {
+-    new XXImageDescriptionV4(resource->client(), image_description, resource->version(), m_preferred);
++    new ImageDescriptionV1(resource->client(), image_description, resource->version(), m_preferred);
+ }
+ 
+-XXColorSurfaceV4::XXColorSurfaceV4(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface)
+-    : QtWaylandServer::xx_color_management_surface_v4(client, id, version)
++ColorSurfaceV1::ColorSurfaceV1(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface)
++    : QtWaylandServer::wp_color_management_surface_v1(client, id, version)
+     , m_surface(surface)
+ {
+ }
+ 
+-XXColorSurfaceV4::~XXColorSurfaceV4()
++ColorSurfaceV1::~ColorSurfaceV1()
+ {
+     if (m_surface) {
+         const auto priv = SurfaceInterfacePrivate::get(m_surface);
+         priv->pending->colorDescription = ColorDescription::sRGB;
+         priv->pending->colorDescriptionIsSet = true;
+-        priv->xxColorSurface = nullptr;
++        priv->colorSurface = nullptr;
+     }
+ }
+ 
+-void XXColorSurfaceV4::xx_color_management_surface_v4_destroy_resource(Resource *resource)
++void ColorSurfaceV1::wp_color_management_surface_v1_destroy_resource(Resource *resource)
+ {
+     delete this;
+ }
+ 
+-void XXColorSurfaceV4::xx_color_management_surface_v4_destroy(Resource *resource)
++void ColorSurfaceV1::wp_color_management_surface_v1_destroy(Resource *resource)
+ {
+     wl_resource_destroy(resource->handle);
+ }
+@@ -154,42 +177,42 @@ void XXColorSurfaceV4::xx_color_management_surface_v4_destroy(Resource *resource
+ static std::optional<RenderingIntent> waylandToKwinIntent(uint32_t intent)
+ {
+     switch (intent) {
+-    case QtWaylandServer::xx_color_manager_v4::render_intent::render_intent_perceptual:
++    case QtWaylandServer::wp_color_manager_v1::render_intent::render_intent_perceptual:
+         return RenderingIntent::Perceptual;
+-    case QtWaylandServer::xx_color_manager_v4::render_intent::render_intent_relative:
++    case QtWaylandServer::wp_color_manager_v1::render_intent::render_intent_relative:
+         return RenderingIntent::RelativeColorimetric;
+-    case QtWaylandServer::xx_color_manager_v4::render_intent::render_intent_absolute:
++    case QtWaylandServer::wp_color_manager_v1::render_intent::render_intent_absolute:
+         return RenderingIntent::AbsoluteColorimetric;
+-    case QtWaylandServer::xx_color_manager_v4::render_intent::render_intent_relative_bpc:
++    case QtWaylandServer::wp_color_manager_v1::render_intent::render_intent_relative_bpc:
+         return RenderingIntent::RelativeColorimetricWithBPC;
+-    case QtWaylandServer::xx_color_manager_v4::render_intent::render_intent_saturation:
++    case QtWaylandServer::wp_color_manager_v1::render_intent::render_intent_saturation:
+         return std::nullopt;
+     }
+     return std::nullopt;
+ }
+ 
+-void XXColorSurfaceV4::xx_color_management_surface_v4_set_image_description(Resource *resource, struct ::wl_resource *image_description, uint32_t render_intent)
++void ColorSurfaceV1::wp_color_management_surface_v1_set_image_description(Resource *resource, struct ::wl_resource *image_description, uint32_t render_intent)
+ {
+     if (!m_surface) {
+         return;
+     }
+     const std::optional<RenderingIntent> intent = waylandToKwinIntent(render_intent);
+     if (!intent) {
+-        wl_resource_post_error(resource->handle, XX_COLOR_MANAGER_V4_ERROR_UNSUPPORTED_FEATURE, "rendering intent is not supported");
++        wl_resource_post_error(resource->handle, WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE, "rendering intent is not supported");
+         return;
+     }
+-    const auto description = XXImageDescriptionV4::get(image_description);
++    const auto description = ImageDescriptionV1::get(image_description);
+     if (!description->description().has_value()) {
+         wl_resource_post_error(resource->handle, error_image_description, "failed image description can't be used");
+         return;
+     }
+     const auto priv = SurfaceInterfacePrivate::get(m_surface);
+-    priv->pending->colorDescription = *XXImageDescriptionV4::get(image_description)->description();
++    priv->pending->colorDescription = *ImageDescriptionV1::get(image_description)->description();
+     priv->pending->renderingIntent = *intent;
+     priv->pending->colorDescriptionIsSet = true;
+ }
+ 
+-void XXColorSurfaceV4::xx_color_management_surface_v4_unset_image_description(Resource *resource)
++void ColorSurfaceV1::wp_color_management_surface_v1_unset_image_description(Resource *resource)
+ {
+     if (!m_surface) {
+         return;
+@@ -199,26 +222,22 @@ void XXColorSurfaceV4::xx_color_management_surface_v4_unset_image_description(Re
+     priv->pending->colorDescriptionIsSet = true;
+ }
+ 
+-XXColorParametricCreatorV4::XXColorParametricCreatorV4(wl_client *client, uint32_t id, uint32_t version)
+-    : QtWaylandServer::xx_image_description_creator_params_v4(client, id, version)
++ColorParametricCreatorV1::ColorParametricCreatorV1(wl_client *client, uint32_t id, uint32_t version)
++    : QtWaylandServer::wp_image_description_creator_params_v1(client, id, version)
+ {
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_destroy_resource(Resource *resource)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_destroy_resource(Resource *resource)
+ {
+     delete this;
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_create(Resource *resource, uint32_t image_description)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_create(Resource *resource, uint32_t image_description)
+ {
+     if (!m_colorimetry || !m_transferFunctionType) {
+         wl_resource_post_error(resource->handle, error::error_incomplete_set, "colorimetry or transfer function missing");
+         return;
+     }
+-    if (m_transferFunctionType != TransferFunction::PerceptualQuantizer && (m_maxCll || m_maxFall)) {
+-        wl_resource_post_error(resource->handle, error::error_inconsistent_set, "max_cll and max_fall must only be set with the PQ transfer function");
+-        return;
+-    }
+     std::optional<double> maxFrameAverageLuminance = m_maxFall ? m_maxFall : m_maxMasteringLuminance;
+     std::optional<double> maxHdrLuminance = m_maxCll ? m_maxCll : m_maxMasteringLuminance;
+ 
+@@ -234,33 +253,39 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_create(R
+     TransferFunction func{*m_transferFunctionType};
+     double referenceLuminance = TransferFunction::defaultReferenceLuminanceFor(func.type);
+     if (m_transferFunctionLuminances) {
+-        func.minLuminance = m_transferFunctionLuminances->min;
+-        func.maxLuminance = m_transferFunctionLuminances->max;
++        // PQ is special cased to require (max - min) == 10'000
++        if (m_transferFunctionType == TransferFunction::PerceptualQuantizer) {
++            func.minLuminance = m_transferFunctionLuminances->min;
++            func.maxLuminance = m_transferFunctionLuminances->min + 10'000;
++        } else {
++            func.minLuminance = m_transferFunctionLuminances->min;
++            func.maxLuminance = m_transferFunctionLuminances->max;
++        }
+         referenceLuminance = m_transferFunctionLuminances->reference;
+     }
+     if (Colorimetry::isValid(m_colorimetry->red().toxy(), m_colorimetry->green().toxy(), m_colorimetry->blue().toxy(), m_colorimetry->white().toxy())) {
+-        new XXImageDescriptionV4(resource->client(), image_description, resource->version(), ColorDescription(*m_colorimetry, func, referenceLuminance, m_minMasteringLuminance.value_or(func.minLuminance), maxFrameAverageLuminance, maxHdrLuminance, m_masteringColorimetry, Colorimetry::fromName(NamedColorimetry::BT709)));
++        new ImageDescriptionV1(resource->client(), image_description, resource->version(), ColorDescription(*m_colorimetry, func, referenceLuminance, m_minMasteringLuminance.value_or(func.minLuminance), maxFrameAverageLuminance, maxHdrLuminance, m_masteringColorimetry, Colorimetry::fromName(NamedColorimetry::BT709)));
+     } else {
+-        new XXImageDescriptionV4(resource->client(), image_description, resource->version(), std::nullopt);
++        new ImageDescriptionV1(resource->client(), image_description, resource->version(), std::nullopt);
+     }
+     wl_resource_destroy(resource->handle);
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_tf_named(Resource *resource, uint32_t tf)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_tf_named(Resource *resource, uint32_t tf)
+ {
+     if (m_transferFunctionType) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "transfer function is already set");
+         return;
+     }
+     switch (tf) {
+-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_SRGB:
+-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA22:
++    case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB:
++    case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22:
+         m_transferFunctionType = TransferFunction::gamma22;
+         return;
+-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ:
++    case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ:
+         m_transferFunctionType = TransferFunction::PerceptualQuantizer;
+         return;
+-    case XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR:
++    case WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR:
+         m_transferFunctionType = TransferFunction::linear;
+         return;
+     default:
+@@ -269,74 +294,72 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_tf_n
+     }
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_tf_power(Resource *resource, uint32_t eexp)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_tf_power(Resource *resource, uint32_t eexp)
+ {
+     wl_resource_post_error(resource->handle, error::error_invalid_tf, "power transfer functions are not supported");
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_primaries_named(Resource *resource, uint32_t primaries)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_primaries_named(Resource *resource, uint32_t primaries)
+ {
+     if (m_colorimetry) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "primaries are already set");
+         return;
+     }
+     switch (primaries) {
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_srgb:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_srgb:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::BT709);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_pal_m:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_pal_m:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::PAL_M);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_pal:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_pal:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::PAL);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_ntsc:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_ntsc:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::NTSC);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_generic_film:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_generic_film:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::GenericFilm);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_bt2020:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_bt2020:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::BT2020);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_cie1931_xyz:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_cie1931_xyz:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::CIEXYZ);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_dci_p3:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_dci_p3:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::DCIP3);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_display_p3:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_display_p3:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::DisplayP3);
+         return;
+-    case QtWaylandServer::xx_color_manager_v4::primaries::primaries_adobe_rgb:
++    case QtWaylandServer::wp_color_manager_v1::primaries::primaries_adobe_rgb:
+         m_colorimetry = Colorimetry::fromName(NamedColorimetry::AdobeRGB);
+         return;
+     default:
+-        wl_resource_post_error(resource->handle, error::error_invalid_primaries, "unsupported named primaries");
++        wl_resource_post_error(resource->handle, error::error_invalid_primaries_named, "unsupported named primaries");
+     }
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y)
++constexpr double s_primaryUnit = 1.0 / 1'000'000.0;
++
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y)
+ {
+     if (m_colorimetry) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "primaries are already set");
+         return;
+     }
+-    if (w_x == 0 || w_y == 0) {
+-        wl_resource_post_error(resource->handle, error::error_invalid_primaries, "whitepoint must not be zero");
+-        return;
+-    }
+     m_colorimetry = Colorimetry{
+-        xy{r_x / 10'000.0, r_y / 10'000.0},
+-        xy{g_x / 10'000.0, g_y / 10'000.0},
+-        xy{b_x / 10'000.0, b_y / 10'000.0},
+-        xy{w_x / 10'000.0, w_y / 10'000.0},
++        xy{r_x * s_primaryUnit, r_y * s_primaryUnit},
++        xy{g_x * s_primaryUnit, g_y * s_primaryUnit},
++        xy{b_x * s_primaryUnit, b_y * s_primaryUnit},
++        xy{w_x * s_primaryUnit, w_y * s_primaryUnit},
+     };
+ }
+ 
+ constexpr double s_minLuminanceUnit = 1.0 / 10'000.0;
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_luminances(Resource *resource, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_luminances(Resource *resource, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum)
+ {
+     if (max_lum < min_lum * s_minLuminanceUnit) {
+         wl_resource_post_error(resource->handle, error::error_invalid_luminance, "max. luminance is lower than the min. luminance");
+@@ -353,33 +376,37 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_lumi
+     };
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_mastering_display_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_mastering_display_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y)
+ {
+     if (m_masteringColorimetry) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "mastering display primaries are already set");
+         return;
+     }
+     m_masteringColorimetry = Colorimetry{
+-        xy{r_x / 10'000.0, r_y / 10'000.0},
+-        xy{g_x / 10'000.0, g_y / 10'000.0},
+-        xy{b_x / 10'000.0, b_y / 10'000.0},
+-        xy{w_x / 10'000.0, w_y / 10'000.0},
++        xy{r_x * s_primaryUnit, r_y * s_primaryUnit},
++        xy{g_x * s_primaryUnit, g_y * s_primaryUnit},
++        xy{b_x * s_primaryUnit, b_y * s_primaryUnit},
++        xy{w_x * s_primaryUnit, w_y * s_primaryUnit},
+     };
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_mastering_luminance(Resource *resource, uint32_t min_lum, uint32_t max_lum)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_mastering_luminance(Resource *resource, uint32_t min_lum, uint32_t max_lum)
+ {
+     if (m_minMasteringLuminance) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "mastering luminance is already set");
+         return;
+     }
++    if (min_lum * s_minLuminanceUnit >= max_lum) {
++        wl_resource_post_error(resource->handle, error::error_invalid_luminance, "min_lum can't be higher or equal to max_lum");
++        return;
++    }
+     m_minMasteringLuminance = min_lum * s_minLuminanceUnit;
+     if (max_lum > 0) {
+         m_maxMasteringLuminance = max_lum;
+     }
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_max_cll(Resource *resource, uint32_t max_cll)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_max_cll(Resource *resource, uint32_t max_cll)
+ {
+     if (m_maxCll) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "max_cll is already set");
+@@ -390,7 +417,7 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_max_
+     }
+ }
+ 
+-void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_max_fall(Resource *resource, uint32_t max_fall)
++void ColorParametricCreatorV1::wp_image_description_creator_params_v1_set_max_fall(Resource *resource, uint32_t max_fall)
+ {
+     if (m_maxFall) {
+         wl_resource_post_error(resource->handle, error::error_already_set, "max_fall is already set");
+@@ -401,23 +428,25 @@ void XXColorParametricCreatorV4::xx_image_description_creator_params_v4_set_max_
+     }
+ }
+ 
+-XXImageDescriptionV4::XXImageDescriptionV4(wl_client *client, uint32_t id, uint32_t version, const std::optional<ColorDescription> &color)
+-    : QtWaylandServer::xx_image_description_v4(client, id, version)
++uint64_t ImageDescriptionV1::s_idCounter = 1;
++
++ImageDescriptionV1::ImageDescriptionV1(wl_client *client, uint32_t id, uint32_t version, const std::optional<ColorDescription> &color)
++    : QtWaylandServer::wp_image_description_v1(client, id, version)
+     , m_description(color)
+ {
+     if (color.has_value()) {
+-        send_ready(resource()->handle, 0);
++        send_ready(resource()->handle, s_idCounter++);
+     } else {
+         send_failed(resource()->handle, cause::cause_unsupported, "The provided image description failed to verify as usable");
+     }
+ }
+ 
+-void XXImageDescriptionV4::xx_image_description_v4_destroy_resource(Resource *resource)
++void ImageDescriptionV1::wp_image_description_v1_destroy_resource(Resource *resource)
+ {
+     delete this;
+ }
+ 
+-void XXImageDescriptionV4::xx_image_description_v4_destroy(Resource *resource)
++void ImageDescriptionV1::wp_image_description_v1_destroy(Resource *resource)
+ {
+     wl_resource_destroy(resource->handle);
+ }
+@@ -426,13 +455,13 @@ static uint32_t kwinTFtoProtoTF(TransferFunction tf)
+ {
+     switch (tf.type) {
+     case TransferFunction::sRGB:
+-        return xx_color_manager_v4_transfer_function::XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_SRGB;
++        return WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB;
+     case TransferFunction::linear:
+-        return xx_color_manager_v4_transfer_function::XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_LINEAR;
++        return WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR;
+     case TransferFunction::PerceptualQuantizer:
+-        return xx_color_manager_v4_transfer_function::XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ;
++        return WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ;
+     case TransferFunction::gamma22:
+-        return xx_color_manager_v4_transfer_function::XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_GAMMA22;
++        return WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22;
+     }
+     Q_UNREACHABLE();
+ }
+@@ -441,113 +470,113 @@ static uint32_t kwinPrimariesToProtoPrimaires(NamedColorimetry primaries)
+ {
+     switch (primaries) {
+     case NamedColorimetry::BT709:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_srgb;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_srgb;
+     case NamedColorimetry::PAL_M:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_pal_m;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_pal_m;
+     case NamedColorimetry::PAL:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_pal;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_pal;
+     case NamedColorimetry::NTSC:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_ntsc;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_ntsc;
+     case NamedColorimetry::GenericFilm:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_generic_film;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_generic_film;
+     case NamedColorimetry::BT2020:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_bt2020;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_bt2020;
+     case NamedColorimetry::CIEXYZ:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_cie1931_xyz;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_cie1931_xyz;
+     case NamedColorimetry::DCIP3:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_dci_p3;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_dci_p3;
+     case NamedColorimetry::DisplayP3:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_display_p3;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_display_p3;
+     case NamedColorimetry::AdobeRGB:
+-        return QtWaylandServer::xx_color_manager_v4::primaries::primaries_adobe_rgb;
++        return QtWaylandServer::wp_color_manager_v1::primaries::primaries_adobe_rgb;
+     }
+     Q_UNREACHABLE();
+ }
+ 
+-void XXImageDescriptionV4::xx_image_description_v4_get_information(Resource *qtResource, uint32_t information)
++void ImageDescriptionV1::wp_image_description_v1_get_information(Resource *qtResource, uint32_t information)
+ {
+     if (!m_description.has_value()) {
+         wl_resource_post_error(qtResource->handle, error_no_information, "Can't request information from a failed image description");
+         return;
+     }
+-    auto resource = wl_resource_create(qtResource->client(), &xx_image_description_info_v4_interface, qtResource->version(), information);
++    auto resource = wl_resource_create(qtResource->client(), &wp_image_description_info_v1_interface, qtResource->version(), information);
+     const auto round = [](float f) {
+-        return std::clamp(std::round(f * 10'000.0), 0.0, 10'000.0);
++        return std::clamp(std::round(f / s_primaryUnit), 0.0, 1.0 / s_primaryUnit);
+     };
+     const xyY containerRed = m_description->containerColorimetry().red().toxyY();
+     const xyY containerGreen = m_description->containerColorimetry().green().toxyY();
+     const xyY containerBlue = m_description->containerColorimetry().blue().toxyY();
+     const xyY containerWhite = m_description->containerColorimetry().white().toxyY();
+-    xx_image_description_info_v4_send_primaries(resource,
++    wp_image_description_info_v1_send_primaries(resource,
+                                                 round(containerRed.x), round(containerRed.y),
+                                                 round(containerGreen.x), round(containerGreen.y),
+                                                 round(containerBlue.x), round(containerBlue.y),
+                                                 round(containerWhite.x), round(containerWhite.y));
+     if (auto name = m_description->containerColorimetry().name()) {
+-        xx_image_description_info_v4_send_primaries_named(resource, kwinPrimariesToProtoPrimaires(*name));
++        wp_image_description_info_v1_send_primaries_named(resource, kwinPrimariesToProtoPrimaires(*name));
+     }
+     if (auto m = m_description->masteringColorimetry()) {
+         const xyY masterRed = m->red().toxyY();
+         const xyY masterGreen = m->green().toxyY();
+         const xyY masterBlue = m->blue().toxyY();
+         const xyY masterWhite = m->white().toxyY();
+-        xx_image_description_info_v4_send_target_primaries(resource,
++        wp_image_description_info_v1_send_target_primaries(resource,
+                                                            round(masterRed.x), round(masterRed.y),
+                                                            round(masterGreen.x), round(masterGreen.y),
+                                                            round(masterBlue.x), round(masterBlue.y),
+                                                            round(masterWhite.x), round(masterWhite.y));
+     }
+     if (auto maxfall = m_description->maxAverageLuminance()) {
+-        xx_image_description_info_v4_send_target_max_fall(resource, *maxfall);
++        wp_image_description_info_v1_send_target_max_fall(resource, *maxfall);
+     }
+     if (auto maxcll = m_description->maxHdrLuminance()) {
+-        xx_image_description_info_v4_send_target_max_cll(resource, *maxcll);
++        wp_image_description_info_v1_send_target_max_cll(resource, *maxcll);
+     }
+-    xx_image_description_info_v4_send_luminances(resource, std::round(m_description->transferFunction().minLuminance * 10'000), std::round(m_description->transferFunction().maxLuminance), std::round(m_description->referenceLuminance()));
+-    xx_image_description_info_v4_send_target_luminance(resource, m_description->minLuminance(), m_description->maxHdrLuminance().value_or(800));
+-    xx_image_description_info_v4_send_tf_named(resource, kwinTFtoProtoTF(m_description->transferFunction()));
+-    xx_image_description_info_v4_send_done(resource);
++    wp_image_description_info_v1_send_luminances(resource, std::round(m_description->transferFunction().minLuminance / s_minLuminanceUnit), std::round(m_description->transferFunction().maxLuminance), std::round(m_description->referenceLuminance()));
++    wp_image_description_info_v1_send_target_luminance(resource, m_description->minLuminance(), m_description->maxHdrLuminance().value_or(800));
++    wp_image_description_info_v1_send_tf_named(resource, kwinTFtoProtoTF(m_description->transferFunction()));
++    wp_image_description_info_v1_send_done(resource);
+     wl_resource_destroy(resource);
+ }
+ 
+-const std::optional<ColorDescription> &XXImageDescriptionV4::description() const
++const std::optional<ColorDescription> &ImageDescriptionV1::description() const
+ {
+     return m_description;
+ }
+ 
+-XXImageDescriptionV4 *XXImageDescriptionV4::get(wl_resource *resource)
++ImageDescriptionV1 *ImageDescriptionV1::get(wl_resource *resource)
+ {
+     if (auto resourceContainer = Resource::fromResource(resource)) {
+-        return static_cast<XXImageDescriptionV4 *>(resourceContainer->object());
++        return static_cast<ImageDescriptionV1 *>(resourceContainer->object());
+     } else {
+         return nullptr;
+     }
+ }
+ 
+-XXColorManagementOutputV4::XXColorManagementOutputV4(wl_client *client, uint32_t id, uint32_t version, Output *output)
+-    : QtWaylandServer::xx_color_management_output_v4(client, id, version)
++ColorManagementOutputV1::ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, Output *output)
++    : QtWaylandServer::wp_color_management_output_v1(client, id, version)
+     , m_output(output)
+     , m_colorDescription(output->colorDescription())
+ {
+-    connect(output, &Output::colorDescriptionChanged, this, &XXColorManagementOutputV4::colorDescriptionChanged);
++    connect(output, &Output::colorDescriptionChanged, this, &ColorManagementOutputV1::colorDescriptionChanged);
+ }
+ 
+-void XXColorManagementOutputV4::xx_color_management_output_v4_destroy_resource(Resource *resource)
++void ColorManagementOutputV1::wp_color_management_output_v1_destroy_resource(Resource *resource)
+ {
+     delete this;
+ }
+ 
+-void XXColorManagementOutputV4::xx_color_management_output_v4_destroy(Resource *resource)
++void ColorManagementOutputV1::wp_color_management_output_v1_destroy(Resource *resource)
+ {
+     wl_resource_destroy(resource->handle);
+ }
+ 
+-void XXColorManagementOutputV4::xx_color_management_output_v4_get_image_description(Resource *resource, uint32_t image_description)
++void ColorManagementOutputV1::wp_color_management_output_v1_get_image_description(Resource *resource, uint32_t image_description)
+ {
+-    new XXImageDescriptionV4(resource->client(), image_description, resource->version(), m_colorDescription);
++    new ImageDescriptionV1(resource->client(), image_description, resource->version(), m_colorDescription);
+ }
+ 
+-void XXColorManagementOutputV4::colorDescriptionChanged()
++void ColorManagementOutputV1::colorDescriptionChanged()
+ {
+     m_colorDescription = m_output->colorDescription();
+     send_image_description_changed();
+@@ -555,4 +584,4 @@ void XXColorManagementOutputV4::colorDescriptionChanged()
+ 
+ }
+ 
+-#include "moc_xx_colormanagement_v4.cpp"
++#include "moc_colormanagement_v1.cpp"
+diff --git a/src/wayland/colormanagement_v1.h b/src/wayland/colormanagement_v1.h
+new file mode 100644
+index 0000000000..2cdb3b505c
+--- /dev/null
++++ b/src/wayland/colormanagement_v1.h
+@@ -0,0 +1,140 @@
++/*
++    SPDX-FileCopyrightText: 2024 Xaver Hugl <xaver.hugl@gmail.com>
++
++    SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
++*/
++#pragma once
++#include "core/colorspace.h"
++
++#include "wayland/qwayland-server-color-management-v1.h"
++#include <QObject>
++#include <QPointer>
++
++namespace KWin
++{
++
++class Display;
++class SurfaceInterface;
++class Output;
++
++class ColorManagerV1 : public QObject, private QtWaylandServer::wp_color_manager_v1
++{
++    Q_OBJECT
++public:
++    explicit ColorManagerV1(Display *display, QObject *parent);
++
++private:
++    void wp_color_manager_v1_bind_resource(Resource *resource) override;
++    void wp_color_manager_v1_destroy(Resource *resource) override;
++    void wp_color_manager_v1_get_output(Resource *resource, uint32_t id, struct ::wl_resource *output) override;
++    void wp_color_manager_v1_get_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface) override;
++    void wp_color_manager_v1_get_surface_feedback(Resource *resource, uint32_t id, struct ::wl_resource *surface) override;
++    void wp_color_manager_v1_create_icc_creator(Resource *resource, uint32_t obj) override;
++    void wp_color_manager_v1_create_parametric_creator(Resource *resource, uint32_t obj) override;
++    void wp_color_manager_v1_create_windows_scrgb(Resource *resource, uint32_t image_description) override;
++};
++
++class ColorFeedbackSurfaceV1 : private QtWaylandServer::wp_color_management_surface_feedback_v1
++{
++public:
++    explicit ColorFeedbackSurfaceV1(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface);
++    ~ColorFeedbackSurfaceV1() override;
++
++    void setPreferredColorDescription(const ColorDescription &descr);
++
++private:
++    void wp_color_management_surface_feedback_v1_destroy_resource(Resource *resource) override;
++    void wp_color_management_surface_feedback_v1_destroy(Resource *resource) override;
++    void wp_color_management_surface_feedback_v1_get_preferred(Resource *resource, uint32_t image_description) override;
++    void wp_color_management_surface_feedback_v1_get_preferred_parametric(Resource *resource, uint32_t image_description) override;
++
++    QPointer<SurfaceInterface> m_surface;
++    ColorDescription m_preferred;
++};
++
++class ColorSurfaceV1 : private QtWaylandServer::wp_color_management_surface_v1
++{
++public:
++    explicit ColorSurfaceV1(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface);
++    ~ColorSurfaceV1() override;
++
++private:
++    void wp_color_management_surface_v1_destroy_resource(Resource *resource) override;
++    void wp_color_management_surface_v1_destroy(Resource *resource) override;
++    void wp_color_management_surface_v1_set_image_description(Resource *resource, struct ::wl_resource *image_description, uint32_t render_intent) override;
++    void wp_color_management_surface_v1_unset_image_description(Resource *resource) override;
++
++    QPointer<SurfaceInterface> m_surface;
++};
++
++class ColorParametricCreatorV1 : private QtWaylandServer::wp_image_description_creator_params_v1
++{
++public:
++    explicit ColorParametricCreatorV1(wl_client *client, uint32_t id, uint32_t version);
++
++private:
++    void wp_image_description_creator_params_v1_destroy_resource(Resource *resource) override;
++    void wp_image_description_creator_params_v1_create(Resource *resource, uint32_t image_description) override;
++    void wp_image_description_creator_params_v1_set_tf_named(Resource *resource, uint32_t tf) override;
++    void wp_image_description_creator_params_v1_set_tf_power(Resource *resource, uint32_t eexp) override;
++    void wp_image_description_creator_params_v1_set_primaries_named(Resource *resource, uint32_t primaries) override;
++    void wp_image_description_creator_params_v1_set_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) override;
++    void wp_image_description_creator_params_v1_set_mastering_display_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) override;
++    void wp_image_description_creator_params_v1_set_mastering_luminance(Resource *resource, uint32_t min_lum, uint32_t max_lum) override;
++    void wp_image_description_creator_params_v1_set_max_cll(Resource *resource, uint32_t max_cll) override;
++    void wp_image_description_creator_params_v1_set_max_fall(Resource *resource, uint32_t max_fall) override;
++    void wp_image_description_creator_params_v1_set_luminances(Resource *resource, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum) override;
++
++    std::optional<Colorimetry> m_colorimetry;
++    std::optional<TransferFunction::Type> m_transferFunctionType;
++    struct Luminances
++    {
++        double min;
++        double max;
++        double reference;
++    };
++    std::optional<Luminances> m_transferFunctionLuminances;
++
++    // mastering display information
++    std::optional<Colorimetry> m_masteringColorimetry;
++    std::optional<double> m_minMasteringLuminance;
++    std::optional<double> m_maxMasteringLuminance;
++    std::optional<double> m_maxCll;
++    std::optional<double> m_maxFall;
++};
++
++class ImageDescriptionV1 : private QtWaylandServer::wp_image_description_v1
++{
++public:
++    explicit ImageDescriptionV1(wl_client *client, uint32_t id, uint32_t version, const std::optional<ColorDescription> &color);
++
++    const std::optional<ColorDescription> &description() const;
++
++    static ImageDescriptionV1 *get(wl_resource *resource);
++    static uint64_t s_idCounter;
++
++private:
++    void wp_image_description_v1_destroy_resource(Resource *resource) override;
++    void wp_image_description_v1_destroy(Resource *resource) override;
++    void wp_image_description_v1_get_information(Resource *resource, uint32_t information) override;
++
++    const std::optional<ColorDescription> m_description;
++};
++
++class ColorManagementOutputV1 : public QObject, private QtWaylandServer::wp_color_management_output_v1
++{
++    Q_OBJECT
++public:
++    explicit ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, Output *output);
++
++private:
++    void colorDescriptionChanged();
++    void wp_color_management_output_v1_destroy_resource(Resource *resource) override;
++    void wp_color_management_output_v1_destroy(Resource *resource) override;
++    void wp_color_management_output_v1_get_image_description(Resource *resource, uint32_t image_description) override;
++
++    Output *const m_output;
++    ColorDescription m_colorDescription;
++};
++
++}
+diff --git a/src/wayland/protocols/xx-color-management-v4.xml b/src/wayland/protocols/color-management-v1.xml
+similarity index 69%
+rename from src/wayland/protocols/xx-color-management-v4.xml
+rename to src/wayland/protocols/color-management-v1.xml
+index eab84dfd99..7f8da78f12 100644
+--- a/src/wayland/protocols/xx-color-management-v4.xml
++++ b/src/wayland/protocols/color-management-v1.xml
+@@ -1,11 +1,12 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+-<protocol name="xx_color_management_v4">
++<protocol name="color_management_v1">
+   <copyright>
+     Copyright 2019 Sebastian Wick
+     Copyright 2019 Erwin Burema
+     Copyright 2020 AMD
+     Copyright 2020-2024 Collabora, Ltd.
+     Copyright 2024 Xaver Hugl
++    Copyright 2022-2025 Red Hat, Inc.
+ 
+     Permission is hereby granted, free of charge, to any person obtaining a
+     copy of this software and associated documentation files (the "Software"),
+@@ -63,20 +64,27 @@
+     color encoding terminology where possible. The glossary in the color-and-hdr
+     repository shall be the authority on the definition of terms in this
+     protocol.
++
++    Warning! The protocol described in this file is currently in the testing
++    phase. Backward compatible changes may be added together with the
++    corresponding interface version bump. Backward incompatible changes can
++    only be done by creating a new major version of the extension.
+   </description>
+ 
+-  <interface name="xx_color_manager_v4" version="1">
++  <interface name="wp_color_manager_v1" version="1">
+     <description summary="color manager singleton">
+-      A global interface used for getting color management extensions for
+-      wl_surface and wl_output objects, and for creating client defined image
+-      description objects. The extension interfaces allow
++      A singleton global interface used for getting color management extensions
++      for wl_surface and wl_output objects, and for creating client defined
++      image description objects. The extension interfaces allow
+       getting the image description of outputs and setting the image
+       description of surfaces.
++
++      Compositors should never remove this global.
+     </description>
+ 
+     <request name="destroy" type="destructor">
+       <description summary="destroy the color manager">
+-        Destroy the xx_color_manager_v4 object. This does not affect any other
++        Destroy the wp_color_manager_v1 object. This does not affect any other
+         objects in any way.
+       </description>
+     </request>
+@@ -116,9 +124,9 @@
+       <description summary="compositor supported features"/>
+ 
+       <entry name="icc_v2_v4" value="0"
+-             summary="new_icc_creator request"/>
++             summary="create_icc_creator request"/>
+       <entry name="parametric" value="1"
+-             summary="new_parametric_creator request"/>
++             summary="create_parametric_creator request"/>
+       <entry name="set_primaries" value="2"
+              summary="parametric set_primaries request"/>
+       <entry name="set_tf_power" value="3"
+@@ -140,6 +148,8 @@
+           is supported as well.
+         </description>
+       </entry>
++      <entry name="windows_scrgb" value="7"
++             summary="get_windows_scrgb request"/>
+     </enum>
+ 
+     <enum name="primaries">
+@@ -148,10 +158,12 @@
+         is the authority, when it comes to the exact values of primaries and
+         authoritative specifications, where an equivalent code point exists.
+ 
++        A value of 0 is invalid and will never be present in the list of enums.
++
+         Descriptions do list the specifications for convenience.
+       </description>
+ 
+-      <entry name="srgb" value="0">
++      <entry name="srgb" value="1">
+         <description summary="Color primaries for the sRGB color space as defined by the BT.709 standard">
+           Color primaries as defined by
+           - Rec. ITU-R BT.709-6
+@@ -164,7 +176,7 @@
+           Equivalent to H.273 ColourPrimaries code point 1.
+         </description>
+       </entry>
+-      <entry name="pal_m" value="1">
++      <entry name="pal_m" value="2">
+         <description summary="Color primaries for PAL-M as defined by the BT.470 standard">
+           Color primaries as defined by
+           - Rec. ITU-R BT.470-6 System M (historical)
+@@ -175,7 +187,7 @@
+           Equivalent to H.273 ColourPrimaries code point 4.
+         </description>
+       </entry>
+-      <entry name="pal" value="2">
++      <entry name="pal" value="3">
+         <description summary="Color primaries for PAL as defined by the BT.601 standard">
+           Color primaries as defined by
+           - Rec. ITU-R BT.470-6 System B, G (historical)
+@@ -185,7 +197,7 @@
+           Equivalent to H.273 ColourPrimaries code point 5.
+         </description>
+       </entry>
+-      <entry name="ntsc" value="3">
++      <entry name="ntsc" value="4">
+         <description summary="Color primaries for NTSC as defined by the BT.601 standard">
+           Color primaries as defined by
+           - Rec. ITU-R BT.601-7 525
+@@ -196,13 +208,13 @@
+           Equivalent to H.273 ColourPrimaries code point 6 and 7.
+         </description>
+       </entry>
+-      <entry name="generic_film" value="4">
++      <entry name="generic_film" value="5">
+         <description summary="Generic film with colour filters using Illuminant C">
+           Color primaries as defined by H.273 for generic film.
+           Equivalent to H.273 ColourPrimaries code point 8.
+         </description>
+       </entry>
+-      <entry name="bt2020" value="5">
++      <entry name="bt2020" value="6">
+         <description summary="Color primaries as defined by the BT.2020 and BT.2100 standard">
+           Color primaries as defined by
+           - Rec. ITU-R BT.2020-2
+@@ -210,7 +222,7 @@
+           Equivalent to H.273 ColourPrimaries code point 9.
+         </description>
+       </entry>
+-      <entry name="cie1931_xyz" value="6">
++      <entry name="cie1931_xyz" value="7">
+         <description summary="Color primaries of the full CIE 1931 XYZ color space">
+           Color primaries as defined as the maximum of the CIE 1931 XYZ color
+           space by
+@@ -219,21 +231,21 @@
+           Equivalent to H.273 ColourPrimaries code point 10.
+         </description>
+       </entry>
+-      <entry name="dci_p3" value="7">
++      <entry name="dci_p3" value="8">
+         <description summary="Color primaries of the DCI P3 color space as defined by the SMPTE RP 431 standard">
+           Color primaries as defined by Digital Cinema System and published in
+           SMPTE RP 431-2 (2011). Equivalent to H.273 ColourPrimaries code point
+           11.
+         </description>
+       </entry>
+-      <entry name="display_p3" value="8">
++      <entry name="display_p3" value="9">
+         <description summary="Color primaries of Display P3 variant of the DCI-P3 color space as defined by the SMPTE EG 432 standard">
+           Color primaries as defined by Digital Cinema System and published in
+           SMPTE EG 432-1 (2010).
+           Equivalent to H.273 ColourPrimaries code point 12.
+         </description>
+       </entry>
+-      <entry name="adobe_rgb" value="9">
++      <entry name="adobe_rgb" value="10">
+         <description summary="Color primaries of the Adobe RGB color space as defined by the ISO 12640 standard">
+           Color primaries as defined by Adobe as "Adobe RGB" and later published
+           by ISO 12640-4 (2011).
+@@ -243,23 +255,32 @@
+ 
+     <enum name="transfer_function">
+       <description summary="named transfer functions">
+-        Named transfer functions used to encode well-known transfer
++        Named transfer functions used to represent well-known transfer
+         characteristics. H.273 is the authority, when it comes to the exact
+         formulas and authoritative specifications, where an equivalent code
+         point exists.
+ 
++        A value of 0 is invalid and will never be present in the list of enums.
++
+         Descriptions do list the specifications for convenience.
+       </description>
+ 
+-      <entry name="bt709" value="0">
+-        <description summary="BT.709 transfer function">
+-          Transfer characteristics as defined by
++      <entry name="bt1886" value="1">
++        <description summary="BT.1886 display transfer characteristic">
++          Rec. ITU-R BT.1886 is the display transfer characteristic assumed by
++          - Rec. ITU-R BT.601-7 525 and 625
+           - Rec. ITU-R BT.709-6
+-          - Rec. ITU-R BT.1361-0 conventional colour gamut system (historical)
+-          Equivalent to H.273 TransferCharacteristics code point 1, 6, 14, 15.
++          - Rec. ITU-R BT.2020-2
++          These recommendations are referred to by H.273 TransferCharacteristics
++          code points 1, 6, 14, and 15, which are all equivalent.
++
++          This TF implies these default luminances from Rec. ITU-R BT.2035:
++          - primary color volume minimum: 0.01 cd/m²
++          - primary color volume maximum: 100 cd/m²
++          - reference white: 100 cd/m²
+         </description>
+       </entry>
+-      <entry name="gamma22" value="1">
++      <entry name="gamma22" value="2">
+         <description summary="Assumed display gamma 2.2 transfer function">
+           Transfer characteristics as defined by
+           - Rec. ITU-R BT.470-6 System M (historical)
+@@ -271,52 +292,48 @@
+           Equivalent to H.273 TransferCharacteristics code point 4.
+         </description>
+       </entry>
+-      <entry name="gamma28" value="2">
++      <entry name="gamma28" value="3">
+         <description summary="Assumed display gamma 2.8 transfer function">
+           Transfer characteristics as defined by
+           - Rec. ITU-R BT.470-6 System B, G (historical)
+           Equivalent to H.273 TransferCharacteristics code point 5.
+         </description>
+       </entry>
+-      <entry name="st240" value="3">
++      <entry name="st240" value="4">
+         <description summary="SMPTE ST 240 transfer function">
+           Transfer characteristics as defined by
+           - SMPTE ST 240 (1999)
+           Equivalent to H.273 TransferCharacteristics code point 7.
+         </description>
+       </entry>
+-      <entry name="linear" value="4">
+-        <description summary="linear transfer function">
+-          Linear transfer characteristics.
+-          Equivalent to H.273 TransferCharacteristics code point 8.
++      <entry name="ext_linear" value="5">
++        <description summary="extended linear transfer function">
++          Linear transfer function defined over all real numbers.
++          Normalised electrical values are equal the normalised optical values.
++
++          The differences to H.273 TransferCharacteristics code point 8 are
++          the definition over all real numbers.
+         </description>
+       </entry>
+-      <entry name="log_100" value="5">
++      <entry name="log_100" value="6">
+         <description summary="logarithmic 100:1 transfer function">
+           Logarithmic transfer characteristic (100:1 range).
+           Equivalent to H.273 TransferCharacteristics code point 9.
+         </description>
+       </entry>
+-      <entry name="log_316" value="6">
++      <entry name="log_316" value="7">
+         <description summary="logarithmic (100*Sqrt(10) : 1) transfer function">
+           Logarithmic transfer characteristic (100 * Sqrt(10) : 1 range).
+           Equivalent to H.273 TransferCharacteristics code point 10.
+         </description>
+       </entry>
+-      <entry name="xvycc" value="7">
++      <entry name="xvycc" value="8">
+         <description summary="IEC 61966-2-4 transfer function">
+           Transfer characteristics as defined by
+           - IEC 61966-2-4
+           Equivalent to H.273 TransferCharacteristics code point 11.
+         </description>
+       </entry>
+-      <entry name="bt1361" value="8">
+-        <description summary="BT.1361 extended transfer function">
+-          Transfer characteristics as defined by
+-          - Rec. ITU-R BT.1361-0 extended colour gamut system (historical)
+-          Equivalent to H.273 TransferCharacteristics code point 12.
+-        </description>
+-      </entry>
+       <entry name="srgb" value="9">
+         <description summary="sRGB piece-wise transfer function">
+           Transfer characteristics as defined by
+@@ -344,6 +361,12 @@
+           - primary color volume minimum: 0.005 cd/m²
+           - primary color volume maximum: 10000 cd/m²
+           - reference white: 203 cd/m²
++
++          The difference between the primary color volume minimum and maximum
++          must be approximately 10000 cd/m² as that is the swing of the EOTF
++          defined by ST 2084 and BT.2100. The default value for the
++          reference white is a protocol addition: it is suggested by
++          Report ITU-R BT.2408-7 and is not part of ST 2084 or BT.2100.
+         </description>
+       </entry>
+       <entry name="st428" value="12">
+@@ -364,87 +387,146 @@
+           - primary color volume minimum: 0.005 cd/m²
+           - primary color volume maximum: 1000 cd/m²
+           - reference white: 203 cd/m²
+-          Note: HLG is a scene referred signal. All absolute luminance values
+-          used here for HLG assume a 1000 cd/m² display.
++
++          HLG is a relative display-referred signal with a specified
++          non-linear mapping to the display peak luminance (the HLG OOTF).
++          All absolute luminance values used here for HLG assume a 1000 cd/m²
++          peak display.
++
++          The default value for the reference white is a protocol addition:
++          it is suggested by Report ITU-R BT.2408-7 and is not part of
++          ARIB STD-B67 or BT.2100.
+         </description>
+       </entry>
+     </enum>
+ 
+     <request name="get_output">
+       <description summary="create a color management interface for a wl_output">
+-        This creates a new xx_color_management_output_v4 object for the
++        This creates a new wp_color_management_output_v1 object for the
+         given wl_output.
+ 
+-        See the xx_color_management_output_v4 interface for more details.
++        See the wp_color_management_output_v1 interface for more details.
+       </description>
+ 
+-      <arg name="id" type="new_id" interface="xx_color_management_output_v4"/>
++      <arg name="id" type="new_id" interface="wp_color_management_output_v1"/>
+       <arg name="output" type="object" interface="wl_output"/>
+     </request>
+ 
+     <request name="get_surface">
+       <description summary="create a color management interface for a wl_surface">
+-        If a xx_color_management_surface_v4 object already exists for the given
++        If a wp_color_management_surface_v1 object already exists for the given
+         wl_surface, the protocol error surface_exists is raised.
+ 
+-        This creates a new color xx_color_management_surface_v4 object for the
++        This creates a new color wp_color_management_surface_v1 object for the
+         given wl_surface.
+ 
+-        See the xx_color_management_surface_v4 interface for more details.
++        See the wp_color_management_surface_v1 interface for more details.
+       </description>
+ 
+-      <arg name="id" type="new_id" interface="xx_color_management_surface_v4"/>
++      <arg name="id" type="new_id" interface="wp_color_management_surface_v1"/>
+       <arg name="surface" type="object" interface="wl_surface"/>
+     </request>
+ 
+-    <request name="get_feedback_surface">
++    <request name="get_surface_feedback">
+       <description summary="create a color management feedback interface">
+-        This creates a new color xx_color_management_feedback_surface_v4 object
++        This creates a new color wp_color_management_surface_feedback_v1 object
+         for the given wl_surface.
+ 
+-        See the xx_color_management_feedback_surface_v4 interface for more
++        See the wp_color_management_surface_feedback_v1 interface for more
+         details.
+       </description>
+ 
+       <arg name="id" type="new_id"
+-           interface="xx_color_management_feedback_surface_v4"/>
++           interface="wp_color_management_surface_feedback_v1"/>
+       <arg name="surface" type="object" interface="wl_surface"/>
+     </request>
+ 
+-    <request name="new_icc_creator">
++    <request name="create_icc_creator">
+       <description summary="make a new ICC-based image description creator object">
+         Makes a new ICC-based image description creator object with all
+         properties initially unset. The client can then use the object's
+         interface to define all the required properties for an image description
+-        and finally create a xx_image_description_v4 object.
++        and finally create a wp_image_description_v1 object.
+ 
+         This request can be used when the compositor advertises
+-        xx_color_manager_v4.feature.icc_v2_v4.
++        wp_color_manager_v1.feature.icc_v2_v4.
+         Otherwise this request raises the protocol error unsupported_feature.
+       </description>
+ 
+       <arg name="obj"
+-           type="new_id" interface="xx_image_description_creator_icc_v4"
++           type="new_id" interface="wp_image_description_creator_icc_v1"
+            summary="the new creator object"/>
+     </request>
+ 
+-    <request name="new_parametric_creator">
++    <request name="create_parametric_creator">
+       <description summary="make a new parametric image description creator object">
+         Makes a new parametric image description creator object with all
+         properties initially unset. The client can then use the object's
+         interface to define all the required properties for an image description
+-        and finally create a xx_image_description_v4 object.
++        and finally create a wp_image_description_v1 object.
+ 
+         This request can be used when the compositor advertises
+-        xx_color_manager_v4.feature.parametric.
++        wp_color_manager_v1.feature.parametric.
+         Otherwise this request raises the protocol error unsupported_feature.
+       </description>
+ 
+       <arg name="obj"
+-           type="new_id" interface="xx_image_description_creator_params_v4"
++           type="new_id" interface="wp_image_description_creator_params_v1"
+            summary="the new creator object"/>
+     </request>
+ 
++    <request name="create_windows_scrgb">
++      <description summary="create Windows-scRGB image description object">
++        This creates a pre-defined image description for the so-called
++        Windows-scRGB stimulus encoding. This comes from the Windows 10 handling
++        of its own definition of an scRGB color space for an HDR screen
++        driven in BT.2100/PQ signalling mode.
++
++        Windows-scRGB uses sRGB (BT.709) color primaries and white point.
++        The transfer characteristic is extended linear.
++
++        The nominal color channel value range is extended, meaning it includes
++        negative and greater than 1.0 values. Negative values are used to
++        escape the sRGB color gamut boundaries. To make use of the extended
++        range, the client needs to use a pixel format that can represent those
++        values, e.g. floating-point 16 bits per channel.
++
++        Nominal color value R=G=B=0.0 corresponds to BT.2100/PQ system
++        0 cd/m², and R=G=B=1.0 corresponds to BT.2100/PQ system 80 cd/m².
++        The maximum is R=G=B=125.0 corresponding to 10k cd/m².
++
++        Windows-scRGB is displayed by Windows 10 by converting it to
++        BT.2100/PQ, maintaining the CIE 1931 chromaticity and mapping the
++        luminance as above. No adjustment is made to the signal to account
++        for the viewing conditions.
++
++        The reference white level of Windows-scRGB is unknown. If a
++        reference white level must be assumed for compositor processing, it
++        should be R=G=B=2.5375 corresponding to 203 cd/m² of Report ITU-R
++        BT.2408-7.
++
++        The target color volume of Windows-scRGB is unknown. The color gamut
++        may be anything between sRGB and BT.2100.
++
++        Note: EGL_EXT_gl_colorspace_scrgb_linear definition differs from
++        Windows-scRGB by using R=G=B=1.0 as the reference white level, while
++        Windows-scRGB reference white level is unknown or varies. However,
++        it seems probable that Windows implements both
++        EGL_EXT_gl_colorspace_scrgb_linear and Vulkan
++        VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT as Windows-scRGB.
++
++        This request can be used when the compositor advertises
++        wp_color_manager_v1.feature.windows_scrgb.
++        Otherwise this request raises the protocol error unsupported_feature.
++
++        The resulting image description object does not allow get_information
++        request. The wp_image_description_v1.ready event shall be sent.
++      </description>
++
++      <arg name="image_description"
++           type="new_id" interface="wp_image_description_v1"/>
++    </request>
++
+     <event name="supported_intent">
+       <description summary="supported rendering intent">
+         When this object is created, it shall immediately send this event once
+@@ -486,22 +568,29 @@
+       <arg name="primaries" type="uint" enum="primaries"
+            summary="Named color primaries"/>
+     </event>
++
++    <event name="done">
++      <description summary="all features have been sent">
++        This event is sent when all supported rendering intents, features,
++        transfer functions and named primaries have been sent.
++      </description>
++    </event>
+   </interface>
+ 
+-  <interface name="xx_color_management_output_v4" version="1">
++  <interface name="wp_color_management_output_v1" version="1">
+     <description summary="output color properties">
+-      A xx_color_management_output_v4 describes the color properties of an
++      A wp_color_management_output_v1 describes the color properties of an
+       output.
+ 
+-      The xx_color_management_output_v4 is associated with the wl_output global
++      The wp_color_management_output_v1 is associated with the wl_output global
+       underlying the wl_output object. Therefore the client destroying the
+       wl_output object has no impact, but the compositor removing the output
+-      global makes the xx_color_management_output_v4 object inert.
++      global makes the wp_color_management_output_v1 object inert.
+     </description>
+ 
+     <request name="destroy" type="destructor">
+       <description summary="destroy the color management output">
+-        Destroy the color xx_color_management_output_v4 object. This does not
++        Destroy the color wp_color_management_output_v1 object. This does not
+         affect any remaining protocol objects.
+       </description>
+     </request>
+@@ -520,12 +609,12 @@
+ 
+     <request name="get_image_description">
+       <description summary="get the image description of the output">
+-        This creates a new xx_image_description_v4 object for the current image
++        This creates a new wp_image_description_v1 object for the current image
+         description of the output. There always is exactly one image description
+         active for an output so the client should destroy the image description
+         created by earlier invocations of this request. This request is usually
+         sent as a reaction to the image_description_changed event or when
+-        creating a xx_color_management_output_v4 object.
++        creating a wp_color_management_output_v1 object.
+ 
+         The image description of an output represents the color encoding the
+         output expects. There might be performance and power advantages, as well
+@@ -535,41 +624,41 @@
+         of, then the color reproduction on those outputs might be considerably
+         worse.
+ 
+-        The created xx_image_description_v4 object preserves the image
++        The created wp_image_description_v1 object preserves the image
+         description of the output from the time the object was created.
+ 
+         The resulting image description object allows get_information request.
+ 
+         If this protocol object is inert, the resulting image description object
+-        shall immediately deliver the xx_image_description_v4.failed event with
++        shall immediately deliver the wp_image_description_v1.failed event with
+         the no_output cause.
+ 
+         If the interface version is inadequate for the output's image
+         description, meaning that the client does not support all the events
+         needed to deliver the crucial information, the resulting image
+         description object shall immediately deliver the
+-        xx_image_description_v4.failed event with the low_version cause.
++        wp_image_description_v1.failed event with the low_version cause.
+ 
+         Otherwise the object shall immediately deliver the ready event.
+       </description>
+ 
+       <arg name="image_description"
+-           type="new_id" interface="xx_image_description_v4"/>
++           type="new_id" interface="wp_image_description_v1"/>
+     </request>
+   </interface>
+ 
+-  <interface name="xx_color_management_surface_v4" version="1">
++  <interface name="wp_color_management_surface_v1" version="1">
+     <description summary="color management extension to a surface">
+-        A xx_color_management_surface_v4 allows the client to set the color
++        A wp_color_management_surface_v1 allows the client to set the color
+         space and HDR properties of a surface.
+ 
+-        If the wl_surface associated with the xx_color_management_surface_v4 is
+-        destroyed, the xx_color_management_surface_v4 object becomes inert.
++        If the wl_surface associated with the wp_color_management_surface_v1 is
++        destroyed, the wp_color_management_surface_v1 object becomes inert.
+     </description>
+ 
+     <request name="destroy" type="destructor">
+       <description summary="destroy the color management interface for a surface">
+-        Destroy the xx_color_management_surface_v4 object and do the same as
++        Destroy the wp_color_management_surface_v1 object and do the same as
+         unset_image_description.
+       </description>
+     </request>
+@@ -580,10 +669,14 @@
+              summary="unsupported rendering intent"/>
+       <entry name="image_description" value="1"
+              summary="invalid image description"/>
++      <entry name="inert" value="2"
++             summary="forbidden request on inert object"/>
+     </enum>
+ 
+     <request name="set_image_description">
+       <description summary="set the surface image description">
++        If this protocol object is inert, the protocol error inert is raised.
++
+         Set the image description of the underlying surface. The image
+         description and rendering intent are double-buffered state, see
+         wl_surface.commit.
+@@ -593,36 +686,47 @@
+         description. Compositors might convert images to match their own or any
+         other image descriptions.
+ 
+-        Image description whose creation gracefully failed (received
+-        xx_image_description_v4.failed) are forbidden in this request, and in
+-        such case the protocol error image_description is raised.
++        Image descriptions which are not ready (see wp_image_description_v1)
++        are forbidden in this request, and in such case the protocol error
++        image_description is raised.
+ 
+-        All image descriptions whose creation succeeded (received
+-        xx_image_description_v4.ready) are allowed and must always be accepted
+-        by the compositor.
++        All image descriptions which are ready (see wp_image_description_v1)
++        are allowed and must always be accepted by the compositor.
+ 
+         A rendering intent provides the client's preference on how content
+         colors should be mapped to each output. The render_intent value must
+         be one advertised by the compositor with
+-        xx_color_manager_v4.render_intent event, otherwise the protocol error
++        wp_color_manager_v1.render_intent event, otherwise the protocol error
+         render_intent is raised.
+ 
++        When an image description is set on a surface, the Transfer
++        Characteristics of the image description defines the valid range of
++        the nominal (real-valued) color channel values. The processing of
++        out-of-range color channel values is undefined, but compositors are
++        recommended to clamp the values to the valid range when possible.
++
+         By default, a surface does not have an associated image description
+         nor a rendering intent. The handling of color on such surfaces is
+         compositor implementation defined. Compositors should handle such
+-        surfaces as sRGB but may handle them differently if they have specific
++        surfaces as sRGB, but may handle them differently if they have specific
+         requirements.
++
++        Setting the image description has copy semantics; after this request,
++        the image description can be immediately destroyed without affecting
++        the pending state of the surface.
+       </description>
+ 
+       <arg name="image_description"
+-           type="object" interface="xx_image_description_v4"/>
++           type="object" interface="wp_image_description_v1"/>
+       <arg name="render_intent"
+-           type="uint" enum="xx_color_manager_v4.render_intent"
++           type="uint" enum="wp_color_manager_v1.render_intent"
+            summary="rendering intent"/>
+     </request>
+ 
+     <request name="unset_image_description">
+       <description summary="remove the surface image description">
++        If this protocol object is inert, the protocol error inert is raised.
++
+         This request removes any image description from the surface. See
+         set_image_description for how a compositor handles a surface without
+         an image description. This is double-buffered state, see
+@@ -631,18 +735,18 @@
+     </request>
+   </interface>
+ 
+-  <interface name="xx_color_management_feedback_surface_v4" version="1">
++  <interface name="wp_color_management_surface_feedback_v1" version="1">
+     <description summary="color management extension to a surface">
+-        A xx_color_management_feedback_surface_v4 allows the client to get the
+-        preferred color description of a surface.
++        A wp_color_management_surface_feedback_v1 allows the client to get the
++        preferred image description of a surface.
+ 
+         If the wl_surface associated with this object is destroyed, the
+-        xx_color_management_feedback_surface_v4 object becomes inert.
++        wp_color_management_surface_feedback_v1 object becomes inert.
+     </description>
+ 
+     <request name="destroy" type="destructor">
+       <description summary="destroy the color management interface for a surface">
+-        Destroy the xx_color_management_feedback_surface_v4 object.
++        Destroy the wp_color_management_surface_feedback_v1 object.
+       </description>
+     </request>
+ 
+@@ -650,6 +754,8 @@
+       <description summary="protocol errors"/>
+       <entry name="inert" value="0"
+              summary="forbidden request on inert object"/>
++      <entry name="unsupported_feature" value="1"
++             summary="attempted to use an unsupported feature"/>
+     </enum>
+ 
+     <event name="preferred_changed">
+@@ -659,17 +765,20 @@
+         client for its wl_surface contents. This event is sent whenever the
+         compositor changes the wl_surface's preferred image description.
+ 
+-        This event is merely a notification. When the client wants to know
+-        what the preferred image description is, it shall use the get_preferred
+-        request.
++        This event sends the identity of the new preferred state as the argument,
++        so clients who are aware of the image description already can reuse it.
++        Otherwise, if the client client wants to know what the preferred image
++        description is, it shall use the get_preferred request.
+ 
+         The preferred image description is not automatically used for anything.
+         It is only a hint, and clients may set any valid image description with
+-        set_image_description but there might be performance and color accuracy
++        set_image_description, but there might be performance and color accuracy
+         improvements by providing the wl_surface contents in the preferred
+         image description. Therefore clients that can, should render according
+         to the preferred image description
+       </description>
++
++      <arg name="identity" type="uint" summary="image description id number"/>
+     </event>
+ 
+     <request name="get_preferred">
+@@ -682,36 +791,56 @@
+         reproduction, if the image description of a content update matches the
+         preferred image description.
+ 
+-        This creates a new xx_image_description_v4 object for the currently
++        This creates a new wp_image_description_v1 object for the currently
+         preferred image description for the wl_surface. The client should
+         stop using and destroy the image descriptions created by earlier
+         invocations of this request for the associated wl_surface.
+         This request is usually sent as a reaction to the preferred_changed
+-        event or when creating a xx_color_management_feedback_surface_v4 object
++        event or when creating a wp_color_management_surface_feedback_v1 object
+         if the client is capable of adapting to image descriptions.
+ 
+-        The created xx_image_description_v4 object preserves the preferred image
++        The created wp_image_description_v1 object preserves the preferred image
+         description of the wl_surface from the time the object was created.
+ 
+         The resulting image description object allows get_information request.
+ 
++        If the image description is parametric, the client should set it on its
++        wl_surface only if the image description is an exact match with the
++        client content. Particularly if everything else matches, but the target
++        color volume is greater than what the client needs, the client should
++        create its own parameric image description with its exact parameters.
++
+         If the interface version is inadequate for the preferred image
+         description, meaning that the client does not support all the
+         events needed to deliver the crucial information, the resulting image
+         description object shall immediately deliver the
+-        xx_image_description_v4.failed event with the low_version cause,
++        wp_image_description_v1.failed event with the low_version cause,
+         otherwise the object shall immediately deliver the ready event.
+       </description>
+ 
+       <arg name="image_description"
+-           type="new_id" interface="xx_image_description_v4"/>
++           type="new_id" interface="wp_image_description_v1"/>
++    </request>
++
++    <request name="get_preferred_parametric">
++      <description summary="get the preferred image description">
++        The same description as for get_preferred applies, except the returned
++        image description is guaranteed to be parametric. This is meant for
++        clients that can only deal with parametric image descriptions.
++
++        If the compositor doesn't support parametric image descriptions, the
++        unsupported_feature error is emitted.
++      </description>
++
++      <arg name="image_description"
++           type="new_id" interface="wp_image_description_v1"/>
+     </request>
+   </interface>
+ 
+-  <interface name="xx_image_description_creator_icc_v4" version="1">
++  <interface name="wp_image_description_creator_icc_v1" version="1">
+     <description summary="holder of image description ICC information">
+       This type of object is used for collecting all the information required
+-      to create a xx_image_description_v4 object from an ICC file. A complete
++      to create a wp_image_description_v1 object from an ICC file. A complete
+       set of required parameters consists of these properties:
+       - ICC file
+ 
+@@ -753,19 +882,19 @@
+ 
+         If the particular combination of the information is not supported
+         by the compositor, the resulting image description object shall
+-        immediately deliver the xx_image_description_v4.failed event with the
++        immediately deliver the wp_image_description_v1.failed event with the
+         'unsupported' cause. If a valid image description was created from the
+-        information, the xx_image_description_v4.ready event will eventually
++        information, the wp_image_description_v1.ready event will eventually
+         be sent instead.
+ 
+-        This request destroys the xx_image_description_creator_icc_v4 object.
++        This request destroys the wp_image_description_creator_icc_v1 object.
+ 
+         The resulting image description object does not allow get_information
+         request.
+       </description>
+ 
+       <arg name="image_description"
+-           type="new_id" interface="xx_image_description_v4"/>
++           type="new_id" interface="wp_image_description_v1"/>
+     </request>
+ 
+     <request name="set_icc_file">
+@@ -774,23 +903,23 @@
+         description.
+ 
+         The data shall be found through the given fd at the given offset, having
+-        the given length. The fd must seekable and readable. Violating these
++        the given length. The fd must be seekable and readable. Violating these
+         requirements raises the bad_fd protocol error.
+ 
+         If reading the data fails due to an error independent of the client, the
+-        compositor shall send the xx_image_description_v4.failed event on the
+-        created xx_image_description_v4 with the 'operating_system' cause.
++        compositor shall send the wp_image_description_v1.failed event on the
++        created wp_image_description_v1 with the 'operating_system' cause.
+ 
+-        The maximum size of the ICC profile is 4 MB. If length is greater than
++        The maximum size of the ICC profile is 32 MB. If length is greater than
+         that or zero, the protocol error bad_size is raised. If offset + length
+         exceeds the file size, the protocol error out_of_file is raised.
+ 
+         A compositor may read the file at any time starting from this request
+         and only until whichever happens first:
+-        - If create request was issued, the xx_image_description_v4 object
++        - If create request was issued, the wp_image_description_v1 object
+           delivers either failed or ready event; or
+         - if create request was not issued, this
+-          xx_image_description_creator_icc_v4 object is destroyed.
++          wp_image_description_creator_icc_v1 object is destroyed.
+ 
+         A compositor shall not modify the contents of the file, and the fd may
+         be sealed for writes and size changes. The client must ensure to its
+@@ -800,9 +929,9 @@
+         The data must represent a valid ICC profile. The ICC profile version
+         must be 2 or 4, it must be a 3 channel profile and the class must be
+         Display or ColorSpace. Violating these requirements will not result in a
+-        protocol error but will eventually send the
+-        xx_image_description_v4.failed event on the created
+-        xx_image_description_v4 with the 'unsupported' cause.
++        protocol error, but will eventually send the
++        wp_image_description_v1.failed event on the created
++        wp_image_description_v1 with the 'unsupported' cause.
+ 
+         See the International Color Consortium specification ICC.1:2022 for more
+         details about ICC profiles.
+@@ -820,10 +949,10 @@
+     </request>
+   </interface>
+ 
+-  <interface name="xx_image_description_creator_params_v4" version="1">
++  <interface name="wp_image_description_creator_params_v1" version="1">
+     <description summary="holder of image description parameters">
+       This type of object is used for collecting all the parameters required
+-      to create a xx_image_description_v4 object. A complete set of required
++      to create a wp_image_description_v1 object. A complete set of required
+       parameters consists of these properties:
+       - transfer characteristic function (tf)
+       - chromaticities of primaries and white point (primary color volume)
+@@ -834,6 +963,9 @@
+       - reference white luminance level
+       - mastering display primaries and white point (target color volume)
+       - mastering luminance range
++
++      The following properties are optional and will be ignored
++      if not explicitly set:
+       - maximum content light level
+       - maximum frame-average light level
+ 
+@@ -853,20 +985,16 @@
+ 
+       <entry name="incomplete_set" value="0"
+              summary="incomplete parameter set"/>
+-      <entry name="inconsistent_set" value="1"
+-             summary="invalid combination of parameters"/>
+-      <entry name="already_set" value="2"
++      <entry name="already_set" value="1"
+              summary="property already set"/>
+-      <entry name="unsupported_feature" value="3"
++      <entry name="unsupported_feature" value="2"
+              summary="request not supported"/>
+-      <entry name="invalid_tf" value="4"
++      <entry name="invalid_tf" value="3"
+              summary="invalid transfer characteristic"/>
+-      <entry name="invalid_primaries" value="5"
+-             summary="invalid primaries or white point"/>
+-      <entry name="invalid_luminance" value="6"
++      <entry name="invalid_primaries_named" value="4"
++             summary="invalid primaries named"/>
++      <entry name="invalid_luminance" value="5"
+              summary="invalid luminance value or range"/>
+-      <entry name="invalid_mastering" value="7"
+-             summary="invalid mastering information"/>
+     </enum>
+ 
+     <request name="create" type="destructor">
+@@ -878,17 +1006,23 @@
+         complete, the protocol error incomplete_set is raised. For the
+         definition of a complete set, see the description of this interface.
+ 
+-        Also, the combination of the parameter set is verified. If the set is
+-        not consistent, the protocol error inconsistent_set is raised.
++        The protocol error invalid_luminance is raised if any of the following
++        requirements is not met:
++        - When max_cll is set, it must be greater than min L and less or equal
++          to max L of the mastering luminance range.
++        - When max_fall is set, it must be greater than min L and less or equal
++          to max L of the mastering luminance range.
++        - When both max_cll and max_fall are set, max_fall must be less or equal
++          to max_cll.
+ 
+         If the particular combination of the parameter set is not supported
+         by the compositor, the resulting image description object shall
+-        immediately deliver the xx_image_description_v4.failed event with the
++        immediately deliver the wp_image_description_v1.failed event with the
+         'unsupported' cause. If a valid image description was created from the
+-        parameter set, the xx_image_description_v4.ready event will eventually
++        parameter set, the wp_image_description_v1.ready event will eventually
+         be sent instead.
+ 
+-        This request destroys the xx_image_description_creator_params_v4
++        This request destroys the wp_image_description_creator_params_v1
+         object.
+ 
+         The resulting image description object does not allow get_information
+@@ -896,7 +1030,7 @@
+       </description>
+ 
+       <arg name="image_description"
+-           type="new_id" interface="xx_image_description_v4"/>
++           type="new_id" interface="wp_image_description_v1"/>
+     </request>
+ 
+     <request name="set_tf_named">
+@@ -908,22 +1042,24 @@
+         content should be encoded and decoded according to the industry standard
+         practices for the transfer characteristic.
+ 
+-        Only names advertised with xx_color_manager_v4 event supported_tf_named
++        Only names advertised with wp_color_manager_v1 event supported_tf_named
+         are allowed. Other values shall raise the protocol error invalid_tf.
+ 
+         If transfer characteristic has already been set on this object, the
+         protocol error already_set is raised.
+       </description>
+ 
+-      <arg name="tf" type="uint" enum="xx_color_manager_v4.transfer_function"
++      <arg name="tf" type="uint" enum="wp_color_manager_v1.transfer_function"
+            summary="named transfer function"/>
+     </request>
+ 
+     <request name="set_tf_power">
+       <description summary="transfer characteristic as a power curve">
+         Sets the color component transfer characteristic to a power curve with
+-        the given exponent. This curve represents the conversion from electrical
+-        to optical pixel or color values.
++        the given exponent. Negative values are handled by mirroring the
++        positive half of the curve through the origin. The valid domain and
++        range of the curve are all finite real numbers. This curve represents
++        the conversion from electrical to optical color channel values.
+ 
+         When the resulting image description is attached to an image, the
+         content should be encoded with the inverse of the power curve.
+@@ -938,7 +1074,7 @@
+         protocol error already_set is raised.
+ 
+         This request can be used when the compositor advertises
+-        xx_color_manager_v4.feature.set_tf_power. Otherwise this request raises
++        wp_color_manager_v1.feature.set_tf_power. Otherwise this request raises
+         the protocol error unsupported_feature.
+       </description>
+ 
+@@ -951,15 +1087,15 @@
+         This describes the primary color volume which is the basis for color
+         value encoding.
+ 
+-        Only names advertised with xx_color_manager_v4 event
++        Only names advertised with wp_color_manager_v1 event
+         supported_primaries_named are allowed. Other values shall raise the
+-        protocol error invalid_primaries.
++        protocol error invalid_primaries_named.
+ 
+         If primaries have already been set on this object, the protocol error
+         already_set is raised.
+       </description>
+ 
+-      <arg name="primaries" type="uint" enum="xx_color_manager_v4.primaries"
++      <arg name="primaries" type="uint" enum="wp_color_manager_v1.primaries"
+            summary="named primaries"/>
+     </request>
+ 
+@@ -969,33 +1105,36 @@
+         coordinates. This describes the primary color volume which is the basis
+         for color value encoding.
+ 
+-        Each coordinate value is multiplied by 10000 to get the argument value
+-        to carry precision of 4 decimals.
++        Each coordinate value is multiplied by 1 million to get the argument
++        value to carry precision of 6 decimals.
+ 
+         If primaries have already been set on this object, the protocol error
+         already_set is raised.
+ 
+         This request can be used if the compositor advertises
+-        xx_color_manager_v4.feature.set_primaries. Otherwise this request raises
++        wp_color_manager_v1.feature.set_primaries. Otherwise this request raises
+         the protocol error unsupported_feature.
+       </description>
+ 
+-      <arg name="r_x" type="int" summary="Red x * 10000"/>
+-      <arg name="r_y" type="int" summary="Red y * 10000"/>
+-      <arg name="g_x" type="int" summary="Green x * 10000"/>
+-      <arg name="g_y" type="int" summary="Green y * 10000"/>
+-      <arg name="b_x" type="int" summary="Blue x * 10000"/>
+-      <arg name="b_y" type="int" summary="Blue y * 10000"/>
+-      <arg name="w_x" type="int" summary="White x * 10000"/>
+-      <arg name="w_y" type="int" summary="White y * 10000"/>
++      <arg name="r_x" type="int" summary="Red x * 1M"/>
++      <arg name="r_y" type="int" summary="Red y * 1M"/>
++      <arg name="g_x" type="int" summary="Green x * 1M"/>
++      <arg name="g_y" type="int" summary="Green y * 1M"/>
++      <arg name="b_x" type="int" summary="Blue x * 1M"/>
++      <arg name="b_y" type="int" summary="Blue y * 1M"/>
++      <arg name="w_x" type="int" summary="White x * 1M"/>
++      <arg name="w_y" type="int" summary="White y * 1M"/>
+     </request>
+ 
+     <request name="set_luminances">
+       <description summary="primary color volume luminance range and reference white">
+         Sets the primary color volume luminance range and the reference white
+-        luminance level.
++        luminance level. These values include the minimum display emission
++        and ambient flare luminances, assumed to be optically additive and have
++        the chromaticity of the primary color volume white point.
+ 
+-        The default luminances are
++        The default luminances from
++        https://www.color.org/chardata/rgb/srgb.xalter are
+         - primary color volume minimum: 0.2 cd/m²
+         - primary color volume maximum: 80 cd/m²
+         - reference white: 80 cd/m²
+@@ -1004,6 +1143,8 @@
+         luminances.
+ 
+         The default luminances get overwritten when this request is used.
++        With transfer_function.st2084_pq the given 'max_lum' value is ignored,
++        and 'max_lum' is taken as 'min_lum' + 10000 cd/m².
+ 
+         'min_lum' and 'max_lum' specify the minimum and maximum luminances of
+         the primary color volume as reproduced by the targeted display.
+@@ -1018,9 +1159,12 @@
+         description should produce the same output level, even though the
+         'reference_lum' on both image representations can be different.
+ 
+-        If 'max_lum' is less than the 'reference_lum', or 'reference_lum' is
+-        less than or equal to 'min_lum', the protocol error invalid_luminance is
+-        raised.
++        'reference_lum' may be higher than 'max_lum'. In that case reaching
++        the reference white output level in image content requires the
++        'extended_target_volume' feature support.
++
++        If 'max_lum' or 'reference_lum' are less than or equal to 'min_lum',
++        the protocol error invalid_luminance is raised.
+ 
+         The minimum luminance is multiplied by 10000 to get the argument
+         'min_lum' value and carries precision of 4 decimals. The maximum
+@@ -1031,7 +1175,7 @@
+         already_set is raised.
+ 
+         This request can be used if the compositor advertises
+-        xx_color_manager_v4.feature.set_luminances. Otherwise this request
++        wp_color_manager_v1.feature.set_luminances. Otherwise this request
+         raises the protocol error unsupported_feature.
+       </description>
+ 
+@@ -1049,10 +1193,11 @@
+         using CIE 1931 xy chromaticity coordinates. This is compatible with the
+         SMPTE ST 2086 definition of HDR static metadata.
+ 
+-        The mastering display primaries define the target color volume.
++        The mastering display primaries and mastering display luminances define
++        the target color volume.
+ 
+         If mastering display primaries are not explicitly set, the target color
+-        volume is assumed to be equal to the primary color volume.
++        volume is assumed to have the same primaries as the primary color volume.
+ 
+         The target color volume is defined by all tristimulus values between 0.0
+         and 1.0 (inclusive) of the color space defined by the given mastering
+@@ -1071,50 +1216,72 @@
+         has to be chosen (e.g. floating point to exceed the primary color
+         volume, or abusing limited quantization range as with xvYCC).
+ 
+-        Each coordinate value is multiplied by 10000 to get the argument value
+-        to carry precision of 4 decimals.
++        Each coordinate value is multiplied by 1 million to get the argument
++        value to carry precision of 6 decimals.
+ 
+         If mastering display primaries have already been set on this object, the
+         protocol error already_set is raised.
+ 
+         This request can be used if the compositor advertises
+-        xx_color_manager_v4.feature.set_mastering_display_primaries. Otherwise
++        wp_color_manager_v1.feature.set_mastering_display_primaries. Otherwise
+         this request raises the protocol error unsupported_feature. The
+         advertisement implies support only for target color volumes fully
+         contained within the primary color volume.
+ 
+         If a compositor additionally supports target color volume exceeding the
+         primary color volume, it must advertise
+-        xx_color_manager_v4.feature.extended_target_volume. If a client uses
++        wp_color_manager_v1.feature.extended_target_volume. If a client uses
+         target color volume exceeding the primary color volume and the
+         compositor does not support it, the result is implementation defined.
+         Compositors are recommended to detect this case and fail the image
+         description gracefully, but it may as well result in color artifacts.
+       </description>
+ 
+-      <arg name="r_x" type="int" summary="Red x * 10000"/>
+-      <arg name="r_y" type="int" summary="Red y * 10000"/>
+-      <arg name="g_x" type="int" summary="Green x * 10000"/>
+-      <arg name="g_y" type="int" summary="Green y * 10000"/>
+-      <arg name="b_x" type="int" summary="Blue x * 10000"/>
+-      <arg name="b_y" type="int" summary="Blue y * 10000"/>
+-      <arg name="w_x" type="int" summary="White x * 10000"/>
+-      <arg name="w_y" type="int" summary="White y * 10000"/>
++      <arg name="r_x" type="int" summary="Red x * 1M"/>
++      <arg name="r_y" type="int" summary="Red y * 1M"/>
++      <arg name="g_x" type="int" summary="Green x * 1M"/>
++      <arg name="g_y" type="int" summary="Green y * 1M"/>
++      <arg name="b_x" type="int" summary="Blue x * 1M"/>
++      <arg name="b_y" type="int" summary="Blue y * 1M"/>
++      <arg name="w_x" type="int" summary="White x * 1M"/>
++      <arg name="w_y" type="int" summary="White y * 1M"/>
+     </request>
+ 
+     <request name="set_mastering_luminance">
+       <description summary="display mastering luminance range">
+         Sets the luminance range that was used during the content mastering
+-        process as the minimum and maximum absolute luminance L. This is
++        process as the minimum and maximum absolute luminance L. These values
++        include the minimum display emission and ambient flare luminances,
++        assumed to be optically additive and have the chromaticity of the
++        primary color volume white point. This should be
+         compatible with the SMPTE ST 2086 definition of HDR static metadata.
+ 
+-        The mastering luminance range is undefined by default.
++        The mastering display primaries and mastering display luminances define
++        the target color volume.
++
++        If mastering luminances are not explicitly set, the target color volume
++        is assumed to have the same min and max luminances as the primary color
++        volume.
+ 
+         If max L is less than or equal to min L, the protocol error
+         invalid_luminance is raised.
+ 
+         Min L value is multiplied by 10000 to get the argument min_lum value
+         and carry precision of 4 decimals. Max L value is unscaled for max_lum.
++
++        This request can be used if the compositor advertises
++        wp_color_manager_v1.feature.set_mastering_display_primaries. Otherwise
++        this request raises the protocol error unsupported_feature. The
++        advertisement implies support only for target color volumes fully
++        contained within the primary color volume.
++
++        If a compositor additionally supports target color volume exceeding the
++        primary color volume, it must advertise
++        wp_color_manager_v1.feature.extended_target_volume. If a client uses
++        target color volume exceeding the primary color volume and the
++        compositor does not support it, the result is implementation defined.
++        Compositors are recommended to detect this case and fail the image
++        description gracefully, but it may as well result in color artifacts.
+       </description>
+ 
+       <arg name="min_lum" type="uint" summary="min L (cd/m²) * 10000"/>
+@@ -1125,11 +1292,6 @@
+       <description summary="maximum content light level">
+         Sets the maximum content light level (max_cll) as defined by CTA-861-H.
+ 
+-        This can only be set when set_tf_cicp is used to set the transfer
+-        characteristic to Rec. ITU-R BT.2100-2 perceptual quantization system.
+-        Otherwise, 'create' request shall raise inconsistent_set protocol
+-        error.
+-
+         max_cll is undefined by default.
+       </description>
+ 
+@@ -1141,10 +1303,6 @@
+         Sets the maximum frame-average light level (max_fall) as defined by
+         CTA-861-H.
+ 
+-        This can only be set when set_tf_cicp is used to set the transfer
+-        characteristic to Rec. ITU-R BT.2100-2 perceptual quantization system.
+-        Otherwise, 'create' request shall raise inconsistent_set protocol error.
+-
+         max_fall is undefined by default.
+       </description>
+ 
+@@ -1152,15 +1310,15 @@
+     </request>
+   </interface>
+ 
+-  <interface name="xx_image_description_v4" version="1">
++  <interface name="wp_image_description_v1" version="1">
+     <description summary="Colorimetric image description">
+       An image description carries information about the color encoding used on
+       a surface when attached to a wl_surface via
+-      xx_color_management_surface_v4.set_image_description. A compositor can use
++      wp_color_management_surface_v1.set_image_description. A compositor can use
+       this information to decode pixel values into colorimetrically meaningful
+       quantities.
+ 
+-      Note, that the xx_image_description_v4 object is not ready to be used
++      Note, that the wp_image_description_v1 object is not ready to be used
+       immediately after creation. The object eventually delivers either the
+       'ready' or the 'failed' event, specified in all requests creating it. The
+       object is deemed "ready" after receiving the 'ready' event.
+@@ -1171,7 +1329,7 @@
+       interfaces shall raise protocol errors defined there.
+ 
+       Once created and regardless of how it was created, a
+-      xx_image_description_v4 object always refers to one fixed image
++      wp_image_description_v1 object always refers to one fixed image
+       description. It cannot change after creation.
+     </description>
+ 
+@@ -1179,8 +1337,8 @@
+       <description summary="destroy the image description">
+         Destroy this object. It is safe to destroy an object which is not ready.
+ 
+-        Destroying a xx_image_description_v4 object has no side-effects, not
+-        even if a xx_color_management_surface_v4.set_image_description has not
++        Destroying a wp_image_description_v1 object has no side-effects, not
++        even if a wp_color_management_surface_v1.set_image_description has not
+         yet been followed by a wl_surface.commit.
+       </description>
+     </request>
+@@ -1209,7 +1367,7 @@
+ 
+     <event name="failed">
+       <description summary="graceful error on creating the image description">
+-        If creating a xx_image_description_v4 object fails for a reason that is
++        If creating a wp_image_description_v1 object fails for a reason that is
+         not defined as a protocol error, this event is sent.
+ 
+         The requests that create image description objects define whether and
+@@ -1217,7 +1375,7 @@
+         This event cannot be triggered after the image description was
+         successfully formed.
+ 
+-        Once this event has been sent, the xx_image_description_v4 object will
++        Once this event has been sent, the wp_image_description_v1 object will
+         never become ready and it can only be destroyed.
+       </description>
+ 
+@@ -1229,11 +1387,11 @@
+ 
+     <event name="ready">
+       <description summary="indication that the object is ready to be used">
+-        Once this event has been sent, the xx_image_description_v4 object is
++        Once this event has been sent, the wp_image_description_v1 object is
+         deemed "ready". Ready objects can be used to send requests and can be
+         used through other interfaces.
+ 
+-        Every ready xx_image_description_v4 protocol object refers to an
++        Every ready wp_image_description_v1 protocol object refers to an
+         underlying image description record in the compositor. Multiple protocol
+         objects may end up referring to the same record. Clients may identify
+         these "copies" by comparing their id numbers: if the numbers from two
+@@ -1250,7 +1408,8 @@
+         Image description id number is not a protocol object id. Zero is
+         reserved as an invalid id number. It shall not be possible for a client
+         to refer to an image description by its id number in protocol. The id
+-        numbers might not be portable between Wayland connections.
++        numbers might not be portable between Wayland connections. A compositor
++        shall not send an invalid id number.
+ 
+         This identity allows clients to de-duplicate image description records
+         and avoid get_information request if they already have the image
+@@ -1262,7 +1421,7 @@
+ 
+     <request name="get_information">
+       <description summary="get information about the image description">
+-        Creates a xx_image_description_info_v4 object which delivers the
++        Creates a wp_image_description_info_v1 object which delivers the
+         information that makes up the image description.
+ 
+         Not all image description protocol objects allow get_information
+@@ -1272,20 +1431,34 @@
+       </description>
+ 
+       <arg name="information"
+-           type="new_id" interface="xx_image_description_info_v4"/>
++           type="new_id" interface="wp_image_description_info_v1"/>
+     </request>
+   </interface>
+ 
+-  <interface name="xx_image_description_info_v4" version="1">
++  <interface name="wp_image_description_info_v1" version="1">
+     <description summary="Colorimetric image description information">
+       Sends all matching events describing an image description object exactly
+       once and finally sends the 'done' event.
+ 
+-      Once a xx_image_description_info_v4 object has delivered a 'done' event it
++      This means
++      - if the image description is parametric, it must send
++        - primaries
++        - named_primaries, if applicable
++        - at least one of tf_power and tf_named, as applicable
++        - luminances
++        - target_primaries
++        - target_luminance
++      - if the image description is parametric, it may send, if applicable,
++        - target_max_cll
++        - target_max_fall
++      - if the image description contains an ICC profile, it must send the
++        icc_file event
++
++      Once a wp_image_description_info_v1 object has delivered a 'done' event it
+       is automatically destroyed.
+ 
+-      Every xx_image_description_info_v4 created from the same
+-      xx_image_description_v4 shall always return the exact same data.
++      Every wp_image_description_info_v1 created from the same
++      wp_image_description_v1 shall always return the exact same data.
+     </description>
+ 
+     <event name="done" type="destructor">
+@@ -1316,18 +1489,18 @@
+         Delivers the primary color volume primaries and white point using CIE
+         1931 xy chromaticity coordinates.
+ 
+-        Each coordinate value is multiplied by 10000 to get the argument value
+-        to carry precision of 4 decimals.
++        Each coordinate value is multiplied by 1 million to get the argument
++        value to carry precision of 6 decimals.
+       </description>
+ 
+-      <arg name="r_x" type="int" summary="Red x * 10000"/>
+-      <arg name="r_y" type="int" summary="Red y * 10000"/>
+-      <arg name="g_x" type="int" summary="Green x * 10000"/>
+-      <arg name="g_y" type="int" summary="Green y * 10000"/>
+-      <arg name="b_x" type="int" summary="Blue x * 10000"/>
+-      <arg name="b_y" type="int" summary="Blue y * 10000"/>
+-      <arg name="w_x" type="int" summary="White x * 10000"/>
+-      <arg name="w_y" type="int" summary="White y * 10000"/>
++      <arg name="r_x" type="int" summary="Red x * 1M"/>
++      <arg name="r_y" type="int" summary="Red y * 1M"/>
++      <arg name="g_x" type="int" summary="Green x * 1M"/>
++      <arg name="g_y" type="int" summary="Green y * 1M"/>
++      <arg name="b_x" type="int" summary="Blue x * 1M"/>
++      <arg name="b_y" type="int" summary="Blue y * 1M"/>
++      <arg name="w_x" type="int" summary="White x * 1M"/>
++      <arg name="w_y" type="int" summary="White y * 1M"/>
+     </event>
+ 
+     <event name="primaries_named">
+@@ -1336,7 +1509,7 @@
+         explicitly enumerated named set.
+       </description>
+ 
+-      <arg name="primaries" type="uint" enum="xx_color_manager_v4.primaries"
++      <arg name="primaries" type="uint" enum="wp_color_manager_v1.primaries"
+            summary="named primaries"/>
+     </event>
+ 
+@@ -1360,14 +1533,16 @@
+         named function.
+       </description>
+ 
+-      <arg name="tf" type="uint" enum="xx_color_manager_v4.transfer_function"
++      <arg name="tf" type="uint" enum="wp_color_manager_v1.transfer_function"
+            summary="named transfer function"/>
+     </event>
+ 
+     <event name="luminances">
+       <description summary="primary color volume luminance range and reference white">
+         Delivers the primary color volume luminance range and the reference
+-        white luminance level.
++        white luminance level. These values include the minimum display emission
++        and ambient flare luminances, assumed to be optically additive and have
++        the chromaticity of the primary color volume white point.
+ 
+         The minimum luminance is multiplied by 10000 to get the argument
+         'min_lum' value and carries precision of 4 decimals. The maximum
+@@ -1393,25 +1568,28 @@
+         volume is equal to the primary color volume, then this event is not
+         sent.
+ 
+-        Each coordinate value is multiplied by 10000 to get the argument value
+-        to carry precision of 4 decimals.
++        Each coordinate value is multiplied by 1 million to get the argument
++        value to carry precision of 6 decimals.
+       </description>
+ 
+-      <arg name="r_x" type="int" summary="Red x * 10000"/>
+-      <arg name="r_y" type="int" summary="Red y * 10000"/>
+-      <arg name="g_x" type="int" summary="Green x * 10000"/>
+-      <arg name="g_y" type="int" summary="Green y * 10000"/>
+-      <arg name="b_x" type="int" summary="Blue x * 10000"/>
+-      <arg name="b_y" type="int" summary="Blue y * 10000"/>
+-      <arg name="w_x" type="int" summary="White x * 10000"/>
+-      <arg name="w_y" type="int" summary="White y * 10000"/>
++      <arg name="r_x" type="int" summary="Red x * 1M"/>
++      <arg name="r_y" type="int" summary="Red y * 1M"/>
++      <arg name="g_x" type="int" summary="Green x * 1M"/>
++      <arg name="g_y" type="int" summary="Green y * 1M"/>
++      <arg name="b_x" type="int" summary="Blue x * 1M"/>
++      <arg name="b_y" type="int" summary="Blue y * 1M"/>
++      <arg name="w_x" type="int" summary="White x * 1M"/>
++      <arg name="w_y" type="int" summary="White y * 1M"/>
+     </event>
+ 
+     <event name="target_luminance">
+       <description summary="target luminance range">
+         Provides the luminance range that the image description is targeting as
+-        the minimum and maximum absolute luminance L. This is compatible with
+-        the SMPTE ST 2086 definition of HDR static metadata.
++        the minimum and maximum absolute luminance L. These values include the
++        minimum display emission and ambient flare luminances, assumed to be
++        optically additive and have the chromaticity of the primary color
++        volume white point. This should be compatible with the SMPTE ST 2086
++        definition of HDR static metadata.
+ 
+         This luminance range is only theoretical and may not correspond to the
+         luminance of light emitted on an actual display.
+diff --git a/src/wayland/surface.cpp b/src/wayland/surface.cpp
+index 601aab3286..8e3d3252a9 100644
+--- a/src/wayland/surface.cpp
++++ b/src/wayland/surface.cpp
+@@ -7,6 +7,7 @@
+ #include "surface.h"
+ #include "blur.h"
+ #include "clientconnection.h"
++#include "colormanagement_v1.h"
+ #include "compositor.h"
+ #include "contrast.h"
+ #include "display.h"
+@@ -25,7 +26,6 @@
+ #include "surface_p.h"
+ #include "transaction.h"
+ #include "utils/resource.h"
+-#include "xx_colormanagement_v4.h"
+ 
+ #include <wayland-server.h>
+ // std
+@@ -1134,7 +1134,7 @@ void SurfaceInterface::setPreferredColorDescription(const ColorDescription &desc
+     if (d->frogColorManagement) {
+         d->frogColorManagement->setPreferredColorDescription(descr);
+     }
+-    for (const auto feedbackSurface : std::as_const(d->xxColorFeedbacks)) {
++    for (const auto feedbackSurface : std::as_const(d->colorFeedbackSurfaces)) {
+         feedbackSurface->setPreferredColorDescription(descr);
+     }
+     for (auto child : std::as_const(d->current->subsurface.below)) {
+diff --git a/src/wayland/surface_p.h b/src/wayland/surface_p.h
+index f93c0504d5..243f05529b 100644
+--- a/src/wayland/surface_p.h
++++ b/src/wayland/surface_p.h
+@@ -27,8 +27,8 @@ class TearingControlV1Interface;
+ class FractionalScaleV1Interface;
+ class FrogColorManagementSurfaceV1;
+ class PresentationTimeFeedback;
+-class XXColorSurfaceV4;
+-class XXColorFeedbackSurfaceV4;
++class ColorSurfaceV1;
++class ColorFeedbackSurfaceV1;
+ class LinuxDrmSyncObjSurfaceV1;
+ class AlphaModifierSurfaceV1;
+ 
+@@ -181,8 +181,8 @@ public:
+     ClientConnection *client = nullptr;
+     TearingControlV1Interface *tearing = nullptr;
+     FrogColorManagementSurfaceV1 *frogColorManagement = nullptr;
+-    XXColorSurfaceV4 *xxColorSurface = nullptr;
+-    QList<XXColorFeedbackSurfaceV4 *> xxColorFeedbacks;
++    ColorSurfaceV1 *colorSurface = nullptr;
++    QList<ColorFeedbackSurfaceV1 *> colorFeedbackSurfaces;
+     LinuxDrmSyncObjSurfaceV1 *syncObjV1 = nullptr;
+     AlphaModifierSurfaceV1 *alphaModifier = nullptr;
+ 
+diff --git a/src/wayland/xx_colormanagement_v4.h b/src/wayland/xx_colormanagement_v4.h
+deleted file mode 100644
+index 08eaa44da2..0000000000
+--- a/src/wayland/xx_colormanagement_v4.h
++++ /dev/null
+@@ -1,137 +0,0 @@
+-/*
+-    SPDX-FileCopyrightText: 2024 Xaver Hugl <xaver.hugl@gmail.com>
+-
+-    SPDX-License-Identifier: LGPL-2.1-only OR LGPL-3.0-only OR LicenseRef-KDE-Accepted-LGPL
+-*/
+-#pragma once
+-#include "core/colorspace.h"
+-
+-#include "wayland/qwayland-server-xx-color-management-v4.h"
+-#include <QObject>
+-#include <QPointer>
+-
+-namespace KWin
+-{
+-
+-class Display;
+-class SurfaceInterface;
+-class Output;
+-
+-class XXColorManagerV4 : public QObject, private QtWaylandServer::xx_color_manager_v4
+-{
+-    Q_OBJECT
+-public:
+-    explicit XXColorManagerV4(Display *display, QObject *parent);
+-
+-private:
+-    void xx_color_manager_v4_bind_resource(Resource *resource) override;
+-    void xx_color_manager_v4_destroy(Resource *resource) override;
+-    void xx_color_manager_v4_get_output(Resource *resource, uint32_t id, struct ::wl_resource *output) override;
+-    void xx_color_manager_v4_get_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface) override;
+-    void xx_color_manager_v4_get_feedback_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface) override;
+-    void xx_color_manager_v4_new_icc_creator(Resource *resource, uint32_t obj) override;
+-    void xx_color_manager_v4_new_parametric_creator(Resource *resource, uint32_t obj) override;
+-};
+-
+-class XXColorFeedbackSurfaceV4 : private QtWaylandServer::xx_color_management_feedback_surface_v4
+-{
+-public:
+-    explicit XXColorFeedbackSurfaceV4(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface);
+-    ~XXColorFeedbackSurfaceV4() override;
+-
+-    void setPreferredColorDescription(const ColorDescription &descr);
+-
+-private:
+-    void xx_color_management_feedback_surface_v4_destroy_resource(Resource *resource) override;
+-    void xx_color_management_feedback_surface_v4_destroy(Resource *resource) override;
+-    void xx_color_management_feedback_surface_v4_get_preferred(Resource *resource, uint32_t image_description) override;
+-
+-    QPointer<SurfaceInterface> m_surface;
+-    ColorDescription m_preferred;
+-};
+-
+-class XXColorSurfaceV4 : private QtWaylandServer::xx_color_management_surface_v4
+-{
+-public:
+-    explicit XXColorSurfaceV4(wl_client *client, uint32_t id, uint32_t version, SurfaceInterface *surface);
+-    ~XXColorSurfaceV4() override;
+-
+-private:
+-    void xx_color_management_surface_v4_destroy_resource(Resource *resource) override;
+-    void xx_color_management_surface_v4_destroy(Resource *resource) override;
+-    void xx_color_management_surface_v4_set_image_description(Resource *resource, struct ::wl_resource *image_description, uint32_t render_intent) override;
+-    void xx_color_management_surface_v4_unset_image_description(Resource *resource) override;
+-
+-    QPointer<SurfaceInterface> m_surface;
+-};
+-
+-class XXColorParametricCreatorV4 : private QtWaylandServer::xx_image_description_creator_params_v4
+-{
+-public:
+-    explicit XXColorParametricCreatorV4(wl_client *client, uint32_t id, uint32_t version);
+-
+-private:
+-    void xx_image_description_creator_params_v4_destroy_resource(Resource *resource) override;
+-    void xx_image_description_creator_params_v4_create(Resource *resource, uint32_t image_description) override;
+-    void xx_image_description_creator_params_v4_set_tf_named(Resource *resource, uint32_t tf) override;
+-    void xx_image_description_creator_params_v4_set_tf_power(Resource *resource, uint32_t eexp) override;
+-    void xx_image_description_creator_params_v4_set_primaries_named(Resource *resource, uint32_t primaries) override;
+-    void xx_image_description_creator_params_v4_set_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) override;
+-    void xx_image_description_creator_params_v4_set_mastering_display_primaries(Resource *resource, int32_t r_x, int32_t r_y, int32_t g_x, int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) override;
+-    void xx_image_description_creator_params_v4_set_mastering_luminance(Resource *resource, uint32_t min_lum, uint32_t max_lum) override;
+-    void xx_image_description_creator_params_v4_set_max_cll(Resource *resource, uint32_t max_cll) override;
+-    void xx_image_description_creator_params_v4_set_max_fall(Resource *resource, uint32_t max_fall) override;
+-    void xx_image_description_creator_params_v4_set_luminances(Resource *resource, uint32_t min_lum, uint32_t max_lum, uint32_t reference_lum) override;
+-
+-    std::optional<Colorimetry> m_colorimetry;
+-    std::optional<TransferFunction::Type> m_transferFunctionType;
+-    struct Luminances
+-    {
+-        double min;
+-        double max;
+-        double reference;
+-    };
+-    std::optional<Luminances> m_transferFunctionLuminances;
+-
+-    // mastering display information
+-    std::optional<Colorimetry> m_masteringColorimetry;
+-    std::optional<double> m_minMasteringLuminance;
+-    std::optional<double> m_maxMasteringLuminance;
+-    std::optional<double> m_maxCll;
+-    std::optional<double> m_maxFall;
+-};
+-
+-class XXImageDescriptionV4 : private QtWaylandServer::xx_image_description_v4
+-{
+-public:
+-    explicit XXImageDescriptionV4(wl_client *client, uint32_t id, uint32_t version, const std::optional<ColorDescription> &color);
+-
+-    const std::optional<ColorDescription> &description() const;
+-
+-    static XXImageDescriptionV4 *get(wl_resource *resource);
+-
+-private:
+-    void xx_image_description_v4_destroy_resource(Resource *resource) override;
+-    void xx_image_description_v4_destroy(Resource *resource) override;
+-    void xx_image_description_v4_get_information(Resource *resource, uint32_t information) override;
+-
+-    const std::optional<ColorDescription> m_description;
+-};
+-
+-class XXColorManagementOutputV4 : public QObject, private QtWaylandServer::xx_color_management_output_v4
+-{
+-    Q_OBJECT
+-public:
+-    explicit XXColorManagementOutputV4(wl_client *client, uint32_t id, uint32_t version, Output *output);
+-
+-private:
+-    void colorDescriptionChanged();
+-    void xx_color_management_output_v4_destroy_resource(Resource *resource) override;
+-    void xx_color_management_output_v4_destroy(Resource *resource) override;
+-    void xx_color_management_output_v4_get_image_description(Resource *resource, uint32_t image_description) override;
+-
+-    Output *const m_output;
+-    ColorDescription m_colorDescription;
+-};
+-
+-}
+diff --git a/src/wayland_server.cpp b/src/wayland_server.cpp
+index cb9d4e6878..1278713b8d 100644
+--- a/src/wayland_server.cpp
++++ b/src/wayland_server.cpp
+@@ -27,6 +27,7 @@
+ #include "wayland/alphamodifier_v1.h"
+ #include "wayland/appmenu.h"
+ #include "wayland/clientconnection.h"
++#include "wayland/colormanagement_v1.h"
+ #include "wayland/compositor.h"
+ #include "wayland/contenttype_v1.h"
+ #include "wayland/cursorshape_v1.h"
+@@ -80,7 +81,6 @@
+ #include "wayland/xdgshell.h"
+ #include "wayland/xdgtopleveldrag_v1.h"
+ #include "wayland/xdgtoplevelicon_v1.h"
+-#include "wayland/xx_colormanagement_v4.h"
+ #include "workspace.h"
+ #include "xdgactivationv1.h"
+ #include "xdgshellintegration.h"
+@@ -497,7 +497,7 @@ bool WaylandServer::init()
+ 
+     new FrogColorManagementV1(m_display, m_display);
+     new PresentationTime(m_display, m_display);
+-    m_xxColorManager = new XXColorManagerV4(m_display, m_display);
++    m_colorManager = new ColorManagerV1(m_display, m_display);
+     m_xdgDialogWm = new KWin::XdgDialogWmV1Interface(m_display, m_display);
+     connect(m_xdgDialogWm, &KWin::XdgDialogWmV1Interface::dialogCreated, this, [this](KWin::XdgDialogV1Interface *dialog) {
+         if (auto window = findXdgToplevelWindow(dialog->toplevel()->surface())) {
+diff --git a/src/wayland_server.h b/src/wayland_server.h
+index 5ed7da43cc..c0dc30a2fc 100644
+--- a/src/wayland_server.h
++++ b/src/wayland_server.h
+@@ -61,7 +61,7 @@ class XdgPopupWindow;
+ class XdgSurfaceWindow;
+ class XdgToplevelWindow;
+ class PresentationTime;
+-class XXColorManagerV4;
++class ColorManagerV1;
+ class LinuxDrmSyncObjV1Interface;
+ class RenderBackend;
+ class AlphaModifierManagerV1;
+@@ -290,7 +290,7 @@ private:
+     QHash<Output *, OutputDeviceV2Interface *> m_waylandOutputDevices;
+     DrmLeaseManagerV1 *m_leaseManager = nullptr;
+     OutputOrderV1Interface *m_outputOrder = nullptr;
+-    XXColorManagerV4 *m_xxColorManager = nullptr;
++    ColorManagerV1 *m_colorManager = nullptr;
+     XdgDialogWmV1Interface *m_xdgDialogWm = nullptr;
+     ExternalBrightnessV1 *m_externalBrightness = nullptr;
+     AlphaModifierManagerV1 *m_alphaModifierManager = nullptr;
