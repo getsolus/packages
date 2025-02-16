@@ -105,18 +105,11 @@ def init_location_path(path):
         usage("Unable to find PKG-INFO or METADATA files in specified directory")
     print_dependencies(path)
 
-def find_missing_elements(list1, list2):
+def find_mismatched_elements(list1, list2):
+    normalized_list1 = {item.lower().removeprefix("python-").replace("-", "_") for item in list1}
     normalized_list2 = {item.lower().replace("-", "_") for item in list2}
 
-    missing = []
-    for item in list1:
-        lower_item = item.lower().removeprefix("python-")
-        lower_variant = lower_item.replace("-", "_")
-
-        if lower_item not in normalized_list2 and lower_variant not in normalized_list2:
-            missing.append(item)
-
-    return missing
+    return normalized_list1 ^ normalized_list2
 
 def check_against_rundeps(deps):
     yaml = YAML()
@@ -124,7 +117,7 @@ def check_against_rundeps(deps):
         data = yaml.load(file)
         rundeps = data.get("rundeps", [])
         if rundeps:
-            missing_elements = find_missing_elements(rundeps, deps)
+            missing_elements = find_mismatched_elements(rundeps, deps)
 
             print("Required Deps:", deps)
             print("Current Run Deps:", rundeps)
