@@ -30,6 +30,10 @@ eopkg_already_exists = False
 @staticmethod
 def get_dependencies(dependencies: list, env=None) -> list:
     sanitized = []
+
+    if dependencies is None:
+        return sanitized
+
     for dep in dependencies:
         req = Requirement(dep)
         if not req.extras:
@@ -101,16 +105,39 @@ def init_location_path(path):
         usage("Unable to find PKG-INFO or METADATA files in specified directory")
     print_dependencies(path)
 
+def find_missing_elements(list1, list2):
+    normalized_list2 = {item.lower().replace("-", "_") for item in list2}
+
+    missing = []
+    for item in list1:
+        lower_item = item.lower().removeprefix("python-")
+        lower_variant = lower_item.replace("-", "_")
+
+        if lower_item not in normalized_list2 and lower_variant not in normalized_list2:
+            missing.append(item)
+
+    return missing
+
+def check_against_rundeps(deps):
+    yaml = YAML()
+    with open("package.yml", "r") as file:
+        data = yaml.load(file)
+        rundeps = data.get("rundeps", [])
+        if rundeps:
+            missing_elements = find_missing_elements(rundeps, deps)
+
+            print("Required Deps:", deps)
+            print("Current Run Deps:", rundeps)
+            print("Mismatched dependencies:", missing_elements)
+            print("NOTE: The 'python-' prefix is removed and '-' '_' are equivalently compared.")
+
 def print_dependencies(path):
     dependencies = Distribution.at(path).requires
 
-    if dependencies:
-        for dep in get_dependencies(dependencies):
-            print(dep)
-            try:
-                dist = distribution(dep)
-            except PackageNotFoundError:
-                print(f"{dep} isn't installed!")
+    printed_deps = get_dependencies(dependencies)
+
+    if printed_deps:
+        check_against_rundeps(printed_deps)
 
 if __name__ == "__main__":
     args = parser.parse_args()
