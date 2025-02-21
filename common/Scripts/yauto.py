@@ -262,20 +262,27 @@ class AutoPackage:
                     splits = line.split(",")
                     part = splits[1] if len(splits) > 1 else splits[0]
                     part = part.replace("[", "").replace(")", "").replace("]", "")
-                    splits = part.split(">=")
-                    pkg = splits[0].strip()
-                    dep = DepObject()
-                    dep.name = pkg
-                    if len(splits) > 1:
-                        version = splits[1].strip()
-                        # Can happen, we don't handle variable expansion.
-                        if "$" in version:
+                    splits = part.strip().split(" ")
+                    version_info = None
+                    for entry in splits:
+                        if entry in ["=", "<=", ">="]:
+                            version_info = True
                             continue
-                        dep.version = version
-                    # Check it hasn't been added
-                    objs = [x for x in deps if x.name == dep.name]
-                    if len(objs) == 0:
-                        deps.append(dep)
+                        if version_info:
+                            # Can happen, we don't handle variable expansion.
+                            version_info = False
+                            if "$" in entry:
+                                continue
+                            deps[-1].version = entry
+                            continue
+                        if "$" in entry:
+                            continue
+                        dep = DepObject()
+                        dep.name = entry
+                        # Check it hasn't been added
+                        objs = [x for x in deps if x.name == dep.name]
+                        if len(objs) == 0:
+                            deps.append(dep)
 
         return deps
 
@@ -326,16 +333,14 @@ description: |
 
             total_str += "\nbuilddeps  :\n"
             if self.build_deps is not None and len(self.build_deps) > 0:
-                if self.compile_type == PYTHON_MODULES or self.component == "programming.python":
-                    for dep in self.build_deps:
-                        if len(dep.name.strip()) == 0:
-                            continue
+                for dep in self.build_deps:
+                    if len(dep.name.strip()) == 0:
+                        continue
+                    if dep.name in ["python-build", "python-installer",
+                                    "python-packaging", "python-wheel"]:
                         total_str += "    - %s\n" % dep.name
-                else:
-                    for dep in self.build_deps:
-                        if len(dep.name.strip()) == 0:
-                            continue
-                        total_str += "    - pkgconfig(%s)\n" % dep.name
+                        continue
+                    total_str += "    - pkgconfig(%s)\n" % dep.name
             if self.compile_type == GNOMEY:
                 setup = "%configure --disable-static"
             elif self.compile_type == CMAKE:

@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ondrej Holy <oholy@redhat.com>
+Date: Thu, 16 Nov 2023 09:12:39 +0100
+Subject: [PATCH] monitor: Do not load monitors when GIO_USE_VFS=local
+
+Various applications use `GIO_USE_VFS=local` to prevent starting gvfs
+daemons. However, the `gvfsd` and `gvfsd-fuse` processes are started
+anyway when `GVFS_REMOTE_VOLUME_MONITOR_IGNORE` is not set as well.
+This is because the `g_vfs_get_default` call causes all GIO modules
+to be loaded. Consequently, the `gvfsd` daemon is started to list available
+volume monitor implementations since the commit 2592a8ed. Another problem
+is that also non-native volume monitors are listed. Let's simply don't
+load our monitors when `GIO_USE_VFS=local` is set and rely on the unix
+volume monitor.
+---
+ monitor/proxy/remote-volume-monitor-module.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/monitor/proxy/remote-volume-monitor-module.c b/monitor/proxy/remote-volume-monitor-module.c
+index b12c2e342307..42944943b1f5 100644
+--- a/monitor/proxy/remote-volume-monitor-module.c
++++ b/monitor/proxy/remote-volume-monitor-module.c
+@@ -37,34 +37,36 @@ void
+ g_io_module_load (GIOModule *module)
+ {
+   /* see gvfsproxyvolumemonitor.c:g_vfs_proxy_volume_monitor_daemon_init() */
+-  if (g_getenv ("GVFS_REMOTE_VOLUME_MONITOR_IGNORE") != NULL)
++  if (g_getenv ("GVFS_REMOTE_VOLUME_MONITOR_IGNORE") != NULL ||
++      g_strcmp0 (g_getenv ("GIO_USE_VFS"), "local") == 0)
+     goto out;
+ 
+   /* We make this module resident since we *may* hold on to an instance
+    * of the union monitor in the static method get_mount_for_mount_path()
+    * on GNativeVolumeMonitor. And it doesn't make much sense to unload
+    * the module *anyway*.
+    *
+    * See the comment gproxyvolumemonitor.c:get_mount_for_mount_path().
+    */
+   g_type_module_use (G_TYPE_MODULE (module));
+ 
+   bindtextdomain (GETTEXT_PACKAGE, GVFS_LOCALEDIR);
+   bind_textdomain_codeset (GETTEXT_PACKAGE, "UTF-8");
+ 
+   g_proxy_drive_register (module);
+   g_proxy_mount_register (module);
+   g_proxy_shadow_mount_register (module);
+   g_proxy_volume_register (module);
+   g_proxy_volume_monitor_register (module);
+ out:
+   ;
+  }
+ 
+ void
+ g_io_module_unload (GIOModule *module)
+ {
+-  if (g_getenv ("GVFS_REMOTE_VOLUME_MONITOR_IGNORE") != NULL)
++  if (g_getenv ("GVFS_REMOTE_VOLUME_MONITOR_IGNORE") != NULL ||
++      g_strcmp0 (g_getenv ("GIO_USE_VFS"), "local") == 0)
+     goto out;
+ 
+   g_proxy_volume_monitor_unload_cleanup ();
