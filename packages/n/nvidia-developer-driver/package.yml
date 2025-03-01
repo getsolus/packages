@@ -1,8 +1,8 @@
 name       : nvidia-developer-driver
-version    : 550.40.85
-release    : 326
+version    : 570.123.01
+release    : 327
 source     :
-    - https://developer.nvidia.com/downloads/vulkan-beta-5504085-linux : d8b62ba56e7f9791e70165de862bba7c033b7eaaf6907b21e79680c7df4c58f5
+    - https://developer.nvidia.com/downloads/vulkan-beta-57012301-linux : 0c336a409d2980e6b4e3c7eb9dfa6dd56619567a2451d3f073586fd0b2311cd4
 extract    : no
 homepage   : https://developer.nvidia.com/vulkan-driver
 license    :
@@ -24,11 +24,13 @@ rundeps    :
     - 32bit :
         - egl-gbm-32bit
         - egl-wayland-32bit
+        - egl-x11-32bit
         - libglvnd-32bit
         - nvidia-developer-driver-common
     - common :
         - egl-gbm
         - egl-wayland
+        - egl-x11
         - kbd
         - libglvnd
         - linux-driver-management
@@ -89,7 +91,7 @@ setup      : |
     pushd NVIDIA*
 
     pushd kernel
-    %patch -p1 -i $pkgfiles/kernel-6.12.patch
+    %patch -p2 -i $pkgfiles/make-modeset-fbdev-default.diff
     popd
 
     # Prepare kernel trees
@@ -140,8 +142,8 @@ install    : |
     # Remove the non glvnd portions
     rm -v $installdir/usr/lib{32,64}/lib{EGL,GLESv1_CM,GLESv2}.so*
 
-    # Nuke egl-gbm/wayland conflicts, we package those separately
-    rm -fv $installdir/usr/lib{32,64}/libnvidia-egl-{gbm,wayland}*
+    # Nuke egl-gbm/wayland/x11 conflicts, we package those separately
+    rm -fv $installdir/usr/lib{32,64}/libnvidia-egl-{gbm,wayland,xcb,xlib}*
 
     # Remove OpenSSL 1.1 fallback library
     rm -fv $installdir/%libdir%/libnvidia-pkcs11.so*
@@ -175,15 +177,17 @@ install    : |
     sed -e 's@__UTILS_PATH__@/usr/bin@' -i $installdir/usr/share/applications/nvidia-settings.desktop
     install -D -m 00644 nvidia-settings.png $installdir/usr/share/pixmaps/nvidia-settings.png
     install -D -m 00644 nvidia.icd $installdir/usr/share/OpenCL/vendors/nvidia.icd
-    install -D -d -m 00755 $installdir/usr/share/nvidia
+    install -D -d -m 00755 $installdir/usr/share/nvidia/files.d
     install -m 00644 nvoptix.bin $installdir/usr/share/nvidia/
+    install -m 00644 sandboxutils-filelist.json $installdir/usr/share/nvidia/files.d/
 
     # Vulkan
-    install -Dm644 nvidia_icd.json $installdir/usr/share/vulkan/icd.d/10_nvidia.json
-    install -Dm644 nvidia_layers.json $installdir/usr/share/vulkan/implicit_layer.d/nvidia_layers.json
+    install -Dm00644 nvidia_icd.json $installdir/usr/share/vulkan/icd.d/10_nvidia.json
+    install -Dm00644 nvidia_icd_vksc.json $installdir/usr/share/vulkansc/icd.d/nvidia_icd_vksc.json
+    install -Dm00644 nvidia_layers.json $installdir/usr/share/vulkan/implicit_layer.d/nvidia_layers.json
 
-    # EGL/GBM
-    install -D -m 00644 15_nvidia_gbm.json $installdir/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json
+    # GBM ICD
+    install -Dm00644 15_nvidia_gbm.json $installdir/usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json
 
     # GBM
     install -D -d -m 00755 $installdir/%libdir%/gbm
@@ -278,11 +282,11 @@ install    : |
     install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
 
     # Generate single initrd (to be shared between current and lts) with the GSP firmware
-    # mkdir -p init-firmware/dracut-firmware-nvidia-proprietary && pushd init-firmware
-    # cp -rav $installdir/usr/lib64/firmware/nvidia/* dracut-firmware-nvidia-proprietary/
-    # find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
-    # popd
-    # install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd.d/com.solus-project.nvidia-firmware
+    mkdir -p init-firmware/dracut-firmware-nvidia-proprietary && pushd init-firmware
+    cp -rav $installdir/usr/lib64/firmware/nvidia/* dracut-firmware-nvidia-proprietary/
+    find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
+    popd
+    install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd.d/com.solus-project.nvidia-firmware
 
     # Compress modules with zstd. TODO fix this so that we're able to capture the debug symbols (needs ypkg changes)
     find "$installdir" -name '*.ko' -exec strip --strip-unneeded {} \; -exec zstd -19 {} \; -exec rm -v {} \;
