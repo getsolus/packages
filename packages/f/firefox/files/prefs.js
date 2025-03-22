@@ -26,8 +26,8 @@ pref("extensions.webextensions.base-content-security-policy", "script-src 'self'
 // Enable smooth scrolling
 pref("general.smoothScroll",                true);
 // Geolocation preferences
-pref("geo.provider.network.url", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
-pref("geo.wifi.uri", "https://location.services.mozilla.com/v1/geolocate?key=%MOZILLA_API_KEY%");
+pref("geo.provider.network.url", "https://api.beacondb.net/v1/geolocate");
+pref("geo.wifi.uri", "https://api.beacondb.net/v1/geolocate");
 pref("layers.use-image-offscreen-surfaces", false);
 // Enable MSE (Media Source Extensions) API
 pref("media.mediasource.enabled",           true);
