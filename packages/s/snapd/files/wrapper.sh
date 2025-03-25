@@ -41,11 +41,10 @@ if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" 
           --urgency critical \
           --icon dialog-warning \
           "Snap has ${CONFINEMENT} confinement" \
-          "Snaps may stop working in 2025. See ${URL}"
+          "Snaps are no longer supported on Solus as of 2025. See ${URL}"
   else
       echo -e "${YELLOW}WARNING:${NC} snap is running with ${CONFINEMENT} confinement." \
-        "Snaps may stop working in 2025." \
-        "See ${URL} for details"
+        "Snaps are no longer supported on Solus as of January 2025. See ${URL} for details"
   fi
 fi
 
