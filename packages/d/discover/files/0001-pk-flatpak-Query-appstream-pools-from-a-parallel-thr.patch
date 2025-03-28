@@ -1,0 +1,772 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aleix Pol <aleixpol@kde.org>
+Date: Sat, 7 Sep 2024 11:53:02 +0200
+Subject: [PATCH 1/6] pk&flatpak: Query appstream pools from a parallel thread
+
+This allows us to:
+- make queries to separate pools in parallel. It happpens in flatpak
+between sources and also with packagekit.
+- move these CPU intensive tasks out of the main thread, which gets
+freed to do other interesting stuff like setting up the UI.
+
+We keep the interaction with AbstractResources in the main thread.
+---
+ CMakeLists.txt                                |   2 +-
+ libdiscover/CMakeLists.txt                    |   1 +
+ .../appstream/AppStreamConcurrentPool.cpp     | 102 ++++++++++
+ .../appstream/AppStreamConcurrentPool.h       |  70 +++++++
+ libdiscover/appstream/AppStreamUtils.cpp      |  33 +--
+ libdiscover/appstream/AppStreamUtils.h        |   4 +-
+ .../FlatpakBackend/FlatpakBackend.cpp         | 189 ++++++++++--------
+ .../backends/FlatpakBackend/FlatpakBackend.h  |   1 +
+ .../PackageKitBackend/PackageKitBackend.cpp   |  42 ++--
+ .../PackageKitBackend/PackageKitBackend.h     |   5 +-
+ 10 files changed, 333 insertions(+), 116 deletions(-)
+ create mode 100644 libdiscover/appstream/AppStreamConcurrentPool.cpp
+ create mode 100644 libdiscover/appstream/AppStreamConcurrentPool.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 72a91c3af..812da660d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -37,7 +37,7 @@ find_package(KF6 ${KF6_MIN_VERSION} REQUIRED Kirigami CoreAddons Config Crash DB
+ find_package(KF6 ${KF6_MIN_VERSION} OPTIONAL_COMPONENTS UserFeedback)
+ 
+ find_package(packagekitqt6 1.0.1 CONFIG)
+-find_package(AppStreamQt 1.0 CONFIG REQUIRED)
++find_package(AppStreamQt 1.0.4 CONFIG REQUIRED)
+ find_package(KF6Attica 5.23 CONFIG)
+ find_package(KF6NewStuff 5.53 CONFIG)
+ 
+diff --git a/libdiscover/CMakeLists.txt b/libdiscover/CMakeLists.txt
+index 3ad9173fd..ae19146ce 100644
+--- a/libdiscover/CMakeLists.txt
++++ b/libdiscover/CMakeLists.txt
+@@ -66,6 +66,7 @@ if(TARGET AppStreamQt)
+     target_sources(DiscoverCommon PRIVATE
+         appstream/OdrsReviewsBackend.cpp
+         appstream/OdrsReviewsJob.cpp
++        appstream/AppStreamConcurrentPool.cpp
+         appstream/AppStreamIntegration.cpp
+         appstream/AppStreamUtils.cpp
+     )
+diff --git a/libdiscover/appstream/AppStreamConcurrentPool.cpp b/libdiscover/appstream/AppStreamConcurrentPool.cpp
+new file mode 100644
+index 000000000..365b3d109
+--- /dev/null
++++ b/libdiscover/appstream/AppStreamConcurrentPool.cpp
+@@ -0,0 +1,102 @@
++/*
++ *   SPDX-FileCopyrightText: 2024 Aleix Pol Gonzalez <aleixpol@kde.org>
++ *
++ *   SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++ */
++
++#include "AppStreamConcurrentPool.h"
++
++#include <QtConcurrentRun>
++
++using namespace AppStream;
++
++void ConcurrentPool::reset(AppStream::Pool *pool, QThreadPool *threadPool)
++{
++    m_pool.reset(pool);
++    connect(pool, &Pool::loadFinished, this, &ConcurrentPool::loadFinished);
++
++    m_threadPool = threadPool;
++}
++
++void ConcurrentPool::loadAsync()
++{
++    QMutexLocker lock(&m_mutex);
++    return m_pool->loadAsync();
++}
++
++QString ConcurrentPool::lastError()
++{
++    QMutexLocker lock(&m_mutex);
++    return m_pool->lastError();
++}
++
++QFuture<ComponentBox> ConcurrentPool::search(const QString &term)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, term] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->search(term);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::components()
++{
++    return QtConcurrent::run(m_threadPool.get(), [this] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->components();
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsById(const QString &cid)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, cid] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsById(cid);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsByProvided(Provided::Kind kind, const QString &item)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, kind, item] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByProvided(kind, item);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsByKind(Component::Kind kind)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, kind] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByKind(kind);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsByCategories(const QStringList &categories)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, categories] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByCategories(categories);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsByLaunchable(Launchable::Kind kind, const QString &value)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, kind, value] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByLaunchable(kind, value);
++    });
++}
++
++QFuture<ComponentBox> ConcurrentPool::componentsByExtends(const QString &extendedId)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, extendedId] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByExtends(extendedId);
++    });
++}
++QFuture<ComponentBox> ConcurrentPool::componentsByBundleId(Bundle::Kind kind, const QString &bundleId, bool matchPrefix)
++{
++    return QtConcurrent::run(m_threadPool.get(), [this, kind, bundleId, matchPrefix] {
++        QMutexLocker lock(&m_mutex);
++        return m_pool->componentsByBundleId(kind, bundleId, matchPrefix);
++    });
++}
+diff --git a/libdiscover/appstream/AppStreamConcurrentPool.h b/libdiscover/appstream/AppStreamConcurrentPool.h
+new file mode 100644
+index 000000000..876412292
+--- /dev/null
++++ b/libdiscover/appstream/AppStreamConcurrentPool.h
+@@ -0,0 +1,70 @@
++/*
++ *   SPDX-FileCopyrightText: 2024 Aleix Pol Gonzalez <aleixpol@kde.org>
++ *
++ *   SPDX-License-Identifier: GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
++ */
++
++#pragma once
++
++#include <QFuture>
++#include <QMutex>
++#include <QPointer>
++
++#include <AppStreamQt/pool.h>
++
++#include "discovercommon_export.h"
++
++namespace AppStream
++{
++
++/**
++ * Convenience façade class to have QtConcurrent-enabled pools
++ */
++class DISCOVERCOMMON_EXPORT ConcurrentPool : public QObject
++{
++    Q_OBJECT
++public:
++    /**
++     * Tells which @p pool to use and in which thread pool the jobs will be run
++     *
++     * @param pool takes ownership
++     * @param threadPool does not take ownership
++     */
++    void reset(AppStream::Pool *pool, QThreadPool *threadPool);
++
++    QFuture<ComponentBox> search(const QString &term);
++
++    QFuture<ComponentBox> components();
++
++    QFuture<ComponentBox> componentsById(const QString &cid);
++
++    QFuture<ComponentBox> componentsByProvided(Provided::Kind kind, const QString &item);
++
++    QFuture<ComponentBox> componentsByKind(Component::Kind kind);
++
++    QFuture<ComponentBox> componentsByCategories(const QStringList &categories);
++
++    QFuture<ComponentBox> componentsByLaunchable(Launchable::Kind kind, const QString &value);
++
++    QFuture<ComponentBox> componentsByExtends(const QString &extendedId);
++
++    QFuture<ComponentBox> componentsByBundleId(Bundle::Kind kind, const QString &bundleId, bool matchPrefix);
++
++    QString lastError();
++    void loadAsync();
++
++    AppStream::Pool *get() const
++    {
++        return m_pool.get();
++    }
++
++Q_SIGNALS:
++    void loadFinished(bool success);
++
++private:
++    QMutex m_mutex;
++    std::unique_ptr<AppStream::Pool> m_pool;
++    QPointer<QThreadPool> m_threadPool;
++};
++
++}
+diff --git a/libdiscover/appstream/AppStreamUtils.cpp b/libdiscover/appstream/AppStreamUtils.cpp
+index 65eb17216..975091bd1 100644
+--- a/libdiscover/appstream/AppStreamUtils.cpp
++++ b/libdiscover/appstream/AppStreamUtils.cpp
+@@ -21,6 +21,7 @@
+ #include <QJsonObject>
+ #include <QMetaEnum>
+ #include <QUrlQuery>
++#include <QtConcurrentRun>
+ 
+ using namespace std::chrono_literals;
+ using namespace AppStreamUtils;
+@@ -193,25 +194,31 @@ static void kRemoveDuplicates(AppStream::ComponentBox &input, AppStream::Bundle:
+     }
+ }
+ 
+-QCoro::Task<AppStream::ComponentBox> AppStreamUtils::componentsByCategoriesTask(AppStream::Pool *pool, Category *cat, AppStream::Bundle::Kind kind)
++QFuture<AppStream::ComponentBox> AppStreamUtils::componentsByCategoriesTask(AppStream::ConcurrentPool *pool, Category *cat, AppStream::Bundle::Kind kind)
+ {
+     if (cat->name() == QLatin1StringView("All Applications")) {
+-        co_return pool->componentsByKind(AppStream::Component::KindDesktopApp);
++        return pool->componentsByKind(AppStream::Component::KindDesktopApp);
+     }
+ 
+-    AppStream::ComponentBox ret(AppStream::ComponentBox::FlagNoChecks);
+-    for (const auto &categoryName : cat->involvedCategories()) {
+-        // Give the eventloop some breathing room by suspending execution for a bit. This in particular should keep the
+-        // UI more responsive while we fetch a substantial amount of components on e.g. the all apps view.
+-        constexpr auto arbitrarySuspendTime = 64ms;
+-        QTimer timer;
+-        timer.start(arbitrarySuspendTime);
+-        co_await timer;
++    const auto categories = cat->involvedCategories();
++    QList<QFuture<AppStream::ComponentBox>> futures;
++    futures.reserve(categories.size());
++    for (const auto &categoryName : categories) {
++        futures += pool->componentsByCategories({categoryName});
++    }
+ 
+-        ret += pool->componentsByCategories({categoryName});
++    if (futures.size() == 1) {
++        return futures.constFirst();
+     }
+-    kRemoveDuplicates(ret, kind);
+-    co_return ret;
++
++    return QtConcurrent::run([futures, kind]() -> AppStream::ComponentBox {
++        AppStream::ComponentBox ret(AppStream::ComponentBox::FlagNoChecks);
++        for (const auto &box : futures) {
++            ret += box.result();
++        }
++        kRemoveDuplicates(ret, kind);
++        return ret;
++    });
+ }
+ 
+ DISCOVERCOMMON_EXPORT bool AppStreamUtils::kIconLoaderHasIcon(const QString &name)
+diff --git a/libdiscover/appstream/AppStreamUtils.h b/libdiscover/appstream/AppStreamUtils.h
+index 64c2aea9d..efd887d88 100644
+--- a/libdiscover/appstream/AppStreamUtils.h
++++ b/libdiscover/appstream/AppStreamUtils.h
+@@ -10,11 +10,11 @@
+ #include <AppStreamQt/image.h>
+ #include <AppStreamQt/pool.h>
+ #include <QColor>
+-#include <QCoroTask>
+ #include <QList>
+ #include <QUrl>
+ #include <resources/AbstractResource.h>
+ 
++#include "AppStreamConcurrentPool.h"
+ #include "discovercommon_export.h"
+ 
+ namespace AppStreamUtils
+@@ -39,7 +39,7 @@ DISCOVERCOMMON_EXPORT QString versionString(const QString &version, const AppStr
+ DISCOVERCOMMON_EXPORT QString contentRatingDescription(const AppStream::Component &appdata);
+ DISCOVERCOMMON_EXPORT uint contentRatingMinimumAge(const AppStream::Component &appdata);
+ 
+-DISCOVERCOMMON_EXPORT QCoro::Task<AppStream::ComponentBox> componentsByCategoriesTask(AppStream::Pool *pool, Category *cat, AppStream::Bundle::Kind kind);
++DISCOVERCOMMON_EXPORT QFuture<AppStream::ComponentBox> componentsByCategoriesTask(AppStream::ConcurrentPool *pool, Category *cat, AppStream::Bundle::Kind kind);
+ 
+ DISCOVERCOMMON_EXPORT bool kIconLoaderHasIcon(const QString &name);
+ }
+diff --git a/libdiscover/backends/FlatpakBackend/FlatpakBackend.cpp b/libdiscover/backends/FlatpakBackend/FlatpakBackend.cpp
+index 814552e77..14a09d14d 100644
+--- a/libdiscover/backends/FlatpakBackend/FlatpakBackend.cpp
++++ b/libdiscover/backends/FlatpakBackend/FlatpakBackend.cpp
+@@ -14,6 +14,7 @@
+ 
+ #include <ReviewsBackend/Rating.h>
+ #include <Transaction/Transaction.h>
++#include <appstream/AppStreamConcurrentPool.h>
+ #include <appstream/AppStreamUtils.h>
+ #include <appstream/OdrsReviewsBackend.h>
+ #include <resources/SourcesModel.h>
+@@ -170,25 +171,25 @@ public:
+     AppStream::ComponentBox componentsByName(const QString &name)
+     {
+         auto components = m_pool->componentsById(name);
+-        if (!components.isEmpty()) {
+-            return components;
++        if (!components.result().isEmpty()) {
++            return components.result();
+         }
+ 
+         components = m_pool->componentsByProvided(AppStream::Provided::KindId, name);
+-        return components;
++        return components.result();
+     }
+ 
+     AppStream::ComponentBox componentsByFlatpakId(const QString &ref)
+     {
+-        AppStream::ComponentBox components = m_pool->componentsByBundleId(AppStream::Bundle::KindFlatpak, ref, false);
+-        if (!components.isEmpty())
+-            return components;
++        auto components = m_pool->componentsByBundleId(AppStream::Bundle::KindFlatpak, ref, false);
++        if (!components.result().isEmpty())
++            return components.result();
+ 
+         components = m_pool->componentsByProvided(AppStream::Provided::KindId, ref.section('/'_L1, 1, 1));
+-        return components;
++        return components.result();
+     }
+ 
+-    AppStream::Pool *m_pool = nullptr;
++    std::unique_ptr<AppStream::ConcurrentPool> m_pool;
+     QHash<FlatpakResource::Id, FlatpakResource *> m_resources;
+ 
+ private:
+@@ -1099,7 +1100,8 @@ void FlatpakBackend::createPool(QSharedPointer<FlatpakSource> source)
+     pool->addExtraDataLocation(appstreamDirPath, AppStream::Metadata::FormatStyleCatalog);
+ 
+     const auto loadDone = [this, source, pool](bool result) {
+-        source->m_pool = pool;
++        source->m_pool.reset(new AppStream::ConcurrentPool);
++        source->m_pool->reset(pool, &m_threadPool);
+         m_flatpakLoadingSources.removeAll(source);
+         if (result) {
+             m_flatpakSources += source;
+@@ -1478,6 +1480,32 @@ ResultsStream *FlatpakBackend::deferredResultStream(const QString &streamName, s
+     return stream;
+ }
+ 
++ResultsStream *FlatpakBackend::deferredResultStreamNoFinish(const QString &streamName, std::function<QCoro::Task<>(ResultsStream *)> callback)
++{
++    ResultsStream *stream = new ResultsStream(streamName);
++    stream->setParent(this);
++
++    // Don't capture variables into a coroutine lambda, pass them in as arguments instead
++    // See https://devblogs.microsoft.com/oldnewthing/20211103-00/?p=105870
++    [](FlatpakBackend *self, ResultsStream *stream, std::function<QCoro::Task<>(ResultsStream *)> callback) -> QCoro::Task<> {
++        QPointer<ResultsStream> guard = stream;
++        if (self->isFetching()) {
++            co_await qCoro(self, &FlatpakBackend::initialized);
++        } else {
++            co_await QCoro::sleepFor(0ms);
++        }
++        if (guard.isNull()) {
++            co_return;
++        }
++        co_await callback(stream);
++        if (guard.isNull()) {
++            co_return;
++        }
++    }(this, stream, std::move(callback));
++
++    return stream;
++}
++
+ #define FLATPAK_BACKEND_GUARD                                                                                                                                  \
+     QPointer<ResultsStream> guardStream(stream);                                                                                                               \
+     g_autoptr(GCancellable) cancellable = g_object_ref(self->m_cancellable);                                                                                   \
+@@ -1497,6 +1525,39 @@ static bool isFlatpakSubRef(const QLatin1String &name)
+     return name.endsWith(QLatin1String(".Debug")) || name.endsWith(QLatin1String(".Locale")) || name.endsWith(QLatin1String(".Docs"));
+ }
+ 
++void triage(FlatpakResource *resource, QVector<StreamResult> &prioritary, QVector<StreamResult> &rest, const AbstractResourcesBackend::Filters &filter)
++{
++    const bool matchById = resource->appstreamId().compare(filter.search, Qt::CaseInsensitive) == 0;
++    // Note: FlatpakResource can not have type == System
++    if (resource->type() == AbstractResource::ApplicationSupport && filter.state != AbstractResource::Upgradeable && !matchById) {
++        return;
++    }
++
++    if (resource->state() < filter.state) {
++        return;
++    }
++
++    if (!filter.extends.isEmpty() && !resource->extends().contains(filter.extends)) {
++        return;
++    }
++
++    if (!filter.mimetype.isEmpty() && !resource->mimetypes().contains(filter.mimetype)) {
++        return;
++    }
++
++    if (filter.search.isEmpty() || matchById) {
++        rest += resource;
++    } else if (resource->name().contains(filter.search, Qt::CaseInsensitive)) {
++        prioritary += resource;
++    } else if (resource->comment().contains(filter.search, Qt::CaseInsensitive)) {
++        rest += resource;
++        // trust The search terms provided by appstream are relevant, this makes possible finding "gimp"
++        // since the name() is "GNU Image Manipulation Program"
++    } else if (resource->appstreamId().contains(filter.search, Qt::CaseInsensitive)) {
++        rest += resource;
++    }
++}
++
+ ResultsStream *FlatpakBackend::search(const AbstractResourcesBackend::Filters &filter)
+ {
+     const auto fileName = filter.resourceUrl.fileName();
+@@ -1698,90 +1759,62 @@ ResultsStream *FlatpakBackend::search(const AbstractResourcesBackend::Filters &f
+         // Multithreading is nearly impossible for this stream, since child
+         // objects are created and interact with this backend object. So the
+         // task is split into hunks, interleaved by zero timers.
+-        return deferredResultStream(u"FlatpakStream"_s, [this, filter](ResultsStream *stream) -> QCoro::Task<> {
++        return deferredResultStreamNoFinish(u"FlatpakStream"_s, [this, filter](ResultsStream *stream) -> QCoro::Task<> {
+             return [](FlatpakBackend *self, ResultsStream *stream, const AbstractResourcesBackend::Filters filter) -> QCoro::Task<> {
+                 FLATPAK_BACKEND_GUARD
+                 const auto flatpakSources = self->m_flatpakSources;
+                 QVector<StreamResult> prioritary, rest;
++                QMap<QSharedPointer<FlatpakSource>, QFuture<AppStream::ComponentBox>> futures;
++                QList<FlatpakResource *> unpooled;
+ 
+                 for (const auto &source : flatpakSources) {
+-                    FLATPAK_BACKEND_YIELD;
+-
+-                    QList<FlatpakResource *> resources;
+                     if (source->m_pool) {
+-                        const auto components = co_await [](const auto &filter, const auto &source) -> QCoro::Task<AppStream::ComponentBox> {
+-                            if (!filter.search.isEmpty()) {
+-                                co_return source->m_pool->search(filter.search);
+-                            }
+-                            if (filter.category) {
+-                                co_return co_await AppStreamUtils::componentsByCategoriesTask(source->m_pool, filter.category, AppStream::Bundle::KindFlatpak);
+-                            }
+-                            co_return source->m_pool->components();
+-                        }(filter, source);
+-
+-                        resources.reserve(components.size());
+-                        for (const auto &component : components) {
+-                            FLATPAK_BACKEND_YIELD;
+-
+-                            resources += self->resourceForComponent(component, source);
++                        if (!filter.search.isEmpty()) {
++                            futures.insert(source, source->m_pool->search(filter.search));
++                        } else if (filter.category) {
++                            futures.insert(source,
++                                           AppStreamUtils::componentsByCategoriesTask(source->m_pool.get(), filter.category, AppStream::Bundle::KindFlatpak));
++                        } else {
++                            futures.insert(source, source->m_pool->components());
+                         }
+                     } else {
+-                        resources = source->m_resources.values();
++                        unpooled += source->m_resources.values();
+                     }
+-
+-                    for (auto resource : std::as_const(resources)) {
+-                        FLATPAK_BACKEND_YIELD;
+-
+-                        const bool matchById = resource->appstreamId().compare(filter.search, Qt::CaseInsensitive) == 0;
+-                        // Note: FlatpakResource can not have type == System
+-                        if (resource->type() == AbstractResource::ApplicationSupport && filter.state != AbstractResource::Upgradeable && !matchById) {
+-                            continue;
+-                        }
+-
+-                        if (resource->state() < filter.state) {
+-                            continue;
+-                        }
+-
+-                        if (!filter.extends.isEmpty() && !resource->extends().contains(filter.extends)) {
+-                            continue;
+-                        }
+-
+-                        if (!filter.mimetype.isEmpty() && !resource->mimetypes().contains(filter.mimetype)) {
+-                            continue;
+-                        }
+-
+-                        if (filter.search.isEmpty() || matchById) {
+-                            rest += resource;
+-                        } else if (resource->name().contains(filter.search, Qt::CaseInsensitive)) {
+-                            prioritary += resource;
+-                        } else if (resource->comment().contains(filter.search, Qt::CaseInsensitive)) {
+-                            rest += resource;
+-                            // trust The search terms provided by appstream are relevant, this makes possible finding "gimp"
+-                            // since the name() is "GNU Image Manipulation Program"
+-                        } else if (resource->appstreamId().contains(filter.search, Qt::CaseInsensitive)) {
+-                            rest += resource;
++                }
++                using QFS = QFutureWatcher<QList<QFuture<AppStream::ComponentBox>>>;
++                auto *fw = new QFS(stream);
++                fw->setFuture(QtFuture::whenAll(futures.begin(), futures.end()));
++                FLATPAK_BACKEND_YIELD
++                for (auto r : unpooled) {
++                    triage(r, prioritary, rest, filter);
++                }
++                connect(fw, &QFS::finished, stream, [self, futures, stream, _rest = rest, _prioritary = prioritary, filter, fw]() {
++                    QVector<StreamResult> rest(_rest), prioritary(_prioritary);
++                    for (const auto [source, future] : futures.asKeyValueRange()) {
++                        for (const auto &component : future.result()) {
++                            triage(self->resourceForComponent(component, source), prioritary, rest, filter);
+                         }
+                     }
+-                }
+-                auto f = [self](auto left, auto right) {
+-                    return self->flatpakResourceLessThan(left, right);
+-                };
+ 
+-                // Even sorting can not be performed in other thread, and it can take a while
+-                std::sort(rest.begin(), rest.end(), f);
++                    auto f = [self](auto left, auto right) {
++                        return self->flatpakResourceLessThan(left, right);
++                    };
+ 
+-                FLATPAK_BACKEND_YIELD;
++                    // Even sorting can not be performed in other thread, and it can take a while
++                    std::sort(rest.begin(), rest.end(), f);
++                    std::sort(prioritary.begin(), prioritary.end(), f);
+ 
+-                std::sort(prioritary.begin(), prioritary.end(), f);
++                    QList<StreamResult> resources;
++                    resources.reserve(prioritary.size() + rest.size());
++                    resources.append(std::move(prioritary));
++                    resources.append(std::move(rest));
+ 
+-                QList<StreamResult> resources;
+-                resources.reserve(prioritary.size() + rest.size());
+-                resources.append(std::move(prioritary));
+-                resources.append(std::move(rest));
+-
+-                if (!resources.isEmpty()) {
+-                    Q_EMIT stream->resourcesFound(resources);
+-                }
++                    if (!resources.isEmpty()) {
++                        Q_EMIT stream->resourcesFound(resources);
++                    }
++                    stream->finish();
++                    fw->deleteLater();
++                });
+             }(this, stream, filter);
+         });
+     }
+@@ -2111,7 +2144,7 @@ InlineMessage *FlatpakBackend::explainDysfunction() const
+ bool FlatpakBackend::extends(const QString &extends) const
+ {
+     return std::any_of(m_flatpakSources.constBegin(), m_flatpakSources.constEnd(), [extends](const auto &source) {
+-        return source->m_pool && source->m_pool->lastError().isEmpty() && !source->m_pool->componentsByExtends(extends).isEmpty();
++        return source->m_pool && source->m_pool->lastError().isEmpty() && !source->m_pool->componentsByExtends(extends).result().isEmpty();
+     });
+ }
+ 
+diff --git a/libdiscover/backends/FlatpakBackend/FlatpakBackend.h b/libdiscover/backends/FlatpakBackend/FlatpakBackend.h
+index 88e0fe5a0..0a1e97c66 100644
+--- a/libdiscover/backends/FlatpakBackend/FlatpakBackend.h
++++ b/libdiscover/backends/FlatpakBackend/FlatpakBackend.h
+@@ -135,6 +135,7 @@ private:
+     FlatpakRemote *installSource(FlatpakResource *resource);
+ 
+     ResultsStream *deferredResultStream(const QString &streamName, std::function<QCoro::Task<>(ResultsStream *)> callback);
++    ResultsStream *deferredResultStreamNoFinish(const QString &streamName, std::function<QCoro::Task<>(ResultsStream *)> callback);
+     // Returned Installation and Ref objects are g_object_ref'ed, caller is responsible for calling g_object_unref.
+     QCoro::Task<QHash<FlatpakInstallation *, QList<FlatpakInstalledRef *>>> listInstalledRefsForUpdate();
+ 
+diff --git a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+index 60471be38..4cef7c57d 100644
+--- a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
++++ b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+@@ -128,7 +128,7 @@ Delay::Delay()
+ 
+ PackageKitBackend::PackageKitBackend(QObject *parent)
+     : AbstractResourcesBackend(parent)
+-    , m_appdata(new AppStream::Pool)
++    , m_appdata(new AppStream::ConcurrentPool)
+     , m_updater(new PackageKitUpdater(this))
+     , m_refresher(nullptr)
+     , m_isFetching(0)
+@@ -317,7 +317,7 @@ void PackageKitBackend::reloadPackageList()
+ {
+     acquireFetching(true);
+ 
+-    m_appdata.reset(new AppStream::Pool);
++    m_appdata->reset(new AppStream::Pool, &m_threadPool);
+ 
+     const auto loadDone = [this](bool correct) {
+         if (!correct && m_packages.packages.isEmpty()) {
+@@ -340,10 +340,10 @@ void PackageKitBackend::reloadPackageList()
+         acquireFetching(false);
+ 
+         const auto distroComponents = m_appdata->componentsById(AppStream::SystemInfo::currentDistroComponentId());
+-        if (distroComponents.isEmpty()) {
++        if (distroComponents.result().isEmpty()) {
+             qWarning() << "PackageKitBackend: No distro component found for" << AppStream::SystemInfo::currentDistroComponentId();
+         }
+-        for (const AppStream::Component &dc : distroComponents) {
++        for (const AppStream::Component &dc : distroComponents.result()) {
+             const auto releases = dc.releasesPlain().entries();
+             for (const auto &r : releases) {
+                 int cmp = AppStream::Utils::vercmpSimple(r.version(), AppStreamIntegration::global()->osRelease()->versionId());
+@@ -366,7 +366,7 @@ void PackageKitBackend::reloadPackageList()
+         }
+     };
+ 
+-    connect(m_appdata.get(), &AppStream::Pool::loadFinished, this, [this, loadDone](bool success) {
++    connect(m_appdata.get(), &AppStream::ConcurrentPool::loadFinished, this, [this, loadDone](bool success) {
+         m_appdataLoaded = true;
+         if (!success) {
+             qWarning() << "PackageKitBackend: Could not open the AppStream metadata pool" << m_appdata->lastError();
+@@ -565,7 +565,7 @@ T PackageKitBackend::resourcesByPackageNames(const W &pkgnames) const
+                 if (resource) {
+                     ret += resource;
+                 } else {
+-                    ret += resourcesByComponents<T>(m_appdata->componentsByBundleId(AppStream::Bundle::KindPackage, pkg_name, false));
++                    ret += resourcesByComponents<T>(m_appdata->componentsByBundleId(AppStream::Bundle::KindPackage, pkg_name, false).result());
+                 }
+             }
+         }
+@@ -605,10 +605,10 @@ AppStream::ComponentBox PackageKitBackend::componentsById(const QString &id) con
+ {
+     Q_ASSERT(m_appstreamInitialized);
+     auto comps = m_appdata->componentsById(id);
+-    if (comps.isEmpty()) {
++    if (comps.result().isEmpty()) {
+         comps = m_appdata->componentsByProvided(AppStream::Provided::KindId, id);
+     }
+-    return comps;
++    return comps.result();
+ }
+ 
+ static bool needsResolveFilter(const StreamResult &result)
+@@ -703,9 +703,10 @@ ResultsStream *PackageKitBackend::search(const AbstractResourcesBackend::Filters
+         return findResourceByPackageName(filter.resourceUrl);
+     } else if (!filter.extends.isEmpty()) {
+         return deferredResultStream(u"PackageKitStream-extends"_s, [this, filter = filter](PKResultsStream *stream) {
+-            const auto extendingComponents = m_appdata->componentsByExtends(filter.extends);
+-            auto resources = resultsByComponents(extendingComponents);
+-            stream->sendResources(resources, filter.state != AbstractResource::Broken);
++            m_appdata->componentsByExtends(filter.extends).then([this, stream, filter](const QFuture<AppStream::ComponentBox> &extendingComponents) {
++                auto resources = resultsByComponents(extendingComponents.result());
++                stream->sendResources(resources, filter.state != AbstractResource::Broken);
++            });
+         });
+     } else if (filter.state == AbstractResource::Upgradeable) {
+         return new ResultsStream(QStringLiteral("PackageKitStream-upgradeable"),
+@@ -773,19 +774,20 @@ ResultsStream *PackageKitBackend::search(const AbstractResourcesBackend::Filters
+         });
+     } else {
+         return deferredResultStream(u"PackageKitStream-search"_s, [this, filter = filter](PKResultsStream *stream) {
+-            auto loadComponents = [](const auto &filter, const auto &appdata) -> QCoro::Task<AppStream::ComponentBox> {
+-                AppStream::ComponentBox components(AppStream::ComponentBox::FlagNone);
++            auto loadComponents = [](const auto &filter, const auto &appdata) {
++                QFuture<AppStream::ComponentBox> components;
+                 if (!filter.search.isEmpty()) {
+                     components = appdata->search(filter.search);
+                 } else if (filter.category) {
+-                    components = co_await AppStreamUtils::componentsByCategoriesTask(appdata.get(), filter.category, AppStream::Bundle::KindUnknown);
++                    components = AppStreamUtils::componentsByCategoriesTask(appdata.get(), filter.category, AppStream::Bundle::KindUnknown);
+                 } else {
+                     components = appdata->components();
+                 }
+-                co_return components;
++                return components;
+             };
+-            QCoro::connect(loadComponents(filter, m_appdata), this, [this, stream, filter](auto &&components) {
++            loadComponents(filter, m_appdata).then([this, stream, filter](const QFuture<AppStream::ComponentBox> &futureComponents) {
+                 QSet<QString> ids;
++                AppStream::ComponentBox components = futureComponents.result();
+                 kFilterInPlace<AppStream::ComponentBox>(components, [&ids](const AppStream::Component &component) {
+                     if (ids.contains(component.id())) {
+                         return false;
+@@ -998,7 +1000,7 @@ void PackageKitBackend::getUpdatesFinished(PackageKit::Transaction::Exit, uint)
+ 
+     if (!m_updater->isDistroUpgrade() && !PackageKit::Daemon::global()->offline()->upgradeTriggered()) {
+         const auto loadDone = [this] {
+-            auto nextRelease = AppStreamIntegration::global()->getDistroUpgrade(m_appdata.get());
++            auto nextRelease = AppStreamIntegration::global()->getDistroUpgrade(m_appdata->get());
+             if (nextRelease) {
+                 foundNewMajorVersion(*nextRelease);
+             }
+@@ -1006,7 +1008,7 @@ void PackageKitBackend::getUpdatesFinished(PackageKit::Transaction::Exit, uint)
+         if (m_appdataLoaded) {
+             loadDone();
+         } else {
+-            connect(m_appdata.get(), &AppStream::Pool::loadFinished, this, loadDone);
++            connect(m_appdata.get(), &AppStream::ConcurrentPool::loadFinished, this, loadDone);
+         }
+     }
+ }
+@@ -1137,7 +1139,7 @@ AbstractBackendUpdater *PackageKitBackend::backendUpdater() const
+ QVector<AbstractResource *> PackageKitBackend::extendedBy(const QString &id) const
+ {
+     const auto components = m_appdata->componentsByExtends(id);
+-    return resourcesByComponents<QVector<AbstractResource *>>(components);
++    return resourcesByComponents<QVector<AbstractResource *>>(components.result());
+ }
+ 
+ AbstractReviewsBackend *PackageKitBackend::reviewsBackend() const
+@@ -1191,7 +1193,7 @@ void PackageKitBackend::loadAllPackages()
+     if (m_allPackagesLoaded) {
+         return;
+     }
+-    const auto components = m_appdata->components();
++    const auto components = m_appdata->components().result();
+     for (const auto &component : components) {
+         if (!component.packageNames().isEmpty()) {
+             addComponent(component);
+diff --git a/libdiscover/backends/PackageKitBackend/PackageKitBackend.h b/libdiscover/backends/PackageKitBackend/PackageKitBackend.h
+index 8fe096d66..15429a294 100644
+--- a/libdiscover/backends/PackageKitBackend/PackageKitBackend.h
++++ b/libdiscover/backends/PackageKitBackend/PackageKitBackend.h
+@@ -8,7 +8,6 @@
+ 
+ #include "PackageKitResource.h"
+ 
+-#include <AppStreamQt/pool.h>
+ #include <PackageKit/Offline>
+ #include <PackageKit/Transaction>
+ #include <QFile>
+@@ -19,6 +18,8 @@
+ #include <QThreadPool>
+ #include <QTimer>
+ #include <QVariantList>
++
++#include <appstream/AppStreamConcurrentPool.h>
+ #include <resources/AbstractResourcesBackend.h>
+ 
+ class AppPackageKitResource;
+@@ -175,7 +176,7 @@ private:
+     void updateProxy();
+     void foundNewMajorVersion(const AppStream::Release &release);
+ 
+-    QScopedPointer<AppStream::Pool> m_appdata;
++    QScopedPointer<AppStream::ConcurrentPool> m_appdata;
+     bool m_appdataLoaded = false;
+     PackageKitUpdater *m_updater;
+     QPointer<PackageKit::Transaction> m_refresher;

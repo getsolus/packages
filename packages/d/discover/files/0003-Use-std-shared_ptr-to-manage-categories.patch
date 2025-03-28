@@ -1,0 +1,1042 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aleix Pol <aleixpol@kde.org>
+Date: Sat, 25 Jan 2025 16:12:41 +0100
+Subject: [PATCH 3/6] Use std::shared_ptr to manage categories
+
+Categories get merged and destroyed normally which makes the code a bit
+fiddly. Let std::shared_ptr take care of the lifetime of such objects
+rather than doing it by ourselves.
+
+CCBUG: 491703
+---
+ discover/DiscoverDeclarativePlugin.cpp        |  2 +
+ discover/DiscoverObject.cpp                   |  2 +-
+ discover/DiscoverObject.h                     |  3 +-
+ discover/qml/DiscoverDrawer.qml               | 10 +--
+ libdiscover/Category/CategoriesReader.cpp     |  9 ++-
+ libdiscover/Category/CategoriesReader.h       |  4 +-
+ libdiscover/Category/Category.cpp             | 66 +++++++++++--------
+ libdiscover/Category/Category.h               | 40 +++++++----
+ libdiscover/Category/CategoryModel.cpp        | 27 +++++---
+ libdiscover/Category/CategoryModel.h          | 10 +--
+ libdiscover/appstream/AppStreamUtils.cpp      |  3 +-
+ libdiscover/appstream/AppStreamUtils.h        |  3 +-
+ .../AlpineApkBackend/AlpineApkBackend.cpp     | 18 ++---
+ .../AlpineApkBackend/AlpineApkBackend.h       |  2 +-
+ .../backends/KNSBackend/KNSBackend.cpp        | 42 +++++++-----
+ libdiscover/backends/KNSBackend/KNSBackend.h  |  4 +-
+ libdiscover/resources/AbstractResource.cpp    | 14 ++--
+ libdiscover/resources/AbstractResource.h      |  5 +-
+ .../resources/AbstractResourcesBackend.cpp    |  2 +-
+ .../resources/AbstractResourcesBackend.h      |  4 +-
+ libdiscover/resources/ResourcesProxyModel.cpp | 10 +--
+ libdiscover/resources/ResourcesProxyModel.h   |  6 +-
+ libdiscover/tests/CategoriesTest.cpp          | 10 +--
+ 23 files changed, 172 insertions(+), 124 deletions(-)
+
+diff --git a/discover/DiscoverDeclarativePlugin.cpp b/discover/DiscoverDeclarativePlugin.cpp
+index da50bfa4d..85f239f9b 100644
+--- a/discover/DiscoverDeclarativePlugin.cpp
++++ b/discover/DiscoverDeclarativePlugin.cpp
+@@ -77,6 +77,8 @@ QML_DECLARE_TYPEINFO(ActivatableType, QML_HAS_ATTACHED_PROPERTIES)
+ 
+ void DiscoverDeclarativePlugin::registerTypes(const char * /*uri*/)
+ {
++    qRegisterMetaType<std::shared_ptr<Category>>("std::shared_ptr<Category>");
++
+     qmlRegisterType<TransactionListener>("org.kde.discover", 2, 0, "TransactionListener");
+     qmlRegisterType<ResourcesUpdatesModel>("org.kde.discover", 2, 0, "ResourcesUpdatesModel");
+     qmlRegisterType<ResourcesProxyModel>("org.kde.discover", 2, 0, "ResourcesProxyModel");
+diff --git a/discover/DiscoverObject.cpp b/discover/DiscoverObject.cpp
+index 4ca4b5f8f..e28b319f5 100644
+--- a/discover/DiscoverObject.cpp
++++ b/discover/DiscoverObject.cpp
+@@ -285,7 +285,7 @@ void DiscoverObject::openCategory(const QString &category)
+     showLoadingPage();
+     auto action = new OneTimeAction(
+         [this, category]() {
+-            Category *cat = CategoryModel::global()->findCategoryByName(category);
++            std::shared_ptr<Category> cat = CategoryModel::global()->findCategoryByName(category);
+             if (cat) {
+                 Q_EMIT listCategoryInternal(cat);
+             } else {
+diff --git a/discover/DiscoverObject.h b/discover/DiscoverObject.h
+index 2d9d1cf04..66a5f2a67 100644
+--- a/discover/DiscoverObject.h
++++ b/discover/DiscoverObject.h
+@@ -8,6 +8,7 @@
+ 
+ #include <QUrl>
+ 
++#include "Category/Category.h"
+ #include <QQuickView>
+ 
+ class AbstractResource;
+@@ -67,7 +68,7 @@ Q_SIGNALS:
+     void openSearch(const QString &search);
+     void openApplicationInternal(AbstractResource *app);
+     void listMimeInternal(const QString &mime);
+-    void listCategoryInternal(Category *cat);
++    void listCategoryInternal(const std::shared_ptr<Category> &cat);
+ 
+     void unableToFind(const QString &resid);
+     void
+diff --git a/discover/qml/DiscoverDrawer.qml b/discover/qml/DiscoverDrawer.qml
+index 74739162f..d87cd2e5b 100644
+--- a/discover/qml/DiscoverDrawer.qml
++++ b/discover/qml/DiscoverDrawer.qml
+@@ -31,8 +31,9 @@ Kirigami.GlobalDrawer {
+ 
+     function createCategoryActions(categories /*list<Discover.Category>*/) /*list<Kirigami.Action>*/ {
+         const ret = []
+-        for (const category of categories) {
+-            const categoryAction = categoryActionComponent.createObject(drawer, { category })
++        for (const c of categories) {
++            const category = Discover.CategoryModel.get(c)
++            const categoryAction = categoryActionComponent.createObject(drawer, { category: category, categoryPtr: c })
+             categoryAction.children = createCategoryActions(category.subcategories)
+             ret.push(categoryAction)
+         }
+@@ -173,6 +174,7 @@ Kirigami.GlobalDrawer {
+         id: categoryActionComponent
+         Kirigami.Action {
+             required property Discover.Category category
++            required property var categoryPtr
+ 
+             readonly property bool itsMe: window?.leftPage?.category === category
+ 
+@@ -185,13 +187,13 @@ Kirigami.GlobalDrawer {
+             visible: category?.visible
+             onTriggered: {
+                 if (!window.leftPage.canNavigate) {
+-                    Navigation.openCategory(category, currentSearchText)
++                    Navigation.openCategory(categoryPtr, currentSearchText)
+                 } else {
+                     if (pageStack.depth > 1) {
+                         pageStack.pop()
+                     }
+                     pageStack.currentIndex = 0
+-                    window.leftPage.category = category
++                    window.leftPage.category = categoryPtr
+                 }
+ 
+                 if (!drawer.wideScreen && category.subcategories.length === 0) {
+diff --git a/libdiscover/Category/CategoriesReader.cpp b/libdiscover/Category/CategoriesReader.cpp
+index 3a1a294ff..19a1ab057 100644
+--- a/libdiscover/Category/CategoriesReader.cpp
++++ b/libdiscover/Category/CategoriesReader.cpp
+@@ -14,7 +14,7 @@
+ #include <DiscoverBackendsFactory.h>
+ #include <resources/AbstractResourcesBackend.h>
+ 
+-QVector<Category *> CategoriesReader::loadCategoriesFile(AbstractResourcesBackend *backend)
++QList<std::shared_ptr<Category>> CategoriesReader::loadCategoriesFile(AbstractResourcesBackend *backend)
+ {
+     QString path = QStandardPaths::locate(QStandardPaths::GenericDataLocation,
+                                           QStringLiteral("libdiscover/categories/") + backend->name() + QStringLiteral("-categories.xml"));
+@@ -30,9 +30,9 @@ QVector<Category *> CategoriesReader::loadCategoriesFile(AbstractResourcesBacken
+     return loadCategoriesPath(path, Category::Localization::Yes);
+ }
+ 
+-QVector<Category *> CategoriesReader::loadCategoriesPath(const QString &path, Category::Localization localization)
++QList<std::shared_ptr<Category>> CategoriesReader::loadCategoriesPath(const QString &path, Category::Localization localization)
+ {
+-    QVector<Category *> ret;
++    QList<std::shared_ptr<Category>> ret;
+     qCDebug(LIBDISCOVER_LOG) << "CategoriesReader: Load categories from file" << path << "with l10n" << (localization == Category::Localization::Yes);
+     QFile menuFile(path);
+     if (!menuFile.open(QIODevice::ReadOnly)) {
+@@ -47,7 +47,7 @@ QVector<Category *> CategoriesReader::loadCategoriesPath(const QString &path, Ca
+         xml.readNext();
+ 
+         if (xml.isStartElement() && xml.name() == QLatin1String("Menu")) {
+-            ret << new Category({path}, qApp);
++            ret << std::make_shared<Category>(QSet<QString>{path});
+             ret.last()->parseData(path, &xml, localization);
+         }
+     }
+@@ -65,7 +65,6 @@ QVector<Category *> CategoriesReader::loadCategoriesPath(const QString &path, Ca
+             break;
+         case Category::Localization::Yes:
+             qCWarning(LIBDISCOVER_LOG) << "Category has duplicates. Reloading without translations!";
+-            qDeleteAll(ret);
+             ret = loadCategoriesPath(path, Category::Localization::No);
+             break;
+         }
+diff --git a/libdiscover/Category/CategoriesReader.h b/libdiscover/Category/CategoriesReader.h
+index 523bf6966..493d94dd3 100644
+--- a/libdiscover/Category/CategoriesReader.h
++++ b/libdiscover/Category/CategoriesReader.h
+@@ -14,9 +14,9 @@ class AbstractResourcesBackend;
+ class DISCOVERCOMMON_EXPORT CategoriesReader
+ {
+ public:
+-    QVector<Category *> loadCategoriesFile(AbstractResourcesBackend *backend);
++    QList<std::shared_ptr<Category>> loadCategoriesFile(AbstractResourcesBackend *backend);
+ 
+ private:
+     friend class CategoriesTest;
+-    QVector<Category *> loadCategoriesPath(const QString &path, Category::Localization localization);
++    QList<std::shared_ptr<Category>> loadCategoriesPath(const QString &path, Category::Localization localization);
+ };
+diff --git a/libdiscover/Category/Category.cpp b/libdiscover/Category/Category.cpp
+index 3cb611600..56ba34228 100644
+--- a/libdiscover/Category/Category.cpp
++++ b/libdiscover/Category/Category.cpp
+@@ -17,9 +17,19 @@
+ 
+ using namespace Qt::StringLiterals;
+ 
++QDebug operator<<(QDebug s, const std::shared_ptr<Category> &category)
++{
++    if (category) {
++        s.nospace() << "Category(" << category->name() << ")";
++    } else {
++        s.nospace() << "Category(nullptr)";
++    }
++    return s.space();
++}
++
+ namespace
+ {
+-[[nodiscard]] std::optional<QString> duplicatedNamesAsString(const QList<Category *> &categories)
++[[nodiscard]] std::optional<QString> duplicatedNamesAsString(const QList<std::shared_ptr<Category>> &categories)
+ {
+     QStringList seen;
+     seen.reserve(categories.size());
+@@ -44,10 +54,11 @@ namespace
+ }
+ } // namespace
+ 
+-Category::Category(QSet<QString> pluginName, QObject *parent)
+-    : QObject(parent)
++Category::Category(QSet<QString> pluginName, const std::shared_ptr<Category> &parent)
++    : QObject()
+     , m_iconString(QStringLiteral("applications-other"))
+     , m_plugins(std::move(pluginName))
++    , m_parentCategory(parent)
+ {
+     // Use a timer so to compress the rootCategoriesChanged signal
+     // It generally triggers when KNS is unavailable at large (as explained in bug 454442)
+@@ -61,7 +72,7 @@ Category::Category(const QString &name,
+                    const QString &iconName,
+                    const CategoryFilter &filter,
+                    const QSet<QString> &pluginName,
+-                   const QVector<Category *> &subCategories,
++                   const QList<std::shared_ptr<Category>> &subCategories,
+                    bool isAddons)
+     : QObject(nullptr)
+     , m_name(name)
+@@ -103,7 +114,7 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml, Localizatio
+         if (xml->name() == QLatin1String("Name")) {
+             setNameMembers(xml->readElementText(), localization);
+         } else if (xml->name() == QLatin1String("Menu")) {
+-            m_subCategories << new Category(m_plugins, this);
++            m_subCategories << std::make_shared<Category>(m_plugins);
+             m_subCategories.last()->parseData(path, xml, localization);
+         } else if (xml->name() == QLatin1String("Addons")) {
+             m_isAddons = true;
+@@ -165,7 +176,7 @@ CategoryFilter Category::parseIncludes(QXmlStreamReader *xml)
+     Q_ASSERT(xml->isStartElement());
+ 
+     auto subIncludes = [&]() {
+-        QVector<CategoryFilter> filters;
++        QList<CategoryFilter> filters;
+ 
+         Q_ASSERT(xml->isStartElement());
+         const QString opening = xml->name().toString();
+@@ -238,19 +249,19 @@ void Category::setFilter(const CategoryFilter &filter)
+     m_filter = filter;
+ }
+ 
+-const QVector<Category *> &Category::subCategories() const
++const QList<std::shared_ptr<Category>> &Category::subCategories() const
+ {
+     return m_subCategories;
+ }
+ 
+-bool Category::categoryLessThan(Category *c1, const Category *c2)
++bool Category::categoryLessThan(const std::shared_ptr<Category> &c1, const std::shared_ptr<Category> &c2)
+ {
+     return (c1->priority() < c2->priority()) || (c1->priority() == c2->priority() && QString::localeAwareCompare(c1->name(), c2->name()) < 0);
+ }
+ 
+-static bool isSorted(const QVector<Category *> &vector)
++static bool isSorted(const QList<std::shared_ptr<Category>> &vector)
+ {
+-    Category *last = nullptr;
++    std::shared_ptr<Category> last = nullptr;
+     for (auto a : vector) {
+         if (last && !Category::categoryLessThan(last, a))
+             return false;
+@@ -259,7 +270,7 @@ static bool isSorted(const QVector<Category *> &vector)
+     return true;
+ }
+ 
+-void Category::sortCategories(QVector<Category *> &cats)
++void Category::sortCategories(QList<std::shared_ptr<Category>> &cats)
+ {
+ #if !defined(QT_NO_DEBUG)
+     if (const auto duplicatedNames = duplicatedNamesAsString(cats); duplicatedNames.has_value()) {
+@@ -282,13 +293,13 @@ QDebug operator<<(QDebug debug, const CategoryFilter &filter)
+     if (auto x = std::get_if<QString>(&filter.value)) {
+         debug << x;
+     } else {
+-        debug << std::get<QVector<CategoryFilter>>(filter.value);
++        debug << std::get<QList<CategoryFilter>>(filter.value);
+     }
+     debug.nospace() << ')';
+     return debug;
+ }
+ 
+-void Category::addSubcategory(QVector<Category *> &list, Category *newcat)
++void Category::addSubcategory(QList<std::shared_ptr<Category>> &list, const std::shared_ptr<Category> &newcat)
+ {
+     Q_ASSERT(isSorted(list));
+ 
+@@ -304,11 +315,11 @@ void Category::addSubcategory(QVector<Category *> &list, Category *newcat)
+             qCWarning(LIBDISCOVER_LOG) << "the following categories seem to be the same but they're not entirely" << c->icon() << newcat->icon() << "--"
+                                        << c->name() << newcat->name() << "--" << c->isAddons() << newcat->isAddons();
+         } else {
+-            CategoryFilter newFilter = {CategoryFilter::OrFilter, QVector<CategoryFilter>{c->m_filter, newcat->m_filter}};
++            CategoryFilter newFilter = {CategoryFilter::OrFilter, QList<CategoryFilter>{c->m_filter, newcat->m_filter}};
+             c->m_filter = newFilter;
+             c->m_plugins.unite(newcat->m_plugins);
+             const auto subCategories = newcat->subCategories();
+-            for (Category *nc : subCategories) {
++            for (const std::shared_ptr<Category> &nc : subCategories) {
+                 addSubcategory(c->m_subCategories, nc);
+             }
+             return;
+@@ -319,10 +330,10 @@ void Category::addSubcategory(QVector<Category *> &list, Category *newcat)
+     Q_ASSERT(isSorted(list));
+ }
+ 
+-void Category::addSubcategory(Category *cat)
++void Category::addSubcategory(const std::shared_ptr<Category> &cat)
+ {
+     int i = 0;
+-    for (Category *subCat : std::as_const(m_subCategories)) {
++    for (const std::shared_ptr<Category> &subCat : std::as_const(m_subCategories)) {
+         if (!categoryLessThan(subCat, cat)) {
+             break;
+         }
+@@ -332,12 +343,11 @@ void Category::addSubcategory(Category *cat)
+     Q_ASSERT(isSorted(m_subCategories));
+ }
+ 
+-bool Category::blacklistPluginsInVector(const QSet<QString> &pluginNames, QVector<Category *> &subCategories)
++bool Category::blacklistPluginsInVector(const QSet<QString> &pluginNames, QList<std::shared_ptr<Category>> &subCategories)
+ {
+     bool ret = false;
+-    for (QVector<Category *>::iterator it = subCategories.begin(); it != subCategories.end();) {
++    for (QList<std::shared_ptr<Category>>::iterator it = subCategories.begin(); it != subCategories.end();) {
+         if ((*it)->blacklistPlugins(pluginNames)) {
+-            delete *it;
+             it = subCategories.erase(it);
+             ret = true;
+         } else
+@@ -360,8 +370,8 @@ bool Category::blacklistPlugins(const QSet<QString> &pluginNames)
+ 
+ QVariantList Category::subCategoriesVariant() const
+ {
+-    return kTransform<QVariantList>(m_subCategories, [](Category *cat) {
+-        return QVariant::fromValue<QObject *>(cat);
++    return kTransform<QVariantList>(m_subCategories, [](const std::shared_ptr<Category> &cat) {
++        return QVariant::fromValue<std::shared_ptr<Category>>(cat);
+     });
+ }
+ 
+@@ -370,9 +380,9 @@ bool Category::matchesCategoryName(const QString &name) const
+     return involvedCategories().contains(name);
+ }
+ 
+-bool Category::contains(Category *cat) const
++bool Category::contains(const std::shared_ptr<Category> &cat) const
+ {
+-    const bool ret = cat == this || (cat && contains(qobject_cast<Category *>(cat->parent())));
++    const bool ret = cat.get() == this || (cat && contains(cat->parentCategory()));
+     return ret;
+ }
+ 
+@@ -380,7 +390,7 @@ bool Category::contains(const QVariantList &cats) const
+ {
+     bool ret = false;
+     for (const auto &itCat : cats) {
+-        if (contains(qobject_cast<Category *>(itCat.value<QObject *>()))) {
++        if (contains(itCat.value<std::shared_ptr<Category>>())) {
+             ret = true;
+             break;
+         }
+@@ -395,7 +405,7 @@ static QStringList involvedCategories(const CategoryFilter &f)
+         return {std::get<QString>(f.value)};
+     case CategoryFilter::OrFilter:
+     case CategoryFilter::AndFilter: {
+-        const auto filters = std::get<QVector<CategoryFilter>>(f.value);
++        const auto filters = std::get<QList<CategoryFilter>>(f.value);
+         QStringList ret;
+         ret.reserve(filters.size());
+         for (const auto &subFilters : filters) {
+@@ -429,11 +439,11 @@ bool CategoryFilter::operator==(const CategoryFilter &other) const
+     if (auto x = std::get_if<QString>(&value)) {
+         return *x == std::get<QString>(other.value);
+     } else {
+-        return std::get<QVector<CategoryFilter>>(value) == std::get<QVector<CategoryFilter>>(other.value);
++        return std::get<QList<CategoryFilter>>(value) == std::get<QList<CategoryFilter>>(other.value);
+     }
+ }
+ 
+-std::optional<QString> Category::duplicatedNamesAsStringNested(const QList<Category *> &categories)
++std::optional<QString> Category::duplicatedNamesAsStringNested(const QList<std::shared_ptr<Category>> &categories)
+ {
+     // The recursive call chain here is a bit crappy but I can't think of a better way to visit all m_subCategories
+     // at unknown depths. It's not too bad. We know this is finite :)
+diff --git a/libdiscover/Category/Category.h b/libdiscover/Category/Category.h
+index b498d3243..e94cda03a 100644
+--- a/libdiscover/Category/Category.h
++++ b/libdiscover/Category/Category.h
+@@ -36,7 +36,7 @@ public:
+     Q_ENUM(FilterType)
+ 
+     FilterType type;
+-    std::variant<QString, QVector<CategoryFilter>> value;
++    std::variant<QString, QList<CategoryFilter>> value;
+ 
+     bool operator==(const CategoryFilter &other) const;
+     bool operator!=(const CategoryFilter &other) const
+@@ -51,7 +51,6 @@ class DISCOVERCOMMON_EXPORT Category : public QObject
+ public:
+     Q_PROPERTY(QString name READ name NOTIFY nameChanged)
+     Q_PROPERTY(QString icon READ icon CONSTANT)
+-    Q_PROPERTY(QObject *parent READ parent CONSTANT)
+     Q_PROPERTY(QVariantList subcategories READ subCategoriesVariant NOTIFY subCategoriesChanged)
+     Q_PROPERTY(bool visible READ isVisible CONSTANT)
+ 
+@@ -62,13 +61,13 @@ public:
+         Force, /* < Use localization even when it'd break something (only use this for tests!) */
+     };
+ 
+-    explicit Category(QSet<QString> pluginNames, QObject *parent = nullptr);
++    explicit Category(QSet<QString> pluginNames, const std::shared_ptr<Category> &parent = {});
+ 
+     Category(const QString &name,
+              const QString &iconName,
+              const CategoryFilter &filters,
+              const QSet<QString> &pluginName,
+-             const QVector<Category *> &subCategories,
++             const QList<std::shared_ptr<Category>> &subCategories,
+              bool isAddons);
+     ~Category() override;
+ 
+@@ -79,17 +78,17 @@ public:
+     QString icon() const;
+     void setFilter(const CategoryFilter &filter);
+     CategoryFilter filter() const;
+-    const QVector<Category *> &subCategories() const;
++    const QList<std::shared_ptr<Category>> &subCategories() const;
+     QVariantList subCategoriesVariant() const;
+ 
+-    static void sortCategories(QVector<Category *> &cats);
+-    static void addSubcategory(QVector<Category *> &cats, Category *cat);
++    static void sortCategories(QList<std::shared_ptr<Category>> &cats);
++    static void addSubcategory(QList<std::shared_ptr<Category>> &cats, const std::shared_ptr<Category> &cat);
+     /**
+      * Add a subcategory to this category. This function should only
+      * be used during the initialisation stage, before adding the local
+      * root category to the global root category model.
+      */
+-    void addSubcategory(Category *cat);
++    void addSubcategory(const std::shared_ptr<Category> &cat);
+     void parseData(const QString &path, QXmlStreamReader *xml, Localization localization);
+     bool blacklistPlugins(const QSet<QString> &pluginName);
+     bool isAddons() const
+@@ -113,30 +112,39 @@ public:
+         return m_visible;
+     }
+ 
+-    Q_SCRIPTABLE bool contains(Category *cat) const;
++    Q_SCRIPTABLE bool contains(const std::shared_ptr<Category> &cat) const;
+     Q_SCRIPTABLE bool contains(const QVariantList &cats) const;
+ 
+-    static bool categoryLessThan(Category *c1, const Category *c2);
+-    static bool blacklistPluginsInVector(const QSet<QString> &pluginNames, QVector<Category *> &subCategories);
++    static bool categoryLessThan(const std::shared_ptr<Category> &c1, const std::shared_ptr<Category> &c2);
++    static bool blacklistPluginsInVector(const QSet<QString> &pluginNames, QList<std::shared_ptr<Category>> &subCategories);
+ 
+     QStringList involvedCategories() const;
+     QString untranslatedName() const
+     {
+         return m_untranslatedName;
+     }
+-    [[nodiscard]] static std::optional<QString> duplicatedNamesAsStringNested(const QList<Category *> &categories);
++    [[nodiscard]] static std::optional<QString> duplicatedNamesAsStringNested(const QList<std::shared_ptr<Category>> &categories);
++
++    std::shared_ptr<Category> parentCategory() const
++    {
++        return m_parentCategory;
++    }
+ 
+ Q_SIGNALS:
+     void subCategoriesChanged();
+     void nameChanged();
+ 
+ private:
++    // disable the QObject parent business
++    QObject *parent() const;
++    void setParent(QObject *);
++
+     void setNameMembers(const QString &name, Localization localization);
+     QString m_name;
+     QString m_untranslatedName;
+     QString m_iconString;
+     CategoryFilter m_filter;
+-    QVector<Category *> m_subCategories;
++    QList<std::shared_ptr<Category>> m_subCategories;
+ 
+     CategoryFilter parseIncludes(QXmlStreamReader *xml);
+     QSet<QString> m_plugins;
+@@ -144,4 +152,10 @@ private:
+     qint8 m_priority = 0;
+     QTimer *m_subCategoriesChanged;
+     bool m_visible = true;
++    std::shared_ptr<Category> m_parentCategory;
+ };
++
++Q_DECLARE_SMART_POINTER_METATYPE(std::shared_ptr)
++Q_DECLARE_METATYPE(std::shared_ptr<Category>)
++
++DISCOVERCOMMON_EXPORT QDebug operator<<(QDebug dbg, const std::shared_ptr<Category> &category);
+diff --git a/libdiscover/Category/CategoryModel.cpp b/libdiscover/Category/CategoryModel.cpp
+index 5ad779319..272906d22 100644
+--- a/libdiscover/Category/CategoryModel.cpp
++++ b/libdiscover/Category/CategoryModel.cpp
+@@ -9,6 +9,7 @@
+ #include "CategoriesReader.h"
+ #include "libdiscover_debug.h"
+ #include <QCollator>
++#include <QQmlEngine>
+ #include <resources/ResourcesModel.h>
+ #include <utils.h>
+ 
+@@ -45,18 +46,18 @@ void CategoryModel::populateCategories()
+ {
+     const auto backends = ResourcesModel::global()->backends();
+ 
+-    QList<Category *> ret;
++    QList<std::shared_ptr<Category>> ret;
+     CategoriesReader cr;
+     for (const auto backend : backends) {
+         if (!backend->isValid())
+             continue;
+ 
+-        const QList<Category *> cats = cr.loadCategoriesFile(backend);
++        const QList<std::shared_ptr<Category>> cats = cr.loadCategoriesFile(backend);
+ 
+         if (ret.isEmpty()) {
+             ret = cats;
+         } else {
+-            for (Category *c : cats)
++            for (std::shared_ptr<Category> c : cats)
+                 Category::addSubcategory(ret, c);
+         }
+     }
+@@ -66,7 +67,7 @@ void CategoryModel::populateCategories()
+     }
+ }
+ 
+-const QList<Category *> &CategoryModel::rootCategories() const
++const QList<std::shared_ptr<Category>> &CategoryModel::rootCategories() const
+ {
+     return m_rootCategories;
+ }
+@@ -79,14 +80,14 @@ void CategoryModel::blacklistPlugin(const QString &name)
+     }
+ }
+ 
+-static Category *recFindCategory(Category *root, const QString &name)
++static std::shared_ptr<Category> recFindCategory(std::shared_ptr<Category> root, const QString &name)
+ {
+     if (root->untranslatedName() == name)
+         return root;
+     else {
+         const auto &subs = root->subCategories();
+-        for (Category *c : subs) {
+-            Category *ret = recFindCategory(c, name);
++        for (std::shared_ptr<Category> c : subs) {
++            std::shared_ptr<Category> ret = recFindCategory(c, name);
+             if (ret)
+                 return ret;
+         }
+@@ -94,10 +95,16 @@ static Category *recFindCategory(Category *root, const QString &name)
+     return nullptr;
+ }
+ 
+-Category *CategoryModel::findCategoryByName(const QString &name) const
++QObject *CategoryModel::get(const std::shared_ptr<Category> &ptr)
+ {
+-    for (Category *cat : m_rootCategories) {
+-        Category *ret = recFindCategory(cat, name);
++    QQmlEngine::setObjectOwnership(ptr.get(), QQmlEngine::CppOwnership);
++    return ptr.get();
++}
++
++std::shared_ptr<Category> CategoryModel::findCategoryByName(const QString &name) const
++{
++    for (std::shared_ptr<Category> cat : m_rootCategories) {
++        std::shared_ptr<Category> ret = recFindCategory(cat, name);
+         if (ret)
+             return ret;
+     }
+diff --git a/libdiscover/Category/CategoryModel.h b/libdiscover/Category/CategoryModel.h
+index 26c758f8b..d039be820 100644
+--- a/libdiscover/Category/CategoryModel.h
++++ b/libdiscover/Category/CategoryModel.h
+@@ -17,21 +17,23 @@ class QTimer;
+ class DISCOVERCOMMON_EXPORT CategoryModel : public QObject
+ {
+     Q_OBJECT
+-    Q_PROPERTY(QList<Category *> rootCategories READ rootCategories NOTIFY rootCategoriesChanged)
++    Q_PROPERTY(QList<std::shared_ptr<Category>> rootCategories READ rootCategories NOTIFY rootCategoriesChanged)
+ public:
+     explicit CategoryModel(QObject *parent = nullptr);
+ 
+     static CategoryModel *global();
+ 
+-    Q_SCRIPTABLE Category *findCategoryByName(const QString &name) const;
++    Q_SCRIPTABLE std::shared_ptr<Category> findCategoryByName(const QString &name) const;
+     void blacklistPlugin(const QString &name);
+-    const QList<Category *> &rootCategories() const;
++    const QList<std::shared_ptr<Category>> &rootCategories() const;
+     void populateCategories();
+ 
++    Q_SCRIPTABLE static QObject *get(const std::shared_ptr<Category> &ptr);
++
+ Q_SIGNALS:
+     void rootCategoriesChanged();
+ 
+ private:
+     QTimer *m_rootCategoriesChanged;
+-    QList<Category *> m_rootCategories;
++    QList<std::shared_ptr<Category>> m_rootCategories;
+ };
+diff --git a/libdiscover/appstream/AppStreamUtils.cpp b/libdiscover/appstream/AppStreamUtils.cpp
+index 975091bd1..b874ba8e5 100644
+--- a/libdiscover/appstream/AppStreamUtils.cpp
++++ b/libdiscover/appstream/AppStreamUtils.cpp
+@@ -194,7 +194,8 @@ static void kRemoveDuplicates(AppStream::ComponentBox &input, AppStream::Bundle:
+     }
+ }
+ 
+-QFuture<AppStream::ComponentBox> AppStreamUtils::componentsByCategoriesTask(AppStream::ConcurrentPool *pool, Category *cat, AppStream::Bundle::Kind kind)
++QFuture<AppStream::ComponentBox>
++AppStreamUtils::componentsByCategoriesTask(AppStream::ConcurrentPool *pool, const std::shared_ptr<Category> &cat, AppStream::Bundle::Kind kind)
+ {
+     if (cat->name() == QLatin1StringView("All Applications")) {
+         return pool->componentsByKind(AppStream::Component::KindDesktopApp);
+diff --git a/libdiscover/appstream/AppStreamUtils.h b/libdiscover/appstream/AppStreamUtils.h
+index efd887d88..a5bba850a 100644
+--- a/libdiscover/appstream/AppStreamUtils.h
++++ b/libdiscover/appstream/AppStreamUtils.h
+@@ -39,7 +39,8 @@ DISCOVERCOMMON_EXPORT QString versionString(const QString &version, const AppStr
+ DISCOVERCOMMON_EXPORT QString contentRatingDescription(const AppStream::Component &appdata);
+ DISCOVERCOMMON_EXPORT uint contentRatingMinimumAge(const AppStream::Component &appdata);
+ 
+-DISCOVERCOMMON_EXPORT QFuture<AppStream::ComponentBox> componentsByCategoriesTask(AppStream::ConcurrentPool *pool, Category *cat, AppStream::Bundle::Kind kind);
++DISCOVERCOMMON_EXPORT QFuture<AppStream::ComponentBox>
++componentsByCategoriesTask(AppStream::ConcurrentPool *pool, const std::shared_ptr<Category> &cat, AppStream::Bundle::Kind kind);
+ 
+ DISCOVERCOMMON_EXPORT bool kIconLoaderHasIcon(const QString &name);
+ }
+diff --git a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
+index dd2544c4c..9da0c21df 100644
+--- a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
++++ b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
+@@ -281,23 +281,23 @@ void AlpineApkBackend::onAppstreamDataDownloaded()
+     }
+ }
+ 
+-QVector<Category *> AlpineApkBackend::category() const
++QList<std::shared_ptr<Category>> AlpineApkBackend::category() const
+ {
+     static CategoryFilter s_apkFlt{CategoryFilter::FilterType::CategoryNameFilter, QLatin1String("alpine_packages")};
+ 
+     // Display a single root category
+     // we could add more, but Alpine apk does not have this concept
+-    static Category *s_rootCat = new Category(i18nc("Root category name", "Alpine Linux packages"), // name
+-                                              QStringLiteral("package-x-generic"), // icon name
+-                                              s_apkFlt, // const CategoryFilter& filters
+-                                              {displayName()}, // pluginName
+-                                              {}, // QVector<Category *> subCategories - none
+-                                              false // isAddons
+-    );
++    static std::shared_ptr<Category> s_rootCat(std::make_shared<Category>(i18nc("Root category name", "Alpine Linux packages"), // name
++                                                                          QStringLiteral("package-x-generic"), // icon name
++                                                                          s_apkFlt, // const CategoryFilter& filters
++                                                                          QSet<QString>{displayName()}, // pluginName
++                                                                          QList<std::shared_ptr<Category>>{}, // subcategories
++                                                                          false // isAddons
++                                                                          ));
+ 
+     return {s_rootCat};
+ 
+-    //    static QVector<Category *> s_cats;
++    //    static QList<std::shared_ptr<Category>> s_cats;
+     //    if (s_cats.isEmpty()) {
+     //        // fill only once
+     //        s_cats << s_rootCat;
+diff --git a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.h b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.h
+index 2622f0abb..633784694 100644
+--- a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.h
++++ b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.h
+@@ -30,7 +30,7 @@ class AlpineApkBackend : public AbstractResourcesBackend
+ public:
+     explicit AlpineApkBackend(QObject *parent = nullptr);
+ 
+-    QVector<Category *> category() const override;
++    QList<std::shared_ptr<Category>> category() const override;
+     int updatesCount() const override;
+     AbstractBackendUpdater *backendUpdater() const override;
+     AbstractReviewsBackend *reviewsBackend() const override;
+diff --git a/libdiscover/backends/KNSBackend/KNSBackend.cpp b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+index 85b9d54ce..b3a924a3f 100644
+--- a/libdiscover/backends/KNSBackend/KNSBackend.cpp
++++ b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+@@ -203,18 +203,28 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+     m_hasApplications = group.readEntry<bool>("X-Discover-HasApplications", false);
+ 
+     const QStringList cats = group.readEntry<QStringList>("Categories", QStringList{});
+-    QVector<Category *> categories;
++    QList<std::shared_ptr<Category>> categories;
+     if (cats.count() > 1) {
+         m_categories += cats;
+         for (const auto &cat : cats) {
+             if (m_hasApplications)
+-                categories << new Category(cat, QStringLiteral("applications-other"), {CategoryFilter::CategoryNameFilter, cat}, backendName, {}, true);
++                categories << std::make_shared<Category>(cat,
++                                                         QStringLiteral("applications-other"),
++                                                         CategoryFilter{CategoryFilter::CategoryNameFilter, cat},
++                                                         backendName,
++                                                         QList<std::shared_ptr<Category>>{},
++                                                         true);
+             else
+-                categories << new Category(cat, QStringLiteral("plasma"), {CategoryFilter::CategoryNameFilter, cat}, backendName, {}, true);
++                categories << std::make_shared<Category>(cat,
++                                                         QStringLiteral("plasma"),
++                                                         CategoryFilter{CategoryFilter::CategoryNameFilter, cat},
++                                                         backendName,
++                                                         QList<std::shared_ptr<Category>>{},
++                                                         true);
+         }
+     }
+ 
+-    QVector<Category *> topCategories{categories};
++    QList<std::shared_ptr<Category>> topCategories{categories};
+     for (const auto &cat : std::as_const(categories)) {
+         const QString catName = cat->name().append(QLatin1Char('/'));
+         for (const auto &potentialSubCat : std::as_const(categories)) {
+@@ -233,7 +243,7 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+ 
+     connect(m_engine, &KNSCore::EngineBase::signalCategoriesMetadataLoaded, this, [categories](const QList<KNSCore::CategoryMetadata> &categoryMetadatas) {
+         for (const KNSCore::CategoryMetadata &category : categoryMetadatas) {
+-            for (Category *cat : std::as_const(categories)) {
++            for (const std::shared_ptr<Category> &cat : std::as_const(categories)) {
+                 if (cat->matchesCategoryName(category.name())) {
+                     cat->setName(category.displayName());
+                     break;
+@@ -244,14 +254,14 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+     m_engine->init(m_name);
+ 
+     if (m_hasApplications) {
+-        auto actualCategory = new Category(m_displayName, QStringLiteral("applications-other"), filter, backendName, topCategories, false);
+-        auto applicationCategory = new Category(i18n("Applications"), //
+-                                                QStringLiteral("applications-internet"),
+-                                                filter,
+-                                                backendName,
+-                                                {actualCategory},
+-                                                false);
+-        const QVector<CategoryFilter> filters = {{CategoryFilter::CategoryNameFilter, QLatin1String("Application")}, filter};
++        auto actualCategory = std::make_shared<Category>(m_displayName, QStringLiteral("applications-other"), filter, backendName, topCategories, false);
++        std::shared_ptr<Category> applicationCategory = std::make_shared<Category>(i18n("Applications"), //
++                                                                                   QStringLiteral("applications-internet"),
++                                                                                   filter,
++                                                                                   backendName,
++                                                                                   QList<std::shared_ptr<Category>>{actualCategory},
++                                                                                   false);
++        const QList<CategoryFilter> filters = {{CategoryFilter::CategoryNameFilter, QLatin1String("Application")}, filter};
+         applicationCategory->setFilter({CategoryFilter::AndFilter, filters});
+         m_categories.append(applicationCategory->name());
+         m_rootCategories = {applicationCategory};
+@@ -272,11 +282,10 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+         m_engine->setTagFilter(tagFilter);
+     } else {
+         const auto iconName = isPlasmaCategory ? QStringLiteral("plasma") : QStringLiteral("applications-other");
+-        auto actualCategory = new Category(m_displayName, iconName, filter, backendName, categories, true);
+-        actualCategory->setParent(this);
++        auto actualCategory = std::make_shared<Category>(m_displayName, iconName, filter, backendName, categories, true);
+ 
+         const auto topLevelName = isPlasmaCategory ? i18n("Plasma Addons") : i18n("Application Addons");
+-        auto addonsCategory = new Category(topLevelName, iconName, filter, backendName, {actualCategory}, true);
++        auto addonsCategory = std::make_shared<Category>(topLevelName, iconName, filter, backendName, QList<std::shared_ptr<Category>>{actualCategory}, true);
+         m_rootCategories = {addonsCategory};
+     }
+ 
+@@ -285,7 +294,6 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+ 
+ KNSBackend::~KNSBackend()
+ {
+-    qDeleteAll(m_rootCategories);
+ }
+ 
+ void KNSBackend::markInvalid(const QString &message)
+diff --git a/libdiscover/backends/KNSBackend/KNSBackend.h b/libdiscover/backends/KNSBackend/KNSBackend.h
+index bacf9c058..bbc2a0941 100644
+--- a/libdiscover/backends/KNSBackend/KNSBackend.h
++++ b/libdiscover/backends/KNSBackend/KNSBackend.h
+@@ -36,7 +36,7 @@ public:
+     ResultsStream *search(const AbstractResourcesBackend::Filters &filter) override;
+     ResultsStream *findResourceByPackageName(const QUrl &search);
+ 
+-    QVector<Category *> category() const override
++    QList<std::shared_ptr<Category>> category() const override
+     {
+         return m_rootCategories;
+     }
+@@ -100,7 +100,7 @@ private:
+     StandardBackendUpdater *const m_updater;
+     QStringList m_extends;
+     QStringList m_categories;
+-    QVector<Category *> m_rootCategories;
++    QList<std::shared_ptr<Category>> m_rootCategories;
+     QString m_displayName;
+     bool m_initialized = false;
+     bool m_hasApplications = false;
+diff --git a/libdiscover/resources/AbstractResource.cpp b/libdiscover/resources/AbstractResource.cpp
+index 556e7e5f2..f741d43fb 100644
+--- a/libdiscover/resources/AbstractResource.cpp
++++ b/libdiscover/resources/AbstractResource.cpp
+@@ -177,21 +177,21 @@ static bool shouldFilter(AbstractResource *resource, const CategoryFilter &filte
+         ret = resource->packageName() == std::get<QString>(filter.value);
+         break;
+     case CategoryFilter::AndFilter: {
+-        const auto filters = std::get<QVector<CategoryFilter>>(filter.value);
++        const auto filters = std::get<QList<CategoryFilter>>(filter.value);
+         ret = std::all_of(filters.begin(), filters.end(), [resource](const CategoryFilter &filter) {
+             return shouldFilter(resource, filter);
+         });
+         break;
+     }
+     case CategoryFilter::OrFilter: {
+-        const auto filters = std::get<QVector<CategoryFilter>>(filter.value);
++        const auto filters = std::get<QList<CategoryFilter>>(filter.value);
+         ret = std::any_of(filters.begin(), filters.end(), [resource](const CategoryFilter &filter) {
+             return shouldFilter(resource, filter);
+         });
+         break;
+     }
+     case CategoryFilter::NotFilter: {
+-        const auto filters = std::get<QVector<CategoryFilter>>(filter.value);
++        const auto filters = std::get<QList<CategoryFilter>>(filter.value);
+         ret = !std::any_of(filters.begin(), filters.end(), [resource](const CategoryFilter &filter) {
+             return shouldFilter(resource, filter);
+         });
+@@ -201,14 +201,14 @@ static bool shouldFilter(AbstractResource *resource, const CategoryFilter &filte
+     return ret;
+ }
+ 
+-bool AbstractResource::categoryMatches(Category *cat)
++bool AbstractResource::categoryMatches(const std::shared_ptr<Category> &cat)
+ {
+     return shouldFilter(this, cat->filter());
+ }
+ 
+-static QSet<Category *> walkCategories(AbstractResource *resource, const QVector<Category *> &categories)
++static QSet<std::shared_ptr<Category>> walkCategories(AbstractResource *resource, const QList<std::shared_ptr<Category>> &categories)
+ {
+-    QSet<Category *> ret;
++    QSet<std::shared_ptr<Category>> ret;
+     for (auto category : categories) {
+         if (resource->categoryMatches(category)) {
+             const auto subcats = walkCategories(resource, category->subCategories());
+@@ -223,7 +223,7 @@ static QSet<Category *> walkCategories(AbstractResource *resource, const QVector
+     return ret;
+ }
+ 
+-QSet<Category *> AbstractResource::categoryObjects(const QVector<Category *> &categories) const
++QSet<std::shared_ptr<Category>> AbstractResource::categoryObjects(const QList<std::shared_ptr<Category>> &categories) const
+ {
+     return walkCategories(const_cast<AbstractResource *>(this), categories);
+ }
+diff --git a/libdiscover/resources/AbstractResource.h b/libdiscover/resources/AbstractResource.h
+index 596cf8caf..99d927646 100644
+--- a/libdiscover/resources/AbstractResource.h
++++ b/libdiscover/resources/AbstractResource.h
+@@ -21,6 +21,7 @@
+ 
+ #include <ReviewsBackend/Rating.h>
+ 
++#include "Category/Category.h"
+ #include "PackageState.h"
+ #include "discovercommon_export.h"
+ 
+@@ -233,9 +234,9 @@ public:
+      */
+     virtual Rating rating() const;
+ 
+-    bool categoryMatches(Category *cat);
++    bool categoryMatches(const std::shared_ptr<Category> &cat);
+ 
+-    QSet<Category *> categoryObjects(const QVector<Category *> &cats) const;
++    QSet<std::shared_ptr<Category>> categoryObjects(const QList<std::shared_ptr<Category>> &cats) const;
+ 
+     /**
+      * @returns a url that uniquely identifies the application
+diff --git a/libdiscover/resources/AbstractResourcesBackend.cpp b/libdiscover/resources/AbstractResourcesBackend.cpp
+index d6bf39b49..fccaa02e8 100644
+--- a/libdiscover/resources/AbstractResourcesBackend.cpp
++++ b/libdiscover/resources/AbstractResourcesBackend.cpp
+@@ -19,7 +19,7 @@ QDebug operator<<(QDebug debug, const AbstractResourcesBackend::Filters &filters
+     QDebugStateSaver saver(debug);
+     debug.nospace() << "Filters(";
+     if (filters.category)
+-        debug.nospace() << "category: " << filters.category << ',';
++        debug.nospace() << "category: " << filters.category.get() << ',';
+     if (filters.state)
+         debug.nospace() << "state: " << filters.state << ',';
+     if (!filters.mimetype.isEmpty())
+diff --git a/libdiscover/resources/AbstractResourcesBackend.h b/libdiscover/resources/AbstractResourcesBackend.h
+index 1f4e5bce1..6c726b2a7 100644
+--- a/libdiscover/resources/AbstractResourcesBackend.h
++++ b/libdiscover/resources/AbstractResourcesBackend.h
+@@ -143,7 +143,7 @@ public:
+     virtual bool isValid() const = 0;
+ 
+     struct Filters {
+-        Category *category = nullptr;
++        std::shared_ptr<Category> category = nullptr;
+         AbstractResource::State state = AbstractResource::Broken;
+         QString mimetype;
+         QString search;
+@@ -221,7 +221,7 @@ public:
+     /**
+      * @returns the root category tree
+      */
+-    virtual QVector<Category *> category() const
++    virtual QList<std::shared_ptr<Category>> category() const
+     {
+         return {};
+     }
+diff --git a/libdiscover/resources/ResourcesProxyModel.cpp b/libdiscover/resources/ResourcesProxyModel.cpp
+index dc02c5f9b..c0241dbf7 100644
+--- a/libdiscover/resources/ResourcesProxyModel.cpp
++++ b/libdiscover/resources/ResourcesProxyModel.cpp
+@@ -336,7 +336,7 @@ void ResourcesProxyModel::setFilteredCategoryName(const QString &categoryName)
+     }
+ }
+ 
+-void ResourcesProxyModel::setFiltersFromCategory(Category *category)
++void ResourcesProxyModel::setFiltersFromCategory(const std::shared_ptr<Category> &category)
+ {
+     if (m_filters.category != category) {
+         m_filters.category = category;
+@@ -350,7 +350,7 @@ void ResourcesProxyModel::fetchSubcategories()
+     auto categories = kToSet(m_filters.category ? m_filters.category->subCategories() : CategoryModel::global()->rootCategories());
+ 
+     const int count = rowCount();
+-    QSet<Category *> done;
++    QSet<std::shared_ptr<Category>> done;
+     for (int i = 0; i < count && !categories.isEmpty(); ++i) {
+         const auto resource = m_displayedResources[i].resource;
+         const auto found = resource->categoryObjects(kSetToVector(categories));
+@@ -358,8 +358,8 @@ void ResourcesProxyModel::fetchSubcategories()
+         categories.subtract(found);
+     }
+ 
+-    const QVariantList ret = kTransform<QVariantList>(done, [](Category *category) {
+-        return QVariant::fromValue<QObject *>(category);
++    const QVariantList ret = kTransform<QVariantList>(done, [](const std::shared_ptr<Category> &category) {
++        return QVariant::fromValue<std::shared_ptr<Category>>(category);
+     });
+     if (m_subcategories != ret) {
+         m_subcategories = ret;
+@@ -442,7 +442,7 @@ bool ResourcesProxyModel::orderedLessThan(const StreamResult &left, const Stream
+     return false;
+ }
+ 
+-Category *ResourcesProxyModel::filteredCategory() const
++std::shared_ptr<Category> ResourcesProxyModel::filteredCategory() const
+ {
+     return m_filters.category;
+ }
+diff --git a/libdiscover/resources/ResourcesProxyModel.h b/libdiscover/resources/ResourcesProxyModel.h
+index cf9fe44fd..a928aad51 100644
+--- a/libdiscover/resources/ResourcesProxyModel.h
++++ b/libdiscover/resources/ResourcesProxyModel.h
+@@ -50,7 +50,7 @@ class DISCOVERCOMMON_EXPORT ResourcesProxyModel : public QAbstractListModel, pub
+     Q_INTERFACES(QQmlParserStatus)
+     Q_PROPERTY(Roles sortRole READ sortRole WRITE setSortRole NOTIFY sortRoleChanged)
+     Q_PROPERTY(Qt::SortOrder sortOrder READ sortOrder WRITE setSortOrder NOTIFY sortOrderChanged)
+-    Q_PROPERTY(Category *filteredCategory READ filteredCategory WRITE setFiltersFromCategory NOTIFY categoryChanged)
++    Q_PROPERTY(std::shared_ptr<Category> filteredCategory READ filteredCategory WRITE setFiltersFromCategory NOTIFY categoryChanged)
+     Q_PROPERTY(QString filteredCategoryName READ filteredCategoryName WRITE setFilteredCategoryName NOTIFY categoryChanged)
+     Q_PROPERTY(QString originFilter READ originFilter WRITE setOriginFilter)
+     Q_PROPERTY(AbstractResource::State stateFilter READ stateFilter WRITE setStateFilter NOTIFY stateFilterChanged)
+@@ -100,7 +100,7 @@ public:
+     QString lastSearch() const;
+     void setOriginFilter(const QString &origin);
+     QString originFilter() const;
+-    void setFiltersFromCategory(Category *category);
++    void setFiltersFromCategory(const std::shared_ptr<Category> &category);
+     void setStateFilter(AbstractResource::State s);
+     AbstractResource::State stateFilter() const;
+     void setSortRole(Roles sortRole);
+@@ -116,7 +116,7 @@ public:
+     void setFilterMinimumState(bool filterMinimumState);
+     bool filterMinimumState() const;
+ 
+-    Category *filteredCategory() const;
++    std::shared_ptr<Category> filteredCategory() const;
+     QString filteredCategoryName() const;
+     void setFilteredCategoryName(const QString &categoryName);
+ 
+diff --git a/libdiscover/tests/CategoriesTest.cpp b/libdiscover/tests/CategoriesTest.cpp
+index 44e52e278..cad8805b4 100644
+--- a/libdiscover/tests/CategoriesTest.cpp
++++ b/libdiscover/tests/CategoriesTest.cpp
+@@ -19,7 +19,7 @@ public:
+     {
+     }
+ 
+-    QVector<Category *> populateCategories()
++    QList<std::shared_ptr<Category>> populateCategories()
+     {
+         const QVector<QString> categoryFiles = {
+             QFINDTESTDATA("../backends/PackageKitBackend/packagekit-backend-categories.xml"),
+@@ -27,16 +27,16 @@ public:
+             QFINDTESTDATA("../backends/DummyBackend/dummy-backend-categories.xml"),
+         };
+ 
+-        QVector<Category *> ret;
++        QList<std::shared_ptr<Category>> ret;
+         CategoriesReader reader;
+         for (const QString &name : categoryFiles) {
+             qDebug() << "doing..." << name;
+-            const QVector<Category *> cats = reader.loadCategoriesPath(name, Category::Localization::Force);
++            const QList<std::shared_ptr<Category>> cats = reader.loadCategoriesPath(name, Category::Localization::Force);
+ 
+             if (ret.isEmpty()) {
+                 ret = cats;
+             } else {
+-                for (Category *c : cats)
++                for (const std::shared_ptr<Category> &c : cats)
+                     Category::addSubcategory(ret, c);
+             }
+         }
+@@ -50,7 +50,7 @@ private Q_SLOTS:
+         auto categories = populateCategories();
+         QVERIFY(!categories.isEmpty());
+ 
+-        for (Category *c : categories) {
++        for (const std::shared_ptr<Category> &c : categories) {
+             if (c->name() != QLatin1String("Dummy Category"))
+                 continue;
+ 

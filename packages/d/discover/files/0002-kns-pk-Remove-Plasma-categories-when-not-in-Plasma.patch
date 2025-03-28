@@ -1,0 +1,145 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aleix Pol <aleixpol@kde.org>
+Date: Thu, 16 Jan 2025 00:55:18 +0100
+Subject: [PATCH 2/6] kns+pk: Remove Plasma categories when not in Plasma
+
+It seems to be what's needed for other desktops to use Discover to
+fulfill their users.
+
+Fixes #34.
+---
+ discover/qml/DiscoverDrawer.qml               |  1 +
+ libdiscover/Category/Category.cpp             |  2 ++
+ libdiscover/Category/Category.h               | 13 +++++++
+ .../backends/KNSBackend/KNSBackend.cpp        | 34 +++++++++----------
+ .../packagekit-backend-categories.xml         |  1 +
+ 5 files changed, 33 insertions(+), 18 deletions(-)
+
+diff --git a/discover/qml/DiscoverDrawer.qml b/discover/qml/DiscoverDrawer.qml
+index 3ba33ce08..74739162f 100644
+--- a/discover/qml/DiscoverDrawer.qml
++++ b/discover/qml/DiscoverDrawer.qml
+@@ -182,6 +182,7 @@ Kirigami.GlobalDrawer {
+             enabled: (currentSearchText.length === 0
+                       || (category?.contains(window?.leftPage?.model?.subcategories) ?? false))
+ 
++            visible: category?.visible
+             onTriggered: {
+                 if (!window.leftPage.canNavigate) {
+                     Navigation.openCategory(category, currentSearchText)
+diff --git a/libdiscover/Category/Category.cpp b/libdiscover/Category/Category.cpp
+index 034b33a4b..3cb611600 100644
+--- a/libdiscover/Category/Category.cpp
++++ b/libdiscover/Category/Category.cpp
+@@ -109,6 +109,8 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml, Localizatio
+             m_isAddons = true;
+             m_priority = 5;
+             xml->readNext();
++        } else if (xml->name() == QLatin1String("OnlyShowIn")) {
++            m_visible = qEnvironmentVariable("XDG_CURRENT_DESKTOP") == xml->readElementText();
+         } else if (xml->name() == QLatin1String("Icon")) {
+             m_iconString = xml->readElementText();
+         } else if (xml->name() == QLatin1String("Include") || xml->name() == QLatin1String("Categories")) {
+diff --git a/libdiscover/Category/Category.h b/libdiscover/Category/Category.h
+index caa8b4cf3..b498d3243 100644
+--- a/libdiscover/Category/Category.h
++++ b/libdiscover/Category/Category.h
+@@ -53,6 +53,7 @@ public:
+     Q_PROPERTY(QString icon READ icon CONSTANT)
+     Q_PROPERTY(QObject *parent READ parent CONSTANT)
+     Q_PROPERTY(QVariantList subcategories READ subCategoriesVariant NOTIFY subCategoriesChanged)
++    Q_PROPERTY(bool visible READ isVisible CONSTANT)
+ 
+     // Whether to apply localization during parsing.
+     enum class Localization {
+@@ -101,6 +102,17 @@ public:
+     }
+     bool matchesCategoryName(const QString &name) const;
+ 
++    /**
++     * @returns whether the category ought to be listed.
++     *
++     * It can be disabled passing <OnlyShowIn> with a vale differing from
++     * XDG_CURRENT_DESKTOP environment variable.
++     */
++    bool isVisible() const
++    {
++        return m_visible;
++    }
++
+     Q_SCRIPTABLE bool contains(Category *cat) const;
+     Q_SCRIPTABLE bool contains(const QVariantList &cats) const;
+ 
+@@ -131,4 +143,5 @@ private:
+     bool m_isAddons = false;
+     qint8 m_priority = 0;
+     QTimer *m_subCategoriesChanged;
++    bool m_visible = true;
+ };
+diff --git a/libdiscover/backends/KNSBackend/KNSBackend.cpp b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+index 2b45935b8..85b9d54ce 100644
+--- a/libdiscover/backends/KNSBackend/KNSBackend.cpp
++++ b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+@@ -154,6 +154,20 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+     setName(fileName);
+     setObjectName(knsrc);
+ 
++    static const QSet<QStringView> knsrcPlasma = {
++        u"aurorae.knsrc",         u"icons.knsrc",        u"kfontinst.knsrc",          u"lookandfeel.knsrc", u"plasma-themes.knsrc",
++        u"plasmoids.knsrc",       u"wallpaper.knsrc",    u"wallpaper-mobile.knsrc",   u"xcursor.knsrc",     u"cgcgtk3.knsrc",
++        u"cgcicon.knsrc",         u"cgctheme.knsrc",     u"kwinswitcher.knsrc",       u"kwineffect.knsrc",  u"kwinscripts.knsrc",
++        u"comic.knsrc",           u"colorschemes.knsrc", u"emoticons.knsrc",          u"plymouth.knsrc",    u"sddmtheme.knsrc",
++        u"wallpaperplugin.knsrc", u"ksplash.knsrc",      u"window-decorations.knsrc",
++    };
++    const bool isPlasmaCategory = knsrcPlasma.contains(fileName);
++    static const bool weAreOnPlasma = qgetenv("XDG_CURRENT_DESKTOP") == "KDE";
++    if (isPlasmaCategory && !weAreOnPlasma) {
++        markInvalid(QStringLiteral("Skipping Plasma categories outside of Plasma."));
++        return;
++    }
++
+     const KConfig conf(m_name, KConfig::SimpleConfig);
+     const bool hasVersionlessGrp = conf.hasGroup(u"KNewStuff"_s);
+     if (!conf.hasGroup(u"KNewStuff3"_s) && !hasVersionlessGrp) {
+@@ -257,27 +271,11 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+         }
+         m_engine->setTagFilter(tagFilter);
+     } else {
+-        static const QSet<QString> knsrcPlasma = {
+-            QStringLiteral("aurorae.knsrc"),       QStringLiteral("icons.knsrc"),
+-            QStringLiteral("kfontinst.knsrc"),     QStringLiteral("lookandfeel.knsrc"),
+-            QStringLiteral("plasma-themes.knsrc"), QStringLiteral("plasmoids.knsrc"),
+-            QStringLiteral("wallpaper.knsrc"),     QStringLiteral("wallpaper-mobile.knsrc"),
+-            QStringLiteral("xcursor.knsrc"),
+-
+-            QStringLiteral("cgcgtk3.knsrc"),       QStringLiteral("cgcicon.knsrc"),
+-            QStringLiteral("cgctheme.knsrc"), // GTK integration
+-            QStringLiteral("kwinswitcher.knsrc"),  QStringLiteral("kwineffect.knsrc"),
+-            QStringLiteral("kwinscripts.knsrc"), // KWin
+-            QStringLiteral("comic.knsrc"),         QStringLiteral("colorschemes.knsrc"),
+-            QStringLiteral("emoticons.knsrc"),     QStringLiteral("plymouth.knsrc"),
+-            QStringLiteral("sddmtheme.knsrc"),     QStringLiteral("wallpaperplugin.knsrc"),
+-            QStringLiteral("ksplash.knsrc"),       QStringLiteral("window-decorations.knsrc"),
+-        };
+-        const auto iconName = knsrcPlasma.contains(fileName) ? QStringLiteral("plasma") : QStringLiteral("applications-other");
++        const auto iconName = isPlasmaCategory ? QStringLiteral("plasma") : QStringLiteral("applications-other");
+         auto actualCategory = new Category(m_displayName, iconName, filter, backendName, categories, true);
+         actualCategory->setParent(this);
+ 
+-        const auto topLevelName = knsrcPlasma.contains(fileName) ? i18n("Plasma Addons") : i18n("Application Addons");
++        const auto topLevelName = isPlasmaCategory ? i18n("Plasma Addons") : i18n("Application Addons");
+         auto addonsCategory = new Category(topLevelName, iconName, filter, backendName, {actualCategory}, true);
+         m_rootCategories = {addonsCategory};
+     }
+diff --git a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
+index 68c8299e1..2dd798c8a 100644
+--- a/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
++++ b/libdiscover/backends/PackageKitBackend/packagekit-backend-categories.xml
+@@ -556,6 +556,7 @@
+     <Name>Plasma Addons</Name>
+     <Icon>plasma</Icon>
+     <Addons />
++    <OnlyShowIn>KDE</OnlyShowIn>
+ 
+     <Include>
+         <Or>
