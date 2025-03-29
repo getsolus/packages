@@ -2,6 +2,7 @@
 
 Hyprland stack order, according to the autobuild tool
 
+glaze
 hyprland-protocols
 hyprutils
 hyprwayland-scanner
@@ -14,6 +15,5 @@ hyprland-qt-support
 hyprlock
 hyprpaper
 xdg-desktop-portal-hyprland
-glaze
-hyprland
 hyprland-qutils
+hyprland
