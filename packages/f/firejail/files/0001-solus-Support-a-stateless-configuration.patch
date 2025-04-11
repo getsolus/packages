@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Muhammad Alfi Syahrin <malfisya.dev@hotmail.com>
+Date: Fri, 11 Apr 2025 14:32:29 +0700
+Subject: [PATCH] solus: Support a stateless configuration
+
+---
+ Makefile                        | 17 ++++++++---------
+ config.mk.in                    |  4 +++-
+ configure.ac                    |  1 +
+ src/firecfg/firecfg.h           |  1 +
+ src/firecfg/main.c              |  7 ++++++-
+ src/firejail/appimage.c         | 11 +++++++++--
+ src/firejail/checkcfg.c         |  7 ++++++-
+ src/firejail/profile.c          |  4 ++++
+ src/firejail/restricted_shell.c | 12 ++++++++++--
+ 9 files changed, 48 insertions(+), 16 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index e18749c04..e831e19a2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -243,18 +243,17 @@ endif
+ 	$(INSTALL) -m 0755 -d $(DESTDIR)$(docdir)
+ 	$(INSTALL) -m 0644 -t $(DESTDIR)$(docdir) COPYING README RELNOTES etc/templates/*
+ 	# profiles and settings
+-	$(INSTALL) -m 0755 -d $(DESTDIR)$(sysconfdir)/firejail
+-	$(INSTALL) -m 0755 -d $(DESTDIR)$(sysconfdir)/firejail/firecfg.d
+-	$(INSTALL) -m 0644 -t $(DESTDIR)$(sysconfdir)/firejail src/firecfg/firecfg.config
+-	$(INSTALL) -m 0644 -t $(DESTDIR)$(sysconfdir)/firejail etc/profile-a-l/*.profile etc/profile-m-z/*.profile etc/inc/*.inc etc/net/*.net etc/firejail.config
+-	sh -c "if [ ! -f $(DESTDIR)$(sysconfdir)/firejail/login.users ]; then \
+-		$(INSTALL) -m 0644 -t $(DESTDIR)$(sysconfdir)/firejail etc/login.users; \
++	$(INSTALL) -m 0755 -d $(DESTDIR)$(datadir)/defaults/firejail
++	$(INSTALL) -m 0644 -t $(DESTDIR)$(datadir)/defaults/firejail src/firecfg/firecfg.config
++	$(INSTALL) -m 0644 -t $(DESTDIR)$(datadir)/defaults/firejail etc/profile-a-l/*.profile etc/profile-m-z/*.profile etc/inc/*.inc etc/net/*.net etc/firejail.config
++	sh -c "if [ ! -f $(DESTDIR)$(datadir)/defaults/firejail/login.users ]; then \
++		$(INSTALL) -m 0644 -t $(DESTDIR)$(datadir)/defaults/firejail etc/login.users; \
+ 	fi"
+ ifeq ($(HAVE_IDS),-DHAVE_IDS)
+-	$(INSTALL) -m 0644 -t $(DESTDIR)$(sysconfdir)/firejail etc/ids.config
++	$(INSTALL) -m 0644 -t $(DESTDIR)$(datadir)/defaults/firejail etc/ids.config
+ endif
+ ifeq ($(BUSYBOX_WORKAROUND),yes)
+-	./mketc.sh $(DESTDIR)$(sysconfdir)/firejail/disable-common.inc
++	./mketc.sh $(DESTDIR)$(datadir)/defaults/firejail/disable-common.inc
+ endif
+ ifeq ($(HAVE_APPARMOR),-DHAVE_APPARMOR)
+ 	# install apparmor profile
+@@ -306,7 +305,7 @@ uninstall: config.mk
+ 	$(RM) $(DESTDIR)$(datarootdir)/vim/vimfiles/ftplugin/firejail.vim
+ 	$(RM) $(DESTDIR)$(datarootdir)/vim/vimfiles/syntax/firejail.vim
+ 	$(RM) $(DESTDIR)$(datarootdir)/gtksourceview-5/language-specs/firejail-profile.lang
+-	@echo "If you want to install a different version of firejail, you might also need to run 'rm -fr $(DESTDIR)$(sysconfdir)/firejail', see #2038."
++	@echo "If you want to install a different version of firejail, you might also need to run 'rm -fr $(DESTDIR)$(datadir)/defaults/firejail', see #2038."
+ 
+ # Note: Keep this list in sync with `paths` in .github/workflows/build.yml.
+ DISTFILES = \
+diff --git a/config.mk.in b/config.mk.in
+index 11d00851a..1cfbf6d62 100644
+--- a/config.mk.in
++++ b/config.mk.in
+@@ -18,6 +18,7 @@ exec_prefix=@exec_prefix@
+ bindir=@bindir@
+ libdir=@libdir@
+ datarootdir=@datarootdir@
++datadir=@datadir@
+ docdir=@docdir@
+ mandir=@mandir@
+ sysconfdir=@sysconfdir@
+@@ -99,7 +100,8 @@ COMMON_CFLAGS = \
+ 	-fstack-protector-all \
+ 	-DPREFIX='"$(prefix)"' -DSYSCONFDIR='"$(sysconfdir)/firejail"' \
+ 	-DLIBDIR='"$(libdir)"' -DBINDIR='"$(bindir)"' \
+-	-DVARDIR='"/var/lib/firejail"'
++	-DVARDIR='"/var/lib/firejail"' \
++	-DDATADIR='"$(datadir)"'
+ 
+ PROG_CFLAGS = \
+ 	$(COMMON_CFLAGS) \
+diff --git a/configure.ac b/configure.ac
+index d67d218ea..46fbf97d7 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -323,6 +323,7 @@ Compile options:
+    install contrib scripts: $HAVE_CONTRIB_INSTALL
+    prefix: $prefix
+    sysconfdir: $sysconfdir
++   defaultsdir: $datadir/defaults/firejail
+    Spectre compiler patch: $HAVE_SPECTRE
+ 
+ Features:
+diff --git a/src/firecfg/firecfg.h b/src/firecfg/firecfg.h
+index 03f4c36c5..b49cf5d0a 100644
+--- a/src/firecfg/firecfg.h
++++ b/src/firecfg/firecfg.h
+@@ -38,6 +38,7 @@
+ #define MAX_BUF 4096
+ 
+ // config files
++#define FIRECFG_DEFAULT_CFGFILE DATADIR "/defaults/firejail/firecfg.config"
+ #define FIRECFG_CFGFILE SYSCONFDIR "/firecfg.config"
+ #define FIRECFG_CONF_GLOB SYSCONFDIR "/firecfg.d/*.conf"
+ 
+diff --git a/src/firecfg/main.c b/src/firecfg/main.c
+index 7b4db43f6..67e405682 100644
+--- a/src/firecfg/main.c
++++ b/src/firecfg/main.c
+@@ -294,7 +294,12 @@ void parse_config_all(int do_symlink) {
+ 		return;
+ 
+ 	parse_config_glob(FIRECFG_CONF_GLOB, do_symlink);
+-	parse_config_file(FIRECFG_CFGFILE, do_symlink);
++
++	if (access(FIRECFG_CFGFILE, F_OK) == 0) {
++		parse_config_file(FIRECFG_CFGFILE, do_symlink);
++	} else {
++		parse_config_file(FIRECFG_DEFAULT_CFGFILE, do_symlink);
++	}
+ 
+ 	done_config = 1;
+ }
+diff --git a/src/firejail/appimage.c b/src/firejail/appimage.c
+index d76b61b1b..95e4e28df 100644
+--- a/src/firejail/appimage.c
++++ b/src/firejail/appimage.c
+@@ -54,9 +54,16 @@ int appimage_find_profile(const char *archive) {
+ 		printf("Looking for a %s profile\n", arc);
+ 
+ 	// try to match the name of the archive with the list of programs in /etc/firejail/firecfg.config
+-	FILE *fp = fopen(SYSCONFDIR "/firecfg.config", "r");
++	const char *fname;
++	if (access(SYSCONFDIR "/firecfg.config", F_OK) == 0) {
++		fname = SYSCONFDIR "/firecfg.config";
++	} else {
++		fname = DATADIR "/defaults/firejail/firecfg.config";
++	}
++	FILE *fp = fopen(fname, "r");
+ 	if (!fp) {
+-		fprintf(stderr, "Error: cannot find %s, firejail is not correctly installed\n", SYSCONFDIR "/firecfg.config");
++		fprintf(stderr, "Error: cannot find %s or %s, firejail is not correctly installed\n",
++				SYSCONFDIR "/firecfg.config", DATADIR "/defaults/firejail/firecfg.config");
+ 		exit(1);
+ 	}
+ 	char buf[MAXBUF];
+diff --git a/src/firejail/checkcfg.c b/src/firejail/checkcfg.c
+index 5ef3612b6..ea12a0798 100644
+--- a/src/firejail/checkcfg.c
++++ b/src/firejail/checkcfg.c
+@@ -65,7 +65,12 @@ int checkcfg(int val) {
+ 		cfg_val[CFG_TRACELOG] = 0;
+ 
+ 		// open configuration file
+-		const char *fname = SYSCONFDIR "/firejail.config";
++		const char *fname;
++		if (access(SYSCONFDIR "/firejail.config", F_OK) == 0) {
++			fname = SYSCONFDIR "/firejail.config";
++		} else {
++			fname = DATADIR "/defaults/firejail/firejail.config";
++		}
+ 		fp = fopen(fname, "re");
+ 		if (!fp) {
+ #ifdef HAVE_GLOBALCFG
+diff --git a/src/firejail/profile.c b/src/firejail/profile.c
+index 0609a89a6..45bcabc76 100644
+--- a/src/firejail/profile.c
++++ b/src/firejail/profile.c
+@@ -85,6 +85,10 @@ int profile_find_firejail(const char *name, int add_ext) {
+ 		// look for a user profile in /etc/firejail directory
+ 		rv = profile_find(name, SYSCONFDIR, add_ext);
+ 
++	if (!rv)
++		// look for a user profile in /usr/share/defaults/firejail directory
++		rv = profile_find(name, DATADIR "/defaults/firejail", add_ext);
++
+ 	return rv;
+ #else
+ 	return profile_find(name, SYSCONFDIR, add_ext);
+diff --git a/src/firejail/restricted_shell.c b/src/firejail/restricted_shell.c
+index bda1d716d..47fcfee83 100644
+--- a/src/firejail/restricted_shell.c
++++ b/src/firejail/restricted_shell.c
+@@ -34,8 +34,16 @@ int restricted_shell(const char *user) {
+ 		errExit("asprintf");
+ 	FILE *fp = fopen(fname, "re");
+ 	free(fname);
+-	if (fp == NULL)
+-		return 0;
++	fname = NULL;
++	if (fp == NULL) {
++		// Grab the stateless version
++		if (asprintf(&fname, "%s/defaults/firejail/login.users", DATADIR) == -1)
++			errExit("asprintf");
++		FILE *fp = fopen(fname, "r");
++		free(fname);
++		if (fp == NULL)
++			return 0;
++	}
+ 
+ 	int lineno = 0;
+ 	char buf[MAX_READ];
