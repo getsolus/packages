@@ -2,4 +2,4 @@
 
 source /usr/share/defaults/etc/profile
 
-exec /usr/bin/xfce4-session
+exec /usr/bin/startxfce4
