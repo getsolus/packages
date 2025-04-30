@@ -43,6 +43,7 @@ YARN = 10
 WAF = 11
 QMAKE = 12
 PEP517 = 13
+PYTHON_SETUPTOOLS = 14
 
 
 class DepObject:
@@ -170,6 +171,11 @@ class AutoPackage:
                         pyproject_deps = ["python-build", "python-installer",
                                           "python-packaging", "python-wheel"]
                         self.build_deps.extend(self.extra_build_deps(pyproject_deps))
+                # Handle legacy setuptools python modules.
+                if "setup.py" in file:
+                    if PYTHON_SETUPTOOLS not in known_types:
+                        known_types.append(PYTHON_SETUPTOOLS)
+                        self.build_deps.extend(self.extra_build_deps(["python-setuptools"]))
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
@@ -240,6 +246,9 @@ class AutoPackage:
         elif PEP517 in known_types:
             self.compile_type = PYTHON_MODULES
             print("PEP517")
+        elif PYTHON_SETUPTOOLS in known_types:
+            self.compile_type = PYTHON_MODULES
+            print("PYTHON_SETUPTOOLS")
         else:
             print("unknown")
 
@@ -337,7 +346,8 @@ description: |
                     if len(dep.name.strip()) == 0:
                         continue
                     if dep.name in ["python-build", "python-installer",
-                                    "python-packaging", "python-wheel"]:
+                                    "python-packaging", "python-setuptools",
+                                    "python-wheel"]:
                         total_str += "    - %s\n" % dep.name
                         continue
                     total_str += "    - pkgconfig(%s)\n" % dep.name
