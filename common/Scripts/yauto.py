@@ -169,7 +169,7 @@ class AutoPackage:
                     if PEP517 not in known_types:
                         known_types.append(PEP517)
                         pyproject_deps = ["python-build", "python-installer",
-                                          "python-packaging", "python-wheel"]
+                                          "python-setuptools"]
                         self.build_deps.extend(self.extra_build_deps(pyproject_deps))
                 # Handle legacy setuptools python modules.
                 if "setup.py" in file:
