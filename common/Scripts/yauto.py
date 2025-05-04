@@ -142,7 +142,7 @@ class AutoPackage:
                     self.makefile = True
                 if "configure.ac" in file:
                     # Examine this fella for build deps
-                    self.build_deps = self.check_build_deps(os.path.join(root, file))
+                    self.build_deps.extend(self.check_build_deps(os.path.join(root, file)))
                 if "configure" in file:
                     # Check if we need to employ certain hacks needed in gnome packages
                     f_path = os.path.join(root, file)
@@ -168,12 +168,13 @@ class AutoPackage:
                 if "pyproject.toml" in file or "setup.cfg" in file:
                     if PEP517 not in known_types:
                         known_types.append(PEP517)
-                        pyproject_deps = ["python-build", "python-installer",
-                                          "python-setuptools"]
+                        pyproject_deps = ["python-build", "python-installer"]
+                        if PYTHON_SETUPTOOLS not in known_types:
+                            pyproject_deps.append("python-setuptools")
                         self.build_deps.extend(self.extra_build_deps(pyproject_deps))
                 # Handle legacy setuptools python modules.
                 if "setup.py" in file:
-                    if PYTHON_SETUPTOOLS not in known_types:
+                    if PYTHON_SETUPTOOLS not in known_types and PEP517 not in known_types:
                         known_types.append(PYTHON_SETUPTOOLS)
                         self.build_deps.extend(self.extra_build_deps(["python-setuptools"]))
                 if "Makefile.PL" in file or "Build.PL" in file:
@@ -345,9 +346,7 @@ description: |
                 for dep in self.build_deps:
                     if len(dep.name.strip()) == 0:
                         continue
-                    if dep.name in ["python-build", "python-installer",
-                                    "python-packaging", "python-setuptools",
-                                    "python-wheel"]:
+                    if dep.name in ["python-build", "python-installer", "python-setuptools"]:
                         total_str += "    - %s\n" % dep.name
                         continue
                     total_str += "    - pkgconfig(%s)\n" % dep.name
