@@ -1,0 +1,115 @@
+From: Alexander Zhirov <azhirov1991@gmail.com>
+Date: Tue, 06 May 2025 19:15:37 +0300
+Subject: The default paths to the configuration files have been changed.
+
+diff --git a/common/slp_types.h b/common/slp_types.h
+index 9714a50..478155b 100644
+--- a/common/slp_types.h
++++ b/common/slp_types.h
+@@ -231,8 +231,11 @@ typedef unsigned long uint32_t;
+ # endif
+ 
+ # define SLPD_CONFFILE  ETCDIR "/slp.conf"
++# define SLPD_CONFFILE_STATELESS "/usr/share/defaults/etc/openslp/slp.conf"
+ # define SLPD_REGFILE   ETCDIR "/slp.reg"
++# define SLPD_REGFILE_STATELESS "/usr/share/defaults/etc/openslp/slp.reg"
+ # define SLPD_SPIFILE   ETCDIR "/slp.spi"
++# define SLPD_SPIFILE_STATELESS "/usr/share/defaults/etc/openslp/slp.spi"
+ # define SLPD_LOGFILE   VARDIR "/log/slpd.log"
+ # define SLPD_PIDFILE   VARDIR "/run/slpd.pid"
+ 
+diff --git a/libslp/libslp_handle.c b/libslp/libslp_handle.c
+index b938345..d75314a 100644
+--- a/libslp/libslp_handle.c
++++ b/libslp/libslp_handle.c
+@@ -65,7 +65,11 @@ static SLPError InitUserAgentLibrary(void)
+    /* Initialize the system if this is the first handle opened. */
+    if (SLPAtomicInc(&s_OpenSLPHandleCount) == 1)
+    {
+-      if (LIBSLPPropertyInit(LIBSLP_CONFFILE) != 0)
++      const char *slp_conf_file_name = LIBSLP_CONFFILE;
++      if (access(slp_conf_file_name, R_OK) != 0)
++         slp_conf_file_name = SLPD_CONFFILE_STATELESS;
++
++      if (LIBSLPPropertyInit(slp_conf_file_name) != 0)
+       {
+          SLPAtomicDec(&s_OpenSLPHandleCount);
+          return SLP_MEMORY_ALLOC_FAILED;
+@@ -221,7 +225,11 @@ SLPEXP SLPError SLPAPI SLPOpen(
+    }
+ 
+ #ifdef ENABLE_SLPv2_SECURITY
+-   handle->hspi = SLPSpiOpen(LIBSLP_SPIFILE, 0);
++   const char *slp_spi_file_name = LIBSLP_SPIFILE;
++   if (access(slp_spi_file_name, R_OK) != 0)
++      slp_spi_file_name = SLPD_SPIFILE_STATELESS;
++
++   handle->hspi = SLPSpiOpen(slp_spi_file_name, 0);
+    if (!handle->hspi)
+    {
+       xfree(handle->langtag);
+diff --git a/libslp/libslp_property.c b/libslp/libslp_property.c
+index f645b93..913d39b 100644
+--- a/libslp/libslp_property.c
++++ b/libslp/libslp_property.c
+@@ -115,8 +115,12 @@ SLPEXP const char * SLPAPI SLPGetProperty(const char * pcName)
+    if (!pcName || !*pcName)
+       return 0;
+ 
++   const char *slp_conf_file_name = LIBSLP_CONFFILE;
++   if (access(slp_conf_file_name, R_OK) != 0)
++      slp_conf_file_name = SLPD_CONFFILE_STATELESS;
++
+    /* This wrapper ensures that we only get initialized once */
+-   if (!s_PropInited && LIBSLPPropertyInit(LIBSLP_CONFFILE) != 0)
++   if (!s_PropInited && LIBSLPPropertyInit(slp_conf_file_name) != 0)
+       return 0;
+ 
+    /* At this point, the caller may no longer call SLPSetProperty because
+@@ -157,8 +161,12 @@ SLPEXP void SLPAPI SLPSetProperty(const char * pcName, const char * pcValue)
+    if (!pcName || !*pcName)
+       return;
+ 
++   const char *slp_conf_file_name = LIBSLP_CONFFILE;
++   if (access(slp_conf_file_name, R_OK) != 0)
++      slp_conf_file_name = SLPD_CONFFILE_STATELESS;
++
+    /* This wrapper ensures that we only get initialized once */
+-   if (!s_PropInited && LIBSLPPropertyInit(LIBSLP_CONFFILE) != 0)
++   if (!s_PropInited && LIBSLPPropertyInit(slp_conf_file_name) != 0)
+       return;
+ 
+    if (s_UserAllowedToSet)
+diff --git a/slpd/slpd_cmdline.c b/slpd/slpd_cmdline.c
+index 177833e..7f47436 100644
+--- a/slpd/slpd_cmdline.c
++++ b/slpd/slpd_cmdline.c
+@@ -85,14 +85,25 @@ int SLPDParseCommandLine(int argc, char * argv[])
+ {
+    int i;
+ 
++   const char *slp_spi_file_name = SLPD_SPIFILE;
++   const char *slp_reg_file_name = SLPD_REGFILE;
++   const char *slp_conf_file_name = SLPD_CONFFILE;
++
++   if (access(slp_spi_file_name, R_OK) != 0)
++      slp_spi_file_name = SLPD_SPIFILE_STATELESS;
++   if (access(slp_reg_file_name, R_OK) != 0)
++      slp_reg_file_name = SLPD_REGFILE_STATELESS;
++   if (access(slp_conf_file_name, R_OK) != 0)
++      slp_conf_file_name = SLPD_CONFFILE_STATELESS;
++
+    /* Set defaults */
+    memset(&G_SlpdCommandLine, 0, sizeof(SLPDCommandLine));
+-   strnenv(G_SlpdCommandLine.cfgfile, SLPD_CONFFILE, sizeof(G_SlpdCommandLine.cfgfile));
++   strnenv(G_SlpdCommandLine.cfgfile, slp_conf_file_name, sizeof(G_SlpdCommandLine.cfgfile));
+    strnenv(G_SlpdCommandLine.logfile, SLPD_LOGFILE, sizeof(G_SlpdCommandLine.logfile));
+-   strnenv(G_SlpdCommandLine.regfile, SLPD_REGFILE, sizeof(G_SlpdCommandLine.regfile));
++   strnenv(G_SlpdCommandLine.regfile, slp_reg_file_name, sizeof(G_SlpdCommandLine.regfile));
+    strnenv(G_SlpdCommandLine.pidfile, SLPD_PIDFILE, sizeof(G_SlpdCommandLine.pidfile));
+ #ifdef ENABLE_SLPv2_SECURITY
+-   strnenv(G_SlpdCommandLine.spifile, SLPD_SPIFILE, sizeof(G_SlpdCommandLine.spifile));
++   strnenv(G_SlpdCommandLine.spifile, slp_spi_file_name, sizeof(G_SlpdCommandLine.spifile));
+ #endif
+    G_SlpdCommandLine.action = -1;
+ 
