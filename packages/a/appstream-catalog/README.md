@@ -9,8 +9,8 @@ The package folder also contains a specialized Taskfile.yml which augments the m
 2. Go to this package: `gotopkg appstream-catalog`.
 3. Run `go-task infra:generate-appstream` . You must have `infrastructure-tooling`, ssh access to teaparty and be part of the ferryd group on teaparty for this to succeed.
    - NOTE: As the generated tarballs are behind a CDN it may take a few minutes to propagate.
-4. Run `update-appstream-sources.sh` and copy and paste the sources into `package.yml`
-5. Run `git diff`, if the shasums of the sources are different run `ybump` and `go-task build`.
+4. Run `update-appstream-sources.py`
+5. Run `git diff`, if the shasums of the sources are different run `go-task build`.
 6. Install the resulting `.eopkg` and make sure GNOME Software or Discover recognize packages (ideally, search for something which you know was added in the most recent sync).
 7. Commit and push to a branch on github using this package's Taskfile: `go-task appstream-commit-and-push`. You can also do this manually if you're more comfortable that way.
 8. Create a pull request from your new branch on github. If you used the Taskfile or manually created a branch called `appstream-catalog-update`, you can click this helpful link: https://github.com/getsolus/packages/pull/new/appstream-catalog-update.
