@@ -1,0 +1,211 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Silke Hofstra <silke@slxh.eu>
+Date: Tue, 27 May 2025 18:50:06 +0200
+Subject: [PATCH 1/2] Decode encoded unicode characters
+
+Add supported for decoding `&#xhhhh;` and `&#nnnn;` encoded characters.
+This ensures that XML encoded with Iksemel can actually be decoded without loss.
+---
+ src/sax.c           | 57 ++++++++++++++++++++++-----
+ test/tst-iks-utf8.c | 93 ++++++++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 135 insertions(+), 15 deletions(-)
+
+diff --git a/src/sax.c b/src/sax.c
+index 7d55042..ad316b9 100644
+--- a/src/sax.c
++++ b/src/sax.c
+@@ -196,6 +196,41 @@ stack_expand (iksparser *prs, int len)
+ 	prs->stack_pos++; \
+ }
+ 
++static int utf8_encode(char dst[4], long int v) {
++	if (v <= 0x7F) {
++		dst[0] = (char) v;
++		return 1;
++	} else if (v <= 0x07FF) {
++		dst[0] = (char) (((v >> 6) & 0x1F) | 0xC0);
++		dst[1] = (char) (((v >> 0) & 0x3F) | 0x80);
++		return 2;
++	} else if (v <= 0xFFFF) {
++		dst[0] = (char) (((v >> 12) & 0x0F) | 0xE0);
++		dst[1] = (char) (((v >> 6) & 0x3F) | 0x80);
++		dst[2] = (char) (((v >> 0) & 0x3F) | 0x80);
++		return 3;
++	} else if (v <= 0x10FFFF) {
++		dst[0] = (char) (((v >> 18) & 0x07) | 0xF0);
++		dst[1] = (char) (((v >> 12) & 0x3F) | 0x80);
++		dst[2] = (char) (((v >> 6) & 0x3F) | 0x80);
++		dst[3] = (char) (((v >> 0) & 0x3F) | 0x80);
++		return 4;
++	} else {
++		dst[0] = '?';
++		return 1;
++	}
++}
++
++static int decode_codepoint(char dst[4], const char *src, int base) {
++	long int v = strtol(src, NULL, base);
++	if (v == 0) {
++		dst[0] = '?';
++		return 1;
++	}
++
++	return utf8_encode(dst, v);
++}
++
+ static enum ikserror
+ sax_core (iksparser *prs, char *buf, int len)
+ {
+@@ -469,23 +504,27 @@ sax_core (iksparser *prs, char *buf, int len)
+ 
+ 			case C_ENTITY:
+ 				if (';' == c) {
+-					char hede[2];
+-					char t = '?';
++					char hede[4] = {'?', '\0', '\0', '\0'};
++					int hede_len = 1;
+ 					prs->entity[prs->entpos] = '\0';
+ 					if (strcmp(prs->entity, "amp") == 0)
+-						t = '&';
++						hede[0] = '&';
+ 					else if (strcmp(prs->entity, "quot") == 0)
+-						t = '"';
++						hede[0] = '"';
+ 					else if (strcmp(prs->entity, "apos") == 0)
+-						t = '\'';
++						hede[0] = '\'';
+ 					else if (strcmp(prs->entity, "lt") == 0)
+-						t = '<';
++						hede[0] = '<';
+ 					else if (strcmp(prs->entity, "gt") == 0)
+-						t = '>';
++						hede[0] = '>';
++					else if (strncmp(prs->entity, "#x", 2) == 0)
++						hede_len = decode_codepoint(hede, prs->entity+2, 16);
++					else if (strncmp(prs->entity, "#", 1) == 0)
++						hede_len = decode_codepoint(hede, prs->entity+1, 10);
++
+ 					old = pos + 1;
+-					hede[0] = t;
+ 					if (prs->cdataHook) {
+-						err = prs->cdataHook (prs->user_data, &hede[0], 1);
++						err = prs->cdataHook (prs->user_data, hede, hede_len);
+ 						if (IKS_OK != err) return err;
+ 					}
+ 					prs->context = C_CDATA;
+diff --git a/test/tst-iks-utf8.c b/test/tst-iks-utf8.c
+index d9a0f1f..d46613a 100644
+--- a/test/tst-iks-utf8.c
++++ b/test/tst-iks-utf8.c
+@@ -10,9 +10,45 @@
+ 
+ #include "iksemel.h"
+ 
+-int main (int argc, char *argv[])
+-{
+-	setlocale (LC_ALL, "");
++int errors = 0;
++
++void hex(char *dst, const char *s) {
++	for (size_t i = 0; i < iks_strlen(s); i++) {
++		sprintf(dst + (2 * i), "%02x", (unsigned char) s[i]);
++	}
++
++	dst[2 * iks_strlen(s)] = '\x00';
++}
++
++void validate_tag(const iks *document, const char *name, const char *expect) {
++	iks *tag = iks_find((iks *) document, name);
++	if (!tag) {
++		printf("Cannot find tag %s\n", "text");
++		errors++;
++
++		return;
++	}
++
++	char *got = NULL;
++	iks *child = iks_child(tag);
++	if (child) {
++		got = iks_cdata(iks_child(tag));
++	}
++
++	char expect_hex[1024];
++	char got_hex[1024];
++
++	hex(expect_hex, expect);
++	hex(got_hex, got);
++
++	if (iks_strcmp(expect_hex, got_hex) != 0) {
++		printf("Incorrect value for %s: expected \"%s\", got \"%s\"\n",
++			   name, expect_hex, got_hex);
++		errors++;
++	}
++}
++
++static void test_encode() {
+ 	static char xml[] = "<test>"
+ 						"<text>Hello, &#x4e16;&#x754c;</text>"
+ 						"<emoji>&#x1f4a9;</emoji>"
+@@ -35,14 +71,59 @@ int main (int argc, char *argv[])
+ 	iks_insert_cdata (iks_insert (x, "katana"), "セ", 4);
+ 	iks_insert_cdata (iks_insert (x, "wideunicode"), "\U00026007", 4);
+ 	iks_insert_cdata (iks_insert (x, "nonprint"), "\x1\a\v\x7F", 4);
+-	
++
+ 	char *t = iks_string (iks_stack (x), x);
+ 	if(!t || strcmp(t, xml) != 0) {
+ 		printf("Result:   %s\n", t);
+ 		printf("Expected: %s\n", xml);
+-		return 1;
++		errors++;
+ 	}
+ 	iks_delete(x);
++}
++
++static void test_decode() {
++	static char xml_dec[] = "<test>"
++							"<text>Hello, &#x4e16;&#x754c; (world)</text>"
++							"<emoji>&#x1F4A9;</emoji>"
++							"<invalid>&#xG;&#;</invalid>"
++							"<null></null>"
++							"<twoun>&#xc5;</twoun>"
++							"<threeun>&#x100;</threeun>"
++							"<katana>&#12475;</katana>"
++							"<wideunicode>&#x26007;</wideunicode>"
++							"<nonprint>&#01;&#x07;&#x0b;&#x7f;</nonprint>"
++							"<store>&#x645;&#x62e;&#x632;&#x646;</store>"
++							"</test>";
++
++	iks *x;
++	iksparser *parser = iks_dom_new(&x);
++	enum ikserror err = iks_parse(parser, xml_dec, 0, 1);
++	if (err != IKS_OK) {
++		printf("Error: %d\n", err);
++		errors++;
++		return;
++	}
++	iks_parser_delete(parser);
++
++	validate_tag(x, "text", "Hello, 世界 (world)");
++	validate_tag(x, "emoji", "\U0001F4A9");
++	validate_tag(x, "invalid", "??");
++	validate_tag(x, "null", NULL);
++	validate_tag(x, "twoun", "Å");
++	validate_tag(x, "threeun", "Ā");
++	validate_tag(x, "katana", "セ");
++	validate_tag(x, "wideunicode", "\U00026007");
++	validate_tag(x, "nonprint", "\x1\a\v\x7F");
++	validate_tag(x, "store", "\u0645\u062e\u0632\u0646");
++
++	iks_delete(x);
++}
++
++int main (int argc, char *argv[])
++{
++	setlocale (LC_ALL, "");
++	test_encode();
++	test_decode();
+ 
+-	return 0;
++	return errors;
+ }
