@@ -1,0 +1,774 @@
+From f918eabe6a144e78c62c3fc0cfa7fe32e4623e5a Mon Sep 17 00:00:00 2001
+From: Ivan Molodetskikh <yalterz@gmail.com>
+Date: Wed, 4 Jun 2025 08:26:51 +0300
+Subject: [PATCH] Implement xwayland-satellite integration
+
+---
+ niri-config/src/lib.rs               |  23 ++
+ src/main.rs                          |  17 +-
+ src/niri.rs                          |  38 +++-
+ src/utils/mod.rs                     |   1 +
+ src/utils/spawning.rs                |   9 +
+ src/utils/xwayland/mod.rs            | 151 +++++++++++++
+ src/utils/xwayland/satellite.rs      | 309 +++++++++++++++++++++++++++
+ wiki/Configuration:-Miscellaneous.md |  27 +++
+ wiki/Xwayland.md                     |   8 +
+ 9 files changed, 579 insertions(+), 4 deletions(-)
+ create mode 100644 src/utils/xwayland/mod.rs
+ create mode 100644 src/utils/xwayland/satellite.rs
+
+diff --git a/niri-config/src/lib.rs b/niri-config/src/lib.rs
+index 83689a4b9..e82f881e5 100644
+--- a/niri-config/src/lib.rs
++++ b/niri-config/src/lib.rs
+@@ -65,6 +65,8 @@ pub struct Config {
+     pub overview: Overview,
+     #[knuffel(child, default)]
+     pub environment: Environment,
++    #[knuffel(child, default)]
++    pub xwayland_satellite: XwaylandSatellite,
+     #[knuffel(children(name = "window-rule"))]
+     pub window_rules: Vec<WindowRule>,
+     #[knuffel(children(name = "layer-rule"))]
+@@ -1364,6 +1366,23 @@ pub struct EnvironmentVariable {
+     pub value: Option<String>,
+ }
+ 
++#[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
++pub struct XwaylandSatellite {
++    #[knuffel(child)]
++    pub off: bool,
++    #[knuffel(child, unwrap(argument), default = Self::default().path)]
++    pub path: String,
++}
++
++impl Default for XwaylandSatellite {
++    fn default() -> Self {
++        Self {
++            off: false,
++            path: String::from("xwayland-satellite"),
++        }
++    }
++}
++
+ #[derive(knuffel::Decode, Debug, Clone, PartialEq, Eq)]
+ pub struct Workspace {
+     #[knuffel(argument)]
+@@ -4796,6 +4815,10 @@ mod tests {
+                     },
+                 ],
+             ),
++            xwayland_satellite: XwaylandSatellite {
++                off: false,
++                path: "xwayland-satellite",
++            },
+             window_rules: [
+                 WindowRule {
+                     matches: [
+diff --git a/src/main.rs b/src/main.rs
+index 401db23a2..0eeb57bf4 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -17,11 +17,11 @@ use niri::dbus;
+ use niri::ipc::client::handle_msg;
+ use niri::niri::State;
+ use niri::utils::spawning::{
+-    spawn, store_and_increase_nofile_rlimit, CHILD_ENV, REMOVE_ENV_RUST_BACKTRACE,
++    spawn, store_and_increase_nofile_rlimit, CHILD_DISPLAY, CHILD_ENV, REMOVE_ENV_RUST_BACKTRACE,
+     REMOVE_ENV_RUST_LIB_BACKTRACE,
+ };
+ use niri::utils::watcher::Watcher;
+-use niri::utils::{cause_panic, version, IS_SYSTEMD_SERVICE};
++use niri::utils::{cause_panic, version, xwayland, IS_SYSTEMD_SERVICE};
+ use niri_config::Config;
+ use niri_ipc::socket::SOCKET_PATH_ENV;
+ use portable_atomic::Ordering;
+@@ -200,6 +200,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+         info!("IPC listening on: {}", socket_path.to_string_lossy());
+     }
+ 
++    // Setup xwayland-satellite integration.
++    xwayland::satellite::setup(&mut state);
++    if let Some(satellite) = &state.niri.satellite {
++        let name = satellite.display_name();
++        *CHILD_DISPLAY.write().unwrap() = Some(name.to_owned());
++        env::set_var("DISPLAY", name);
++        info!("listening on X11 socket: {name}");
++    } else {
++        // Avoid spawning children in the host X11.
++        env::remove_var("DISPLAY");
++    }
++
+     if cli.session {
+         // We're starting as a session. Import our variables.
+         import_environment();
+@@ -275,6 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+ fn import_environment() {
+     let variables = [
+         "WAYLAND_DISPLAY",
++        "DISPLAY",
+         "XDG_CURRENT_DESKTOP",
+         "XDG_SESSION_TYPE",
+         SOCKET_PATH_ENV,
+diff --git a/src/niri.rs b/src/niri.rs
+index c1d1b958b..e058cf28b 100644
+--- a/src/niri.rs
++++ b/src/niri.rs
+@@ -160,11 +160,12 @@ use crate::ui::hotkey_overlay::HotkeyOverlay;
+ use crate::ui::screen_transition::{self, ScreenTransition};
+ use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+ use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
+-use crate::utils::spawning::CHILD_ENV;
++use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
++use crate::utils::xwayland::satellite::Satellite;
+ use crate::utils::{
+     center, center_f64, expand_home, get_monotonic_time, ipc_transform_to_smithay, is_mapped,
+     logical_output, make_screenshot_path, output_matches_name, output_size, send_scale_transform,
+-    write_png_rgba8,
++    write_png_rgba8, xwayland,
+ };
+ use crate::window::mapped::MappedId;
+ use crate::window::{InitialConfigureState, Mapped, ResolvedWindowRules, Unmapped, WindowRef};
+@@ -376,6 +377,8 @@ pub struct Niri {
+     pub ipc_server: Option<IpcServer>,
+     pub ipc_outputs_changed: bool,
+ 
++    pub satellite: Option<Satellite>,
++
+     // Casts are dropped before PipeWire to prevent a double-free (yay).
+     pub casts: Vec<Cast>,
+     pub pipewire: Option<PipeWire>,
+@@ -1332,6 +1335,7 @@ impl State {
+         let mut layer_rules_changed = false;
+         let mut shaders_changed = false;
+         let mut cursor_inactivity_timeout_changed = false;
++        let mut xwls_changed = false;
+         let mut old_config = self.niri.config.borrow_mut();
+ 
+         // Reload the cursor.
+@@ -1443,6 +1447,10 @@ impl State {
+             output_config_changed = true;
+         }
+ 
++        if config.xwayland_satellite != old_config.xwayland_satellite {
++            xwls_changed = true;
++        }
++
+         *old_config = config;
+ 
+         if let Some(outputs) = preserved_output_config {
+@@ -1506,6 +1514,30 @@ impl State {
+             self.niri.reset_pointer_inactivity_timer();
+         }
+ 
++        if xwls_changed {
++            // If xwl-s was previously working and is now off, we don't try to kill it or stop
++            // watching the sockets, for simplicity's sake.
++            let was_working = self.niri.satellite.is_some();
++
++            // Try to start, or restart in case the user corrected the path or something.
++            xwayland::satellite::setup(self);
++
++            let config = self.niri.config.borrow();
++            let display_name = (!config.xwayland_satellite.off)
++                .then_some(self.niri.satellite.as_ref())
++                .flatten()
++                .map(|satellite| satellite.display_name().to_owned());
++
++            if let Some(name) = &display_name {
++                if !was_working {
++                    info!("listening on X11 socket: {name}");
++                }
++            }
++
++            // This won't change the systemd environment, but oh well.
++            *CHILD_DISPLAY.write().unwrap() = display_name;
++        }
++
+         // Can't really update xdg-decoration settings since we have to hide the globals for CSD
+         // due to the SDL2 bug... I don't imagine clients are prepared for the xdg-decoration
+         // global suddenly appearing? Either way, right now it's live-reloaded in a sense that new
+@@ -2569,6 +2601,8 @@ impl Niri {
+             ipc_server,
+             ipc_outputs_changed: false,
+ 
++            satellite: None,
++
+             pipewire: None,
+             casts: vec![],
+             #[cfg(feature = "xdp-gnome-screencast")]
+diff --git a/src/utils/mod.rs b/src/utils/mod.rs
+index 2ac377218..ac7cf6a15 100644
+--- a/src/utils/mod.rs
++++ b/src/utils/mod.rs
+@@ -37,6 +37,7 @@ pub mod scale;
+ pub mod spawning;
+ pub mod transaction;
+ pub mod watcher;
++pub mod xwayland;
+ 
+ pub static IS_SYSTEMD_SERVICE: AtomicBool = AtomicBool::new(false);
+ 
+diff --git a/src/utils/spawning.rs b/src/utils/spawning.rs
+index 286df68fe..0e118785f 100644
+--- a/src/utils/spawning.rs
++++ b/src/utils/spawning.rs
+@@ -16,6 +16,7 @@ use crate::utils::expand_home;
+ pub static REMOVE_ENV_RUST_BACKTRACE: AtomicBool = AtomicBool::new(false);
+ pub static REMOVE_ENV_RUST_LIB_BACKTRACE: AtomicBool = AtomicBool::new(false);
+ pub static CHILD_ENV: RwLock<Environment> = RwLock::new(Environment(Vec::new()));
++pub static CHILD_DISPLAY: RwLock<Option<String>> = RwLock::new(None);
+ 
+ static ORIGINAL_NOFILE_RLIMIT_CUR: Atomic<rlim_t> = Atomic::new(0);
+ static ORIGINAL_NOFILE_RLIMIT_MAX: Atomic<rlim_t> = Atomic::new(0);
+@@ -116,6 +117,14 @@ fn spawn_sync(
+         process.env_remove("RUST_LIB_BACKTRACE");
+     }
+ 
++    // Set DISPLAY if needed.
++    let display = CHILD_DISPLAY.read().unwrap();
++    if let Some(display) = &*display {
++        process.env("DISPLAY", display);
++    } else {
++        process.env_remove("DISPLAY");
++    }
++
+     // Set configured environment.
+     let env = CHILD_ENV.read().unwrap();
+     for var in &env.0 {
+diff --git a/src/utils/xwayland/mod.rs b/src/utils/xwayland/mod.rs
+new file mode 100644
+index 000000000..a04b5a53b
+--- /dev/null
++++ b/src/utils/xwayland/mod.rs
+@@ -0,0 +1,151 @@
++use std::os::fd::OwnedFd;
++use std::os::linux::net::SocketAddrExt;
++use std::os::unix::net::{SocketAddr, UnixListener};
++
++use anyhow::{anyhow, ensure, Context as _};
++use rustix::fs::{lstat, mkdir};
++use rustix::io::Errno;
++use rustix::process::getuid;
++use smithay::reexports::rustix::fs::{unlink, OFlags};
++use smithay::reexports::rustix::process::getpid;
++use smithay::reexports::rustix::{self};
++
++pub mod satellite;
++
++const TMP_UNIX_DIR: &str = "/tmp";
++const X11_TMP_UNIX_DIR: &str = "/tmp/.X11-unix";
++
++struct X11Connection {
++    display_name: String,
++    abstract_fd: OwnedFd,
++    unix_fd: OwnedFd,
++    _unix_guard: Unlink,
++    _lock_guard: Unlink,
++}
++
++struct Unlink(String);
++impl Drop for Unlink {
++    fn drop(&mut self) {
++        let _ = unlink(&self.0);
++    }
++}
++
++// Adapted from Mutter code:
++// https://gitlab.gnome.org/GNOME/mutter/-/blob/48.3.1/src/wayland/meta-xwayland.c?ref_type=tags#L513
++fn ensure_x11_unix_dir() -> anyhow::Result<()> {
++    match mkdir(X11_TMP_UNIX_DIR, 0o1777.into()) {
++        Ok(()) => Ok(()),
++        Err(Errno::EXIST) => {
++            ensure_x11_unix_perms().context("wrong X11 directory permissions")?;
++            Ok(())
++        }
++        Err(err) => Err(err).context("error creating X11 directory"),
++    }
++}
++
++fn ensure_x11_unix_perms() -> anyhow::Result<()> {
++    let x11_tmp = lstat(X11_TMP_UNIX_DIR).context("error checking X11 directory permissions")?;
++    let tmp = lstat(TMP_UNIX_DIR).context("error checking /tmp directory permissions")?;
++
++    ensure!(
++        x11_tmp.st_uid == tmp.st_uid || x11_tmp.st_uid == getuid().as_raw(),
++        "wrong ownership for X11 directory"
++    );
++    ensure!(
++        (x11_tmp.st_mode & 0o022) == 0o022,
++        "X11 directory is not writable"
++    );
++    ensure!(
++        (x11_tmp.st_mode & 0o1000) == 0o1000,
++        "X11 directory is missing the sticky bit"
++    );
++
++    Ok(())
++}
++
++fn pick_x11_display(start: u32) -> anyhow::Result<(u32, OwnedFd, Unlink)> {
++    for n in start..start + 50 {
++        let lock_path = format!("/tmp/.X{n}-lock");
++        let flags = OFlags::WRONLY | OFlags::CLOEXEC | OFlags::CREATE | OFlags::EXCL;
++        let Ok(lock_fd) = rustix::fs::open(&lock_path, flags, 0o444.into()) else {
++            // FIXME: check if the target process is dead and reuse the lock.
++            continue;
++        };
++        return Ok((n, lock_fd, Unlink(lock_path)));
++    }
++
++    Err(anyhow!("no free X11 display found after 50 attempts"))
++}
++
++fn bind_to_socket(addr: &SocketAddr) -> anyhow::Result<UnixListener> {
++    let listener = UnixListener::bind_addr(addr).context("error binding socket")?;
++    Ok(listener)
++}
++
++fn bind_to_abstract_socket(display: u32) -> anyhow::Result<UnixListener> {
++    let name = format!("/tmp/.X11-unix/X{display}");
++    let addr = SocketAddr::from_abstract_name(name).unwrap();
++    bind_to_socket(&addr)
++}
++
++fn bind_to_unix_socket(display: u32) -> anyhow::Result<(UnixListener, Unlink)> {
++    let name = format!("/tmp/.X11-unix/X{display}");
++    let addr = SocketAddr::from_pathname(&name).unwrap();
++    // Unlink old leftover socket if any.
++    let _ = unlink(&name);
++    let guard = Unlink(name);
++    bind_to_socket(&addr).map(|listener| (listener, guard))
++}
++
++fn open_display_sockets(display: u32) -> anyhow::Result<(UnixListener, UnixListener, Unlink)> {
++    let a = bind_to_abstract_socket(display).context("error binding to abstract socket")?;
++    let (u, g) = bind_to_unix_socket(display).context("error binding to unix socket")?;
++    Ok((a, u, g))
++}
++
++fn setup_connection() -> anyhow::Result<X11Connection> {
++    let _span = tracy_client::span!("open_x11_sockets");
++
++    ensure_x11_unix_dir()?;
++
++    let mut n = 0;
++    let mut attempt = 0;
++    let (display, lock_guard, a, u, unix_guard) = loop {
++        let (display, lock_fd, lock_guard) = pick_x11_display(n)?;
++
++        // Write our PID into the lock file.
++        let pid_string = format!("{:>10}\n", getpid().as_raw_nonzero());
++        if let Err(err) = rustix::io::write(&lock_fd, pid_string.as_bytes()) {
++            return Err(err).context("error writing PID to X11 lock file");
++        }
++        drop(lock_fd);
++
++        match open_display_sockets(display) {
++            Ok((a, u, g)) => {
++                break (display, lock_guard, a, u, g);
++            }
++            Err(err) => {
++                if attempt == 50 {
++                    return Err(err)
++                        .context("error opening X11 sockets after creating a lock file");
++                }
++
++                n = display + 1;
++                attempt += 1;
++                continue;
++            }
++        }
++    };
++
++    let display_name = format!(":{display}");
++    let abstract_fd = OwnedFd::from(a);
++    let unix_fd = OwnedFd::from(u);
++
++    Ok(X11Connection {
++        display_name,
++        abstract_fd,
++        unix_fd,
++        _unix_guard: unix_guard,
++        _lock_guard: lock_guard,
++    })
++}
+diff --git a/src/utils/xwayland/satellite.rs b/src/utils/xwayland/satellite.rs
+new file mode 100644
+index 000000000..0c5a2d67d
+--- /dev/null
++++ b/src/utils/xwayland/satellite.rs
+@@ -0,0 +1,309 @@
++use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
++use std::os::unix::net::UnixListener;
++use std::os::unix::process::CommandExt as _;
++use std::path::{Path, PathBuf};
++use std::process::{Command, Stdio};
++use std::thread;
++
++use calloop::channel::Sender;
++use calloop::generic::Generic;
++use calloop::{Interest, Mode, PostAction, RegistrationToken};
++use smithay::reexports::rustix::io::{fcntl_setfd, FdFlags};
++
++use crate::niri::State;
++use crate::utils::expand_home;
++use crate::utils::xwayland::X11Connection;
++
++pub struct Satellite {
++    x11: X11Connection,
++    abstract_token: Option<RegistrationToken>,
++    unix_token: Option<RegistrationToken>,
++    to_main: Sender<ToMain>,
++}
++
++enum ToMain {
++    SetupWatch,
++}
++
++impl Satellite {
++    pub fn display_name(&self) -> &str {
++        &self.x11.display_name
++    }
++}
++
++pub fn setup(state: &mut State) {
++    if state.niri.satellite.is_some() {
++        return;
++    }
++
++    let config = state.niri.config.borrow();
++    let xwls_config = &config.xwayland_satellite;
++    if xwls_config.off {
++        return;
++    }
++
++    if !test_ondemand(&xwls_config.path) {
++        return;
++    }
++    drop(config);
++
++    let x11 = match super::setup_connection() {
++        Ok(x11) => x11,
++        Err(err) => {
++            warn!("error opening X11 sockets, disabling xwayland-satellite integration: {err:?}");
++            return;
++        }
++    };
++
++    let event_loop = &state.niri.event_loop;
++    let (to_main, rx) = calloop::channel::channel();
++    event_loop
++        .insert_source(rx, move |event, _, state| match event {
++            calloop::channel::Event::Msg(msg) => match msg {
++                ToMain::SetupWatch => setup_watch(state),
++            },
++            calloop::channel::Event::Closed => (),
++        })
++        .unwrap();
++
++    state.niri.satellite = Some(Satellite {
++        x11,
++        abstract_token: None,
++        unix_token: None,
++        to_main,
++    });
++
++    setup_watch(state);
++}
++
++fn test_ondemand(path: &str) -> bool {
++    let _span = tracy_client::span!("satellite::test_ondemand");
++
++    // Expand `~` at the start.
++    let mut path = Path::new(path);
++    let expanded = expand_home(path);
++    match &expanded {
++        Ok(Some(expanded)) => path = expanded.as_ref(),
++        Ok(None) => (),
++        Err(err) => {
++            warn!("error expanding ~: {err:?}");
++        }
++    }
++
++    let mut process = Command::new(path);
++    process
++        .args([":0", "--test-listenfd-support"])
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null())
++        .env_remove("DISPLAY")
++        .env_remove("RUST_BACKTRACE")
++        .env_remove("RUST_LIB_BACKTRACE");
++
++    let mut child = match process.spawn() {
++        Ok(child) => child,
++        Err(err) => {
++            info!("error spawning xwayland-satellite at {path:?}, disabling integration: {err}");
++            return false;
++        }
++    };
++
++    let status = match child.wait() {
++        Ok(status) => status,
++        Err(err) => {
++            info!("error waiting for xwayland-satellite, disabling integration: {err}");
++            return false;
++        }
++    };
++
++    if !status.success() {
++        info!("xwayland-satellite doesn't support on-demand activation, disabling integration");
++        return false;
++    }
++
++    true
++}
++
++// When xwayland-satellite fails to start and accept a connection on the socket, the socket will
++// keep triggering our event source, even after the X11 client quits, resulting in a busyloop of
++// trying to start xwayland-satellite. This function will clear out (accept and drop) all pending
++// connections on the socket before registering a new event source, working around this problem.
++// When the problem happens, it's very likely that xwayland-satellite won't be able to accept the
++// pending client (since it had just failed to do so), so it's fine to drop the connections.
++fn clear_out_pending_connections(fd: OwnedFd) -> OwnedFd {
++    let listener = UnixListener::from(fd);
++
++    if let Err(err) = listener.set_nonblocking(true) {
++        warn!("error setting X11 socket to nonblocking: {err:?}");
++        return OwnedFd::from(listener);
++    }
++
++    while listener.accept().is_ok() {}
++
++    if let Err(err) = listener.set_nonblocking(false) {
++        warn!("error setting X11 socket to blocking: {err:?}");
++    }
++
++    OwnedFd::from(listener)
++}
++
++fn setup_watch(state: &mut State) {
++    let Some(satellite) = state.niri.satellite.as_mut() else {
++        return;
++    };
++
++    let event_loop = &state.niri.event_loop;
++
++    if let Some(token) = satellite.abstract_token.take() {
++        error!("abstract_token must be None in setup_watch()");
++        event_loop.remove(token);
++    }
++    if let Some(token) = satellite.unix_token.take() {
++        error!("unix_token must be None in setup_watch()");
++        event_loop.remove(token);
++    }
++
++    let fd = satellite.x11.abstract_fd.try_clone().unwrap();
++    let fd = clear_out_pending_connections(fd);
++    let source = Generic::new(fd, Interest::READ, Mode::Level);
++    let token = event_loop
++        .insert_source(source, move |_, _, state| {
++            if let Some(satellite) = &mut state.niri.satellite {
++                // Remove the other source.
++                if let Some(token) = satellite.unix_token.take() {
++                    state.niri.event_loop.remove(token);
++                }
++                // Clear this source.
++                satellite.abstract_token = None;
++
++                debug!("connection to X11 abstract socket; spawning xwayland-satellite");
++                let path = state.niri.config.borrow().xwayland_satellite.path.clone();
++                spawn(path, satellite);
++            }
++            Ok(PostAction::Remove)
++        })
++        .unwrap();
++    satellite.abstract_token = Some(token);
++
++    let fd = satellite.x11.unix_fd.try_clone().unwrap();
++    let fd = clear_out_pending_connections(fd);
++    let source = Generic::new(fd, Interest::READ, Mode::Level);
++    let token = event_loop
++        .insert_source(source, move |_, _, state| {
++            if let Some(satellite) = &mut state.niri.satellite {
++                // Remove the other source.
++                if let Some(token) = satellite.abstract_token.take() {
++                    state.niri.event_loop.remove(token);
++                }
++                // Clear this source.
++                satellite.unix_token = None;
++
++                debug!("connection to X11 unix socket; spawning xwayland-satellite");
++                let path = state.niri.config.borrow().xwayland_satellite.path.clone();
++                spawn(path, satellite);
++            }
++            Ok(PostAction::Remove)
++        })
++        .unwrap();
++    satellite.unix_token = Some(token);
++}
++
++fn spawn(path: String, xwl: &Satellite) {
++    let _span = tracy_client::span!("satellite::spawn");
++
++    let abstract_fd = xwl.x11.abstract_fd.try_clone().unwrap();
++    let unix_fd = xwl.x11.unix_fd.try_clone().unwrap();
++    let to_main = xwl.to_main.clone();
++
++    // Expand `~` at the start.
++    let mut path = PathBuf::from(path);
++    let expanded = expand_home(&path);
++    match expanded {
++        Ok(Some(expanded)) => path = expanded,
++        Ok(None) => (),
++        Err(err) => {
++            warn!("error expanding ~: {err:?}");
++        }
++    }
++
++    let mut process = Command::new(&path);
++    process.arg(&xwl.x11.display_name).env_remove("DISPLAY");
++
++    // We don't want it spamming the niri output.
++    process
++        .env_remove("RUST_BACKTRACE")
++        .env_remove("RUST_LIB_BACKTRACE");
++    process
++        .stdin(Stdio::null())
++        .stdout(Stdio::null())
++        .stderr(Stdio::null());
++
++    // Spawning and waiting takes some milliseconds, so do it in a thread.
++    let res = thread::Builder::new()
++        .name("Xwl-s Spawner".to_owned())
++        .spawn(move || {
++            spawn_and_wait(&path, process, abstract_fd, unix_fd);
++
++            // Once xwayland-satellite crashes or fails to spawn, re-establish our X11 socket watch
++            // to try again next time.
++            let _ = to_main.send(ToMain::SetupWatch);
++        });
++
++    if let Err(err) = res {
++        warn!("error spawning a thread to spawn xwayland-satellite: {err:?}");
++        let _ = xwl.to_main.send(ToMain::SetupWatch);
++    }
++}
++
++fn spawn_and_wait(path: &Path, mut process: Command, abstract_fd: OwnedFd, unix_fd: OwnedFd) {
++    let abstract_raw = abstract_fd.as_raw_fd();
++    let unix_raw = unix_fd.as_raw_fd();
++
++    process
++        .arg("-listenfd")
++        .arg(abstract_raw.to_string())
++        .arg("-listenfd")
++        .arg(unix_raw.to_string());
++
++    unsafe {
++        process.pre_exec(move || {
++            // We're about to exec xwl-s; perfect time to clear CLOEXEC on the file descriptors
++            // that we want to pass it.
++
++            // We're not dropping these until after spawn().
++            let abstract_fd = BorrowedFd::borrow_raw(abstract_raw);
++            let unix_fd = BorrowedFd::borrow_raw(unix_raw);
++
++            fcntl_setfd(abstract_fd, FdFlags::empty())?;
++            fcntl_setfd(unix_fd, FdFlags::empty())?;
++
++            Ok(())
++        })
++    };
++
++    let mut child = {
++        let _span = tracy_client::span!();
++        match process.spawn() {
++            Ok(child) => child,
++            Err(err) => {
++                warn!("error spawning {path:?}: {err:?}");
++                return;
++            }
++        }
++    };
++
++    // The process spawned, we can drop our fds.
++    drop(abstract_fd);
++    drop(unix_fd);
++
++    let status = match child.wait() {
++        Ok(status) => status,
++        Err(err) => {
++            warn!("error waiting for xwayland-satellite: {err:?}");
++            return;
++        }
++    };
++
++    // This is most likely a crash, hence warn!().
++    warn!("xwayland-satellite exited with: {status}");
++}
+diff --git a/wiki/Configuration:-Miscellaneous.md b/wiki/Configuration:-Miscellaneous.md
+index 1dacb9880..3eba0a311 100644
+--- a/wiki/Configuration:-Miscellaneous.md
++++ b/wiki/Configuration:-Miscellaneous.md
+@@ -36,6 +36,11 @@ overview {
+     }
+ }
+ 
++xwayland-satellite {
++    // off
++    path "xwayland-satellite"
++}
++
+ clipboard {
+     disable-primary
+ }
+@@ -207,6 +212,28 @@ overview {
+ }
+ ```
+ 
++### `xwayland-satellite`
++
++<sup>Since: next release</sup>
++
++Settings for integration with [xwayland-satellite](https://github.com/Supreeeme/xwayland-satellite).
++
++When a recent enough xwayland-satellite is detected, niri will create the X11 sockets and set `DISPLAY`, then automatically spawn `xwayland-satellite` when an X11 client tries to connect.
++If Xwayland dies, niri will keep watching the X11 socket and restart `xwayland-satellite` as needed.
++This is very similar to how built-in Xwayland works in other compositors.
++
++`off` disables the integration: niri won't create an X11 socket and won't set the `DISPLAY` environment variable.
++
++`path` sets the path to the `xwayland-satellite` binary.
++By default, it's just `xwayland-satellite`, so it's looked up like any other non-absolute program name.
++
++```kdl
++// Use a custom build of xwayland-satellite.
++xwayland-satellite {
++    path "~/source/rs/xwayland-satellite/target/release/xwayland-satellite"
++}
++```
++
+ ### `clipboard`
+ 
+ <sup>Since: 25.02</sup>
+diff --git a/wiki/Xwayland.md b/wiki/Xwayland.md
+index 487a882c8..1bc6b9caf 100644
+--- a/wiki/Xwayland.md
++++ b/wiki/Xwayland.md
+@@ -8,6 +8,14 @@ It makes X11 windows appear as normal windows, just like a native Xwayland integ
+ xwayland-satellite works well with most applications: Steam, games, Discord, even more exotic things like Ardour with wine Windows VST plugins.
+ However, X11 apps that want to position windows or bars at specific screen coordinates won't behave correctly.
+ 
++> [!NOTE]
++> In the next release, niri will have [built-in xwayland-satellite integration](./Configuration:-Miscellaneous.md#xwayland-satellite).
++> You can try it by installing git versions of both niri and xwayland-satellite.
++> With no further configuration, niri will create X11 sockets, then when an X11 client connects, automatically start xwayland-satellite.
++>
++> This matches how other compositors run Xwayland (but in niri's case, it's xwayland-satellite rather than Xwayland itself).
++> It also makes X11 apps work fine in `spawn-at-startup` and in XDG autostart.
++
+ Install it from your package manager, or build it according to instructions from its README, then run the `xwayland-satellite` binary.
+ Look for a log message like: `Connected to Xwayland on :0`.
+ Now you can start X11 applications on this X11 DISPLAY:
