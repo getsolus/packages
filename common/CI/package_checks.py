@@ -438,33 +438,43 @@ class PackageBumped(PullRequestCheck):
     _msg_new = 'Package release is not 1'
 
     def run(self) -> List[Result]:
-        results = [self._check_commit(self.base or 'HEAD', file)
-                   for file in self.files]
+        commits = self.commits or ['HEAD']
+        files = set(self.files) & set(self.git.untracked_files() + self.git.modified_files())
+        results = [self._check_commit(commit, file)
+                   for commit in commits
+                   for file in self.git.files_in_commit(commit)]
+        results += [self._check_commit(None, file)
+                    for file in files]
 
         return [result for result in results if result is not None]
 
-    def _check_commit(self, base: str, file: str) -> Optional[Result]:
+    def _check_commit(self, ref: Optional[str], file: str) -> Optional[Result]:
         match os.path.basename(file):
             case 'package.yml':
-                return self._check(base, file, PackageYML, Level.WARNING)
+                return self._check(ref, file, PackageYML, Level.WARNING)
             case 'pspec_x86_64.xml':
-                return self._check(base, file, PspecXML, Level.ERROR)
+                return self._check(ref, file, PspecXML, Level.ERROR)
             case _:
                 return None
 
-    def _check(self, base: str, file: str, loader: Callable[[str], Package], level: Level) -> Optional[Result]:
-        new = loader(self._read(file))
+    def _check(self, ref: Optional[str], file: str, loader: Callable[[str], Package], level: Level) -> Optional[Result]:
+        if ref is not None:
+            new = loader(self.git.file_from_commit(ref, file))
+            prev = f'{ref}~1'
+        else:
+            new = loader(self._read(file))
+            prev = 'HEAD'
 
         try:
-            old = loader(self.git.file_from_commit(base, file))
+            old = loader(self.git.file_from_commit(prev, file))
             if old.release + 1 != new.release:
-                return Result(level=level, file=file, message=self._msg)
+                return Result(level=level, file=file, message=f'{self._msg} (ref: {ref})')
 
             return None
         except Exception as e:
             if 'exists on disk, but not in' in str(e):
                 if new.release != 1:
-                    return Result(level=level, file=file, message=self._msg_new)
+                    return Result(level=level, file=file, message=f'{self._msg_new} (ref: {ref})')
 
                 return None
 
