@@ -1,13 +1,10 @@
 name       : opencv
-version    : 4.5.5
-release    : 42
+version    : 4.11.0
+release    : 43
 source     :
-    - https://github.com/opencv/opencv/archive/refs/tags/4.5.5.tar.gz : a1cfdcf6619387ca9e232687504da996aaa9f7b5689986b8331ec02cb61d28ad
-    - https://github.com/opencv/opencv_contrib/archive/4.5.5/opencv_contrib-4.5.5.tar.gz : a97c2eaecf7a23c6dbd119a609c6d7fae903e5f9ff5f1fe678933e01c67a6c11
-    - https://raw.githubusercontent.com/opencv/opencv_3rdparty/ippicv/master_20191018/ippicv/ippicv_2020_lnx_intel64_20191018_general.tgz : 08627fa5660d52d59309a572dd7db5b9c8aea234cfa5aee0942a1dd903554246
-    - https://github.com/opencv/ade/archive/v0.1.2d.zip : 586fc6b9d56990ed7490e261a0a5c5323ebbda4820bf2458088a5ecda977c1c1
-    - https://github.com/opencv/opencv_3rdparty/archive/34e4206aef44d50e6bbcd0ab06354b52e7466d26/opencv_3rdparty-34e4206aef44d50e6bbcd0ab06354b52e7466d26.tar.gz : d93c783cdf799da7e4a9209d169390424c4c198c1c9b5eeb78ffc890afe5f332
-    - https://github.com/opencv/opencv_3rdparty/archive/fccf7cd6a4b12079f73bbfb21745f9babcd4eb1d/opencv_3rdparty-fccf7cd6a4b12079f73bbfb21745f9babcd4eb1d.tar.gz : e9abccbabcace092e5424073168cc86d422585d15d25569f01fb6503b109e0e1
+    - https://github.com/opencv/opencv/archive/refs/tags/4.11.0.tar.gz : 9a7c11f924eff5f8d8070e297b322ee68b9227e003fd600d4b8122198091665f
+    - https://github.com/opencv/opencv_contrib/archive/4.11.0/opencv_contrib-4.11.0.tar.gz : 2dfc5957201de2aa785064711125af6abb2e80a64e2dc246aca4119b19687041
+    - https://raw.githubusercontent.com/opencv/opencv_3rdparty/7f55c0c26be418d494615afca15218566775c725/ippicv/ippicv_2021.12.0_lnx_intel64_20240425_general.tgz : 5ebbb577a0fdd474346b71d01f7581bc74f4d93d4e5ebf93409589ecc131dd34
 homepage   : https://opencv.org
 license    :
     - BSD-3-Clause
@@ -18,16 +15,17 @@ description: |
     OpenCV (Open Source Computer Vision Library) is an open source computer vision and machine learning software library.
 builddeps  :
     - pkgconfig(OpenEXR)
-    - pkgconfig(Qt5Core)
+    - pkgconfig(Qt6Core5Compat)
     - pkgconfig(freetype2)
-    - pkgconfig(glu)
+    - pkgconfig(gflags)
     - pkgconfig(gstreamer-plugins-base-1.0)
+    - pkgconfig(harfbuzz)
     - pkgconfig(hdf5)
-    - pkgconfig(ice)
     - pkgconfig(lapack)
     - pkgconfig(libavcodec)
-    - pkgconfig(libdc1394-2)
-    - pkgconfig(libgphoto2)
+    - pkgconfig(libavif)
+    - pkgconfig(libglog)
+    - pkgconfig(libpng)
     - pkgconfig(libopenjp2)
     - pkgconfig(libtiff-4)
     - pkgconfig(libturbojpeg)
@@ -37,79 +35,158 @@ builddeps  :
     - pkgconfig(openblas)
     - pkgconfig(protobuf)
     - pkgconfig(python3)
-    - pkgconfig(sm)
-    - pkgconfig(tbb)
-    - pkgconfig(xmu)
-    - ceres-solver-devel
     - numpy
-    - unzip
     - vulkan-headers
 rundeps    :
     - devel :
-        - qt5-base-devel
-    - numpy
+        - opencv-bgsegm
+        - opencv-calib3d
+        - opencv-core
+        - opencv-dnn
+        - opencv-features2d
+        - opencv-flann
+        - opencv-highgui
+        - opencv-imgcodecs
+        - opencv-imgproc
+        - opencv-ml
+        - opencv-objdetect
+        - opencv-optflow
+        - opencv-photo
+        - opencv-plot
+        - opencv-stitching
+        - opencv-tracking
+        - opencv-video
+        - opencv-videoio
+        - opencv-ximgproc
+        - qt6-base-devel
+
+    - ^python-opencv :
+        - numpy
+clang      : yes
 setup      : |
+    tar xf $sources/opencv_contrib-*.tar.gz
+    mv opencv_contrib* contrib
+
     # Use ippicv from $sources
     IPPNAME=$(basename $sources/ippicv_*_lnx_*.tgz)
     IPPMD5SUM=$(md5sum $sources/$IPPNAME | cut -d " " -f1)
     mkdir -p .cache/ippicv
     cp $sources/$IPPNAME .cache/ippicv/$IPPMD5SUM-$IPPNAME
 
-    ADENAME=$(basename $sources/v0.1.2d.zip)
-    ADEMD5SUM=$(md5sum $sources/$ADENAME | cut -d " " -f1)
-    mkdir -p .cache/ade
-    cp $sources/$ADENAME .cache/ade/$ADEMD5SUM-$ADENAME
+    %patch -p1 -i $pkgfiles/ftbfs-cmake-4.patch
+    %patch -p1 -i $pkgfiles/ftbfs-qt-6.9.patch
 
-    mkdir boostdesc
-    mkdir -p .cache/xfeatures2d/boostdesc
-    tar xf $sources/opencv_3rdparty-34e4206*.tar.gz --strip-components=1 -C boostdesc
-    for int in boostdesc/boostdesc_*.i; do
-        BOOSTDESCNAME=$(basename $int)
-        BOOSTDESCMD5SUM=$(md5sum $int | cut -d " " -f1)
-        cp $int .cache/xfeatures2d/boostdesc/$BOOSTDESCMD5SUM-$BOOSTDESCNAME
+    # Using `BUILD_OPENCV_*` options we disable all extra modules from opencv_contrib that we don't explicitly need
+    # To make this easier on ourselves let's allowlist the modules we want and disable every other one
+    # Technically we don't need plot but tracking checks for it so it can build samples (which we don't end up installing anyway)
+    modules=(bgsegm optflow plot tracking ximgproc)
+    contrib_cmake_args=""
+    pushd contrib/modules
+    directories=(*)
+    for dir in "${directories[@]}"
+    do
+        if [ -d "$dir" ]; then
+            if [[ " ${modules[*]} " =~ " ${dir} " ]]; then
+                contrib_cmake_args+="-DBUILD_opencv_${dir}=ON "
+            else
+                contrib_cmake_args+="-DBUILD_opencv_${dir}=OFF "
+            fi
+        fi
     done
+    popd
 
-    mkdir vgg
-    mkdir -p .cache/xfeatures2d/vgg
-    tar xf $sources/opencv_3rdparty-fccf7cd*.tar.gz --strip-components=1 -C vgg
-    for int in vgg/vgg_*.i; do
-        VGGNAME=$(basename $int)
-        VGGMD5SUM=$(md5sum $int | cut -d " " -f1)
-        cp $int .cache/xfeatures2d/vgg/$VGGMD5SUM-$VGGNAME
-    done
-
-    tar xf $sources/opencv_contrib-*.tar.gz
-    mv opencv_contrib* contrib
-
-    # Can be safely removed for opencv >4.5.5
-    patch -p1 -i $pkgfiles/ffmpeg-5.patch
-    patch -p1 -i $pkgfiles/ffmpeg-headers.patch
-    patch -p1 -i $pkgfiles/0001-Update-ADE.patch
-
+    # TODO: Fix this so it uses openblas for lapack
     %cmake_ninja \
+        -DBUILD_DOCS=OFF \
+        -DBUILD_EXAMPLES=OFF \
+        -DBUILD_PERF_TESTS=OFF \
+        -DBUILD_PROTOBUF=OFF \
+        -DBUILD_TESTS=OFF \
+        -DCMAKE_CXX_STANDARD=17 \
+        -DINSTALL_C_EXAMPLES=OFF \
+        -DINSTALL_PYTHON_EXAMPLES=OFF \
+        -DOPENCV_ENABLE_NONFREE=OFF \
+        -DOPENCV_EXTRA_MODULES_PATH=contrib/modules \
         -DOPENCV_GENERATE_PKGCONFIG=ON \
-        -DOPENCV_EXTRA_MODULES_PATH=$workdir/contrib/modules \
+        -DOPENCV_GENERATE_SETUPVARS=OFF \
+        -DOPENCV_SKIP_FEATURES2D_DOWNLOADING=OFF \
+        -DPROTOBUF_UPDATE_FILES=ON \
+        -DWITH_ADE=OFF \
+        -DWITH_FLATBUFFERS=OFF \
         -DWITH_GPHOTO2=ON \
         -DWITH_IPP=ON \
-        -DWITH_OPENGL=ON \
-        -DOpenGL_GL_PREFERENCE="GLVND" \
-        -DWITH_VULKAN=ON \
-        -DWITH_OPENCL=ON \
         -DWITH_LAPACK=ON \
-        -DWITH_TBB=ON \
-        -DENABLE_CXX11=ON \
-        -DBUILD_SHARED_LIBS=ON \
-        -DBUILD_PERF_TESTS=OFF \
-        -DBUILD_TESTS=OFF \
-        -DBUILD_DOCS=OFF \
-        -DBUILD_WITH_DEBUG_INFO=OFF \
-        -DBUILD_opencv_python2=OFF \
-        -DENABLE_SOLUTION_FOLDERS=ON \
-        -DOPENCV_ENABLE_NONFREE=ON \
+        -DWITH_OPENCL=ON \
+        -DWITH_OPENGL=ON \
+        -DWITH_OPENMP=ON \
         -DWITH_QT=ON \
-        -DOPENCV_FORCE_PYTHON_LIBS=ON \
-        -DENABLE_PRECOMPILED_HEADERS=OFF
+        -DWITH_VULKAN=ON \
+        -DVULKAN_INCLUDE_DIRS=/usr/include/vulkan \
+        ${contrib_cmake_args}
 build      : |
     %ninja_build
 install    : |
     %ninja_install
+patterns   :
+    - bgsegm:
+        - /usr/lib64/libopencv_bgsegm.so.*
+
+    - calib3d:
+        - /usr/lib64/libopencv_calib3d.so.*
+
+    - core:
+        - /usr/lib64/libopencv_core.so.*
+
+    - dnn:
+        - /usr/lib64/libopencv_dnn.so.*
+
+    - features2d:
+        - /usr/lib64/libopencv_features2d.so.*
+
+    - flann:
+        - /usr/lib64/libopencv_flann.so.*
+
+    - highgui:
+        - /usr/lib64/libopencv_highgui.so.*
+
+    - imgcodecs:
+        - /usr/lib64/libopencv_imgcodecs.so.*
+
+    - imgproc:
+        - /usr/lib64/libopencv_imgproc.so.*
+
+    - ml:
+        - /usr/lib64/libopencv_ml.so.*
+
+    - objdetect:
+        - /usr/lib64/libopencv_objdetect.so.*
+
+    - optflow:
+        - /usr/lib64/libopencv_optflow.so.*
+
+    - photo:
+        - /usr/lib64/libopencv_photo.so.*
+
+    - plot:
+        - /usr/lib64/libopencv_plot.so.*
+
+    - stitching:
+        - /usr/lib64/libopencv_stitching.so.*
+
+    - tracking:
+        - /usr/lib64/libopencv_tracking.so.*
+
+    - video:
+        - /usr/lib64/libopencv_video.so.*
+
+    - videoio:
+        - /usr/lib64/libopencv_videoio.so.*
+
+    - ximgproc:
+        - /usr/lib64/libopencv_ximgproc.so.*
+
+    - ^python-opencv:
+        - /usr/lib/python3*
+
+    - devel:
+        - /usr/share/opencv4/*.supp
