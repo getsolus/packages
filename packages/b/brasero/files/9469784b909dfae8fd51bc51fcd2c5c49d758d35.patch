@@ -1,0 +1,119 @@
+From 9469784b909dfae8fd51bc51fcd2c5c49d758d35 Mon Sep 17 00:00:00 2001
+From: sid <sidtosh4@gmail.com>
+Date: Thu, 23 May 2024 20:02:22 +0100
+Subject: [PATCH] Prefer 'application/vnd.efi.iso' MIME type
+
+Prefer 'application/vnd.efi.iso' to 'application/x-cd-image' mime for
+ISO images.
+
+This is due to recent ISO mime change in 'shared-mime-info' v2.3, which
+replaced 'application/x-cd-image' with 'application/vnd.efi.iso' mime
+for ISO images. So, GIO returns 'application/vnd.efi.iso' as mime for
+ISO images, and brasero doesn't know 'application/vnd.efi.iso' mime.
+
+$ gio info NetBSD-9.4-amd64.iso | grep vnd
+  standard::icon: application-vnd.efi.iso, media-optical, application-vnd.efi.iso-symbolic, media-optical-symbolic
+  standard::content-type: application/vnd.efi.iso
+  standard::fast-content-type: application/vnd.efi.iso
+  standard::symbolic-icon: application-vnd.efi.iso-symbolic, media-optical-symbolic, application-vnd.efi.iso, media-optical
+
+'application/x-cd-image' still is an alias for 'application/vnd.efi.iso'
+in 'shared-mime-info'. So the old mime still works fine in GtkRecent
+code which handles this correctly.
+
+Refer: https://gitlab.freedesktop.org/xdg/shared-mime-info/-/merge_requests/220
+
+Fixes: https://gitlab.gnome.org/GNOME/brasero/-/issues/375
+---
+ libbrasero-burn/brasero-data-vfs.c        | 1 +
+ libbrasero-burn/brasero-track-image-cfg.c | 3 ++-
+ libbrasero-utils/brasero-io.c             | 1 +
+ nautilus/nautilus-burn-extension.c        | 1 +
+ src/brasero-app.c                         | 2 ++
+ src/brasero-project-type-chooser.c        | 1 +
+ 6 files changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/libbrasero-burn/brasero-data-vfs.c b/libbrasero-burn/brasero-data-vfs.c
+index c008e7047..96bd8fe7c 100644
+--- a/libbrasero-burn/brasero-data-vfs.c
++++ b/libbrasero-burn/brasero-data-vfs.c
+@@ -608,6 +608,7 @@ brasero_data_vfs_loading_node_result (GObject *owner,
+ 	&& (!strcmp (g_file_info_get_content_type (info), "application/x-toc")
+ 	||  !strcmp (g_file_info_get_content_type (info), "application/x-cdrdao-toc")
+ 	||  !strcmp (g_file_info_get_content_type (info), "application/x-cue")
++	||  !strcmp (g_file_info_get_content_type (info), "application/vnd.efi.iso")
+ 	||  !strcmp (g_file_info_get_content_type (info), "application/x-cd-image"))) {
+ 		BraseroBurnResult result;
+ 
+diff --git a/libbrasero-burn/brasero-track-image-cfg.c b/libbrasero-burn/brasero-track-image-cfg.c
+index e065fb3fd..a4b4f5cbf 100644
+--- a/libbrasero-burn/brasero-track-image-cfg.c
++++ b/libbrasero-burn/brasero-track-image-cfg.c
+@@ -198,7 +198,8 @@ brasero_track_image_cfg_get_info_thread (GSimpleAsyncResult *result,
+ 			else
+ 				info->format = BRASERO_IMAGE_FORMAT_BIN;
+ 		}
+-		else if (mime && !strcmp (mime, "application/x-cd-image"))
++		else if (mime && (!strcmp (mime, "application/x-cd-image") ||
++				  (!strcmp (mime, "application/vnd.efi.iso"))))
+ 			info->format = BRASERO_IMAGE_FORMAT_BIN;
+ 
+ 		g_object_unref (file_info);
+diff --git a/libbrasero-utils/brasero-io.c b/libbrasero-utils/brasero-io.c
+index 5619359dd..70fde05ba 100644
+--- a/libbrasero-utils/brasero-io.c
++++ b/libbrasero-utils/brasero-io.c
+@@ -1041,6 +1041,7 @@ brasero_io_get_metadata_info (BraseroIO *self,
+ 	&& (!strncmp (mime, "image/", 6)
+ 	||  !strcmp (mime, "text/plain")
+ 	||  !strcmp (mime, "application/x-cue") /* this one make gstreamer crash */
++	||  !strcmp (mime, "application/vnd.efi.iso")
+ 	||  !strcmp (mime, "application/x-cd-image")))
+ 		return FALSE;
+ 
+diff --git a/nautilus/nautilus-burn-extension.c b/nautilus/nautilus-burn-extension.c
+index 3be8e5fac..758d5248f 100644
+--- a/nautilus/nautilus-burn-extension.c
++++ b/nautilus/nautilus-burn-extension.c
+@@ -560,6 +560,7 @@ nautilus_disc_burn_get_file_items (NautilusMenuProvider *provider,
+         }
+ 
+         is_iso = (strcmp (mime_type, "application/x-iso-image") == 0)
++                || (strcmp (mime_type, "application/vnd.efi.iso") == 0)
+                 || (strcmp (mime_type, "application/x-cd-image") == 0)
+                 || (strcmp (mime_type, "application/x-cue") == 0)
+                 || (strcmp (mime_type, "application/x-toc") == 0)
+diff --git a/src/brasero-app.c b/src/brasero-app.c
+index bae2e8e4d..7f8f8b9a4 100644
+--- a/src/brasero-app.c
++++ b/src/brasero-app.c
+@@ -1373,6 +1373,7 @@ brasero_app_open_by_mime (BraseroApp *app,
+ #endif
+ 
+ 	else if (!strcmp (mime, "application/x-cd-image")
++	     ||  !strcmp (mime, "application/vnd.efi.iso")
+ 	     ||  !strcmp (mime, "application/x-cdrdao-toc")
+ 	     ||  !strcmp (mime, "application/x-toc")
+ 	     ||  !strcmp (mime, "application/x-cue")) {
+@@ -1738,6 +1739,7 @@ brasero_app_add_recent (BraseroApp *app,
+ 
+ 	gtk_recent_filter_set_name (filter, _("_Recent Projects"));
+ 	gtk_recent_filter_add_mime_type (filter, "application/x-brasero");
++	gtk_recent_filter_add_mime_type (filter, "application/vnd.efi.iso");
+ 	gtk_recent_filter_add_mime_type (filter, "application/x-cd-image");
+ 	gtk_recent_filter_add_mime_type (filter, "application/x-cdrdao-toc");
+ 	gtk_recent_filter_add_mime_type (filter, "application/x-toc");
+diff --git a/src/brasero-project-type-chooser.c b/src/brasero-project-type-chooser.c
+index eff1f114f..1d7b93f22 100644
+--- a/src/brasero-project-type-chooser.c
++++ b/src/brasero-project-type-chooser.c
+@@ -253,6 +253,7 @@ brasero_project_type_chooser_build_recent (BraseroProjectTypeChooser *self,
+ 
+ 		/* filter those we want */
+ 		if (strcmp (mime, "application/x-brasero")
++		&&  strcmp (mime, "application/vnd.efi.iso")
+ 		&&  strcmp (mime, "application/x-cd-image")
+ 		&&  strcmp (mime, "application/x-cdrdao-toc")
+ 		&&  strcmp (mime, "application/x-toc")
+-- 
+GitLab
