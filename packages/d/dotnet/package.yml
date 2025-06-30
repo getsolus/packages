@@ -1,13 +1,14 @@
 name       : dotnet
-version    : 8.0.11
-release    : 9
+version    : 9.0.6
+release    : 11
 source     :
-    - https://github.com/dotnet/dotnet/archive/refs/tags/v8.0.11.tar.gz : d7cb383bbfa20f86e085615ab3dcb769e5c9af7330d90834ce34889857bd92e5
+    - https://github.com/dotnet/dotnet/archive/refs/tags/v9.0.6.tar.gz : 8f25d48e7ec0a94b30b702c190ee78609a348520eebef32c1e6bfa196f29d794
 homepage   : https://dot.net
 license    : MIT
 component  : programming.dotnet
 summary    :
     - .NET runtime
+    - shared : .NET Shared Packages
     - sdk : .NET Development Kit
     - source-built-artifacts : Internal package for building .NET
 description: .NET is a free, cross-platform, open-source developer platform for building many kinds of applications. It can run programs written in multiple languages, with C# being the most popular.
@@ -21,6 +22,7 @@ builddeps  :
     - pkgconfig(RapidJSON)
     - pkgconfig(icu-i18n)
     - pkgconfig(krb5)
+    - pkgconfig(libbrotlicommon)
     - pkgconfig(libcurl)
     - pkgconfig(libssl)
     - pkgconfig(libunwind)
@@ -29,49 +31,60 @@ builddeps  :
     - dotnet-sdk
     - dotnet-source-built-artifacts
     - git
-    - jq
     - lldb-devel
 rundeps    :
-    - libicu
+    - dotnet-shared
     - sdk :
         - dotnet
+    - shared :
+        - libicu
 setup      : |
-    %patch -p1 -i $pkgfiles/1005-default-opt-out-of-telemetry.patch
-    %patch -p1 -i $pkgfiles/0001-solus-Read-install_location-from-usr.patch
-    # from .net 9 we can remove this patch
-    %patch -p1 -i $pkgfiles/0002-solus-dac-fix.patch
+    for p in $pkgfiles/*.patch; do
+        %patch -p1 -i $p
+    done
 build      : |
+    CFLAGS="${CFLAGS} -Wno-used-but-marked-unused"
+    CXXFLAGS="${CXXFLAGS} -Wno-used-but-marked-unused"
     # EXTRA_* flags are passed to the build system
     export EXTRA_CFLAGS="$CFLAGS"
     export EXTRA_CXXFLAGS="$CXXFLAGS"
     export EXTRA_LDFLAGS="$LDFLAGS"
-    cp -r /usr/lib64/dotnet .dotnet
-    ln -sf /usr/share/dotnet/source-built-artifacts/Private.SourceBuilt.*.tar.gz prereqs/packages/archive/
-    VERSION_JSON=$(curl -sL "https://github.com/dotnet/dotnet/releases/download/v$version/release.json")
-    SRC_REPO=$(echo $VERSION_JSON | jq -r '.sourceRepository')
-    SRC_VERSION=$(echo $VERSION_JSON | jq -r '.sourceVersion')
+    major_version=$(echo $version | cut -d. -f1)
+    artifacts_file=/usr/share/dotnet/source-built-artifacts/Private.SourceBuilt.Artifacts.$major_version*.tar.gz
+    bootstrap=0
+    if [ ! -f $artifacts_file ] || [[ "$major_version" != "$(basename $artifacts_file | cut -d. -f4)" ]]; then
+        bootstrap=1
+        ./prep-source-build.sh
+    else
+        echo "Using existing source-built artifacts: $artifacts_file"
+        ln -sf $artifacts_file prereqs/packages/archive/
+    fi
 
     # setting `version` (any case) clobbers the msbuild version target
     unset CFLAGS CXXFLAGS LDFLAGS version
-    ./prep.sh
-    # from .net 9 you can pass --with-system-libs to build.sh
-    ./build.sh --clean-while-building \
-               --online \
-               --source-repository $SRC_REPO \
-               --source-version $SRC_VERSION \
-               --with-sdk $PWD/.dotnet \
-               -- -maxCpuCount:%YJOBS%
+    
+    build_command="--clean-while-building --source-only --release-manifest $pkgfiles/release.json --with-system-libs brotli+libunwind+rapidjson+zlib --target-rid solus.4-x64"
+    if [ $bootstrap -eq 0 ]; then
+        build_command="$build_command --with-sdk /usr/lib64/dotnet"
+    fi
+    ./build.sh $build_command -- -maxCpuCount:%YJOBS% /p:ContinueOnPrebuiltBaselineError=true
 install    : |
-    # required bootstrap artifacts
-    install -Dm00644 artifacts/x64/Release/Private.SourceBuilt.Artifacts.*.tar.gz -t $installdir/usr/share/dotnet/source-built-artifacts/
-    install -Dm00644 artifacts/x64/Release/Private.SourceBuilt.Prebuilts.*.tar.gz -t $installdir/usr/share/dotnet/source-built-artifacts/
-
     # sdk
     install -dm00755 $installdir/usr/{bin,lib64/dotnet,share/licenses/dotnet}
-    tar -xf artifacts/x64/Release/dotnet-sdk-*.tar.gz -C $installdir/usr/lib64/dotnet
+    tar -xf artifacts/assets/Release/dotnet-sdk-*.tar.gz -C $installdir/usr/lib64/dotnet --no-same-owner
+    find $installdir/usr/lib64/dotnet -name '*.pdb' -exec rm -f {} \;
     mv $installdir/usr/lib64/dotnet/{LICENSE.txt,ThirdPartyNotices.txt} $installdir/usr/share/licenses/dotnet/
     ln -srv $installdir/usr/lib64/dotnet/dotnet $installdir/usr/bin/dotnet
     ln -srv $installdir/usr/lib64/dotnet/host/fxr/$version/libhostfxr.so $installdir/usr/lib64/libhostfxr.so
+    
+    # Fix permissions
+    for file_pattern in 'apphost' 'singlefilehost' 'lib*so'; do
+        find $installdir/usr/lib64/dotnet/ -type f -name "$file_pattern" -exec chmod +x {} \;
+    done
+    for file_pattern in '*.a' '*.dll' '*.json' '*.props' '*.pubxml' '*.targets' '*.txt' '*.xml'; do
+        find $installdir/usr/lib64/dotnet/ -type f -name "$file_pattern" -exec chmod -x {} \;
+    done
+    find $installdir/usr/lib64/dotnet/ -type f -name '*.h' -exec chmod 0644 {} \;
 
     # prevents dotnet from having to search for the install location
     install -Dm00644 $pkgfiles/dotnet.tmpfiles $installdir/usr/lib64/tmpfiles.d/dotnet.conf
@@ -80,10 +93,10 @@ install    : |
     # completions
     install -Dm00644 src/sdk/scripts/register-completions.bash $installdir/usr/share/bash-completion/completions/dotnet
     install -Dm00644 src/sdk/scripts/register-completions.zsh $installdir/usr/share/zsh/site-functions/_dotnet
-    # install -Dm00644 src/sdk/scripts/register-completions.ps1 $installdir/usr/local/share/powershell/Modules
 
-    # Fix build folder permissions
-    chown root:root -R $installdir
+    # Install source-built artifacts for bootstrapping
+    install -dm00755 $installdir/usr/share/dotnet/source-built-artifacts
+    install -m00644 artifacts/assets/Release/Private.SourceBuilt.Artifacts.*.tar.gz $installdir/usr/share/dotnet/source-built-artifacts/
 patterns   :
     - sdk :
         - /usr/lib64/dotnet/metadata
@@ -91,5 +104,16 @@ patterns   :
         - /usr/lib64/dotnet/sdk
         - /usr/lib64/dotnet/sdk-manifests
         - /usr/lib64/dotnet/templates
+    - shared :
+        - /usr/bin/dotnet
+        - /usr/lib64/dotnet/dotnet
+        - /usr/lib64/dotnet/host/fxr/*/libhostfxr.so
+        - /usr/lib64/dotnet/install_location
+        - /usr/lib64/dotnet/packs/NETStandard.Library.Ref
+        - /usr/lib64/libhostfxr.so
+        - /usr/lib64/tmpfiles.d/
+        - /usr/share/bash-completion/completions/dotnet
+        - /usr/share/licenses/dotnet
+        - /usr/share/zsh/site-functions/_dotnet
     - source-built-artifacts :
         - /usr/share/dotnet/source-built-artifacts
