@@ -1,0 +1,118 @@
+From 70643e4006a07523542c8b07dbdb438c2a43b5c4 Mon Sep 17 00:00:00 2001
+From: Karthik Nishanth <nishanthkarthik@live.com>
+Date: Fri, 16 May 2025 18:55:27 -0700
+Subject: [PATCH 1/3] Move variable inwards and closer to initialization
+
+---
+ src/SearchHistoryTask.cpp | 7 +------
+ 1 file changed, 1 insertion(+), 6 deletions(-)
+
+diff --git a/src/SearchHistoryTask.cpp b/src/SearchHistoryTask.cpp
+index 5d541449b8..e65c008b54 100644
+--- a/src/SearchHistoryTask.cpp
++++ b/src/SearchHistoryTask.cpp
+@@ -42,7 +42,6 @@ void SearchHistoryTask::executeOnScreenWindow(const QPointer<Session> &session,
+     Emulation *emulation = session->emulation();
+ 
+     if (!_regExp.pattern().isEmpty()) {
+-        int pos = -1;
+         bool forwards = (_direction == Enum::ForwardsSearch);
+         const int lastLine = window->lineCount() - 1;
+ 
+@@ -157,11 +156,7 @@ void SearchHistoryTask::executeOnScreenWindow(const QPointer<Session> &session,
+             // line number search below assumes that the buffer ends with a new-line
+             string.append(QLatin1Char('\n'));
+ 
+-            if (forwards) {
+-                pos = string.indexOf(_regExp);
+-            } else {
+-                pos = string.lastIndexOf(_regExp);
+-            }
++            const auto pos = forwards ? string.indexOf(_regExp) : string.lastIndexOf(_regExp);
+ 
+             // if a match is found, position the cursor on that line and update the screen
+             if (pos != -1) {
+-- 
+GitLab
+
+
+From f4ed993ca222cd4c115a7ff2260794310b8a550b Mon Sep 17 00:00:00 2001
+From: Karthik Nishanth <nishanthkarthik@live.com>
+Date: Fri, 16 May 2025 18:56:22 -0700
+Subject: [PATCH 2/3] Hoist line position buffer calculation outside loop
+
+---
+ src/SearchHistoryTask.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/SearchHistoryTask.cpp b/src/SearchHistoryTask.cpp
+index e65c008b54..af96ac58df 100644
+--- a/src/SearchHistoryTask.cpp
++++ b/src/SearchHistoryTask.cpp
+@@ -88,6 +88,7 @@ void SearchHistoryTask::executeOnScreenWindow(const QPointer<Session> &session,
+         decoder.begin(&searchStream);
+         emulation->writeToStream(&decoder, 0, lastLine);
+         decoder.end();
++        const QList<int> linePositions = decoder.linePositions();
+ 
+         QRegularExpressionMatchIterator matchIterator = _regExp.globalMatch(string);
+         while (matchIterator.hasNext()) {
+@@ -95,7 +96,6 @@ void SearchHistoryTask::executeOnScreenWindow(const QPointer<Session> &session,
+             int pos = match.capturedStart();
+             if (pos != -1) {
+                 int newLines = 0;
+-                QList<int> linePositions = decoder.linePositions();
+                 while (newLines < linePositions.count() && linePositions[newLines] <= pos) {
+                     newLines++;
+                 }
+-- 
+GitLab
+
+
+From ed1bf0b947dd468f141687829ca7892c11d34116 Mon Sep 17 00:00:00 2001
+From: Karthik Nishanth <nishanthkarthik@live.com>
+Date: Fri, 16 May 2025 19:11:46 -0700
+Subject: [PATCH 3/3] optimize line match finding
+
+- assume `linePositions` is monotonically increasing
+- replace a scan with binary search (previously quadratic)
+- handle an edge case when there are no matches
+
+Takes search time from ~8s to ~100ms. Makes scrollbar
+highlighting usable with large buffers.
+---
+ src/SearchHistoryTask.cpp | 17 +++++++----------
+ 1 file changed, 7 insertions(+), 10 deletions(-)
+
+diff --git a/src/SearchHistoryTask.cpp b/src/SearchHistoryTask.cpp
+index af96ac58df..3f2bab9c84 100644
+--- a/src/SearchHistoryTask.cpp
++++ b/src/SearchHistoryTask.cpp
+@@ -92,17 +92,14 @@ void SearchHistoryTask::executeOnScreenWindow(const QPointer<Session> &session,
+ 
+         QRegularExpressionMatchIterator matchIterator = _regExp.globalMatch(string);
+         while (matchIterator.hasNext()) {
+-            QRegularExpressionMatch match = matchIterator.next();
+-            int pos = match.capturedStart();
+-            if (pos != -1) {
+-                int newLines = 0;
+-                while (newLines < linePositions.count() && linePositions[newLines] <= pos) {
+-                    newLines++;
++            const QRegularExpressionMatch match = matchIterator.next();
++            const qsizetype startPos = match.capturedStart();
++            if (startPos != -1) {
++                const auto lineMatch = std::upper_bound(linePositions.begin(), linePositions.end(), startPos);
++                if (lineMatch != linePositions.end()) {
++                    const auto lineIdx = qMin(0ll, lastLine) + std::distance(linePositions.begin(), lineMatch) - 1;
++                    matchPositions.insert(static_cast<int>(lineIdx));
+                 }
+-                newLines--;
+-
+-                int findPos = qMin(0, lastLine) + newLines;
+-                matchPositions.insert(findPos);
+             }
+         }
+ 
+-- 
+GitLab
+
