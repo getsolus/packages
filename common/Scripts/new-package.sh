@@ -35,6 +35,6 @@ fi
 mkdir -p $(git rev-parse --show-toplevel)/${DIR}
 
 pushd $(git rev-parse --show-toplevel)/${DIR}
-$YAUTO ${TARBALL}
+$YAUTO ${TARBALL} ${PACKAGE}
 
 printf "\npackage.yml created in ${DIR}\n"
