@@ -190,7 +190,7 @@ def get_release_monitoring(package_name: str, tarball_src: str) -> ReleaseMonito
         search_name = package_name[len("python-"):]
     else:
         search_name = package_name
-    response = _get_release_exact_match(package_name, tarball_uri)
+    response = _get_release_exact_match(search_name, tarball_uri)
     return ReleaseMonitoring(
         YamlData(
             releases=Releases(
