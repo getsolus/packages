@@ -163,9 +163,10 @@ class AutoPackage:
                     or "setup.cfg" in file
                 ):
                     # this is a python module.
-                    known_types.append(PYTHON_MODULES)
-                    self.component = "programming.python"
-                    self.package_name = f"python-{self.package_name}"
+                    if PYTHON_MODULES not in known_types:
+                        known_types.append(PYTHON_MODULES)
+                        self.component = "programming.python"
+                        self.package_name = f"python-{self.package_name}"
                 # Handle python modules respecting PEP517.
                 if "pyproject.toml" in file or "setup.cfg" in file:
                     if PEP517 not in known_types:
