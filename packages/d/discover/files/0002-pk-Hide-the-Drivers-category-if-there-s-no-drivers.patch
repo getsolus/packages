@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Aleix Pol <aleixpol@kde.org>
+Date: Fri, 2 May 2025 03:17:47 +0200
+Subject: [PATCH 2/4] pk: Hide the Drivers category if there's no drivers
+
+---
+ libdiscover/Category/Category.cpp               |  2 +-
+ libdiscover/Category/Category.h                 | 14 +++++++++++++-
+ .../PackageKitBackend/PackageKitBackend.cpp     | 17 +++++++++++++++++
+ 3 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/libdiscover/Category/Category.cpp b/libdiscover/Category/Category.cpp
+index 7c414000f..36e272418 100644
+--- a/libdiscover/Category/Category.cpp
++++ b/libdiscover/Category/Category.cpp
+@@ -123,7 +123,7 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml, Localizatio
+             m_priority = 5;
+             xml->readNext();
+         } else if (xml->name() == QLatin1String("OnlyShowIn")) {
+-            m_visible = qEnvironmentVariable("XDG_CURRENT_DESKTOP") == xml->readElementText();
++            m_visible = !m_hide && qEnvironmentVariable("XDG_CURRENT_DESKTOP") == xml->readElementText();
+         } else if (xml->name() == QLatin1String("Drivers")) {
+             m_isDrivers = true;
+             m_priority = 5;
+diff --git a/libdiscover/Category/Category.h b/libdiscover/Category/Category.h
+index 41e362725..e116b8692 100644
+--- a/libdiscover/Category/Category.h
++++ b/libdiscover/Category/Category.h
+@@ -52,7 +52,7 @@ public:
+     Q_PROPERTY(QString name READ name NOTIFY nameChanged)
+     Q_PROPERTY(QString icon READ icon CONSTANT)
+     Q_PROPERTY(QVariantList subcategories READ subCategoriesVariant NOTIFY subCategoriesChanged)
+-    Q_PROPERTY(bool visible READ isVisible CONSTANT)
++    Q_PROPERTY(bool visible READ isVisible NOTIFY visibleChanged)
+ 
+     // Whether to apply localization during parsing.
+     enum class Localization {
+@@ -135,9 +135,20 @@ public:
+         return m_parentCategory;
+     }
+ 
++    void hide()
++    {
++        if (m_hide) {
++            return;
++        }
++        m_hide = true;
++        m_visible = false;
++        Q_EMIT visibleChanged();
++    }
++
+ Q_SIGNALS:
+     void subCategoriesChanged();
+     void nameChanged();
++    void visibleChanged();
+ 
+ private:
+     // disable the QObject parent business
+@@ -155,6 +166,7 @@ private:
+     QSet<QString> m_plugins;
+     bool m_isAddons = false;
+     bool m_isDrivers = false;
++    bool m_hide = false;
+     qint8 m_priority = 0;
+     QTimer *m_subCategoriesChanged;
+     bool m_visible = true;
+diff --git a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+index bd9c18c38..76bf22ea4 100644
+--- a/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
++++ b/libdiscover/backends/PackageKitBackend/PackageKitBackend.cpp
+@@ -52,6 +52,7 @@
+ #include "libdiscover_backend_packagekit_debug.h"
+ #include "utils.h"
+ #include <Category/Category.h>
++#include <Category/CategoryModel.h>
+ #include <resources/ResourcesModel.h>
+ 
+ using namespace std::chrono_literals;
+@@ -237,6 +238,22 @@ PackageKitBackend::PackageKitBackend(QObject *parent)
+ 
+     m_globalHints = QStringList() << QStringLiteral("interactive=true") << QStringLiteral("locale=%1").arg(qEnvironmentVariable("LANG"));
+     PackageKit::Daemon::global()->setHints(m_globalHints);
++
++    // Hide the drivers category if there's no drivers
++    connect(CategoryModel::global(), &CategoryModel::rootCategoriesChanged, this, [this] {
++        auto driversCategory = CategoryModel::global()->findCategoryByName(QStringLiteral("Hardware Drivers"));
++        AbstractResourcesBackend::Filters filter;
++        filter.category = driversCategory;
++        auto stream = search(filter);
++        connect(stream, &ResultsStream::resourcesFound, stream, [stream] {
++            stream->setProperty("foundDrivers", true);
++        });
++        connect(stream, &ResultsStream::destroyed, stream, [stream, driversCategory] {
++            if (!stream->property("foundDrivers").toBool()) {
++                driversCategory->hide();
++            }
++        });
++    });
+ }
+ 
+ PackageKitBackend::~PackageKitBackend()
