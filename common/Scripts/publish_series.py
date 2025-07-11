@@ -24,10 +24,9 @@ from common.Scripts.worklog import Build as APIBuild  # noqa: E402
 
 
 def get_yml_tag(spec: str) -> str:
-    with open(spec, 'r') as f:
-        yml = yaml.safe_load(f)
+    yml = yaml.safe_load(spec)
 
-        return f"{yml['name']}-{yml['version']}-{yml['release']}"
+    return f"{yml['name']}-{yml['version']}-{yml['release']}"
 
 
 def get_spec_tag(spec: str) -> str:
@@ -107,7 +106,14 @@ class Publisher:
             if self.title:
                 comment = f'{self.title}\n{comment}'
 
-            id = self._push_build(self._build_for_commit(commit, comment, packages[commit][0]))
+            build = self._build_for_commit(commit, comment, packages[commit][0])
+
+            found, id = self._build_exists(build)
+            if not found:
+                id = self._push_build(build)
+            else:
+                print(f'Skipping build: {build}')
+
             if self.wait:
                 self._wait_for_build(id)
 
@@ -122,13 +128,16 @@ class Publisher:
         return [package for package in packages if package is not None]
 
     def _build_for_commit(self, commit: str, comment: str, path: str) -> Build:
-        return Build(os.path.basename(path), self._gettag(path), path, commit, comment)
+        return Build(os.path.basename(path), self._gettag(commit, path), path, commit, comment)
 
-    def _gettag(self, path: str) -> str:
-        if os.path.exists(os.path.join(path, 'package.yml')):
-            return get_yml_tag(os.path.join(path, 'package.yml'))
+    def _gettag(self, commit: str, path: str) -> str:
+        package_yml = os.path.join(path, 'package.yml')
+        pspec_xml = os.path.join(path, 'pspec.xml')
 
-        return get_spec_tag(os.path.join(path, 'pspec.xml'))
+        if package_yml in self.git.files_in_commit(commit):
+            return get_yml_tag(self.git.file_from_commit(commit, package_yml))
+
+        return get_spec_tag(self.git.file_from_commit(commit, pspec_xml))
 
     @staticmethod
     def _package_for_file(file: str) -> Optional[str]:
@@ -153,6 +162,14 @@ class Publisher:
                            base64.b64encode(build.comment.encode()).decode())
 
         return int(json.loads(output)['id'])
+
+    def _build_exists(self, build: Build) -> [bool, int]:
+        try:
+            found = next(b for b in Builds().all
+                         if b.tag == build.tag and b.status != 'FAILED')
+            return True, found.id
+        except StopIteration:
+            return False, 0
 
     def _wait_for_build(self, id: int) -> None:
         print(f'Waiting for build: {id}')
