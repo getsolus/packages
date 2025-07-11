@@ -24,10 +24,9 @@ from common.Scripts.worklog import Build as APIBuild  # noqa: E402
 
 
 def get_yml_tag(spec: str) -> str:
-    with open(spec, 'r') as f:
-        yml = yaml.safe_load(f)
+    yml = yaml.safe_load(spec)
 
-        return f"{yml['name']}-{yml['version']}-{yml['release']}"
+    return f"{yml['name']}-{yml['version']}-{yml['release']}"
 
 
 def get_spec_tag(spec: str) -> str:
@@ -122,13 +121,16 @@ class Publisher:
         return [package for package in packages if package is not None]
 
     def _build_for_commit(self, commit: str, comment: str, path: str) -> Build:
-        return Build(os.path.basename(path), self._gettag(path), path, commit, comment)
+        return Build(os.path.basename(path), self._gettag(commit, path), path, commit, comment)
 
-    def _gettag(self, path: str) -> str:
-        if os.path.exists(os.path.join(path, 'package.yml')):
-            return get_yml_tag(os.path.join(path, 'package.yml'))
+    def _gettag(self, commit: str, path: str) -> str:
+        package_yml = os.path.join(path, 'package.yml')
+        pspec_xml = os.path.join(path, 'pspec.xml')
 
-        return get_spec_tag(os.path.join(path, 'pspec.xml'))
+        if package_yml in self.git.files_in_commit(commit):
+            return get_yml_tag(self.git.file_from_commit(commit, package_yml))
+
+        return get_spec_tag(self.git.file_from_commit(commit, pspec_xml))
 
     @staticmethod
     def _package_for_file(file: str) -> Optional[str]:
