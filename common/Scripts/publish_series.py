@@ -106,7 +106,14 @@ class Publisher:
             if self.title:
                 comment = f'{self.title}\n{comment}'
 
-            id = self._push_build(self._build_for_commit(commit, comment, packages[commit][0]))
+            build = self._build_for_commit(commit, comment, packages[commit][0])
+
+            found, id = self._build_exists(build)
+            if not found:
+                id = self._push_build(build)
+            else:
+                print(f'Skipping build: {build}')
+
             if self.wait:
                 self._wait_for_build(id)
 
@@ -155,6 +162,14 @@ class Publisher:
                            base64.b64encode(build.comment.encode()).decode())
 
         return int(json.loads(output)['id'])
+
+    def _build_exists(self, build: Build) -> [bool, int]:
+        try:
+            found = next(b for b in Builds().all
+                         if b.tag == build.tag and b.status != 'FAILED')
+            return True, found.id
+        except StopIteration:
+            return False, 0
 
     def _wait_for_build(self, id: int) -> None:
         print(f'Waiting for build: {id}')
