@@ -1,0 +1,71 @@
+From 1748cd6a4c4f7befd9f85095818a340ae349e36c Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Tue, 10 Jun 2025 22:50:55 +0100
+Subject: [PATCH 1/1] Print OSC 9;4 ANSI sequence progress report during
+ execution
+
+---
+ src/status.cc           | 15 ++++++++++++++-
+ src/subprocess-posix.cc |  6 +++++-
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/src/status.cc b/src/status.cc
+index 06f3c20..0f0555a 100644
+--- a/src/status.cc
++++ b/src/status.cc
+@@ -45,7 +45,7 @@ StatusPrinter::StatusPrinter(const BuildConfig& config)
+ 
+   progress_status_format_ = getenv("NINJA_STATUS");
+   if (!progress_status_format_)
+-    progress_status_format_ = "[%f/%t] ";
++    progress_status_format_ = "[%f/%t%n] ";
+ }
+ 
+ void StatusPrinter::EdgeAddedToPlan(const Edge* edge) {
+@@ -399,6 +399,19 @@ string StatusPrinter::FormatProgressStatus(const char* progress_status_format,
+         break;
+       }
+ 
++      case 'n': {
++          // OSC 9;4 ANSI Sequences
++          int percent = 0;
++          if (finished_edges_ != 0 && total_edges_ != 0)
++            percent = (100 * finished_edges_) / total_edges_;
++          if (percent > 0)
++            snprintf(buf, sizeof(buf), "\033]9;4;1;%i\e\\", percent);
++          if (percent == 100)
++            snprintf(buf, sizeof(buf), "\033]9;4;0\e\\");
++          out += buf;
++          break;
++      }
++
+       default:
+         Fatal("unknown placeholder '%%%c' in $NINJA_STATUS", *s);
+         return "";
+diff --git a/src/subprocess-posix.cc b/src/subprocess-posix.cc
+index 8e78540..aca6063 100644
+--- a/src/subprocess-posix.cc
++++ b/src/subprocess-posix.cc
+@@ -164,14 +164,18 @@ ExitStatus Subprocess::Finish() {
+   }
+ #endif
+ 
++  // Always reset OSC 9;4 progress status on exit
++  printf("\033]9;4;0\e\\");
++
+   if (WIFEXITED(status)) {
+     int exit = WEXITSTATUS(status);
+     if (exit == 0)
+       return ExitSuccess;
+   } else if (WIFSIGNALED(status)) {
+     if (WTERMSIG(status) == SIGINT || WTERMSIG(status) == SIGTERM
+-        || WTERMSIG(status) == SIGHUP)
++        || WTERMSIG(status) == SIGHUP) {
+       return ExitInterrupted;
++    }
+   }
+   return ExitFailure;
+ }
+-- 
+2.49.0
+
