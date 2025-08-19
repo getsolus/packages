@@ -11,10 +11,11 @@ import sys
 
 def print_usage():
     print("This script should be ran with only a single argument provided")
-    print("That argument should be in the format $number.$number.$number, with or without a following esr string")
+    print("That argument should be in the format $major.$minor.$patch, with or without a following esr string. The patch value is optional")
     print("Valid examples:")
     print("./update.py 141.0.1")
     print("./update.py 128.1.0esr")
+    print("./update.py 142.0")
 
 n = len(sys.argv)
 
@@ -24,7 +25,7 @@ if n != 2:
 
 version = sys.argv[1]
 
-version_regex = re.compile('[0-9]*\.[0-9]*\.[0-9]*(?:esr)?$')
+version_regex = re.compile('[0-9]*\.[0-9]*(?:\.[0-9]*)?(?:esr)?$')
 if not version_regex.match(version):
     print_usage()
     exit(1)
