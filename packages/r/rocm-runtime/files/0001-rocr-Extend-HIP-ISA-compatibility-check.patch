@@ -1,0 +1,82 @@
+From 24305b16a575447b607f4b90fb1b434c3f2e1c68 Mon Sep 17 00:00:00 2001
+From: Cordell Bloor <cgmb@slerp.xyz>
+Date: Wed, 20 Aug 2025 16:56:57 -0400
+Subject: [PATCH] rocr: Extend HIP ISA compatibility check
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ runtime/hsa-runtime/core/runtime/isa.cpp | 44 +++++++++++++++++++++++-
+ 1 file changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/runtime/hsa-runtime/core/runtime/isa.cpp b/runtime/hsa-runtime/core/runtime/isa.cpp
+index c22a3341..fd95cd46 100755
+--- a/runtime/hsa-runtime/core/runtime/isa.cpp
++++ b/runtime/hsa-runtime/core/runtime/isa.cpp
+@@ -43,6 +43,7 @@
+ #include "core/inc/isa.h"
+ #include "core/util/utils.h"
+ 
++#include <array>
+ #include <algorithm>
+ #include <cstring>
+ #include <iostream>
+@@ -74,6 +75,47 @@ static __forceinline std::string strip_features(const std::string &isa_name) {
+   return isa_name.substr(0, isa_name.find(':'));
+ }
+ 
++template <class T, std::size_t N>
++static bool Contains(const std::array<T, N>& arr, const T& value) {
++  return std::find(std::begin(arr), std::end(arr), value) != std::end(arr);
++}
++
++static bool IsVersionCompatible(const Isa &code_object_isa,
++                                const Isa &agent_isa) {
++  if (code_object_isa.GetMajorVersion() == agent_isa.GetMajorVersion() &&
++      code_object_isa.GetMinorVersion() == agent_isa.GetMinorVersion()) {
++
++      if (code_object_isa.GetStepping() == agent_isa.GetStepping()) {
++        return true; // exact match
++      }
++
++      // the processor and code object may sometimes be compatible if
++      // they differ only by stepping version
++      if (code_object_isa.GetMajorVersion() == 9 &&
++          code_object_isa.GetMinorVersion() == 0) {
++        const std::array<int32_t, 4> gfx900_equivalent = { 0, 2, 9, 12 };
++        const std::array<int32_t, 5> gfx900_superset = { 0, 2, 6, 9, 12 };
++        if (Contains(gfx900_equivalent, code_object_isa.GetStepping()) &&
++            Contains(gfx900_superset, agent_isa.GetStepping())) {
++          return true; // gfx900 compatible
++        }
++      } else if (code_object_isa.GetMajorVersion() == 10) {
++        if (code_object_isa.GetMinorVersion() == 1) {
++          const std::array<int32_t, 1> gfx1010_equivalent = { 0 };
++          const std::array<int32_t, 4> gfx1010_superset = { 0, 1, 2, 3 };
++          if (Contains(gfx1010_equivalent, code_object_isa.GetStepping()) &&
++              Contains(gfx1010_superset, agent_isa.GetStepping())) {
++            return true; // gfx1010 compatible
++          }
++        } else if (code_object_isa.GetMinorVersion() == 3) {
++          return true; // gfx1030 compatible
++        }
++      }
++    }
++
++  return false;
++}
++
+ /* static */
+ bool Isa::IsCompatible(const Isa &code_object_isa,
+                        const Isa &agent_isa, unsigned int codeGenericVersion) {
+@@ -111,7 +153,7 @@ bool Isa::IsCompatible(const Isa &code_object_isa,
+       if (codeGenericVersion < generic_it->second) {
+         return false;
+       }
+-  } else if (code_object_isa.GetVersion() != agent_isa.GetVersion()) {
++  } else if (!IsVersionCompatible(code_object_isa, agent_isa)) {
+     return false;
+   }
+ 
+-- 
+2.51.0
+
