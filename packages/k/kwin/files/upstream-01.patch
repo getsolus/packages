@@ -1,0 +1,58 @@
+From 7d36003cb073ed2ad48b2743883db993106c347a Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Wed, 20 Aug 2025 23:12:58 +0200
+Subject: [PATCH] backends/drm: work around amdgpu applying GAMMA_LUT in
+ test-only commits
+
+See https://gitlab.freedesktop.org/drm/amd/-/issues/4444 for details.
+This does not cover up all the cases where the bug causes visible issues, but
+it helps with the most annoying ones (at the cost of some performance during
+brightness or color temperature animations).
+
+For testing potential driver fixes, KWIN_DRM_DISABLE_AMD_GAMMA_WORKAROUND can
+be set to 1 to disable this workaround.
+
+CCBUG: 508350
+
+
+(cherry picked from commit d2df32c9c664023bb6a1409dbaecbd3078dbaaec)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@kde.org>
+---
+ src/backends/drm/drm_colorop.cpp | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/src/backends/drm/drm_colorop.cpp b/src/backends/drm/drm_colorop.cpp
+index 51ca1369fc..281c1e780f 100644
+--- a/src/backends/drm/drm_colorop.cpp
++++ b/src/backends/drm/drm_colorop.cpp
+@@ -9,7 +9,9 @@
+ #include "drm_colorop.h"
+ #include "drm_blob.h"
+ #include "drm_commit.h"
++#include "drm_gpu.h"
+ #include "drm_object.h"
++#include "utils/envvar.h"
+ 
+ #include <ranges>
+ 
+@@ -30,13 +32,15 @@ DrmAbstractColorOp *DrmAbstractColorOp::next() const
+     return m_next;
+ }
+ 
++static const auto s_disableAmdgpuWorkaround = environmentVariableBoolValue("KWIN_DRM_DISABLE_AMD_GAMMA_WORKAROUND");
++
+ bool DrmAbstractColorOp::matchPipeline(DrmAtomicCommit *commit, const ColorPipeline &pipeline)
+ {
+     if (m_cachedPipeline && *m_cachedPipeline == pipeline) {
+         commit->merge(m_cache.get());
+         return true;
+     }
+-    if (pipeline.isIdentity()) {
++    if (pipeline.isIdentity() && s_disableAmdgpuWorkaround.value_or(!commit->gpu()->isAmdgpu())) {
+         // Applying this config is very simple and cheap, so do it directly
+         // and avoid invalidating the cache
+         DrmAbstractColorOp *currentOp = this;
+-- 
+GitLab
+

@@ -1,0 +1,115 @@
+From 598438b9bcb9487c9dc85e4eb5f84e3b73a71051 Mon Sep 17 00:00:00 2001
+From: David Edmundson <kde@davidedmundson.co.uk>
+Date: Wed, 13 Aug 2025 16:25:37 +0000
+Subject: [PATCH] wayland: Make ColorManagementOutputV1 handle output removal
+ better
+
+wl_output removal is racy. The compositor can remove the underlying
+handle but the corresponding wl_output object may still linger for a
+while.
+
+If that happens, the ColorManagementOutputV1 must not attempt to
+dereference the handle object.
+
+BUG: 504959
+SENTRY: KWIN-CKJ
+
+
+(cherry picked from commit e1fd647b979df7f0bd10065932a614a2aa806e87)
+
+Co-authored-by: Vlad Zahorodnii <vlad.zahorodnii@kde.org>
+---
+ src/wayland/colormanagement_v1.cpp | 22 ++++++++++++++++------
+ src/wayland/colormanagement_v1.h   |  7 +++----
+ 2 files changed, 19 insertions(+), 10 deletions(-)
+
+diff --git a/src/wayland/colormanagement_v1.cpp b/src/wayland/colormanagement_v1.cpp
+index c16af0a76cd..4195fc68c93 100644
+--- a/src/wayland/colormanagement_v1.cpp
++++ b/src/wayland/colormanagement_v1.cpp
+@@ -60,7 +60,7 @@ void ColorManagerV1::wp_color_manager_v1_destroy(Resource *resource)
+ 
+ void ColorManagerV1::wp_color_manager_v1_get_output(Resource *resource, uint32_t id, struct ::wl_resource *output)
+ {
+-    new ColorManagementOutputV1(resource->client(), id, resource->version(), OutputInterface::get(output)->handle());
++    new ColorManagementOutputV1(resource->client(), id, resource->version(), OutputInterface::get(output));
+ }
+ 
+ void ColorManagerV1::wp_color_manager_v1_get_surface(Resource *resource, uint32_t id, struct ::wl_resource *surface)
+@@ -574,12 +574,15 @@ ImageDescriptionV1 *ImageDescriptionV1::get(wl_resource *resource)
+     }
+ }
+ 
+-ColorManagementOutputV1::ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, Output *output)
++ColorManagementOutputV1::ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, OutputInterface *output)
+     : QtWaylandServer::wp_color_management_output_v1(client, id, version)
+     , m_output(output)
+-    , m_colorDescription(output->colorDescription())
+ {
+-    connect(output, &Output::colorDescriptionChanged, this, &ColorManagementOutputV1::colorDescriptionChanged);
++    if (m_output->isRemoved()) {
++        return;
++    }
++
++    connect(output->handle(), &Output::colorDescriptionChanged, this, &ColorManagementOutputV1::colorDescriptionChanged);
+ }
+ 
+ void ColorManagementOutputV1::wp_color_management_output_v1_destroy_resource(Resource *resource)
+@@ -594,12 +597,19 @@ void ColorManagementOutputV1::wp_color_management_output_v1_destroy(Resource *re
+ 
+ void ColorManagementOutputV1::wp_color_management_output_v1_get_image_description(Resource *resource, uint32_t image_description)
+ {
+-    new ImageDescriptionV1(resource->client(), image_description, resource->version(), m_colorDescription);
++    if (!m_output || m_output->isRemoved()) {
++        new ImageDescriptionV1(resource->client(), image_description, resource->version(), std::nullopt);
++    } else {
++        new ImageDescriptionV1(resource->client(), image_description, resource->version(), m_output->handle()->colorDescription());
++    }
+ }
+ 
+ void ColorManagementOutputV1::colorDescriptionChanged()
+ {
+-    m_colorDescription = m_output->colorDescription();
++    if (!m_output || m_output->isRemoved()) {
++        return;
++    }
++
+     send_image_description_changed();
+ }
+ 
+diff --git a/src/wayland/colormanagement_v1.h b/src/wayland/colormanagement_v1.h
+index 2cdb3b505c8..b499a301312 100644
+--- a/src/wayland/colormanagement_v1.h
++++ b/src/wayland/colormanagement_v1.h
+@@ -14,8 +14,8 @@ namespace KWin
+ {
+ 
+ class Display;
++class OutputInterface;
+ class SurfaceInterface;
+-class Output;
+ 
+ class ColorManagerV1 : public QObject, private QtWaylandServer::wp_color_manager_v1
+ {
+@@ -125,7 +125,7 @@ class ColorManagementOutputV1 : public QObject, private QtWaylandServer::wp_colo
+ {
+     Q_OBJECT
+ public:
+-    explicit ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, Output *output);
++    explicit ColorManagementOutputV1(wl_client *client, uint32_t id, uint32_t version, OutputInterface *output);
+ 
+ private:
+     void colorDescriptionChanged();
+@@ -133,8 +133,7 @@ private:
+     void wp_color_management_output_v1_destroy(Resource *resource) override;
+     void wp_color_management_output_v1_get_image_description(Resource *resource, uint32_t image_description) override;
+ 
+-    Output *const m_output;
+-    ColorDescription m_colorDescription;
++    QPointer<OutputInterface> m_output;
+ };
+ 
+ }
+-- 
+GitLab
+
