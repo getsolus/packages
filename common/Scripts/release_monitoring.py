@@ -85,7 +85,7 @@ class ReleaseMonitoring:
         else:
             lines.insert(
                 3,
-                "# Verify successful cpe hits by visiting https://cve.circl.lu/search/$VENDOR/$PRODUCT",
+                "# Verify successful cpe hits by visiting https://cve.circl.lu/search?vendor=$VENDOR&product=$PRODUCT",
             )
 
         with open(filename, "w") as f:
