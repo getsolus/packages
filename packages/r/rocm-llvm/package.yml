@@ -1,8 +1,8 @@
 name       : rocm-llvm
-version    : 6.2.4
-release    : 4
+version    : 6.4.3
+release    : 5
 source     :
-    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.2.4.tar.gz : 7af782bf5835fcd0928047dbf558f5000e7f0207ca39cf04570969343e789528
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.4.3.tar.gz : 7a484b621d568eef000ee8c4d2d46d589e5682b950f1f410ce7215031f1f3ad7
     # - https://github.com/ROCm/hip-tests/archive/refs/tags/rocm-6.0.0.tar.gz#hip-tests-6.0.0.tar.gz : e8f92a0f5d1f6093ca1fb24ff1b7140128900fcdc6e9f01f153d6907e5c2d807
 homepage   : https://github.com/ROCm/llvm-project
 license    : Apache-2.0-with-LLVM-exception
@@ -22,47 +22,20 @@ rundeps    :
 # checkdeps  :
 #     - rocm-hip
 environment: |
-    # Decontaminate build environment
-    unset LDFLAGS
-    unset LD_AS_NEEDED
-    unset CFLAGS
-    unset CXXFLAGS
+    unset CFLAGS CXXFLAGS LDFLAGS
+    export PROJECTS="clang;lld;llvm"
+    # export RUNTIMES="compiler-rt"
+    export TARGETS="X86;AMDGPU;NVPTX"
 
-    export _PROJECTS="clang;clang-tools-extra;lld;llvm"
-    export _RUNTIMES="compiler-rt"
-    export _TARGETS="X86;AMDGPU;NVPTX"
-
-    # Set common build options here
     export CMAKE_COMMON_OPTIONS="
-        -DCMAKE_SKIP_RPATH=ON \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX=%libdir%/llvm-rocm \
-        -DCLANG_DEFAULT_LINKER=lld \
-        -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
-        -DCLANG_DEFAULT_PIE_ON_LINUX=ON \
-        -DENABLE_EXPERIMENTAL_NEW_PASS_MANAGER=ON \
-        -DLLVM_INSTALL_UTILS=OFF \
-        -DLLVM_INCLUDE_TESTS=OFF \
-        -DLLVM_BINUTILS_INCDIR=/usr/include \
-        -DLLVM_CONFIG=%libdir%/llvm-rocm/bin/llvm-config
-        -DLLVM_ENABLE_FFI=ON \
-        -DLLVM_ENABLE_ZLIB=ON \
-        -DLLVM_ENABLE_ZSTD=ON \
-        -DLLVM_ENABLE_RTTI=ON \
-        -DLLVM_ENABLE_ASSERTIONS=OFF \
-        -DLLVM_ENABLE_BINDINGS=OFF \
-        -DENABLE_LINKER_BUILD_ID=ON \
-        -DLLVM_ENABLE_PIC=ON \
-        -DLLVM_BUILD_LLVM_DYLIB=OFF \
-        -DLLVM_LINK_LLVM_DYLIB=OFF \
-        -DCLANG_LINK_CLANG_DYLIB=OFF"
-
-    # Used by everything except emul32 build
-    export CMAKE_X86_64_OPTIONS="
-         -DLLVM_DEFAULT_TARGET_TRIPLE=%HOST% \
-         -DLLVM_TARGET_ARCH=x86_64 \
-         -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
-         -DLIB_SUFFIX=%LIBSUFFIX%"
+      -DCMAKE_INSTALL_PREFIX=%libdir%/llvm-rocm \
+      -DLLVM_DEFAULT_TARGET_TRIPLE=%HOST% \
+      -DLLVM_TARGET_ARCH=x86_64 \
+      -DLLVM_LIBDIR_SUFFIX=%LIBSUFFIX% \
+      -DLIB_SUFFIX=%LIBSUFFIX% \
+      # prevent calling `ccache ccache clang`
+      -DLLVM_CCACHE_BUILD=OFF \
+    "
 
     # For profiling
     export PGO_INSTALL_DIR=$workdir/pgo-use
@@ -79,40 +52,50 @@ environment: |
     export PROF_DIR=/home/build/YPKG/root/rocm-llvm/pgo
 # TODO(GZGavinZhao): maybe build openmp as well after bootstrapping?
 setup      : |
+    # From llvm
     # Just annoying.
-    %patch -p1 -i $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
+    %patch -p1 -i $pkgfiles/llvm/0001-Silently-ignore-copy-dt-needed-entries.patch
     # Support solus, it's triplet, etc.
-    %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
-    # Allow us to force ignore -Werror
-    %patch -p1 -i $pkgfiles/ignore-werror.patch
-    # # This warning appears during profiling phase, not sure if it affects
-    # # profile data generation
-    # %patch -p1 -i $pkgfiles/fix-inconsistent-md5-checksum.patch
+    %patch -p1 -i $pkgfiles/llvm/0001-Support-solus-as-a-distro.patch
+    # # Apply the linker flat --emit-relocs for libLLVM and libclang-cpp only without having on everything else
+    # %patch -p1 -i $pkgfiles/llvm/0001-Emit-relocations-for-BOLT.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Build-lld-libraries-shared.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Build-polly-libraries-shared.patch
+    # %patch -p1 -i $pkgfiles/llvm/0003-PATCH-clang-Don-t-install-static-libraries.patch
+    #
+    # # Patch cfe for Solus specific options
+    # %patch -p1 -i $pkgfiles/llvm/0001-cfe-Use-correct-Solus-multilib-paths.patch
+    # # Allow us to ignore -Werror even when projects force append them
+    # %patch -p1 -i $pkgfiles/llvm/0001-clang-lib-Ignore-Werror-if-CLANG_IGNORE_WERROR-is-se.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Solus-Make-it-easier-to-set-version-from-ypkg.patch
+    #
+    # # Pull lld in line with binutils linkers for consistency
+    # %patch -p1 -i $pkgfiles/llvm/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Make-gnuhash-the-default-when-not-specified.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Update-default-binutils-version.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-lld-Always-enable-build-id-and-use-20-byte-hashes.patch
+    # %patch -p1 -i $pkgfiles/llvm/0001-Solus-Use-zstd-compression-for-debug-symbols-by-defa.patch
+    #
+    # %patch -p1 -i $pkgfiles/llvm/0001-Use-mimalloc-for-clang-lld-llvm.patch
 
-    # Patch cfe for Solus specific options
-    pushd clang
-        %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
-    popd
-
-    # Pull lld in line with binutils linkers for consistency
-    pushd lld
-        %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
-        %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
-    popd
+    # ROCm LLVM FTBFS backports
+    %patch -p1 -i $pkgfiles/rocm/0001-NFC-fix-build-failure-100993.patch
+    %patch -p1 -i $pkgfiles/rocm/0002-Revert-Modify-the-localCache-API-to-require-an-expli.patch
+    %patch -p1 -i $pkgfiles/rocm/0003-Removed-by-upstream-StreamedHTTPResponseHandler-comm.patch
 
     # This API is required to extend HIP ISA compatibility for compressed GPU
     # code object bundles (used in composable_kernel, rocSOLVER, and MIOpen)
     %patch -p1 -i $pkgfiles/0001-ClangOffloadBundler-Add-GetBundleIDsInFile-to-Offloa.patch
 
-    %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
-                 $CMAKE_COMMON_OPTIONS \
-                 -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
-                 -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
-                 -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
-                 -DLLVM_BUILD_DOCS=OFF \
-                 # -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 # -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 # -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
+#     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
+#                  $CMAKE_COMMON_OPTIONS \
+#                  -DLLVM_ENABLE_PROJECTS=$PROJECTS \
+#                  -DLLVM_ENABLE_RUNTIMES=$RUNTIMES \
+#                  -DLLVM_TARGETS_TO_BUILD=$TARGETS \
+#                  -DLLVM_BUILD_DOCS=OFF \
+#                  # -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+#                  # -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+#                  # -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
 # build      : |
 #     # ninja -C solusBuildDir install %JOBS%
 #     # cp -TRv $PGO_INSTALL_DIR/lib $PGO_INSTALL_DIR/lib64
@@ -135,14 +118,10 @@ install    : |
     rm -rf solusBuildDir
     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
                  $CMAKE_COMMON_OPTIONS \
-                 -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
-                 -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
-                 -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
+                 -DLLVM_ENABLE_PROJECTS=$PROJECTS \
+                 -DLLVM_TARGETS_TO_BUILD=$TARGETS \
                  -DLLVM_BUILD_DOCS=OFF \
                  # -DCMAKE_C_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata" \
                  # -DCMAKE_CXX_FLAGS="-fprofile-instr-use=$PROF_DIR/code.profdata"
 
     %ninja_install
-
-    cp -TRv $installdir/usr/lib64/llvm-rocm/lib $installdir/usr/lib64/llvm-rocm/lib64
-    rm -rf $installdir/usr/lib64/llvm-rocm/lib
