@@ -849,8 +849,18 @@ class Checker:
             if self.commits:
                 print(f'Checking commits: {", ".join(self.commits)}')
 
-        results = [result for check in self.checks
-                   for result in check(self.git, self.files, self.commits, self.base).run()]
+        with ProcessPoolExecutor() as executor:
+            futures = [
+                executor.submit(
+                    check(self.git, self.files, self.commits, self.base).run
+                )
+                for check in self.checks
+            ]
+
+        results = []
+        for future in as_completed(futures):
+            results.extend(future.result())
+
         errors = [r for r in results if r.level == Level.ERROR]
         warnings = [r for r in results if r.level == Level.WARNING]
 
