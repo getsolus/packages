@@ -8,6 +8,7 @@ import os.path
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -440,13 +441,26 @@ class PackageBumped(PullRequestCheck):
     def run(self) -> List[Result]:
         commits = self.commits or ['HEAD']
         files = set(self.files) & set(self.git.untracked_files() + self.git.modified_files())
-        results = [self._check_commit(commit, file)
-                   for commit in commits
-                   for file in self.git.files_in_commit(commit)]
-        results += [self._check_commit(None, file)
-                    for file in files]
 
-        return [result for result in results if result is not None]
+        results = []
+        with ThreadPoolExecutor() as executor:
+            futures = []
+
+            # commit-based checks
+            for commit in commits:
+                for file in self.git.files_in_commit(commit):
+                    futures.append(executor.submit(self._check_commit, commit, file))
+
+            # file-based checks
+            for file in files:
+                futures.append(executor.submit(self._check_commit, None, file))
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+
+        return results
 
     def _check_commit(self, ref: Optional[str], file: str) -> Optional[Result]:
         match os.path.basename(file):
