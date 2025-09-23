@@ -420,6 +420,28 @@ class Homepage(PullRequestCheck):
             return 'homepage' in yaml.load(f)
 
 
+class BooleanStyle(PullRequestCheck):
+    _error = 'Invalid boolean style. Use true/false instead.'
+    _level = Level.ERROR
+    _pattern = re.compile(r':\s*(yes|no)\s*$', re.IGNORECASE)
+
+    def run(self) -> List[Result]:
+        results: List[Result] = []
+
+        for f in self.package_files:
+            with self._open(f) as stream:
+                for i, line in enumerate(stream.readlines(), start=1):
+                    if self._pattern.search(line):
+                        results.append(Result(
+                            message=self._error,
+                            file=f,
+                            line=i,
+                            level=self._level
+                          ))
+
+        return results
+
+
 class Monitoring(PullRequestCheck):
     _error = '`monitoring.yaml` is missing'
     _level = Level.WARNING
@@ -805,6 +827,7 @@ class SummaryGenerator(PullRequestCheck):
 
 class Checker:
     checks = [
+        BooleanStyle,
         CommitMessage,
         FrozenPackage,
         Homepage,
