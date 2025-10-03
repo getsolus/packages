@@ -322,7 +322,8 @@ class AutoPackage:
             }
 
             tmp = (
-                """name       : %(NAME)s
+                """# yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
+name       : %(NAME)s
 version    : %(VERSION)s
 release    : 1
 source     :
