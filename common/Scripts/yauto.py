@@ -335,7 +335,7 @@ component  : %(COMPONENT)s\n"""
             )
 
             if self.networking:
-                tmp += "\nnetworking : yes\n"
+                tmp += "\nnetworking : true\n"
 
             tmp += """summary    : PLEASE FILL ME IN
 
