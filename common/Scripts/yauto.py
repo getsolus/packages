@@ -322,7 +322,8 @@ class AutoPackage:
             }
 
             tmp = (
-                """name       : %(NAME)s
+                """# yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
+name       : %(NAME)s
 version    : %(VERSION)s
 release    : 1
 source     :
@@ -334,7 +335,7 @@ component  : %(COMPONENT)s\n"""
             )
 
             if self.networking:
-                tmp += "\nnetworking : yes\n"
+                tmp += "\nnetworking : true\n"
 
             tmp += """summary    : PLEASE FILL ME IN
 
