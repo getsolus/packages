@@ -1,0 +1,132 @@
+From dee4d2c9eabbdbad4fbeed1a15457a84f06e8257 Mon Sep 17 00:00:00 2001
+From: Carl Smedstad <carl.smedstad@protonmail.com>
+Date: Wed, 28 Aug 2024 21:47:18 +0200
+Subject: [PATCH 1/1] Add --overwrite-existing option that overwrites existing
+ files (#216)
+
+Implement the --overwrite-existing option that, if supplied, will make installer
+overwrite any already existing package files instead of failing. With
+this flag, installer can be used in an idempotent manner, i.e. the same
+command can be executed multiple times with the same result:
+
+    python -m installer --overwrite-existing --destdir=tmp dist/*.whl
+    python -m installer --overwrite-existing --destdir=tmp dist/*.whl
+    python -m installer --overwrite-existing --destdir=tmp dist/*.whl
+---
+ src/installer/__main__.py     | 14 ++++++++++++++
+ src/installer/destinations.py |  5 ++++-
+ tests/test_destinations.py    | 22 ++++++++++++++++++++++
+ 3 files changed, 40 insertions(+), 1 deletion(-)
+
+diff --git a/src/installer/__main__.py b/src/installer/__main__.py
+index 51014b9..9786719 100644
+--- a/src/installer/__main__.py
++++ b/src/installer/__main__.py
+@@ -43,6 +43,19 @@ def _get_main_parser() -> argparse.ArgumentParser:
+         action="store_true",
+         help="don't generate bytecode for installed modules",
+     )
++    parser.add_argument(
++        "--validate-record",
++        metavar="part",
++        default="none",
++        type=str,
++        choices=["all", "entries", "none"],
++        help="validate the wheel against certain part of its record (default=none)",
++    )
++    parser.add_argument(
++        "--overwrite-existing",
++        action="store_true",
++        help="silently overwrite existing files",
++    )
+     return parser
+ 
+ 
+@@ -90,6 +103,7 @@ def _main(cli_args: Sequence[str], program: Optional[str] = None) -> None:
+             script_kind=get_launcher_kind(),
+             bytecode_optimization_levels=bytecode_levels,
+             destdir=args.destdir,
++            overwrite_existing=args.overwrite_existing,
+         )
+         installer.install(source, destination, {})
+ 
+diff --git a/src/installer/destinations.py b/src/installer/destinations.py
+index a3c1967..9ca2824 100644
+--- a/src/installer/destinations.py
++++ b/src/installer/destinations.py
+@@ -112,6 +112,7 @@ class SchemeDictionaryDestination(WheelDestination):
+         hash_algorithm: str = "sha256",
+         bytecode_optimization_levels: Collection[int] = (),
+         destdir: Optional[str] = None,
++        overwrite_existing: bool = False,
+     ) -> None:
+         """Construct a ``SchemeDictionaryDestination`` object.
+ 
+@@ -128,6 +129,7 @@ class SchemeDictionaryDestination(WheelDestination):
+         :param destdir: A staging directory in which to write all files. This
+             is expected to be the filesystem root at runtime, so embedded paths
+             will be written as though this was the root.
++        :param overwrite_existing: silently overwrite existing files.
+         """
+         self.scheme_dict = scheme_dict
+         self.interpreter = interpreter
+@@ -135,6 +137,7 @@ class SchemeDictionaryDestination(WheelDestination):
+         self.hash_algorithm = hash_algorithm
+         self.bytecode_optimization_levels = bytecode_optimization_levels
+         self.destdir = destdir
++        self.overwrite_existing = overwrite_existing
+ 
+     def _path_with_destdir(self, scheme: Scheme, path: str) -> str:
+         file = os.path.join(self.scheme_dict[scheme], path)
+@@ -162,7 +165,7 @@ class SchemeDictionaryDestination(WheelDestination):
+         - Hashes the written content, to determine the entry in the ``RECORD`` file.
+         """
+         target_path = self._path_with_destdir(scheme, path)
+-        if os.path.exists(target_path):
++        if not self.overwrite_existing and os.path.exists(target_path):
+             message = f"File already exists: {target_path}"
+             raise FileExistsError(message)
+ 
+diff --git a/tests/test_destinations.py b/tests/test_destinations.py
+index 225b009..67f2789 100644
+--- a/tests/test_destinations.py
++++ b/tests/test_destinations.py
+@@ -43,6 +43,18 @@ class TestSchemeDictionaryDestination:
+             scheme_dict[scheme] = str(full_path)
+         return SchemeDictionaryDestination(scheme_dict, "/my/python", "posix")
+ 
++    @pytest.fixture()
++    def destination_overwrite_existing(self, tmp_path):
++        scheme_dict = {}
++        for scheme in SCHEME_NAMES:
++            full_path = tmp_path / scheme
++            if not full_path.exists():
++                full_path.mkdir()
++            scheme_dict[scheme] = str(full_path)
++        return SchemeDictionaryDestination(
++            scheme_dict, "/my/python", "posix", overwrite_existing=True
++        )
++
+     @pytest.mark.parametrize(
+         ("scheme", "path", "data", "expected"),
+         [
+@@ -86,6 +98,16 @@ class TestSchemeDictionaryDestination:
+         with pytest.raises(FileExistsError):
+             destination.write_file("data", "my_data.bin", io.BytesIO(b"my data"), False)
+ 
++    def test_write_record_duplicate_with_overwrite_existing(
++        self, destination_overwrite_existing
++    ):
++        destination_overwrite_existing.write_file(
++            "data", "my_data.bin", io.BytesIO(b"my data"), False
++        )
++        destination_overwrite_existing.write_file(
++            "data", "my_data.bin", io.BytesIO(b"my data"), False
++        )
++
+     def test_write_script(self, destination):
+         script_args = ("my_entrypoint", "my_module", "my_function", "console")
+         record = destination.write_script(*script_args)
+-- 
+2.49.0
+

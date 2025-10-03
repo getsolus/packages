@@ -62,6 +62,19 @@ def render_template(file: str, commit_dir: str) -> None:
         f.write(contents)
 
 
+def write_auto_commit_msg(file: str, commit_dir: str) -> None:
+    with open(file, 'w') as f:
+        f.write(commit_scope(commit_dir))
+
+
+def is_auto_commit_msg(file: str) -> bool:
+    contents = current_message(file).strip()
+
+    if contents == "autocommitmsg":
+        return True
+    return False
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('file', type=str,
@@ -74,7 +87,12 @@ if __name__ == "__main__":
     pwd = os.getenv('PWD') or '/'
 
     match args.source:
-        case 'message' | 'template' | 'merge' | 'squash' | 'commit':
+        case 'template' | 'merge' | 'squash' | 'commit':
             pass
+        case 'message':
+            if is_auto_commit_msg(args.file):
+                write_auto_commit_msg(args.file, pwd)
+            else:
+                pass
         case _:
             render_template(args.file, pwd)

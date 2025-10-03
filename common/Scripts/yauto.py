@@ -16,6 +16,7 @@ import os.path
 import dloader
 import mimetypes
 import shutil
+from release_monitoring import get_release_monitoring
 
 # What we term as needed doc files
 KnownDocFiles = [
@@ -43,6 +44,7 @@ YARN = 10
 WAF = 11
 QMAKE = 12
 PEP517 = 13
+PYTHON_SETUPTOOLS = 14
 
 
 class DepObject:
@@ -56,7 +58,7 @@ class AutoPackage:
     buildpl: bool = False
     makefile: bool = False
 
-    def __init__(self, uri: str):
+    def __init__(self, uri: str, fallback_package_name: str = None):
         self.package_uri: str = uri
 
         self.current_dir = None
@@ -70,7 +72,7 @@ class AutoPackage:
         self.compile_type = None
         self.component = None
         self.networking = False
-        self.package_name = None
+        self.package_name = fallback_package_name.lower() if fallback_package_name else None
         self.version_string = None
 
         # Templates
@@ -79,6 +81,7 @@ class AutoPackage:
         self.template_dir = os.path.join(base_dir, "Templates")
 
         self.build_deps = list()
+        self.release_monitoring = None
 
         self.doc_files = list()
 
@@ -109,7 +112,9 @@ class AutoPackage:
         self.version_string = ".".join(version)
 
         # Package name, including hyphens
-        self.package_name = ("-".join(path.split("-")[:-1])).lower()
+        package_name = ("-".join(path.split("-")[:-1])).lower()
+        if package_name:
+            self.package_name = package_name
         self.component = "PLEASE FILL ME IN"
 
         print("Package: %s\nVersion: %s" % (self.package_name, self.version_string))
@@ -141,7 +146,7 @@ class AutoPackage:
                     self.makefile = True
                 if "configure.ac" in file:
                     # Examine this fella for build deps
-                    self.build_deps = self.check_build_deps(os.path.join(root, file))
+                    self.build_deps.extend(self.check_build_deps(os.path.join(root, file)))
                 if "configure" in file:
                     # Check if we need to employ certain hacks needed in gnome packages
                     f_path = os.path.join(root, file)
@@ -158,18 +163,23 @@ class AutoPackage:
                     or "setup.cfg" in file
                 ):
                     # this is a python module.
-                    known_types.append(PYTHON_MODULES)
-                    self.component = "programming.python"
-                    self.package_name = (
-                        "python-%s" % ("-".join(path.split("-")[:-1])).lower()
-                    )
+                    if PYTHON_MODULES not in known_types:
+                        known_types.append(PYTHON_MODULES)
+                        self.component = "programming.python"
+                        self.package_name = f"python-{self.package_name}"
                 # Handle python modules respecting PEP517.
                 if "pyproject.toml" in file or "setup.cfg" in file:
                     if PEP517 not in known_types:
                         known_types.append(PEP517)
-                        pyproject_deps = ["python-build", "python-installer",
-                                          "python-packaging", "python-wheel"]
+                        pyproject_deps = ["python-build", "python-installer"]
+                        if PYTHON_SETUPTOOLS not in known_types:
+                            pyproject_deps.append("python-setuptools")
                         self.build_deps.extend(self.extra_build_deps(pyproject_deps))
+                # Handle legacy setuptools python modules.
+                if "setup.py" in file:
+                    if PYTHON_SETUPTOOLS not in known_types and PEP517 not in known_types:
+                        known_types.append(PYTHON_SETUPTOOLS)
+                        self.build_deps.extend(self.extra_build_deps(["python-setuptools"]))
                 if "Makefile.PL" in file or "Build.PL" in file:
                     # This is a perl module
                     known_types.append(PERL_MODULES)
@@ -240,6 +250,9 @@ class AutoPackage:
         elif PEP517 in known_types:
             self.compile_type = PYTHON_MODULES
             print("PEP517")
+        elif PYTHON_SETUPTOOLS in known_types:
+            self.compile_type = PYTHON_MODULES
+            print("PYTHON_SETUPTOOLS")
         else:
             print("unknown")
 
@@ -297,6 +310,7 @@ class AutoPackage:
 
     def create_yaml(self):
         """Attempt creation of a package.yml..."""
+
         with open("package.yml", "w") as yml:
             mapping = {
                 "NAME": self.package_name,
@@ -304,6 +318,7 @@ class AutoPackage:
                 "SOURCE": self.package_uri,
                 "SHA256SUM": self.sha256sum,
                 "COMPONENT": self.component,
+                "HOMEPAGE": self.release_monitoring.homepage or "PLEASE FILL ME IN",
             }
 
             tmp = (
@@ -312,7 +327,7 @@ version    : %(VERSION)s
 release    : 1
 source     :
     - %(SOURCE)s : %(SHA256SUM)s
-homepage   : PLEASE FILL ME IN
+homepage   : %(HOMEPAGE)s
 license    : GPL-2.0-or-later # CHECK ME
 component  : %(COMPONENT)s\n"""
                 % mapping
@@ -336,8 +351,7 @@ description: |
                 for dep in self.build_deps:
                     if len(dep.name.strip()) == 0:
                         continue
-                    if dep.name in ["python-build", "python-installer",
-                                    "python-packaging", "python-wheel"]:
+                    if dep.name in ["python-build", "python-installer", "python-setuptools"]:
                         total_str += "    - %s\n" % dep.name
                         continue
                     total_str += "    - pkgconfig(%s)\n" % dep.name
@@ -415,16 +429,26 @@ install    : |
                 return True
         return False
 
+    def create_monitoring(self):
+        self.release_monitoring = get_release_monitoring(
+            self.package_name, self.package_uri
+        )
+        self.release_monitoring.to_yaml("monitoring.yaml")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("%s: <URI>" % sys.argv[0])
+        print(f"{sys.argv[0]}: <URI> <PKG-NAME>?")
         sys.exit(-1)
 
-    p = AutoPackage(sys.argv[1])
+    if len(sys.argv) > 2:
+        p = AutoPackage(sys.argv[1], sys.argv[2])
+    else:
+        p = AutoPackage(sys.argv[1])
     if not p.verify():
         print("Unable to locate given URI")
     else:
         print("Completed verification")
         p.examine_source()
+        p.create_monitoring()
         p.create_yaml()

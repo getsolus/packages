@@ -158,6 +158,27 @@ tasks:
     cmds:
       - 'yupdate {{ .CLI_ARGS }}'
 
+  autoupdate:
+    desc: >-
+        Use ent output to try an automatic update. Does not work for more than one source, or git sources.
+    dir: '{{ .USER_WORKING_DIR }}'
+    vars:
+      ENT_OUTPUT:
+        sh: ent check updates
+      CURRENT_VERSION:
+        sh: "echo '{{.ENT_OUTPUT}}' | tail -n 1 | awk '{split($0, array); print array[2]}'" # Read the last line of ent output and split out the desired string
+      LATEST_VERSION:
+        sh: "echo '{{.ENT_OUTPUT}}' | tail -n 1 | awk '{split($0, array); print array[3]}'"
+    preconditions:
+      - sh: test -f package.yml
+        msg: "`package.yml` must exist in the current directory"
+      - sh: 'echo "{{.ENT_OUTPUT}}" | grep -q "-"' # ent only prints dashes when updates available :)
+      #- sh: 'echo "{{.ENT_OUTPUT}}" | grep -q "Total packages to update: 0"' # Invert this!, or search for a "-" instead
+        msg: "Total packages to update: 0" # Match the ent output
+    cmds:
+      - sed -i 's/{{.CURRENT_VERSION}}/{{.LATEST_VERSION}}/g' package.yml # Up to here it works for single source git
+      - go-task update -- {{.LATEST_VERSION}} $(yq '.source[0] | keys' package.yml | cut -c 3-) # use yq to get the "source" key from package.yml, then trim the leading characters
+
   # For staff and packagers with push access
   publish:
     desc: >-
@@ -297,17 +318,5 @@ tasks:
   add-monitoring:
     desc: Add skeleton for monitoring.yaml
     dir: '{{ .USER_WORKING_DIR }}'
-    vars:
-      DATE:
-        sh: date -u +%Y-%m-%d
-      COMMENT: "# No known CPE, checked {{ .DATE }}"
     cmds:
-      - touch monitoring.yaml
-      - yq --inplace '
-          . head_comment="Remove all comments before submitting, except CPE check date if none found" |
-          .releases.id line_comment = "Check https://release-monitoring.org/" |
-          .releases.rss line_comment = "For example https://github.com/PyO3/maturin/releases.atom" |
-          .releases.[] = ~ |
-          (.security | key) head_comment = "{{ .COMMENT }}" |
-          .security.cpe = ~
-        '  monitoring.yaml
+      - '{{ .TASKFILE_DIR }}/common/Scripts/generate_monitoring.py'

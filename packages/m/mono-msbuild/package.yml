@@ -1,10 +1,8 @@
 name       : mono-msbuild
-version    : '16.9'
-release    : 7
+version    : 16.10.1
+release    : 8
 source     :
-    - https://github.com/mono/linux-packaging-msbuild/archive/refs/tags/upstream/16.9+xamarinxplat.2021.03.07.08.05.tar.gz : 8d0f14b492218c055ff62a9e1f05d9e303a2050ddbb83dd04f90099a2e42faf8
-    - https://dotnetcli.azureedge.net/dotnet/aspnetcore/Runtime/2.1.7/aspnetcore-runtime-2.1.7-linux-x64.tar.gz : e2522c4a4ec94245914b7b93b30d0f92b6ddb6c1e08458b4425bc97a313b9c27
-    - https://dotnetcli.azureedge.net/dotnet/Sdk/3.1.100/dotnet-sdk-3.1.100-linux-x64.tar.gz : 3687b2a150cd5fef6d60a4693b4166994f32499c507cd04f346b6dda38ecdc46
+    - https://github.com/mono/linux-packaging-msbuild/archive/refs/tags/upstream/16.10.1+xamarinxplat.2021.05.26.14.00.tar.gz : 73c948c086d8cea2914917f3b34c084948e734bdb2286722a7c07eeeb59cffed
 homepage   : https://www.mono-project.com/
 license    : MIT
 component  : programming.tools
@@ -12,31 +10,35 @@ summary    :
     - The build platform for .NET and Visual Studio
 description: |
     The Microsoft Build Engine is a platform for building applications. This engine, which is also known as MSBuild, provides an XML schema for a project file that controls how the build platform processes and builds software.
-networking : yes
+networking : true
 builddeps  :
     - pkgconfig(libssl)
     - pkgconfig(mono)
-    - dotnet-sdk
-    - mono-msbuild
+    # - mono-msbuild # uncomment to de-bootstrap
 rundeps    :
     - mono
 environment: |
-    export DOTNET_MSBUILD_SDK_RESOLVER_CLI_DIR=/usr/lib/dotnet
+    USE_SYSTEM_MSBUILD=""
+    if [ -f /usr/bin/msbuild ]; then
+        USE_SYSTEM_MSBUILD="1"
+    fi
 setup      : |
-    cert-sync --user /etc/ssl/certs/ca-certificates.crt
-    cp -r /usr/lib/dotnet .dotnet
-    tar xf $sources/dotnet-sdk-*-linux-x64.tar.gz -C .dotnet
-    tar xf $sources/aspnetcore-runtime-*-linux-x64.tar.gz -C .dotnet
-    sed -i "s|REPLACE_ME|$PWD|g" $pkgfiles/use-local-dotnet.patch
-    %patch -p1 -i $pkgfiles/use-local-dotnet.patch   
-    mv LICENSE license
+    if [ "$USE_SYSTEM_MSBUILD" = "1" ]; then
+        %patch -p1 -i $pkgfiles/0001-use-system-msbuild.patch
+    fi
 build      : |
-    ./eng/cibuild_bootstrapped_msbuild.sh --host_type mono --configuration Release --binaryLog --skip_tests /p:DotNetBuildFromSource=true
+    cert-sync --user /etc/ssl/certs/ca-certificates.crt
+    ./eng/cibuild_bootstrapped_msbuild.sh --host_type mono --configuration Release --skip_tests
 install    : |
-    sed -i -e "s|4</WarningLevel>|3</WarningLevel>|" artifacts/bin/MSBuild.Bootstrap/Release-MONO/net472/Sdks/Microsoft.NET.Sdk/targets/Microsoft.NET.Sdk.CSharp.props
-    msbuild mono/build/install.proj /p:MonoInstallPrefix="$installdir/usr" /p:Configuration=Release-MONO /p:IgnoreDiffFailure=true
-    find "$installdir/usr/lib/mono/" -name 'Microsoft.DiaSymReader.Native.*dll' -delete
-    find "$installdir/usr/lib/mono/" -name '*.dylib' -delete
-    find "$installdir/usr/lib/mono/" -name '*.so' -print -delete
+    if [ "$USE_SYSTEM_MSBUILD" = "1" ]; then
+        msbuild_cmd="msbuild"
+    else
+        msbuild_cmd="mono artifacts/bin/MSBuild.Bootstrap/Release-MONO/net472/MSBuild.dll"
+    fi
+    install -d 755 "$installdir/usr"
+    $msbuild_cmd mono/build/install.proj /p:Configuration=Release-MONO /p:MonoInstallPrefix="$installdir/usr"
     rm -rf "$installdir/usr/lib/mono/msbuild/Current/bin/SdkResolvers/Microsoft.DotNet.MSBuildSdkResolver"
     sed -i -e "s|$installdir||g" $installdir/usr/bin/msbuild
+
+    # install license
+    install -Dm644 LICENSE "$installdir/usr/share/licenses/mono-msbuild/LICENSE"

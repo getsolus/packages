@@ -1,0 +1,421 @@
+Author: bgstack15
+Last-Modified: 2025-02-20
+Last-Version: 14.2
+Description:
+ Disable some functionality that depends on wx3.3 which is not yet in Debian. Unfortunately, this includes dark mode
+ .
+ Required since 14.0
+Forwarded: not-needed
+
+--- a/wx+/darkmode.h
++++ b/wx+/darkmode.h
+@@ -9,6 +9,7 @@
+ 
+ #include <zen/file_error.h>
+ #include <wx/app.h>
++#include <wx/settings.h>
+ 
+ 
+ namespace zen
+@@ -16,7 +17,8 @@
+ bool darkModeAvailable();
+ 
+ //support not only "dark mode" but dark themes in general
+-using ColorTheme = wxApp::Appearance; //why reinvent the wheel?
++enum Appearance { System, Light, Dark };
++using ColorTheme = Appearance; //why reinvent the wheel?
+ 
+ void colorThemeInit(wxApp& app, ColorTheme colTheme); //throw FileError
+ void colorThemeCleanup();
+@@ -25,4 +27,28 @@
+ void changeColorTheme(ColorTheme colTheme); //throw FileError
+ }
+ 
++struct wxColorHook
++{
++    virtual ~wxColorHook() {}
++    virtual wxColour getColor(wxSystemColour index) const = 0;
++};
++WXDLLIMPEXP_CORE inline std::unique_ptr<wxColorHook>& refGlobalColorHook()
++{
++    static std::unique_ptr<wxColorHook> globalColorHook;
++    return globalColorHook;
++}
++
++
++class WXDLLIMPEXP_CORE wxSystemSettings2 : public wxSystemSettingsNative
++{
++public:
++    static wxColour GetColour(wxSystemColour index)
++    {
++        if (refGlobalColorHook())
++			return refGlobalColorHook()->getColor(index);
++
++        return wxSystemSettingsNative::GetColour(index);
++    }
++};
++
+ #endif //DARKMODE_H_754298057018
+--- a/FreeFileSync/Source/ui/cfg_grid.cpp
++++ b/FreeFileSync/Source/ui/cfg_grid.cpp
+@@ -531,7 +531,7 @@
+             }
+     }
+ 
+-    int getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType) override
++    int getBestSize(wxDC& dc, size_t row, ColumnType colType) override
+     {
+         // -> synchronize renderCell() <-> getBestSize()
+ 
+@@ -550,7 +550,7 @@
+         return 0;
+     }
+ 
+-    HoverArea getMouseHover(const wxReadOnlyDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
++    HoverArea getMouseHover(wxDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
+     {
+         if (const ConfigView::Details* item = cfgView_.getItem(row))
+         {
+--- a/FreeFileSync/Source/ui/file_grid.cpp
++++ b/FreeFileSync/Source/ui/file_grid.cpp
+@@ -339,7 +339,7 @@
+ 
+     const FileSystemObject* getFsObject(size_t row) const { return getDataView().getFsObject(row); }
+ 
+-    const wxSize& getTextExtentBuffered(const wxReadOnlyDC& dc, const std::wstring_view& text)
++    const wxSize& getTextExtentBuffered(wxDC& dc, const std::wstring_view& text)
+     {
+         auto& compExtentsBuf = sharedComp_.ref().compExtentsBuf_;
+         //- only used for parent path names and file names on view => should not grow "too big"
+@@ -355,7 +355,7 @@
+ 
+     //- trim while leaving path components intact
+     //- *always* returns at least one component, even if > maxWidth
+-    size_t getPathTrimmedSize(const wxReadOnlyDC& dc, const std::wstring_view& itemPath, int maxWidth)
++    size_t getPathTrimmedSize(wxDC& dc, const std::wstring_view& itemPath, int maxWidth)
+     {
+         if (itemPath.size() <= 1)
+             return itemPath.size();
+@@ -593,7 +593,7 @@
+     }
+ 
+ 
+-    int getGroupItemNamesWidth(const wxReadOnlyDC& dc, const FileView::PathDrawInfo& pdi)
++    int getGroupItemNamesWidth(wxDC& dc, const FileView::PathDrawInfo& pdi)
+     {
+         //FileView::updateView() called? => invalidates group item render buffer
+         if (pdi.viewUpdateId != viewUpdateIdLast_)
+@@ -647,7 +647,7 @@
+         int groupParentWidth;
+         int groupNameWidth;
+     };
+-    GroupRowLayout getGroupRowLayout(const wxReadOnlyDC& dc, size_t row, const FileView::PathDrawInfo& pdi, int maxWidth)
++    GroupRowLayout getGroupRowLayout(wxDC& dc, size_t row, const FileView::PathDrawInfo& pdi, int maxWidth)
+     {
+         assert(pdi.fsObj);
+ 
+@@ -1154,7 +1154,7 @@
+     }
+ 
+ 
+-    HoverArea getMouseHover(const wxReadOnlyDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
++    HoverArea getMouseHover(wxDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
+     {
+         if (static_cast<ColumnTypeRim>(colType) == ColumnTypeRim::path)
+             if (const FileView::PathDrawInfo pdi = getDataView().getDrawInfo(row);
+@@ -1178,7 +1178,7 @@
+     }
+ 
+ 
+-    int getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType) override
++    int getBestSize(wxDC& dc, size_t row, ColumnType colType) override
+     {
+         if (static_cast<ColumnTypeRim>(colType) == ColumnTypeRim::path)
+         {
+@@ -1210,7 +1210,7 @@
+         }
+         else
+         {
+-            const wxReadOnlyDC& infoDc = dc;
++            const wxDC& infoDc = dc;
+             const std::wstring cellValue = getValue(row, colType);
+             return gapSize_ + infoDc.GetTextExtent(cellValue).GetWidth() + gapSize_;
+         }
+@@ -1612,7 +1612,7 @@
+         }
+     }
+ 
+-    HoverArea getMouseHover(const wxReadOnlyDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
++    HoverArea getMouseHover(wxDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
+     {
+         if (const FileSystemObject* const fsObj = getFsObject(row))
+             switch (static_cast<ColumnTypeCenter>(colType))
+--- a/FreeFileSync/Source/ui/log_panel.cpp
++++ b/FreeFileSync/Source/ui/log_panel.cpp
+@@ -245,7 +245,7 @@
+             }
+     }
+ 
+-    int getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType) override
++    int getBestSize(wxDC& dc, size_t row, ColumnType colType) override
+     {
+         // -> synchronize renderCell() <-> getBestSize()
+ 
+@@ -266,7 +266,7 @@
+ 
+     static int getColumnTimeDefaultWidth(Grid& grid)
+     {
+-        wxInfoDC dc(&grid.getMainWin());
++        wxClientDC dc(&grid.getMainWin());
+         dc.SetFont(grid.getMainWin().GetFont());
+         return 2 * getColumnGapLeft() + dc.GetTextExtent(utfTo<wxString>(formatTime(formatTimeTag))).GetWidth();
+     }
+--- a/FreeFileSync/Source/ui/rename_dlg.cpp
++++ b/FreeFileSync/Source/ui/rename_dlg.cpp
+@@ -155,7 +155,7 @@
+         }
+     }
+ 
+-    int getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType) override
++    int getBestSize(wxDC& dc, size_t row, ColumnType colType) override
+     {
+         // -> synchronize renderCell() <-> getBestSize()
+         return dc.GetTextExtent(getValue(row, colType)).GetWidth() + 2 * getColumnGapLeft() + dipToWxsize(1); //gap on left and right side + border
+@@ -282,12 +282,13 @@
+             longNames.resize(10);
+         }
+ 
+-        wxInfoDC infoDc(m_gridRenamePreview);
+-        infoDc.SetFont(m_gridRenamePreview->GetFont()); //the font parameter of GetTextExtent() is not evaluated on OS X, wxWidgets 2.9.5, so apply it to the DC directly!
++        wxMemoryDC dc;
++        setScaleFactor(dc, getScreenDpiScale());
++        dc.SetFont(m_gridRenamePreview->GetFont()); //the font parameter of GetTextExtent() is not evaluated on OS X, wxWidgets 2.9.5, so apply it to the DC directly!
+ 
+         int maxStringWidth = 0;
+         for (const std::wstring& str : longNames)
+-            maxStringWidth = std::max(maxStringWidth, infoDc.GetTextExtent(str).GetWidth());
++            maxStringWidth = std::max(maxStringWidth, dc.GetTextExtent(str).GetWidth());
+ 
+         const int defaultColWidthOld = maxStringWidth + 2 * GridData::getColumnGapLeft() + dipToWxsize(1) /*border*/ + dipToWxsize(10) /*extra space: less cramped*/;
+         const int defaultColWidthNew = maxStringWidth + 2 * GridData::getColumnGapLeft() + dipToWxsize(1) /*border*/ + dipToWxsize(50) /*extra space: for longer new name*/;
+@@ -315,10 +316,11 @@
+         m_staticlinePreview               ->Hide();
+         m_staticTextPlaceholderDescription->Hide();
+ 
+-        wxInfoDC infoDc(m_textCtrlNewName);
+-        infoDc.SetFont(m_textCtrlNewName->GetFont()); //the font parameter of GetTextExtent() is not evaluated on OS X, wxWidgets 2.9.5, so apply it to the DC directly!
++        wxMemoryDC dc; //the context used for bitmaps
++        setScaleFactor(dc, getScreenDpiScale());
++        dc.SetFont(m_textCtrlNewName->GetFont()); //the font parameter of GetTextExtent() is not evaluated on OS X, wxWidgets 2.9.5, so apply it to the DC directly!
+ 
+-        const int textCtrlDefaultWidth = std::min(infoDc.GetTextExtent(renamePhrase).GetWidth() + 20 /*borders (non-DIP!)*/ +
++        const int textCtrlDefaultWidth = std::min(dc.GetTextExtent(renamePhrase).GetWidth() + 20 /*borders (non-DIP!)*/ +
+                                                   dipToWxsize(50) /*extra space: for longer new name*/,
+                                                   dipToWxsize(900));
+         m_textCtrlNewName->SetMinSize({textCtrlDefaultWidth, -1});
+--- a/FreeFileSync/Source/ui/tree_grid.cpp
++++ b/FreeFileSync/Source/ui/tree_grid.cpp
+@@ -932,7 +932,7 @@
+         }
+     }
+ 
+-    int getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType) override
++    int getBestSize(wxDC& dc, size_t row, ColumnType colType) override
+     {
+         // -> synchronize renderCell() <-> getBestSize() <-> getMouseHover()
+ 
+@@ -950,7 +950,7 @@
+                    2 * gapSize_; //include gap from right!
+     }
+ 
+-    HoverArea getMouseHover(const wxReadOnlyDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
++    HoverArea getMouseHover(wxDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) override
+     {
+         if (static_cast<ColumnTypeOverview>(colType) == ColumnTypeOverview::folder)
+             if (std::unique_ptr<TreeView::Node> node = getDataView().getLine(row))
+--- a/wx+/grid.cpp
++++ b/wx+/grid.cpp
+@@ -161,7 +161,7 @@
+ }
+ 
+ 
+-int GridData::getBestSize(const wxReadOnlyDC& dc, size_t row, ColumnType colType)
++int GridData::getBestSize(wxDC& dc, size_t row, ColumnType colType)
+ {
+     return dc.GetTextExtent(getValue(row, colType)).GetWidth() + 2 * getColumnGapLeft() + dipToWxsize(1); //gap on left and right side + border
+ }
+@@ -474,7 +474,7 @@
+ 
+     int getBestWidth(ptrdiff_t rowFrom, ptrdiff_t rowTo)
+     {
+-        wxInfoDC dc(this);
++        wxClientDC dc(this);
+         dc.SetFont(GetFont()); //harmonize with RowLabelWin::render()!
+ 
+         int bestWidth = 0;
+@@ -1109,7 +1109,7 @@
+             {
+                 if (0 <= row && row < rowCount && cpi.colType != ColumnType::none)
+                 {
+-                    wxInfoDC dc(this);
++                    wxClientDC dc(this);
+                     dc.SetFont(GetFont());
+                     return prov->getMouseHover(dc, row, cpi.colType, cpi.cellRelativePosX, cpi.colWidth);
+                 }
+@@ -1143,7 +1143,7 @@
+             {
+                 if (0 <= row && row < rowCount && cpi.colType != ColumnType::none)
+                 {
+-                    wxInfoDC dc(this);
++                    wxClientDC dc(this);
+                     dc.SetFont(GetFont());
+                     return prov->getMouseHover(dc, row, cpi.colType, cpi.cellRelativePosX, cpi.colWidth);
+                 }
+@@ -1274,7 +1274,7 @@
+             {
+                 if (0 <= row && row < rowCount && cpi.colType != ColumnType::none)
+                 {
+-                    wxInfoDC dc(this);
++                    wxClientDC dc(this);
+                     dc.SetFont(GetFont());
+                     return prov->getMouseHover(dc, row, cpi.colType, cpi.cellRelativePosX, cpi.colWidth);
+                 }
+@@ -2287,7 +2287,8 @@
+     {
+         const ColumnType type = visibleCols_[col].type;
+ 
+-        wxInfoDC dc(mainWin_);
++        //wxInfoDC dc(mainWin_);
++        wxClientDC dc(mainWin_);
+         dc.SetFont(mainWin_->GetFont()); //harmonize with MainWin::render()
+ 
+         const auto& [rowFirst, rowLast] = getVisibleRows(mainWin_->GetClientRect());
+--- a/wx+/grid.h
++++ b/wx+/grid.h
+@@ -107,8 +107,8 @@
+     virtual std::wstring getValue(size_t row, ColumnType colType) const = 0;
+     virtual void         renderRowBackgound(wxDC& dc, const wxRect& rect, size_t row,                     bool enabled, bool selected, HoverArea rowHover); //default implementation
+     virtual void         renderCell        (wxDC& dc, const wxRect& rect, size_t row, ColumnType colType, bool enabled, bool selected, HoverArea rowHover);
+-    virtual int          getBestSize  (const wxReadOnlyDC& dc, size_t row, ColumnType colType); //must correspond to renderCell()!
+-    virtual HoverArea    getMouseHover(const wxReadOnlyDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) { return HoverArea::none; }
++    virtual int          getBestSize  (wxDC& dc, size_t row, ColumnType colType); //must correspond to renderCell()!
++    virtual HoverArea    getMouseHover(wxDC& dc, size_t row, ColumnType colType, int cellRelativePosX, int cellWidth) { return HoverArea::none; }
+     virtual std::wstring getToolTip                           (size_t row, ColumnType colType, HoverArea rowHover) { return std::wstring(); }
+ 
+     //label area:
+--- a/FreeFileSync/Source/ui/gui_status_handler.cpp
++++ b/FreeFileSync/Source/ui/gui_status_handler.cpp
+@@ -70,27 +70,34 @@
+                 //case wxAUI_DOCK_CENTRE:
+         }
+ 
++        wxAuiPaneInfoArray& paneArray = mainDlg_.auiMgr_.GetAllPanes();
+         const bool statusRowTaken = [&]
+         {
+-            for (wxAuiPaneInfo& paneInfo : mainDlg_.auiMgr_.GetAllPanes())
++            for (size_t i = 0; i < paneArray.size(); ++i)
++            {
++                const wxAuiPaneInfo& paneInfo = paneArray[i];
+                 //doesn't matter if paneInfo.IsShown() or not! => move down in either case!
+                 if (&paneInfo != &statusPanel &&
+                     paneInfo.dock_layer     == statusPanel.dock_layer &&
+                     paneInfo.dock_direction == statusPanel.dock_direction &&
+                     paneInfo.dock_row       == statusPanel.dock_row)
+                     return true;
++            }
+ 
+             return false;
+         }();
+ 
+         //move all rows that are in the way one step further
+         if (statusRowTaken)
+-            for (wxAuiPaneInfo& paneInfo : mainDlg_.auiMgr_.GetAllPanes())
++            for (size_t i = 0; i < paneArray.size(); ++i)
++            {
++                wxAuiPaneInfo& paneInfo = paneArray[i];
+                 if (&paneInfo != &statusPanel &&
+                     paneInfo.dock_layer     == statusPanel.dock_layer &&
+                     paneInfo.dock_direction == statusPanel.dock_direction &&
+                     paneInfo.dock_row       >= statusPanel.dock_row)
+                     ++paneInfo.dock_row;
++            }
+         //------------------------------------------------------------------
+ 
+         statusPanel.Show();
+--- a/FreeFileSync/Source/ui/main_dlg.cpp
++++ b/FreeFileSync/Source/ui/main_dlg.cpp
+@@ -1253,8 +1253,9 @@
+ 
+     //work around wxAuiManager::LoadPerspective overwriting pane captions with old values (might be different language!)
+     std::vector<std::pair<wxAuiPaneInfo*, wxString>> paneCaptions;
+-    for (wxAuiPaneInfo& paneInfo : auiMgr_.GetAllPanes())
+-        paneCaptions.emplace_back(&paneInfo, paneInfo.caption);
++    wxAuiPaneInfoArray& paneArray = auiMgr_.GetAllPanes();
++    for (size_t i = 0; i < paneArray.size(); ++i)
++        paneCaptions.emplace_back(&paneArray[i], paneArray[i].caption);
+ 
+     //compare progress dialog minimum sizes are layout-dependent + can't be changed by user => don't load stale values from config
+     std::vector<std::tuple<wxAuiPaneInfo*, wxSize /*min size*/, wxSize /*best size*/>> paneConstraints;
+@@ -3121,7 +3122,14 @@
+ 
+     bool addedSeparator = false;
+ 
++#if wxCHECK_VERSION(3,3,0)
+     for (wxAuiPaneInfo& paneInfo : auiMgr_.GetAllPanes())
++#else
++    const wxAuiPaneInfoArray& paneArray = auiMgr_.GetAllPanes();
++    for (size_t i = 0; i < paneArray.size(); ++i)
++    {
++        wxAuiPaneInfo& paneInfo = paneArray[i];
++#endif
+         if (!paneInfo.IsShown() &&
+             paneInfo.window != compareStatus_->getAsWindow() &&
+             paneInfo.window != m_panelLog                    &&
+@@ -3139,6 +3147,9 @@
+                 this->auiMgr_.Update();
+             });
+         }
++#if !wxCHECK_VERSION(3,3,0)
++    }
++#endif
+ 
+     menu.popup(*this);
+ }
+--- a/FreeFileSync/Source/ui/small_dlgs.cpp
++++ b/FreeFileSync/Source/ui/small_dlgs.cpp
+@@ -1564,7 +1564,7 @@
+ 
+         class : public wxGridColumnHeaderRendererDefault
+         {
+-            void DrawHighlighted(const wxGrid& grid, wxDC& dc, wxRect& rect, int col, int flags) const override { DrawBorder(grid, dc, rect); }
++            void DrawHighlighted(const wxGrid& grid, wxDC& dc, wxRect& rect, int col, int flags) const { DrawBorder(grid, dc, rect); }
+         } colRenderNoHighlight_;
+     };
+     m_gridCustomCommand->GetTable()->SetAttrProvider(new wxGridCellAttrProviderNoColHighlight);
+--- a/wx+/darkmode.cpp
++++ b/wx+/darkmode.cpp
+@@ -60,7 +60,8 @@
+ {
+     assert(!refGlobalColorHook());
+ 
+-    globalDefaultThemeIsDark = wxSystemSettings::GetAppearance().AreAppsDark();
++    //globalDefaultThemeIsDark = wxSystemSettings2::GetAppearance().AreAppsDark();
++    globalDefaultThemeIsDark = false;
+     ZEN_ON_SCOPE_EXIT(if (!refGlobalColorHook()) refGlobalColorHook() = std::make_unique<SysColorsHook>()); //*after* SetAppearance() and despite errors
+ 
+     //caveat: on macOS there are more themes than light/dark: https://developer.apple.com/documentation/appkit/nsappearance/name-swift.struct
+@@ -93,10 +94,10 @@
+     try
+     {
+         ZEN_ON_SCOPE_SUCCESS(refGlobalColorHook() = std::make_unique<SysColorsHook>()); //*after* SetAppearance()
+-        if (wxApp::AppearanceResult rv = wxTheApp->SetAppearance(colTheme);
+-            rv != wxApp::AppearanceResult::Ok)
+-            throw SysError(formatSystemError("wxApp::SetAppearance",
+-                                             rv == wxApp::AppearanceResult::CannotChange ? L"CannotChange" : L"Failure", L"" /*errorMsg*/));
++        //if (wxApp::AppearanceResult rv = wxTheApp->SetAppearance(colTheme);
++        //    rv != wxApp::AppearanceResult::Ok)
++        //    throw SysError(formatSystemError("wxApp::SetAppearance",
++        //                                     rv == wxApp::AppearanceResult::CannotChange ? L"CannotChange" : L"Failure", L"" /*errorMsg*/));
+     }
+     catch (const SysError& e) { throw FileError(_("Failed to update the color theme."), e.toString()); }
+ }

@@ -462,7 +462,7 @@ __extension__ extern unsigned long long __sdt_unsp;
 #define _SDT_ASM_BODY_N1(p,n,no,...) _SDT_ASM_BODY_N2(p,n,no,__VA_ARGS__)
 #define _SDT_ASM_BODY_N(p,n,...) _SDT_ASM_BODY_N1(p,n,_SDT_NARG(0, __VA_ARGS__),__VA_ARGS__)
 
-#if __STDC_VERSION__ >= 199901L
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 # define STAP_PROBE_ASM(provider, name, ...)		\
   _SDT_ASM_BODY_N(provider, name, __VA_ARGS__)					\
   _SDT_ASM_BASE

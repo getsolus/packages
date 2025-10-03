@@ -1,8 +1,9 @@
 name       : lenovo-legion-linux
-version    : 0.0.19
-release    : 5
+version    : 0.0.20
+release    : 15
 source     :
-    - https://github.com/johnfanv2/LenovoLegionLinux/archive/refs/tags/v0.0.19.tar.gz : 6bc6c00d5edcc18e347397b65527480e857f365dac5eafa365a4431ae7da2d4f
+    - https://github.com/johnfanv2/LenovoLegionLinux/archive/refs/tags/v0.0.20.tar.gz : c9974cfde03d8fd73de0a09628189f8fd9341037f10e28649b2fe5d1ec68bb2e
+extract    : false
 homepage   : https://github.com/johnfanv2/LenovoLegionLinux
 license    : GPL-2.0-or-later
 component  :
@@ -22,6 +23,7 @@ builddeps  :
     - linux-lts-headers
     - python-build
     - python-installer
+    - python-setuptools
     - python-wheel
 patterns   :
     - current :
@@ -41,36 +43,23 @@ rundeps    :
     - python-qt6
     - pyyaml
 setup      : |
-    sed -i 's|version = _VERSION|verison = %version%|' python/legion_linux/setup.cfg
-
     # Prep build dirs for each kernel version
-    pushd ../
-    for KVER in %kernel_version_lts% %kernel_version_current%
-    do
-        cp -ra "LenovoLegionLinux-%version%" ${KVER}-build
-    done
-    popd
+    mkdir current lts
+    tar --strip-components=1 -xf $sources/v*.tar.gz -C current
+    tar --strip-components=1 -xf $sources/v*.tar.gz -C lts
+
+    sed -i 's|version = _VERSION|version = %version%|' */python/legion_linux/setup.cfg
 build      : |
-    for KVER in %kernel_version_lts% %kernel_version_current%
-    do
-    pushd ${KVER}-build
+    %make -C current/kernel_module KERNELVERSION=%kernel_version_current% KSRC=%libdir%/modules/%kernel_version_current%/build
+    %make -C lts/kernel_module KERNELVERSION=%kernel_version_lts% KSRC=%libdir%/modules/%kernel_version_lts%/build
 
-    %make -C kernel_module KERNELVERSION=$KVER KSRC=%libdir%/modules/$KVER/build
-
-    popd
-    done
+    cd current/python/legion_linux
+    python3 -m build --wheel --no-isolation
 install    : |
-    for KVER in %kernel_version_lts% %kernel_version_current%
-    do
-    pushd ${KVER}-build
-
-    install -Dm00644 kernel_module/legion-laptop.ko -t $installdir/%libdir%/modules/$KVER/kernel/drivers/platform/x86/
-
-    popd
-    done
-
-    pushd LenovoLegionLinux-*/python/legion_linux
-        %python3_install
-    popd
+    install -Dm00644 current/kernel_module/legion-laptop.ko -t $installdir/%libdir%/modules/%kernel_version_current%/kernel/drivers/platform/x86/
+    install -Dm00644 lts/kernel_module/legion-laptop.ko -t $installdir/%libdir%/modules/%kernel_version_lts%/kernel/drivers/platform/x86/
 
     find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    cd current/python/legion_linux
+    python3 -m installer --destdir=%installroot% dist/*.whl

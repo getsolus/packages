@@ -89,14 +89,52 @@ class Listable:
         raise NotImplementedError
 
 
-class GitHubCommit:
+class GitHubObject:
     @staticmethod
-    def get(ref: str) -> 'GitHubCommit':
-        cached = GitHubCommit.__get_cache(ref)
+    def get(name: str, api_path: str) -> Dict[str, Any]:
+        cached = GitHubObject.__get_cache(name)
         if cached is not None:
             return cached
 
-        return GitHubCommit.__get_gh_cli(ref)
+        return GitHubObject.__get_gh_cli(name, api_path)
+
+    @staticmethod
+    def __get_cache(name: str) -> Optional[Dict[str, Any]]:
+        file = GitHubObject.__tempfile(name)
+        if not os.path.exists(file):
+            return None
+
+        with open(file, 'rb') as f:
+            return json.loads(f.read())  # type: ignore
+
+    @staticmethod
+    def store_cache(name: str, commit: str) -> None:
+        with open(os.path.join(GitHubObject.__tempfile(name)), 'w') as fh:
+            fh.write(commit)
+
+    @staticmethod
+    def __tempfile(name: str) -> str:
+        dir = os.path.join(tempfile.gettempdir(), '_solus_worklog')
+        os.makedirs(dir, exist_ok=True, mode=0o700)
+
+        return os.path.join(dir, name + '.json')
+
+    @staticmethod
+    def __get_gh_cli(name: str, path: str) -> Dict[str, Any]:
+        res = subprocess.run(['gh', 'api', path],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            raise ValueError(f'GitHub API returned non-zero exit: {res.stderr}')
+
+        GitHubObject.store_cache(name, res.stdout)
+
+        return json.loads(res.stdout)  # type: ignore
+
+
+class GitHubCommit:
+    @staticmethod
+    def get(ref: str) -> 'GitHubCommit':
+        return GitHubCommit(GitHubObject.get(ref, f'repos/getsolus/packages/commits/{ref}'))
 
     def __init__(self, data: Dict[str, Any]) -> None:
         self._data = data
@@ -121,37 +159,75 @@ class GitHubCommit:
     def ghsas(self) -> Set[str]:
         return {m[0] for m in re.findall(r'(GHSA(-[23456789cfghjmpqrvwx]{4}){3})', self.message)}
 
+
+class GitHubPR(Listable):
     @staticmethod
-    def __tempfile(ref: str) -> str:
-        dir = os.path.join(tempfile.gettempdir(), '_solus_worklog')
-        os.makedirs(dir, exist_ok=True, mode=0o700)
+    def get(id: int) -> 'GitHubPR':
+        return GitHubPR(GitHubObject.get(f'pr_{id}', f'repos/getsolus/packages/pulls/{id}'))
 
-        return os.path.join(dir, ref + '.json')
+    def __init__(self, data: Dict[str, Any]) -> None:
+        self._data = data
 
-    @staticmethod
-    def __get_cache(ref: str) -> Optional['GitHubCommit']:
-        file = GitHubCommit.__tempfile(ref)
-        if not os.path.exists(file):
-            return None
+    @property
+    def package(self) -> str:
+        if ':' not in self.title:
+            return '<unknown>'
 
-        with open(file, 'rb') as f:
-            return GitHubCommit(json.loads(f.read()))
+        return self.title.split(':', 2)[0].strip()
 
-    @staticmethod
-    def __store_cache(ref: str, commit: str) -> None:
-        with open(os.path.join(GitHubCommit.__tempfile(ref)), 'w') as fh:
-            fh.write(commit)
+    @property
+    def title(self) -> str:
+        return self._data['title']  # type: ignore
 
-    @staticmethod
-    def __get_gh_cli(ref: str) -> 'GitHubCommit':
-        res = subprocess.run(['gh', 'api', f'repos/getsolus/packages/commits/{ref}'],
-                             capture_output=True, text=True)
-        if res.returncode != 0:
-            raise ValueError(f'GitHub API returned non-zero exit: {res.stderr}')
+    @property
+    def date(self) -> datetime:
+        return datetime.fromisoformat(self._data['merged_at'])
 
-        GitHubCommit.__store_cache(ref, res.stdout)
+    @property
+    def body(self) -> str:
+        return str(self._data['body'])
 
-        return GitHubCommit(json.loads(res.stdout))
+    @property
+    def summary(self) -> str:
+        start = self.body.find('**Summary**')
+        end = self.body.find('**Test Plan**')
+
+        if start < 0:
+            return self.body
+
+        return self.body[start + 11:end].strip()
+
+    @property
+    def labels(self) -> list[str]:
+        return [label['name'] for label in self._data['labels']]
+
+    @property
+    def include_in_sync_notes(self) -> bool:
+        return 'Topic: Sync Notes' in self.labels
+
+    def to_md(self) -> str:
+        return f'[{self._list_title()}]({self._url})\n{self._prefix_summary()}\n'
+
+    def to_html(self) -> str:
+        return f'<a href="{html.escape(self._url, quote=True)}">{html.escape(self._list_title())}</a>' \
+              f'<blockquote>{self._html_summary()}</blockquote>'
+
+    def to_tty(self) -> str:
+        return f'{TTY.url(self._list_title(), self._url)}\n{self._prefix_summary()}\n'
+
+    def _list_title(self) -> str:
+        return self.package if self.package != '<unknown>' else self.title
+
+    def _prefix_summary(self, prefix: str = '  >') -> str:
+        return "\n".join([f'{prefix} {line}' for line in self.summary.splitlines()])
+
+    @property
+    def _url(self) -> str:
+        return self._data['_links']['html']['href']  # type: ignore
+
+    def _html_summary(self) -> str:
+        import markdown
+        return markdown.markdown(self.summary)
 
 
 @dataclass
@@ -429,6 +505,18 @@ class Commit(Listable):
     def url(self) -> str:
         return f'https://github.com/getsolus/packages/commit/{self.ref}'
 
+    @property
+    def is_pr(self) -> bool:
+        return self.pr is not None
+
+    @property
+    def pr(self) -> Optional[GitHubPR]:
+        match = re.search(r'\(#(\d+)\)$', self.msg.splitlines()[0])
+        if not match:
+            return None
+
+        return GitHubPR.get(int(match.group(1)))
+
     def to_md(self) -> str:
         return f'[{self.msg}]({self.url})'
 
@@ -444,7 +532,7 @@ class Commit(Listable):
 
 
 class Git:
-    _cmd = ['git', '-c', 'color.ui=always', 'log', '--date=iso-strict', '--no-merges',
+    _cmd = ['git', '-c', 'color.ui=always', 'log', '--date=iso-strict',
             '--reverse', '--pretty=format:%h%x1e%ad%x1e%s%x1e%an']
 
     def commits_by_pkg(self, start: datetime, end: datetime) -> Dict[str, List[Commit]]:
@@ -454,16 +542,29 @@ class Git:
 
         return commits
 
-    def commits(self, start: datetime, end: datetime) -> List[Commit]:
-        return [Commit.from_line(line) for line in self._commits(start, end)]
+    def commits(self, start: datetime, end: datetime, merges: bool = False) -> List[Commit]:
+        return [Commit.from_line(line) for line in self._commits(start, end, merges)]
 
-    def _commits(self, start: datetime, end: datetime) -> List[str]:
-        out = subprocess.Popen(self._cmd + [f'--after={start}', f'--before={end}'],
+    def prs(self, start: datetime, end: datetime) -> List[GitHubPR]:
+        return [commit.pr for commit in self.commits(start, end, True)
+                if commit.pr is not None]
+
+    def _commits(self, start: datetime, end: datetime, merges: bool) -> List[str]:
+        cmd = self._cmd.copy()
+
+        if not merges:
+            cmd.append('--no-merges')
+
+        out = subprocess.Popen(cmd + [f'--after={start.isoformat()}', f'--before={end.isoformat()}'],
                                stdout=subprocess.PIPE, stderr=sys.stderr).stdout
         if out is None:
             return []
 
-        return out.read().decode('utf8').strip().split("\n")
+        lines = out.read().decode('utf8').strip().split("\n")
+        if lines == ['']:
+            return []
+
+        return lines
 
 
 def parse_date(date: str) -> datetime:
@@ -519,6 +620,9 @@ class Printer:
                 return self.builds.updates(self.start, self.end, security=True)
             case 'commits':
                 return self.git.commits(self.start, self.end)
+            case 'highlights':
+                return [pr for pr in self.git.prs(self.start, self.end)
+                        if pr.include_in_sync_notes]
             case _:
                 raise ValueError(f'unsupported log kind: {kind}')
 
@@ -565,12 +669,14 @@ if __name__ == '__main__':
                 ./worklog.py commits '1 days ago'
             '''
         ))
-    parser.add_argument('command', type=str, choices=['builds', 'updates', 'security-updates', 'commits'],
+    parser.add_argument('command', type=str,
+                        choices=['builds', 'updates', 'security-updates', 'commits', 'highlights'],
                         help='Type of output to show. '
                              '`builds` shows the builds as produced by the build server, '
                              '`updates` shows per-package updates based on the build server log and GitHub metadata, '
                              '`security-updates` shows updates with security fixes, '
-                             '`commits` shows the commits from your local copy of the `packages` repository.')
+                             '`commits` shows the commits from your local copy of the `packages` repository, '
+                             '`highlights` shows the flagged PR summaries from your local `packages` repository.')
     parser.add_argument('after', type=str,
                         help='Show builds after this date. '
                              'The date can be specified in any format parsed by the `date` command.')

@@ -1,0 +1,960 @@
+From 3a7e7f905be2feac90f61b5111dca390e726a643 Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Wed, 17 Sep 2025 22:03:00 -0700
+Subject: [PATCH 1/9] Give the autoformatter what it wants
+
+---
+ src/font/face/freetype.zig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index 82cf107c85..e63b557268 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -170,7 +170,7 @@ pub const Face = struct {
+                     if (string.len > 1024) break :skip;
+                     var tmp: [512]u16 = undefined;
+                     const max = string.len / 2;
+-                    for (@as([]const u16, @alignCast(@ptrCast(string))), 0..) |c, j| tmp[j] = @byteSwap(c);
++                    for (@as([]const u16, @ptrCast(@alignCast(string))), 0..) |c, j| tmp[j] = @byteSwap(c);
+                     const len = std.unicode.utf16LeToUtf8(buf, tmp[0..max]) catch return string;
+                     return buf[0..len];
+                 }
+
+From cc165990ecfbc9f962e178e3c82dc1352729f5dc Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Wed, 17 Sep 2025 22:03:53 -0700
+Subject: [PATCH 2/9] Use outline bbox for ascii_height measurement
+
+---
+ src/font/face/freetype.zig | 57 ++++++++++++++++++++++++++++++--------
+ 1 file changed, 45 insertions(+), 12 deletions(-)
+
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index e63b557268..1cd789a66b 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -985,14 +985,21 @@ pub const Face = struct {
+                             f26dot6ToF64(glyph.*.advance.x),
+                             max,
+                         );
+-                        top = @max(
+-                            f26dot6ToF64(glyph.*.metrics.horiBearingY),
+-                            top,
+-                        );
+-                        bottom = @min(
+-                            f26dot6ToF64(glyph.*.metrics.horiBearingY - glyph.*.metrics.height),
+-                            bottom,
+-                        );
++                        // We use the outline's bbox instead of the built-in
++                        // metrics for better accuracy (see renderGlyph()).
++                        const ymin, const ymax = metrics: {
++                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
++                                var bbox: freetype.c.FT_BBox = undefined;
++                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
++                                break :metrics .{ bbox.yMin, bbox.yMax };
++                            }
++                            break :metrics .{
++                                glyph.*.metrics.horiBearingY - glyph.*.metrics.height,
++                                glyph.*.metrics.horiBearingY,
++                            };
++                        };
++                        top = @max(f26dot6ToF64(ymax), top);
++                        bottom = @min(f26dot6ToF64(ymin), bottom);
+                     } else |_| {}
+                 }
+             }
+@@ -1035,7 +1042,15 @@ pub const Face = struct {
+                             .render = false,
+                             .no_svg = true,
+                         })) {
+-                            break :cap f26dot6ToF64(face.handle.*.glyph.*.metrics.height);
++                            const glyph = face.handle.*.glyph;
++                            // We use the outline's bbox instead of the built-in
++                            // metrics for better accuracy (see renderGlyph()).
++                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
++                                var bbox: freetype.c.FT_BBox = undefined;
++                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
++                                break :cap f26dot6ToF64(bbox.yMax - bbox.yMin);
++                            }
++                            break :cap f26dot6ToF64(glyph.*.metrics.height);
+                         } else |_| {}
+                     }
+                     break :cap null;
+@@ -1048,7 +1063,15 @@ pub const Face = struct {
+                             .render = false,
+                             .no_svg = true,
+                         })) {
+-                            break :ex f26dot6ToF64(face.handle.*.glyph.*.metrics.height);
++                            const glyph = face.handle.*.glyph;
++                            // We use the outline's bbox instead of the built-in
++                            // metrics for better accuracy (see renderGlyph()).
++                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
++                                var bbox: freetype.c.FT_BBox = undefined;
++                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
++                                break :ex f26dot6ToF64(bbox.yMax - bbox.yMin);
++                            }
++                            break :ex f26dot6ToF64(glyph.*.metrics.height);
+                         } else |_| {}
+                     }
+                     break :ex null;
+@@ -1078,14 +1101,24 @@ pub const Face = struct {
+             // This can sometimes happen if there's a CJK font that has been
+             // patched with the nerd fonts patcher and it butchers the advance
+             // values so the advance ends up half the width of the actual glyph.
+-            if (ft_glyph.*.metrics.width > ft_glyph.*.advance.x) {
++            const ft_glyph_width = ft_glyph_width: {
++                // We use the outline's bbox instead of the built-in
++                // metrics for better accuracy (see renderGlyph()).
++                if (ft_glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
++                    var bbox: freetype.c.FT_BBox = undefined;
++                    _ = freetype.c.FT_Outline_Get_BBox(&ft_glyph.*.outline, &bbox);
++                    break :ft_glyph_width bbox.xMax - bbox.xMin;
++                }
++                break :ft_glyph_width ft_glyph.*.metrics.width;
++            };
++            if (ft_glyph_width > ft_glyph.*.advance.x) {
+                 var buf: [1024]u8 = undefined;
+                 const font_name = self.name(&buf) catch "<Error getting font name>";
+                 log.warn(
+                     "(getMetrics) Width of glyph '水' for font \"{s}\" is greater than its advance ({d} > {d}), discarding ic_width metric.",
+                     .{
+                         font_name,
+-                        f26dot6ToF64(ft_glyph.*.metrics.width),
++                        f26dot6ToF64(ft_glyph_width),
+                         f26dot6ToF64(ft_glyph.*.advance.x),
+                     },
+                 );
+
+From e1b2f6f02182192d6c040dbebc883615d4d5bbbd Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Wed, 17 Sep 2025 22:04:59 -0700
+Subject: [PATCH 3/9] Use same hinting flags for measurement and rendering
+
+---
+ pkg/freetype/main.zig      |  1 +
+ src/font/face/freetype.zig | 31 +++++++++++++++----------------
+ 2 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/pkg/freetype/main.zig b/pkg/freetype/main.zig
+index b396504230..6ec8181815 100644
+--- a/pkg/freetype/main.zig
++++ b/pkg/freetype/main.zig
+@@ -9,6 +9,7 @@ pub const Library = @import("Library.zig");
+ 
+ pub const Error = errors.Error;
+ pub const Face = face.Face;
++pub const LoadFlags = face.LoadFlags;
+ pub const Tag = tag.Tag;
+ pub const mulFix = computations.mulFix;
+ 
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index 1cd789a66b..c448d27350 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -956,6 +956,17 @@ pub const Face = struct {
+             break :st .{ pos, thick };
+         };
+ 
++        // Set the load flags to use when measuring glyphs. For consistency, we
++        // use same hinting settings as when rendering for consistency.
++        const measurement_load_flags: freetype.LoadFlags = .{
++            .render = false,
++            .no_hinting = !self.load_flags.hinting,
++            .force_autohint = self.load_flags.@"force-autohint",
++            .no_autohint = !self.load_flags.autohint,
++            .target_mono = self.load_flags.monochrome,
++            .no_svg = true,
++        };
++
+         // Cell width is calculated by calculating the widest width of the
+         // visible ASCII characters. Usually 'M' is widest but we just take
+         // whatever is widest.
+@@ -976,10 +987,7 @@ pub const Face = struct {
+             var c: u8 = ' ';
+             while (c < 127) : (c += 1) {
+                 if (face.getCharIndex(c)) |glyph_index| {
+-                    if (face.loadGlyph(glyph_index, .{
+-                        .render = false,
+-                        .no_svg = true,
+-                    })) {
++                    if (face.loadGlyph(glyph_index, measurement_load_flags)) {
+                         const glyph = face.handle.*.glyph;
+                         max = @max(
+                             f26dot6ToF64(glyph.*.advance.x),
+@@ -1038,10 +1046,7 @@ pub const Face = struct {
+                     self.ft_mutex.lock();
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('H')) |glyph_index| {
+-                        if (face.loadGlyph(glyph_index, .{
+-                            .render = false,
+-                            .no_svg = true,
+-                        })) {
++                        if (face.loadGlyph(glyph_index, measurement_load_flags)) {
+                             const glyph = face.handle.*.glyph;
+                             // We use the outline's bbox instead of the built-in
+                             // metrics for better accuracy (see renderGlyph()).
+@@ -1059,10 +1064,7 @@ pub const Face = struct {
+                     self.ft_mutex.lock();
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('x')) |glyph_index| {
+-                        if (face.loadGlyph(glyph_index, .{
+-                            .render = false,
+-                            .no_svg = true,
+-                        })) {
++                        if (face.loadGlyph(glyph_index, measurement_load_flags)) {
+                             const glyph = face.handle.*.glyph;
+                             // We use the outline's bbox instead of the built-in
+                             // metrics for better accuracy (see renderGlyph()).
+@@ -1086,10 +1088,7 @@ pub const Face = struct {
+ 
+             const glyph = face.getCharIndex('水') orelse break :ic_width null;
+ 
+-            face.loadGlyph(glyph, .{
+-                .render = false,
+-                .no_svg = true,
+-            }) catch break :ic_width null;
++            face.loadGlyph(glyph, measurement_load_flags) catch break :ic_width null;
+ 
+             const ft_glyph = face.handle.*.glyph;
+ 
+
+From 03a707b2c0d31f2a228d5578abf6c9c46291c443 Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Wed, 17 Sep 2025 19:05:13 -0700
+Subject: [PATCH 4/9] Add tests for font metrics and their estimators
+
+---
+ src/font/Collection.zig | 122 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 122 insertions(+)
+
+diff --git a/src/font/Collection.zig b/src/font/Collection.zig
+index ad9590d704..c06358cbfb 100644
+--- a/src/font/Collection.zig
++++ b/src/font/Collection.zig
+@@ -1369,3 +1369,125 @@ test "adjusted sizes" {
+         );
+     }
+ }
++
++test "face metrics" {
++    const testing = std.testing;
++    const alloc = testing.allocator;
++    const narrowFont = font.embedded.cozette;
++    const wideFont = font.embedded.geist_mono;
++
++    var lib = try Library.init(alloc);
++    defer lib.deinit();
++
++    var c = init();
++    defer c.deinit(alloc);
++    const size: DesiredSize = .{ .points = 12, .xdpi = 96, .ydpi = 96 };
++    c.load_options = .{ .library = lib, .size = size };
++
++    const narrowIndex = try c.add(alloc, try .init(
++        lib,
++        narrowFont,
++        .{ .size = size },
++    ), .{
++        .style = .regular,
++        .fallback = false,
++        .size_adjustment = .none,
++    });
++    const wideIndex = try c.add(alloc, try .init(
++        lib,
++        wideFont,
++        .{ .size = size },
++    ), .{
++        .style = .regular,
++        .fallback = false,
++        .size_adjustment = .none,
++    });
++
++    const narrowMetrics = (try c.getFace(narrowIndex)).getMetrics();
++    const wideMetrics = (try c.getFace(wideIndex)).getMetrics();
++
++    // Verify provided/measured metrics. Measured
++    // values are backend-dependent due to hinting.
++    if (options.backend != .web_canvas) {
++        try std.testing.expectEqual(font.Metrics.FaceMetrics{
++            .px_per_em = 16.0,
++            .cell_width = switch (options.backend) {
++                .freetype,
++                .fontconfig_freetype,
++                .coretext_freetype,
++                => 8.0,
++                .coretext,
++                .coretext_harfbuzz,
++                .coretext_noshape,
++                => 7.3828125,
++                .web_canvas => unreachable,
++            },
++            .ascent = 12.3046875,
++            .descent = -3.6953125,
++            .line_gap = 0.0,
++            .underline_position = -1.2265625,
++            .underline_thickness = 1.2265625,
++            .strikethrough_position = 6.15625,
++            .strikethrough_thickness = 1.234375,
++            .cap_height = 9.84375,
++            .ex_height = 7.3828125,
++            .ascii_height = switch (options.backend) {
++                .freetype,
++                .fontconfig_freetype,
++                .coretext_freetype,
++                => 18.0625,
++                .coretext,
++                .coretext_harfbuzz,
++                .coretext_noshape,
++                => 16.0,
++                .web_canvas => unreachable,
++            },
++        }, narrowMetrics);
++        try std.testing.expectEqual(font.Metrics.FaceMetrics{
++            .px_per_em = 16.0,
++            .cell_width = switch (options.backend) {
++                .freetype,
++                .fontconfig_freetype,
++                .coretext_freetype,
++                => 10.0,
++                .coretext,
++                .coretext_harfbuzz,
++                .coretext_noshape,
++                => 9.6,
++                .web_canvas => unreachable,
++            },
++            .ascent = 14.72,
++            .descent = -3.52,
++            .line_gap = 1.6,
++            .underline_position = -1.6,
++            .underline_thickness = 0.8,
++            .strikethrough_position = 4.24,
++            .strikethrough_thickness = 0.8,
++            .cap_height = 11.36,
++            .ex_height = 8.48,
++            .ascii_height = switch (options.backend) {
++                .freetype,
++                .fontconfig_freetype,
++                .coretext_freetype,
++                => 16.0,
++                .coretext,
++                .coretext_harfbuzz,
++                .coretext_noshape,
++                => 15.472000000000001,
++                .web_canvas => unreachable,
++            },
++        }, wideMetrics);
++    }
++
++    // Verify estimated metrics. icWidth() should equal the smaller of
++    // 2 * cell_width and ascii_height. For a narrow (wide) font, the
++    // smaller quantity is the former (latter).
++    try std.testing.expectEqual(
++        2 * narrowMetrics.cell_width,
++        narrowMetrics.icWidth(),
++    );
++    try std.testing.expectEqual(
++        wideMetrics.ascii_height,
++        wideMetrics.icWidth(),
++    );
++}
+
+From bb607e0999f35cf24b31d5c861fd16414130c94f Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Thu, 18 Sep 2025 09:08:08 -0700
+Subject: [PATCH 5/9] Refactor load flags into a function
+
+---
+ src/font/face/freetype.zig | 57 +++++++++++++++++---------------------
+ 1 file changed, 26 insertions(+), 31 deletions(-)
+
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index c448d27350..e3d4b34cc4 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -351,26 +351,16 @@ pub const Face = struct {
+         return glyph.*.bitmap.pixel_mode == freetype.c.FT_PIXEL_MODE_BGRA;
+     }
+ 
+-    /// Render a glyph using the glyph index. The rendered glyph is stored in the
+-    /// given texture atlas.
+-    pub fn renderGlyph(
+-        self: Face,
+-        alloc: Allocator,
+-        atlas: *font.Atlas,
+-        glyph_index: u32,
+-        opts: font.face.RenderOptions,
+-    ) !Glyph {
+-        self.ft_mutex.lock();
+-        defer self.ft_mutex.unlock();
+-
++    /// Set the load flags to use when loading a glyph for measurement or
++    /// rendering.
++    fn glyphLoadFlags(self: Face, constrained: bool) freetype.LoadFlags {
+         // Hinting should only be enabled if the configured load flags specify
+         // it and the provided constraint doesn't actually do anything, since
+         // if it does, then it'll mess up the hinting anyway when it moves or
+         // resizes the glyph.
+-        const do_hinting = self.load_flags.hinting and !opts.constraint.doesAnything();
++        const do_hinting = self.load_flags.hinting and !constrained;
+ 
+-        // Load the glyph.
+-        try self.face.loadGlyph(glyph_index, .{
++        return .{
+             // If our glyph has color, we want to render the color
+             .color = self.face.hasColor(),
+ 
+@@ -392,7 +382,23 @@ pub const Face = struct {
+             // SVG glyphs under FreeType, since that requires bundling another
+             // dependency to handle rendering the SVG.
+             .no_svg = true,
+-        });
++        };
++    }
++
++    /// Render a glyph using the glyph index. The rendered glyph is stored in the
++    /// given texture atlas.
++    pub fn renderGlyph(
++        self: Face,
++        alloc: Allocator,
++        atlas: *font.Atlas,
++        glyph_index: u32,
++        opts: font.face.RenderOptions,
++    ) !Glyph {
++        self.ft_mutex.lock();
++        defer self.ft_mutex.unlock();
++
++        // Load the glyph.
++        try self.face.loadGlyph(glyph_index, self.glyphLoadFlags(opts.constraint.doesAnything()));
+         const glyph = self.face.handle.*.glyph;
+ 
+         // We get a rect that represents the position
+@@ -956,17 +962,6 @@ pub const Face = struct {
+             break :st .{ pos, thick };
+         };
+ 
+-        // Set the load flags to use when measuring glyphs. For consistency, we
+-        // use same hinting settings as when rendering for consistency.
+-        const measurement_load_flags: freetype.LoadFlags = .{
+-            .render = false,
+-            .no_hinting = !self.load_flags.hinting,
+-            .force_autohint = self.load_flags.@"force-autohint",
+-            .no_autohint = !self.load_flags.autohint,
+-            .target_mono = self.load_flags.monochrome,
+-            .no_svg = true,
+-        };
+-
+         // Cell width is calculated by calculating the widest width of the
+         // visible ASCII characters. Usually 'M' is widest but we just take
+         // whatever is widest.
+@@ -987,7 +982,7 @@ pub const Face = struct {
+             var c: u8 = ' ';
+             while (c < 127) : (c += 1) {
+                 if (face.getCharIndex(c)) |glyph_index| {
+-                    if (face.loadGlyph(glyph_index, measurement_load_flags)) {
++                    if (face.loadGlyph(glyph_index, self.glyphLoadFlags(false))) {
+                         const glyph = face.handle.*.glyph;
+                         max = @max(
+                             f26dot6ToF64(glyph.*.advance.x),
+@@ -1046,7 +1041,7 @@ pub const Face = struct {
+                     self.ft_mutex.lock();
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('H')) |glyph_index| {
+-                        if (face.loadGlyph(glyph_index, measurement_load_flags)) {
++                        if (face.loadGlyph(glyph_index, self.glyphLoadFlags(false))) {
+                             const glyph = face.handle.*.glyph;
+                             // We use the outline's bbox instead of the built-in
+                             // metrics for better accuracy (see renderGlyph()).
+@@ -1064,7 +1059,7 @@ pub const Face = struct {
+                     self.ft_mutex.lock();
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('x')) |glyph_index| {
+-                        if (face.loadGlyph(glyph_index, measurement_load_flags)) {
++                        if (face.loadGlyph(glyph_index, self.glyphLoadFlags(false))) {
+                             const glyph = face.handle.*.glyph;
+                             // We use the outline's bbox instead of the built-in
+                             // metrics for better accuracy (see renderGlyph()).
+@@ -1088,7 +1083,7 @@ pub const Face = struct {
+ 
+             const glyph = face.getCharIndex('水') orelse break :ic_width null;
+ 
+-            face.loadGlyph(glyph, measurement_load_flags) catch break :ic_width null;
++            face.loadGlyph(glyph, self.glyphLoadFlags(false)) catch break :ic_width null;
+ 
+             const ft_glyph = face.handle.*.glyph;
+ 
+
+From 4af4e18725b7cdfd3632bcc7eabd5a82c465ea55 Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Thu, 18 Sep 2025 12:34:32 -0700
+Subject: [PATCH 6/9] Use approximate equality for float comparisons
+
+---
+ src/font/Collection.zig | 173 +++++++++++++++++++++++-----------------
+ 1 file changed, 102 insertions(+), 71 deletions(-)
+
+diff --git a/src/font/Collection.zig b/src/font/Collection.zig
+index c06358cbfb..5a66749d66 100644
+--- a/src/font/Collection.zig
++++ b/src/font/Collection.zig
+@@ -1371,6 +1371,9 @@ test "adjusted sizes" {
+ }
+ 
+ test "face metrics" {
++    // The web canvas backend doesn't calculate face metrics, only cell metrics
++    if (options.backend != .web_canvas) return error.SkipZigTest;
++
+     const testing = std.testing;
+     const alloc = testing.allocator;
+     const narrowFont = font.embedded.cozette;
+@@ -1403,80 +1406,108 @@ test "face metrics" {
+         .size_adjustment = .none,
+     });
+ 
+-    const narrowMetrics = (try c.getFace(narrowIndex)).getMetrics();
+-    const wideMetrics = (try c.getFace(wideIndex)).getMetrics();
++    const narrowMetrics: font.Metrics.FaceMetrics = (try c.getFace(narrowIndex)).getMetrics();
++    const wideMetrics: font.Metrics.FaceMetrics = (try c.getFace(wideIndex)).getMetrics();
+ 
+     // Verify provided/measured metrics. Measured
+     // values are backend-dependent due to hinting.
+-    if (options.backend != .web_canvas) {
+-        try std.testing.expectEqual(font.Metrics.FaceMetrics{
+-            .px_per_em = 16.0,
+-            .cell_width = switch (options.backend) {
+-                .freetype,
+-                .fontconfig_freetype,
+-                .coretext_freetype,
+-                => 8.0,
+-                .coretext,
+-                .coretext_harfbuzz,
+-                .coretext_noshape,
+-                => 7.3828125,
+-                .web_canvas => unreachable,
+-            },
+-            .ascent = 12.3046875,
+-            .descent = -3.6953125,
+-            .line_gap = 0.0,
+-            .underline_position = -1.2265625,
+-            .underline_thickness = 1.2265625,
+-            .strikethrough_position = 6.15625,
+-            .strikethrough_thickness = 1.234375,
+-            .cap_height = 9.84375,
+-            .ex_height = 7.3828125,
+-            .ascii_height = switch (options.backend) {
+-                .freetype,
+-                .fontconfig_freetype,
+-                .coretext_freetype,
+-                => 18.0625,
+-                .coretext,
+-                .coretext_harfbuzz,
+-                .coretext_noshape,
+-                => 16.0,
+-                .web_canvas => unreachable,
+-            },
+-        }, narrowMetrics);
+-        try std.testing.expectEqual(font.Metrics.FaceMetrics{
+-            .px_per_em = 16.0,
+-            .cell_width = switch (options.backend) {
+-                .freetype,
+-                .fontconfig_freetype,
+-                .coretext_freetype,
+-                => 10.0,
+-                .coretext,
+-                .coretext_harfbuzz,
+-                .coretext_noshape,
+-                => 9.6,
+-                .web_canvas => unreachable,
+-            },
+-            .ascent = 14.72,
+-            .descent = -3.52,
+-            .line_gap = 1.6,
+-            .underline_position = -1.6,
+-            .underline_thickness = 0.8,
+-            .strikethrough_position = 4.24,
+-            .strikethrough_thickness = 0.8,
+-            .cap_height = 11.36,
+-            .ex_height = 8.48,
+-            .ascii_height = switch (options.backend) {
+-                .freetype,
+-                .fontconfig_freetype,
+-                .coretext_freetype,
+-                => 16.0,
+-                .coretext,
+-                .coretext_harfbuzz,
+-                .coretext_noshape,
+-                => 15.472000000000001,
+-                .web_canvas => unreachable,
+-            },
+-        }, wideMetrics);
++    const narrowMetricsExpected = font.Metrics.FaceMetrics{
++        .px_per_em = 16.0,
++        .cell_width = switch (options.backend) {
++            .freetype,
++            .fontconfig_freetype,
++            .coretext_freetype,
++            => 8.0,
++            .coretext,
++            .coretext_harfbuzz,
++            .coretext_noshape,
++            => 7.3828125,
++            .web_canvas => unreachable,
++        },
++        .ascent = 12.3046875,
++        .descent = -3.6953125,
++        .line_gap = 0.0,
++        .underline_position = -1.2265625,
++        .underline_thickness = 1.2265625,
++        .strikethrough_position = 6.15625,
++        .strikethrough_thickness = 1.234375,
++        .cap_height = 9.84375,
++        .ex_height = 7.3828125,
++        .ascii_height = switch (options.backend) {
++            .freetype,
++            .fontconfig_freetype,
++            .coretext_freetype,
++            => 18.0625,
++            .coretext,
++            .coretext_harfbuzz,
++            .coretext_noshape,
++            => 16.0,
++            .web_canvas => unreachable,
++        },
++    };
++    const wideMetricsExpected = font.Metrics.FaceMetrics{
++        .px_per_em = 16.0,
++        .cell_width = switch (options.backend) {
++            .freetype,
++            .fontconfig_freetype,
++            .coretext_freetype,
++            => 10.0,
++            .coretext,
++            .coretext_harfbuzz,
++            .coretext_noshape,
++            => 9.6,
++            .web_canvas => unreachable,
++        },
++        .ascent = 14.72,
++        .descent = -3.52,
++        .line_gap = 1.6,
++        .underline_position = -1.6,
++        .underline_thickness = 0.8,
++        .strikethrough_position = 4.24,
++        .strikethrough_thickness = 0.8,
++        .cap_height = 11.36,
++        .ex_height = 8.48,
++        .ascii_height = switch (options.backend) {
++            .freetype,
++            .fontconfig_freetype,
++            .coretext_freetype,
++            => 16.0,
++            .coretext,
++            .coretext_harfbuzz,
++            .coretext_noshape,
++            => 15.472000000000001,
++            .web_canvas => unreachable,
++        },
++    };
++
++    inline for (
++        .{ narrowMetricsExpected, wideMetricsExpected },
++        .{ narrowMetrics, wideMetrics },
++    ) |metricsExpected, metricsActual| {
++        inline for (@typeInfo(font.Metrics.FaceMetrics).@"struct".fields) |field| {
++            const expected = @field(metricsExpected, field.name);
++            const actual = @field(metricsActual, field.name);
++            // Unwrap optional fields
++            const expectedValue, const actualValue = unwrap: switch (@typeInfo(field.type)) {
++                .optional => |Tinfo| {
++                    if (expected) |expectedValue| {
++                        const actualValue = actual orelse std.math.nan(Tinfo.child);
++                        break :unwrap .{ expectedValue, actualValue };
++                    }
++                    // Null values can be compared directly
++                    try std.testing.expectEqual(expected, actual);
++                    continue;
++                },
++                else => break :unwrap .{ expected, actual },
++            };
++            // All non-null values are floats
++            const eps = std.math.floatEps(@TypeOf(actualValue - expectedValue));
++            try std.testing.expectApproxEqRel(
++                expectedValue,
++                actualValue,
++                std.math.sqrt(eps),
++            );
++        }
+     }
+ 
+     // Verify estimated metrics. icWidth() should equal the smaller of
+
+From 8fe9c579ef945228ccd4f604d23fd6670890cbfb Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Thu, 18 Sep 2025 12:39:19 -0700
+Subject: [PATCH 7/9] Drop the nan sentinel; just fall through instead
+
+---
+ src/font/Collection.zig | 7 +++----
+ 1 file changed, 3 insertions(+), 4 deletions(-)
+
+diff --git a/src/font/Collection.zig b/src/font/Collection.zig
+index 5a66749d66..0ab353a021 100644
+--- a/src/font/Collection.zig
++++ b/src/font/Collection.zig
+@@ -1489,11 +1489,10 @@ test "face metrics" {
+             const actual = @field(metricsActual, field.name);
+             // Unwrap optional fields
+             const expectedValue, const actualValue = unwrap: switch (@typeInfo(field.type)) {
+-                .optional => |Tinfo| {
+-                    if (expected) |expectedValue| {
+-                        const actualValue = actual orelse std.math.nan(Tinfo.child);
++                .optional => {
++                    if (expected) |expectedValue| if (actual) |actualValue| {
+                         break :unwrap .{ expectedValue, actualValue };
+-                    }
++                    };
+                     // Null values can be compared directly
+                     try std.testing.expectEqual(expected, actual);
+                     continue;
+
+From 333a32208e2988661f76cd04d6680ffcd4e0f575 Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Thu, 18 Sep 2025 14:01:00 -0700
+Subject: [PATCH 8/9] Factor out glyph rect function
+
+---
+ src/font/face/freetype.zig | 120 ++++++++++++-------------------------
+ 1 file changed, 39 insertions(+), 81 deletions(-)
+
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index e3d4b34cc4..0dc4c4c035 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -385,6 +385,34 @@ pub const Face = struct {
+         };
+     }
+ 
++    /// Get a rect that represents the position and size of the loaded glyph.
++    fn getGlyphSize(glyph: freetype.c.FT_GlyphSlot) font.face.RenderOptions.Constraint.GlyphSize {
++        // If we're dealing with an outline glyph then we get the
++        // outline's bounding box instead of using the built-in
++        // metrics, since that's more precise and allows better
++        // cell-fitting.
++        if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
++            // Get the glyph's bounding box before we transform it at all.
++            // We use this rather than the metrics, since it's more precise.
++            var bbox: freetype.c.FT_BBox = undefined;
++            _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
++
++            return .{
++                .x = f26dot6ToF64(bbox.xMin),
++                .y = f26dot6ToF64(bbox.yMin),
++                .width = f26dot6ToF64(bbox.xMax - bbox.xMin),
++                .height = f26dot6ToF64(bbox.yMax - bbox.yMin),
++            };
++        }
++
++        return .{
++            .x = f26dot6ToF64(glyph.*.metrics.horiBearingX),
++            .y = f26dot6ToF64(glyph.*.metrics.horiBearingY - glyph.*.metrics.height),
++            .width = f26dot6ToF64(glyph.*.metrics.width),
++            .height = f26dot6ToF64(glyph.*.metrics.height),
++        };
++    }
++
+     /// Render a glyph using the glyph index. The rendered glyph is stored in the
+     /// given texture atlas.
+     pub fn renderGlyph(
+@@ -403,37 +431,7 @@ pub const Face = struct {
+ 
+         // We get a rect that represents the position
+         // and size of the glyph before any changes.
+-        const rect: struct {
+-            x: f64,
+-            y: f64,
+-            width: f64,
+-            height: f64,
+-        } = metrics: {
+-            // If we're dealing with an outline glyph then we get the
+-            // outline's bounding box instead of using the built-in
+-            // metrics, since that's more precise and allows better
+-            // cell-fitting.
+-            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
+-                // Get the glyph's bounding box before we transform it at all.
+-                // We use this rather than the metrics, since it's more precise.
+-                var bbox: freetype.c.FT_BBox = undefined;
+-                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
+-
+-                break :metrics .{
+-                    .x = f26dot6ToF64(bbox.xMin),
+-                    .y = f26dot6ToF64(bbox.yMin),
+-                    .width = f26dot6ToF64(bbox.xMax - bbox.xMin),
+-                    .height = f26dot6ToF64(bbox.yMax - bbox.yMin),
+-                };
+-            }
+-
+-            break :metrics .{
+-                .x = f26dot6ToF64(glyph.*.metrics.horiBearingX),
+-                .y = f26dot6ToF64(glyph.*.metrics.horiBearingY - glyph.*.metrics.height),
+-                .width = f26dot6ToF64(glyph.*.metrics.width),
+-                .height = f26dot6ToF64(glyph.*.metrics.height),
+-            };
+-        };
++        const rect = getGlyphSize(glyph);
+ 
+         // If our glyph is smaller than a quarter pixel in either axis
+         // then it has no outlines or they're too small to render.
+@@ -988,21 +986,9 @@ pub const Face = struct {
+                             f26dot6ToF64(glyph.*.advance.x),
+                             max,
+                         );
+-                        // We use the outline's bbox instead of the built-in
+-                        // metrics for better accuracy (see renderGlyph()).
+-                        const ymin, const ymax = metrics: {
+-                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
+-                                var bbox: freetype.c.FT_BBox = undefined;
+-                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
+-                                break :metrics .{ bbox.yMin, bbox.yMax };
+-                            }
+-                            break :metrics .{
+-                                glyph.*.metrics.horiBearingY - glyph.*.metrics.height,
+-                                glyph.*.metrics.horiBearingY,
+-                            };
+-                        };
+-                        top = @max(f26dot6ToF64(ymax), top);
+-                        bottom = @min(f26dot6ToF64(ymin), bottom);
++                        const rect = getGlyphSize(glyph);
++                        top = @max(rect.y + rect.height, top);
++                        bottom = @min(rect.y, bottom);
+                     } else |_| {}
+                 }
+             }
+@@ -1042,15 +1028,7 @@ pub const Face = struct {
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('H')) |glyph_index| {
+                         if (face.loadGlyph(glyph_index, self.glyphLoadFlags(false))) {
+-                            const glyph = face.handle.*.glyph;
+-                            // We use the outline's bbox instead of the built-in
+-                            // metrics for better accuracy (see renderGlyph()).
+-                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
+-                                var bbox: freetype.c.FT_BBox = undefined;
+-                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
+-                                break :cap f26dot6ToF64(bbox.yMax - bbox.yMin);
+-                            }
+-                            break :cap f26dot6ToF64(glyph.*.metrics.height);
++                            break :cap getGlyphSize(face.handle.*.glyph).height;
+                         } else |_| {}
+                     }
+                     break :cap null;
+@@ -1060,15 +1038,7 @@ pub const Face = struct {
+                     defer self.ft_mutex.unlock();
+                     if (face.getCharIndex('x')) |glyph_index| {
+                         if (face.loadGlyph(glyph_index, self.glyphLoadFlags(false))) {
+-                            const glyph = face.handle.*.glyph;
+-                            // We use the outline's bbox instead of the built-in
+-                            // metrics for better accuracy (see renderGlyph()).
+-                            if (glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
+-                                var bbox: freetype.c.FT_BBox = undefined;
+-                                _ = freetype.c.FT_Outline_Get_BBox(&glyph.*.outline, &bbox);
+-                                break :ex f26dot6ToF64(bbox.yMax - bbox.yMin);
+-                            }
+-                            break :ex f26dot6ToF64(glyph.*.metrics.height);
++                            break :ex getGlyphSize(face.handle.*.glyph).height;
+                         } else |_| {}
+                     }
+                     break :ex null;
+@@ -1095,31 +1065,19 @@ pub const Face = struct {
+             // This can sometimes happen if there's a CJK font that has been
+             // patched with the nerd fonts patcher and it butchers the advance
+             // values so the advance ends up half the width of the actual glyph.
+-            const ft_glyph_width = ft_glyph_width: {
+-                // We use the outline's bbox instead of the built-in
+-                // metrics for better accuracy (see renderGlyph()).
+-                if (ft_glyph.*.format == freetype.c.FT_GLYPH_FORMAT_OUTLINE) {
+-                    var bbox: freetype.c.FT_BBox = undefined;
+-                    _ = freetype.c.FT_Outline_Get_BBox(&ft_glyph.*.outline, &bbox);
+-                    break :ft_glyph_width bbox.xMax - bbox.xMin;
+-                }
+-                break :ft_glyph_width ft_glyph.*.metrics.width;
+-            };
+-            if (ft_glyph_width > ft_glyph.*.advance.x) {
++            const ft_glyph_width = getGlyphSize(ft_glyph).width;
++            const advance = f26dot6ToF64(ft_glyph.*.advance.x);
++            if (ft_glyph_width > advance) {
+                 var buf: [1024]u8 = undefined;
+                 const font_name = self.name(&buf) catch "<Error getting font name>";
+                 log.warn(
+                     "(getMetrics) Width of glyph '水' for font \"{s}\" is greater than its advance ({d} > {d}), discarding ic_width metric.",
+-                    .{
+-                        font_name,
+-                        f26dot6ToF64(ft_glyph_width),
+-                        f26dot6ToF64(ft_glyph.*.advance.x),
+-                    },
++                    .{ font_name, ft_glyph_width, advance },
+                 );
+                 break :ic_width null;
+             }
+ 
+-            break :ic_width f26dot6ToF64(ft_glyph.*.advance.x);
++            break :ic_width advance;
+         };
+ 
+         return .{
+
+From 52ef17d4e0012e79b0f1db1d4119fbb17ce8d9bd Mon Sep 17 00:00:00 2001
+From: Daniel Wennberg <daniel.wennberg@gmail.com>
+Date: Sun, 21 Sep 2025 11:04:32 -0700
+Subject: [PATCH 9/9] Hoist `GlyphSize` out of nested scopes
+
+---
+ src/font/face.zig          | 16 ++++++++--------
+ src/font/face/freetype.zig |  2 +-
+ 2 files changed, 9 insertions(+), 9 deletions(-)
+
+diff --git a/src/font/face.zig b/src/font/face.zig
+index 9da3c30f6b..5eb84c898f 100644
+--- a/src/font/face.zig
++++ b/src/font/face.zig
+@@ -93,6 +93,14 @@ pub const Variation = struct {
+     };
+ };
+ 
++/// The size and position of a glyph.
++pub const GlyphSize = struct {
++    width: f64,
++    height: f64,
++    x: f64,
++    y: f64,
++};
++
+ /// Additional options for rendering glyphs.
+ pub const RenderOptions = struct {
+     /// The metrics that are defining the grid layout. These are usually
+@@ -214,14 +222,6 @@ pub const RenderOptions = struct {
+             icon,
+         };
+ 
+-        /// The size and position of a glyph.
+-        pub const GlyphSize = struct {
+-            width: f64,
+-            height: f64,
+-            x: f64,
+-            y: f64,
+-        };
+-
+         /// Returns true if the constraint does anything. If it doesn't,
+         /// because it neither sizes nor positions the glyph, then this
+         /// returns false.
+diff --git a/src/font/face/freetype.zig b/src/font/face/freetype.zig
+index 0dc4c4c035..0ccc84c446 100644
+--- a/src/font/face/freetype.zig
++++ b/src/font/face/freetype.zig
+@@ -386,7 +386,7 @@ pub const Face = struct {
+     }
+ 
+     /// Get a rect that represents the position and size of the loaded glyph.
+-    fn getGlyphSize(glyph: freetype.c.FT_GlyphSlot) font.face.RenderOptions.Constraint.GlyphSize {
++    fn getGlyphSize(glyph: freetype.c.FT_GlyphSlot) font.face.GlyphSize {
+         // If we're dealing with an outline glyph then we get the
+         // outline's bounding box instead of using the built-in
+         // metrics, since that's more precise and allows better

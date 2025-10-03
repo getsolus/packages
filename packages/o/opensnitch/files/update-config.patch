@@ -1,0 +1,138 @@
+diff --git a/daemon/Makefile b/daemon/Makefile
+index df537b3b..f4a74a66 100644
+--- a/daemon/Makefile
++++ b/daemon/Makefile
+@@ -5,15 +5,14 @@ PREFIX?=/usr/local
+ all: opensnitchd
+ 
+ install:
+-	@mkdir -p $(DESTDIR)/etc/opensnitchd/rules
+ 	@install -Dm755 opensnitchd \
+ 		-t $(DESTDIR)$(PREFIX)/bin/
+ 	@install -Dm644 opensnitchd.service \
+-		-t $(DESTDIR)/etc/systemd/system/
++		-t $(DESTDIR)$(PREFIX)/lib64/systemd/system/
+ 	@install -Dm644 default-config.json \
+-		-t $(DESTDIR)/etc/opensnitchd/
++		-t $(DESTDIR)/usr/share/defaults/etc/opensnitchd/
+ 	@install -Dm644 system-fw.json \
+-		-t $(DESTDIR)/etc/opensnitchd/
++		-t $(DESTDIR)/usr/share/defaults/etc/opensnitchd/
+ 	@systemctl daemon-reload
+ 
+ opensnitchd: $(SRC)
+diff --git a/daemon/main.go b/daemon/main.go
+index fdad4cc8..91bae97a 100644
+--- a/daemon/main.go
++++ b/daemon/main.go
+@@ -24,8 +24,10 @@ package main
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"flag"
+ 	"fmt"
++	"io/fs"
+ 	"io/ioutil"
+ 	golog "log"
+ 	"net"
+@@ -62,7 +64,7 @@ var (
+ 	logUTC            = true
+ 	logMicro          = false
+ 	rulesPath         = "/etc/opensnitchd/rules/"
+-	configFile        = "/etc/opensnitchd/default-config.json"
++	configFile        = userConfigExists()
+ 	ebpfModPath       = "" // /usr/lib/opensnitchd/ebpf
+ 	noLiveReload      = false
+ 	queueNum          = 0
+@@ -94,6 +96,14 @@ var (
+ 	resolvMonitor *systemd.ResolvedMonitor
+ )
+ 
++func userConfigExists() (string) {
++	defaultConfig := "/etc/opensnitchd/default-config.json"
++	if _, err := os.Stat(defaultConfig); errors.Is(err, fs.ErrNotExist) {
++		return "/usr/share/defaults/etc/opensnitchd/default-config.json"
++	}
++	return defaultConfig
++}
++
+ func init() {
+ 	flag.BoolVar(&showVersion, "version", debug, "Show daemon version of this executable and exit.")
+ 	flag.BoolVar(&checkRequirements, "check-requirements", debug, "Check system requirements for incompatibilities.")
+diff --git a/daemon/ui/client.go b/daemon/ui/client.go
+index be013d26..04c6838a 100644
+--- a/daemon/ui/client.go
++++ b/daemon/ui/client.go
+@@ -1,8 +1,11 @@
+ package ui
+ 
+ import (
++	"errors"
+ 	"fmt"
++	"io/fs"
+ 	"net"
++	"os"
+ 	"sync"
+ 	"time"
+ 
+@@ -24,7 +27,7 @@ import (
+ )
+ 
+ var (
+-	configFile             = "/etc/opensnitchd/default-config.json"
++	configFile             = userConfigExists()
+ 	dummyOperator, _       = rule.NewOperator(rule.Simple, false, rule.OpTrue, "", make([]rule.Operator, 0))
+ 	clientDisconnectedRule = rule.Create("ui.client.disconnected", "", true, false, false, rule.Allow, rule.Once, dummyOperator)
+ 	// While the GUI is connected, deny by default everything until the user takes an action.
+@@ -35,6 +38,14 @@ var (
+ 	maxQueuedAlerts = 1024
+ )
+ 
++func userConfigExists() (string) {
++	defaultConfig := "/etc/opensnitchd/default-config.json"
++	if _, err := os.Stat(defaultConfig); errors.Is(err, fs.ErrNotExist) {
++		return "/usr/share/defaults/etc/opensnitchd/default-config.json"
++	}
++	return defaultConfig
++}
++
+ // Client holds the connection information of a client.
+ type Client struct {
+ 	rules               *rule.Loader
+diff --git a/daemon/firewall/config/config.go b/daemon/firewall/config/config.go
+index 43c6c9ee..e09f53c5 100644
+--- a/daemon/firewall/config/config.go
++++ b/daemon/firewall/config/config.go
+@@ -9,6 +9,8 @@ package config
+ 
+ import (
+ 	"encoding/json"
++	"errors"
++	"io/fs"
+ 	"io/ioutil"
+ 	"os"
+ 	"sync"
+@@ -138,6 +140,11 @@ func (c *Config) NewSystemFwConfig(preLoadCb, reLoadCb func()) (*Config, error)
+ 	defer c.Unlock()
+ 
+ 	c.file = "/etc/opensnitchd/system-fw.json"
++	
++	if _, err := os.Stat(c.file); errors.Is(err, fs.ErrNotExist) {
++		c.file = "/usr/share/defaults/etc/opensnitchd/system-fw.json"
++	}
++	
+ 	c.monitorExitChan = make(chan bool, 1)
+ 	c.preloadCallback = preLoadCb
+ 	c.reloadCallback = reLoadCb
+@@ -203,6 +210,10 @@ func (c *Config) loadConfiguration(rawConfig []byte) error {
+ // SaveConfiguration saves configuration to disk.
+ // This event dispatches a reload of the configuration.
+ func (c *Config) SaveConfiguration(rawConfig string) error {
++
++	if c.file == "/usr/share/defaults/etc/opensnitchd/system-fw.json" {
++		c.SetFile("/etc/opensnitchd/system-fw.json")
++	}
+ 	conf, err := json.MarshalIndent([]byte(rawConfig), "  ", "  ")
+ 	if err != nil {
+ 		log.Error("saving json firewall configuration: %s %s", err, conf)

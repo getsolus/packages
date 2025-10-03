@@ -1,0 +1,218 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Evan Maddock <maddock.evan@vivaldi.net>
+Date: Fri, 13 Jun 2025 16:18:00 -0400
+Subject: [PATCH 3/4] category: Use an enum instead of separate bools
+
+This changes the `isAddons` and `isDrivers` flags into an enum, making
+these uses more readable. By default, a category is of type Package, as
+that is the most common type of category.
+
+Signed-off-by: Evan Maddock <maddock.evan@vivaldi.net>
+---
+ libdiscover/Category/Category.cpp             | 14 ++++++-------
+ libdiscover/Category/Category.h               | 21 ++++++++++---------
+ libdiscover/appstream/AppStreamUtils.cpp      |  2 +-
+ .../AlpineApkBackend/AlpineApkBackend.cpp     |  4 +---
+ .../backends/KNSBackend/KNSBackend.cpp        | 16 ++++++--------
+ .../backends/SnapBackend/SnapBackend.cpp      |  2 +-
+ 6 files changed, 26 insertions(+), 33 deletions(-)
+
+diff --git a/libdiscover/Category/Category.cpp b/libdiscover/Category/Category.cpp
+index 36e272418..a45e22259 100644
+--- a/libdiscover/Category/Category.cpp
++++ b/libdiscover/Category/Category.cpp
+@@ -73,17 +73,15 @@ Category::Category(const QString &name,
+                    const CategoryFilter &filter,
+                    const QSet<QString> &pluginName,
+                    const QList<std::shared_ptr<Category>> &subCategories,
+-                   bool isAddons,
+-                   bool isDrivers)
++                   Type type)
+     : QObject(nullptr)
+     , m_name(name)
+     , m_iconString(iconName)
+     , m_filter(filter)
+     , m_subCategories(subCategories)
+     , m_plugins(pluginName)
+-    , m_isAddons(isAddons)
+-    , m_isDrivers(isDrivers)
+-    , m_priority(isAddons || isDrivers ? 5 : 0)
++    , m_type(type)
++    , m_priority(type == Type::Addon || type == Type::Driver ? 5 : 0)
+ {
+     setObjectName(m_name);
+ 
+@@ -119,13 +117,13 @@ void Category::parseData(const QString &path, QXmlStreamReader *xml, Localizatio
+             m_subCategories << std::make_shared<Category>(m_plugins);
+             m_subCategories.last()->parseData(path, xml, localization);
+         } else if (xml->name() == QLatin1String("Addons")) {
+-            m_isAddons = true;
++            m_type = Type::Addon;
+             m_priority = 5;
+             xml->readNext();
+         } else if (xml->name() == QLatin1String("OnlyShowIn")) {
+             m_visible = !m_hide && qEnvironmentVariable("XDG_CURRENT_DESKTOP") == xml->readElementText();
+         } else if (xml->name() == QLatin1String("Drivers")) {
+-            m_isDrivers = true;
++            m_type = Type::Driver;
+             m_priority = 5;
+             xml->readNext();
+         } else if (xml->name() == QLatin1String("Icon")) {
+@@ -319,7 +317,7 @@ void Category::addSubcategory(QList<std::shared_ptr<Category>> &list, const std:
+     if (c->name() == newcat->name()) {
+         if (c->icon() != newcat->icon() || c->m_priority != newcat->m_priority) {
+             qCWarning(LIBDISCOVER_LOG) << "the following categories seem to be the same but they're not entirely" << c->icon() << newcat->icon() << "--"
+-                                       << c->name() << newcat->name() << "--" << c->isAddons() << newcat->isAddons();
++                                       << c->name() << newcat->name() << "--" << c->priority() << newcat->priority();
+         } else {
+             CategoryFilter newFilter = {CategoryFilter::OrFilter, QList<CategoryFilter>{c->m_filter, newcat->m_filter}};
+             c->m_filter = newFilter;
+diff --git a/libdiscover/Category/Category.h b/libdiscover/Category/Category.h
+index e116b8692..db0fc6861 100644
+--- a/libdiscover/Category/Category.h
++++ b/libdiscover/Category/Category.h
+@@ -61,6 +61,13 @@ public:
+         Force, /* < Use localization even when it'd break something (only use this for tests!) */
+     };
+ 
++    // The type of package this category contains.
++    enum class Type {
++        Addon, /* < Category contains Plasma addons */
++        Driver, /* < Category contains hardware drivers */
++        Package, /* < Category contains regular packages */
++    };
++
+     explicit Category(QSet<QString> pluginNames, const std::shared_ptr<Category> &parent = {});
+ 
+     Category(const QString &name,
+@@ -68,8 +75,7 @@ public:
+              const CategoryFilter &filters,
+              const QSet<QString> &pluginName,
+              const QList<std::shared_ptr<Category>> &subCategories,
+-             bool isAddons,
+-             bool isDrivers);
++             Type type = Type::Package);
+     ~Category() override;
+ 
+     QString name() const;
+@@ -92,13 +98,9 @@ public:
+     void addSubcategory(const std::shared_ptr<Category> &cat);
+     void parseData(const QString &path, QXmlStreamReader *xml, Localization localization);
+     bool blacklistPlugins(const QSet<QString> &pluginName);
+-    bool isAddons() const
+-    {
+-        return m_isAddons;
+-    }
+-    bool isDrivers() const
++    Type type() const
+     {
+-        return m_isDrivers;
++        return m_type;
+     }
+     qint8 priority() const
+     {
+@@ -164,8 +166,7 @@ private:
+ 
+     CategoryFilter parseIncludes(QXmlStreamReader *xml);
+     QSet<QString> m_plugins;
+-    bool m_isAddons = false;
+-    bool m_isDrivers = false;
++    Type m_type;
+     bool m_hide = false;
+     qint8 m_priority = 0;
+     QTimer *m_subCategoriesChanged;
+diff --git a/libdiscover/appstream/AppStreamUtils.cpp b/libdiscover/appstream/AppStreamUtils.cpp
+index 83ed3701b..b154286aa 100644
+--- a/libdiscover/appstream/AppStreamUtils.cpp
++++ b/libdiscover/appstream/AppStreamUtils.cpp
+@@ -205,7 +205,7 @@ AppStreamUtils::componentsByCategoriesTask(AppStream::ConcurrentPool *pool, cons
+     const auto categories = cat->involvedCategories();
+     QList<QFuture<AppStream::ComponentBox>> futures;
+     futures.reserve(categories.size());
+-    if (cat->isDrivers()) {
++    if (cat->type() == Category::Type::Driver) {
+         futures += pool->componentsByKind(AppStream::Component::KindDriver);
+     } else {
+         for (const auto &categoryName : categories) {
+diff --git a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
+index 7903a9953..3621b10e8 100644
+--- a/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
++++ b/libdiscover/backends/AlpineApkBackend/AlpineApkBackend.cpp
+@@ -290,9 +290,7 @@ QList<std::shared_ptr<Category>> AlpineApkBackend::category() const
+                                                                           QStringLiteral("package-x-generic"), // icon name
+                                                                           s_apkFlt, // const CategoryFilter& filters
+                                                                           QSet<QString>{displayName()}, // pluginName
+-                                                                          QList<std::shared_ptr<Category>>{}, // subcategories
+-                                                                          false, // isAddons
+-                                                                          false // isDrivers
++                                                                          QList<std::shared_ptr<Category>>{} // subcategories
+                                                                           ));
+ 
+     return {s_rootCat};
+diff --git a/libdiscover/backends/KNSBackend/KNSBackend.cpp b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+index d73f4af71..e714aded1 100644
+--- a/libdiscover/backends/KNSBackend/KNSBackend.cpp
++++ b/libdiscover/backends/KNSBackend/KNSBackend.cpp
+@@ -231,16 +231,14 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+                                                          CategoryFilter{CategoryFilter::CategoryNameFilter, cat},
+                                                          backendName,
+                                                          QList<std::shared_ptr<Category>>{},
+-                                                         true,
+-                                                         false);
++                                                         Category::Type::Addon);
+             else
+                 categories << std::make_shared<Category>(cat,
+                                                          QStringLiteral("plasma"),
+                                                          CategoryFilter{CategoryFilter::CategoryNameFilter, cat},
+                                                          backendName,
+                                                          QList<std::shared_ptr<Category>>{},
+-                                                         true,
+-                                                         false);
++                                                         Category::Type::Addon);
+         }
+     }
+ 
+@@ -274,14 +272,12 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+     m_engine->init(m_name);
+ 
+     if (m_hasApplications) {
+-        auto actualCategory = std::make_shared<Category>(m_displayName, QStringLiteral("applications-other"), filter, backendName, topCategories, false, false);
++        auto actualCategory = std::make_shared<Category>(m_displayName, QStringLiteral("applications-other"), filter, backendName, topCategories);
+         std::shared_ptr<Category> applicationCategory = std::make_shared<Category>(i18n("Applications"), //
+                                                                                    QStringLiteral("applications-internet"),
+                                                                                    filter,
+                                                                                    backendName,
+-                                                                                   QList<std::shared_ptr<Category>>{actualCategory},
+-                                                                                   false,
+-                                                                                   false);
++                                                                                   QList<std::shared_ptr<Category>>{actualCategory});
+         const QList<CategoryFilter> filters = {{CategoryFilter::CategoryNameFilter, QLatin1String("Application")}, filter};
+         applicationCategory->setFilter({CategoryFilter::AndFilter, filters});
+         m_categories.append(applicationCategory->name());
+@@ -303,11 +299,11 @@ KNSBackend::KNSBackend(QObject *parent, const QString &iconName, const QString &
+         m_engine->setTagFilter(tagFilter);
+     } else {
+         const auto iconName = isPlasmaCategory ? QStringLiteral("plasma") : QStringLiteral("applications-other");
+-        auto actualCategory = std::make_shared<Category>(m_displayName, iconName, filter, backendName, categories, true, false);
++        auto actualCategory = std::make_shared<Category>(m_displayName, iconName, filter, backendName, categories, Category::Type::Addon);
+ 
+         const auto topLevelName = isPlasmaCategory ? i18n("Plasma Addons") : i18n("Application Addons");
+         auto addonsCategory =
+-            std::make_shared<Category>(topLevelName, iconName, filter, backendName, QList<std::shared_ptr<Category>>{actualCategory}, true, false);
++            std::make_shared<Category>(topLevelName, iconName, filter, backendName, QList<std::shared_ptr<Category>>{actualCategory}, Category::Type::Addon);
+         m_rootCategories = {addonsCategory};
+     }
+ 
+diff --git a/libdiscover/backends/SnapBackend/SnapBackend.cpp b/libdiscover/backends/SnapBackend/SnapBackend.cpp
+index 7e40dc54b..438cfcd94 100644
+--- a/libdiscover/backends/SnapBackend/SnapBackend.cpp
++++ b/libdiscover/backends/SnapBackend/SnapBackend.cpp
+@@ -123,7 +123,7 @@ ResultsStream *SnapBackend::search(const AbstractResourcesBackend::Filters &filt
+         return voidStream();
+     } else if (!filters.resourceUrl.isEmpty()) {
+         return findResourceByPackageName(filters.resourceUrl);
+-    } else if (filters.category && filters.category->isAddons()) {
++    } else if (filters.category && filters.category->type() == Category::Type::Addon) {
+         return voidStream();
+     } else if (filters.state >= AbstractResource::Installed || filters.origin == QLatin1String("Snap")) {
+         std::function<bool(const QSharedPointer<QSnapdSnap> &)> f = [filters](const QSharedPointer<QSnapdSnap> &s) {

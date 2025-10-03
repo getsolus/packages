@@ -1,0 +1,477 @@
+From ff58779c09123a77af475b0b6312c424f1c553da Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Ball=C3=B3=20Gy=C3=B6rgy?= <ballogyor@gmail.com>
+Date: Tue, 30 Jul 2024 22:23:47 +0200
+Subject: [PATCH] Port to libsoup 3.0 and librest 1.0
+
+Closes: https://gitlab.gnome.org/GNOME/recipes/-/issues/155
+---
+ meson.build                     |  4 +-
+ src/gr-app.c                    |  2 +-
+ src/gr-image.c                  | 78 +++++++++++++++++++++----------
+ src/gr-recipe-store.c           | 43 +++++++++++------
+ src/gr-shopping-list-exporter.c | 82 ++++++++++++++++-----------------
+ 5 files changed, 126 insertions(+), 83 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index a0edaadc..afa51d4f 100644
+--- a/meson.build
++++ b/meson.build
+@@ -85,9 +85,9 @@ deps = [ dependency('gtk+-3.0', version : '>=3.22'),
+          dependency('gio-2.0', version : '>= 2.61.2'),
+          dependency('gio-unix-2.0', version : '>= 2.61.2'),
+          dependency('gmodule-export-2.0'),
+-         dependency('libsoup-2.4'),
++         dependency('libsoup-3.0'),
+          dependency('goa-1.0'),
+-         dependency('rest-0.7'),
++         dependency('rest-1.0'),
+          dependency('json-glib-1.0'),
+          autoar_dep,
+          gspell_dep,
+diff --git a/src/gr-app.c b/src/gr-app.c
+index 140e3598..ed902ae1 100644
+--- a/src/gr-app.c
++++ b/src/gr-app.c
+@@ -452,7 +452,7 @@ gr_app_init (GrApp *self)
+ 
+         g_log_set_writer_func (gr_log_writer, NULL, NULL);
+ 
+-        self->session = soup_session_new_with_options (SOUP_SESSION_USER_AGENT,
++        self->session = soup_session_new_with_options ("user-agent",
+                                                        PACKAGE_NAME "/" PACKAGE_VERSION,
+                                                        NULL);
+ }
+diff --git a/src/gr-image.c b/src/gr-image.c
+index 4b1d0841..ba2b4592 100644
+--- a/src/gr-image.c
++++ b/src/gr-image.c
+@@ -55,6 +55,8 @@ struct _GrImage
+         SoupSession *session;
+         SoupMessage *thumbnail_message;
+         SoupMessage *image_message;
++        GCancellable *thumbnail_cancellable;
++        GCancellable *image_cancellable;
+         GList *pending;
+ };
+ 
+@@ -65,15 +67,16 @@ gr_image_finalize (GObject *object)
+ {
+         GrImage *ri = GR_IMAGE (object);
+ 
+-        if (ri->thumbnail_message)
+-                soup_session_cancel_message (ri->session,
+-                                             ri->thumbnail_message,
+-                                             SOUP_STATUS_CANCELLED);
++        if (ri->thumbnail_cancellable) {
++                g_cancellable_cancel (ri->thumbnail_cancellable);
++                g_object_unref (ri->thumbnail_cancellable);
++        }
++        if (ri->image_cancellable) {
++                g_cancellable_cancel (ri->image_cancellable);
++                g_object_unref (ri->image_cancellable);
++        }
++
+         g_clear_object (&ri->thumbnail_message);
+-        if (ri->image_message)
+-                soup_session_cancel_message (ri->session,
+-                                             ri->image_message,
+-                                             SOUP_STATUS_CANCELLED);
+         g_clear_object (&ri->image_message);
+         g_clear_object (&ri->session);
+         g_free (ri->path);
+@@ -302,43 +305,56 @@ set_modified_request (SoupMessage *msg,
+ 
+                 mtime = g_file_info_get_modification_date_time (info);
+                 mod_date = g_date_time_format (mtime, "%a, %d %b %Y %H:%M:%S %Z");
+-                soup_message_headers_append (msg->request_headers, "If-Modified-Since", mod_date);
++                soup_message_headers_append (soup_message_get_request_headers (msg), "If-Modified-Since", mod_date);
+         }
+ }
+ 
+ static void
+-set_image (SoupSession *session,
+-           SoupMessage *msg,
+-           gpointer     data)
++set_image (SoupSession  *session,
++           GAsyncResult *result,
++           gpointer      data)
+ {
+         GrImage *ri = data;
+         g_autofree char *cache_path = NULL;
+         GList *l;
++        g_autoptr(GError) error = NULL;
++        g_autoptr(GBytes) response = NULL;
++        SoupMessage *msg;
++        guint status_code;
++        gconstpointer response_data;
++        gsize response_length;
++
++        response = soup_session_send_and_read_finish (session, result, &error);
+ 
+-        if (msg->status_code == SOUP_STATUS_CANCELLED || ri->session == NULL) {
++	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                 g_debug ("Message cancelled");
+-                return;
+-        }
++		g_clear_error (&error);
++		return;
++	}
++
++        msg = soup_session_get_async_result_message (session, result);
++        status_code = soup_message_get_status (msg);
+ 
+         if (msg == ri->thumbnail_message)
+                 cache_path = get_thumbnail_cache_path (ri);
+         else
+                 cache_path = get_image_cache_path (ri);
+ 
+-        if (msg->status_code == SOUP_STATUS_NOT_MODIFIED) {
++        if (status_code == SOUP_STATUS_NOT_MODIFIED) {
+                 g_debug ("Image not modified");
+                 update_image_timestamp (cache_path);
+         }
+-        else if (msg->status_code == SOUP_STATUS_OK) {
++        else if (status_code == SOUP_STATUS_OK) {
+                 g_debug ("Saving image to %s", cache_path);
+-                if (!g_file_set_contents (cache_path, msg->response_body->data, msg->response_body->length, NULL)) {
++                response_data = g_bytes_get_data (response, &response_length);
++                if (!g_file_set_contents (cache_path, response_data, response_length, NULL)) {
+                         g_debug ("Saving image to %s failed", cache_path);
+                         goto out;
+                 }
+         }
+         else {
+                 g_autofree char *url = get_image_url (ri);
+-                g_debug ("Got status %d, record failure to load %s", msg->status_code, url);
++                g_debug ("Got status %d, record failure to load %s", status_code, url);
+                 write_negative_cache_entry (cache_path);
+                 goto out;
+         }
+@@ -494,28 +510,40 @@ gr_image_load_full (GrImage         *ri,
+ 
+         if (need_thumbnail && ri->thumbnail_message == NULL) {
+                 g_autofree char *url = NULL;
+-                g_autoptr(SoupURI) base_uri = NULL;
++                g_autoptr(GUri) base_uri = NULL;
+ 
+                 url = get_thumbnail_url (ri);
+-                base_uri = soup_uri_new (url);
++                base_uri = g_uri_parse (url, G_URI_FLAGS_NONE, NULL);
+                 ri->thumbnail_message = soup_message_new_from_uri (SOUP_METHOD_GET, base_uri);
++                ri->thumbnail_cancellable = g_cancellable_new();
+                 set_modified_request (ri->thumbnail_message, thumbnail_cache_path);
+                 g_debug ("Load thumbnail for %s from %s", ri->path, url);
+-                soup_session_queue_message (ri->session, g_object_ref (ri->thumbnail_message), set_image, ri);
++                soup_session_send_and_read_async (ri->session,
++                                                  ri->thumbnail_message,
++                                                  G_PRIORITY_DEFAULT,
++                                                  ri->thumbnail_cancellable,
++                                                  (GAsyncReadyCallback) set_image,
++                                                  ri);
+                 if (width > 150 || height > 150)
+                         need_image = TRUE;
+         }
+ 
+         if (need_image && ri->image_message == NULL) {
+                 g_autofree char *url = NULL;
+-                g_autoptr(SoupURI) base_uri = NULL;
++                g_autoptr(GUri) base_uri = NULL;
+ 
+                 url = get_image_url (ri);
+-                base_uri = soup_uri_new (url);
++                base_uri = g_uri_parse (url, G_URI_FLAGS_NONE, NULL);
+                 ri->image_message = soup_message_new_from_uri (SOUP_METHOD_GET, base_uri);
++                ri->image_cancellable = g_cancellable_new();
+                 set_modified_request (ri->image_message, image_cache_path);
+                 g_debug ("Load image for %s from %s", ri->path, url);
+-                soup_session_queue_message (ri->session, g_object_ref (ri->image_message), set_image, ri);
++                soup_session_send_and_read_async (ri->session,
++                                                  ri->image_message,
++                                                  G_PRIORITY_DEFAULT,
++                                                  ri->image_cancellable,
++                                                  (GAsyncReadyCallback) set_image,
++                                                  ri);
+         }
+ }
+ 
+diff --git a/src/gr-recipe-store.c b/src/gr-recipe-store.c
+index 8abab2e5..64398bd5 100644
+--- a/src/gr-recipe-store.c
++++ b/src/gr-recipe-store.c
+@@ -1028,7 +1028,7 @@ set_modified_request (SoupMessage *msg,
+             g_file_info_has_attribute (info, G_FILE_ATTRIBUTE_TIME_MODIFIED)) {
+                 mtime = g_file_info_get_modification_date_time (info);
+                 mod_date = g_date_time_format (mtime, "%a, %d %b %Y %H:%M:%S %Z");
+-                soup_message_headers_append (msg->request_headers, "If-Modified-Since", mod_date);
++                soup_message_headers_append (soup_message_get_request_headers (msg), "If-Modified-Since", mod_date);
+         }
+ }
+ 
+@@ -1116,9 +1116,9 @@ tar_done (GObject      *source,
+ }
+ 
+ static void
+-save_file (SoupSession *session,
+-           SoupMessage *msg,
+-           gpointer     data)
++save_file (SoupSession  *session,
++           GAsyncResult *result,
++           gpointer      data)
+ {
+         GrRecipeStore *self = data;
+         const char *cache_dir;
+@@ -1128,25 +1128,37 @@ save_file (SoupSession *session,
+         g_autoptr(GSubprocess) subprocess = NULL;
+         g_autoptr(GSubprocessLauncher) launcher = NULL;
+         g_autoptr(GError) error = NULL;
++        g_autoptr(GBytes) response = NULL;
++        SoupMessage *msg;
++        guint status_code;
++        gconstpointer response_data;
++        gsize response_length;
+ 
+-        if (msg->status_code == SOUP_STATUS_CANCELLED || self->session == NULL) {
++        response = soup_session_send_and_read_finish (session, result, &error);
++
++	if (g_error_matches (error, G_IO_ERROR, G_IO_ERROR_CANCELLED)) {
+                 g_debug ("Message cancelled");
+-                goto out;
+-        }
++		g_clear_error (&error);
++		goto out;
++	}
++
++        msg = soup_session_get_async_result_message (session, result);
++        status_code = soup_message_get_status (msg);
+ 
+         cache_dir = get_user_cache_dir ();
+         filename = g_build_filename (cache_dir, "data.tar.gz", NULL);
+ 
+-        if (msg->status_code == SOUP_STATUS_NOT_MODIFIED) {
++        if (status_code == SOUP_STATUS_NOT_MODIFIED) {
+                 g_autofree char *f = NULL;
+ 
+                 g_debug ("File not modified");
+                 f = g_build_filename (cache_dir, "data", "recipes.db", NULL);
+                 update_file_timestamp (f);
+         }
+-        else if (msg->status_code == SOUP_STATUS_OK) {
++        else if (status_code == SOUP_STATUS_OK) {
+                 g_debug ("Saving file to %s", filename);
+-                if (!g_file_set_contents (filename, msg->response_body->data, msg->response_body->length, NULL)) {
++                response_data = g_bytes_get_data (response, &response_length);
++                if (!g_file_set_contents (filename, response_data, response_length, NULL)) {
+                         g_debug ("Saving file to %s failed", filename);
+                         goto out;
+                 }
+@@ -1197,14 +1209,19 @@ load_updates (gpointer data)
+         filename = g_build_filename (cache_dir, "recipes.db", NULL);
+         if (should_try_load (filename)) {
+                 g_autofree char *url;
+-                g_autoptr(SoupURI) base_uri = NULL;
++                g_autoptr(GUri) base_uri = NULL;
+ 
+                 url = get_file_url ("data.tar.gz");
+-                base_uri = soup_uri_new (url);
++                base_uri = g_uri_parse (url, G_URI_FLAGS_NONE, NULL);
+                 self->recipes_message = soup_message_new_from_uri (SOUP_METHOD_GET, base_uri);
+                 set_modified_request (self->recipes_message, filename);
+                 g_debug ("Load file for data.tar.gz from %s", url);
+-                soup_session_queue_message (self->session, g_object_ref (self->recipes_message), save_file, self);
++                soup_session_send_and_read_async (self->session,
++                                                  self->recipes_message,
++                                                  G_PRIORITY_DEFAULT,
++                                                  NULL,
++                                                  (GAsyncReadyCallback) save_file,
++                                                  self);
+         }
+ 
+         g_timeout_add_seconds (24 * 60 * 60, load_updates, data);
+diff --git a/src/gr-shopping-list-exporter.c b/src/gr-shopping-list-exporter.c
+index 86757ef2..51528545 100644
+--- a/src/gr-shopping-list-exporter.c
++++ b/src/gr-shopping-list-exporter.c
+@@ -25,7 +25,7 @@
+ #include <glib/gstdio.h>
+ #include <gtk/gtk.h>
+ #include <goa/goa.h>
+-#include <rest/oauth2-proxy.h>
++#include <rest/rest.h>
+ #include <json-glib/json-glib.h>
+ 
+ #include "gr-shopping-list-exporter.h"
+@@ -108,13 +108,17 @@ gr_shopping_list_exporter_new (GtkWindow *parent)
+ 
+ static void
+ remove_items_callback (RestProxyCall *call,
+-		       GError *error,
+-		       GObject *obj,
++		       GAsyncResult *result,
+ 		       GrShoppingListExporter *exporter)
+ {
+ 
+ 	guint status_code;
+ 
++	if (!rest_proxy_call_invoke_finish (call, result, NULL)) {
++		g_warning ("Couldn't execute RestProxyCall");
++		return;
++	}
++
+ 	status_code = rest_proxy_call_get_status_code (call);
+ 
+ 	if (status_code != 200) {
+@@ -128,7 +132,6 @@ remove_items (GrShoppingListExporter *exporter, GList *items)
+ {
+ 	RestProxy *proxy;
+ 	RestProxyCall *call;
+-	GError *error;
+ 	g_autofree gchar *uuid = g_uuid_string_random ();
+ 
+ 	GList *l;
+@@ -152,8 +155,6 @@ remove_items (GrShoppingListExporter *exporter, GList *items)
+ 	commands = g_string_truncate (commands, commands->len-1);
+ 	g_string_append_printf (commands, "]}}]");
+ 
+-	error = NULL;
+-
+ 	proxy = rest_proxy_new (TODOIST_URL, FALSE);
+ 	call = rest_proxy_new_call (proxy);
+ 	rest_proxy_call_set_method (call, "POST");
+@@ -167,22 +168,19 @@ remove_items (GrShoppingListExporter *exporter, GList *items)
+ 
+ 	rest_proxy_call_add_param (call, "commands", commands->str);
+ 
+-	if (!rest_proxy_call_async (call, (RestProxyCallAsyncCallback) remove_items_callback,
+-				    NULL, exporter, &error))
+-	{
+-	    g_warning ("Couldn't execute RestProxyCall");
+-	    goto out;
+-	}
+-	out:
+-	  g_object_unref (proxy);
+-	  g_object_unref (call);
++	rest_proxy_call_invoke_async (call,
++	                              NULL,
++	                              (GAsyncReadyCallback) remove_items_callback,
++				      exporter);
++
++	g_object_unref (proxy);
++	g_object_unref (call);
+ }
+ 
+ static void
+ get_project_data_callback (RestProxyCall *call,
+-			   GError *error,
+-			   GObject *obj,
+-			   GrShoppingListExporter *exporter)
++		           GAsyncResult *result,
++		           GrShoppingListExporter *exporter)
+ {
+ 	JsonObject *object = NULL;
+ 	JsonParser *parser = NULL;
+@@ -194,6 +192,11 @@ get_project_data_callback (RestProxyCall *call,
+ 	JsonArray *json_items;
+ 	GList *items;
+ 
++	if (!rest_proxy_call_invoke_finish (call, result, NULL)) {
++		g_warning ("Couldn't execute RestProxyCall");
++		goto out;
++	}
++
+ 	status_code = rest_proxy_call_get_status_code (call);
+ 
+ 	if (status_code != 200) {
+@@ -235,7 +238,6 @@ get_project_data (GrShoppingListExporter *exporter)
+ {
+ 	RestProxy *proxy;
+ 	RestProxyCall *call;
+-	GError *error;
+ 	const gchar *id;
+ 	id = g_strdup_printf ("%ld", exporter->project_id);
+ 
+@@ -246,16 +248,13 @@ get_project_data (GrShoppingListExporter *exporter)
+ 	rest_proxy_call_add_param (call, "token", exporter->access_token);
+ 	rest_proxy_call_add_param (call, "project_id", id);
+ 
+-	if (!rest_proxy_call_async (call, (RestProxyCallAsyncCallback) get_project_data_callback,
+-				    NULL, exporter, &error))
+-	{
+-		g_warning ("Couldn't execute RestProxyCall");
+-		goto out;
+-	}
++	rest_proxy_call_invoke_async (call,
++	                              NULL,
++	                              (GAsyncReadyCallback) get_project_data_callback,
++				      exporter);
+ 
+-	out:
+-	  g_object_unref (proxy);
+-	  g_object_unref (call);
++	g_object_unref (proxy);
++	g_object_unref (call);
+ }
+ 
+ static void
+@@ -287,9 +286,8 @@ close_dialog (GrShoppingListExporter *exporter)
+ 
+ static void
+ export_shopping_list_callback (RestProxyCall *call,
+-			       GError *error,
+-			       GObject *obj,
+-			       GrShoppingListExporter *exporter)
++		               GAsyncResult *result,
++		               GrShoppingListExporter *exporter)
+ {
+ 	JsonObject *object;
+ 	JsonParser *parser;
+@@ -303,6 +301,11 @@ export_shopping_list_callback (RestProxyCall *call,
+ 	status_code = rest_proxy_call_get_status_code (call);
+ 	parser = json_parser_new ();
+ 
++	if (!rest_proxy_call_invoke_finish (call, result, NULL)) {
++		g_warning ("Couldn't execute RestProxyCall");
++		goto out;
++	}
++
+ 	if (status_code != 200) {
+ 		g_warning ("Couldn't export shopping list");
+ 		goto out;
+@@ -337,12 +340,10 @@ export_shopping_list_to_todoist (GrShoppingListExporter *exporter)
+ {
+ 	RestProxy *proxy;
+ 	RestProxyCall *call;
+-	GError *error;
+ 
+ 	GList *list;
+ 	GString *commands;
+ 	commands = g_string_new ("");
+-	error = NULL;
+ 	GString *commands_arg;
+ 
+ 	if (exporter->ingredients) {
+@@ -378,16 +379,13 @@ export_shopping_list_to_todoist (GrShoppingListExporter *exporter)
+ 
+ 	rest_proxy_call_add_param (call, "commands", commands_arg->str);
+ 
+-	if (!rest_proxy_call_async (call, (RestProxyCallAsyncCallback) export_shopping_list_callback,
+-				    NULL, exporter, &error))
+-	{
+-	    g_warning ("Couldn't execute RestProxyCall");
+-	    goto out;
+-	}
+-	out:
+-	  g_object_unref (proxy);
+-	  g_object_unref (call);
++	rest_proxy_call_invoke_async (call,
++	                              NULL,
++	                              (GAsyncReadyCallback) export_shopping_list_callback,
++				      exporter);
+ 
++	g_object_unref (proxy);
++	g_object_unref (call);
+ }
+ 
+ static void
+-- 
+GitLab
+
