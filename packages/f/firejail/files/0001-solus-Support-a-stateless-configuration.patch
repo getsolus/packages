@@ -1,22 +1,22 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Muhammad Alfi Syahrin <malfisya.dev@hotmail.com>
 Date: Fri, 11 Apr 2025 14:32:29 +0700
-Subject: [PATCH] solus: Support a stateless configuration
+Subject: [PATCH 1/3] solus: Support a stateless configuration
 
 ---
  Makefile                        | 17 ++++++++---------
  config.mk.in                    |  4 +++-
  configure.ac                    |  1 +
  src/firecfg/firecfg.h           |  1 +
- src/firecfg/main.c              |  7 ++++++-
+ src/firecfg/main.c              |  6 +++++-
  src/firejail/appimage.c         | 11 +++++++++--
  src/firejail/checkcfg.c         |  7 ++++++-
- src/firejail/profile.c          |  4 ++++
+ src/firejail/profile.c          |  4 ++--
  src/firejail/restricted_shell.c | 12 ++++++++++--
- 9 files changed, 48 insertions(+), 16 deletions(-)
+ 9 files changed, 45 insertions(+), 18 deletions(-)
 
 diff --git a/Makefile b/Makefile
-index e18749c04..e831e19a2 100644
+index 5cd5f62a0..98968ba8f 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -243,18 +243,17 @@ endif
@@ -55,7 +55,7 @@ index e18749c04..e831e19a2 100644
  # Note: Keep this list in sync with `paths` in .github/workflows/build.yml.
  DISTFILES = \
 diff --git a/config.mk.in b/config.mk.in
-index 11d00851a..1cfbf6d62 100644
+index d362cb105..c061abca3 100644
 --- a/config.mk.in
 +++ b/config.mk.in
 @@ -18,6 +18,7 @@ exec_prefix=@exec_prefix@
@@ -65,19 +65,19 @@ index 11d00851a..1cfbf6d62 100644
 +datadir=@datadir@
  docdir=@docdir@
  mandir=@mandir@
- sysconfdir=@sysconfdir@
-@@ -99,7 +100,8 @@ COMMON_CFLAGS = \
+ localstatedir=@localstatedir@
+@@ -100,7 +101,8 @@ COMMON_CFLAGS = \
  	-fstack-protector-all \
- 	-DPREFIX='"$(prefix)"' -DSYSCONFDIR='"$(sysconfdir)/firejail"' \
+ 	-DPREFIX='"$(prefix)"' -DSYSCONFDIR='"$(sysconfdir)/$(TARNAME)"' \
  	-DLIBDIR='"$(libdir)"' -DBINDIR='"$(bindir)"' \
--	-DVARDIR='"/var/lib/firejail"'
-+	-DVARDIR='"/var/lib/firejail"' \
+-	-DVARDIR='"$(localstatedir)/lib/$(TARNAME)"'
++	-DVARDIR='"$(localstatedir)/lib/$(TARNAME)"' \
 +	-DDATADIR='"$(datadir)"'
  
  PROG_CFLAGS = \
  	$(COMMON_CFLAGS) \
 diff --git a/configure.ac b/configure.ac
-index d67d218ea..46fbf97d7 100644
+index da78cefb5..affce4ec2 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -323,6 +323,7 @@ Compile options:
@@ -101,15 +101,14 @@ index 03f4c36c5..b49cf5d0a 100644
  #define FIRECFG_CONF_GLOB SYSCONFDIR "/firecfg.d/*.conf"
  
 diff --git a/src/firecfg/main.c b/src/firecfg/main.c
-index 7b4db43f6..67e405682 100644
+index 7b4db43f6..c92e55aeb 100644
 --- a/src/firecfg/main.c
 +++ b/src/firecfg/main.c
-@@ -294,7 +294,12 @@ void parse_config_all(int do_symlink) {
+@@ -294,7 +294,11 @@ void parse_config_all(int do_symlink) {
  		return;
  
  	parse_config_glob(FIRECFG_CONF_GLOB, do_symlink);
 -	parse_config_file(FIRECFG_CFGFILE, do_symlink);
-+
 +	if (access(FIRECFG_CFGFILE, F_OK) == 0) {
 +		parse_config_file(FIRECFG_CFGFILE, do_symlink);
 +	} else {
@@ -119,7 +118,7 @@ index 7b4db43f6..67e405682 100644
  	done_config = 1;
  }
 diff --git a/src/firejail/appimage.c b/src/firejail/appimage.c
-index d76b61b1b..95e4e28df 100644
+index d76b61b1b..05f85c218 100644
 --- a/src/firejail/appimage.c
 +++ b/src/firejail/appimage.c
 @@ -54,9 +54,16 @@ int appimage_find_profile(const char *archive) {
@@ -137,12 +136,12 @@ index d76b61b1b..95e4e28df 100644
  	if (!fp) {
 -		fprintf(stderr, "Error: cannot find %s, firejail is not correctly installed\n", SYSCONFDIR "/firecfg.config");
 +		fprintf(stderr, "Error: cannot find %s or %s, firejail is not correctly installed\n",
-+				SYSCONFDIR "/firecfg.config", DATADIR "/defaults/firejail/firecfg.config");
++			SYSCONFDIR "/firecfg.config", DATADIR "/defaults/firejail/firecfg.config");
  		exit(1);
  	}
  	char buf[MAXBUF];
 diff --git a/src/firejail/checkcfg.c b/src/firejail/checkcfg.c
-index 5ef3612b6..ea12a0798 100644
+index 534c79945..025447a41 100644
 --- a/src/firejail/checkcfg.c
 +++ b/src/firejail/checkcfg.c
 @@ -65,7 +65,12 @@ int checkcfg(int val) {
@@ -160,20 +159,20 @@ index 5ef3612b6..ea12a0798 100644
  		if (!fp) {
  #ifdef HAVE_GLOBALCFG
 diff --git a/src/firejail/profile.c b/src/firejail/profile.c
-index 0609a89a6..45bcabc76 100644
+index 76370386d..4ef29f44a 100644
 --- a/src/firejail/profile.c
 +++ b/src/firejail/profile.c
-@@ -85,6 +85,10 @@ int profile_find_firejail(const char *name, int add_ext) {
- 		// look for a user profile in /etc/firejail directory
- 		rv = profile_find(name, SYSCONFDIR, add_ext);
+@@ -82,8 +82,8 @@ int profile_find_firejail(const char *name, int add_ext) {
+ 	free(usercfgdir);
  
-+	if (!rv)
+ 	if (!rv)
+-		// look for a user profile in /etc/firejail directory
+-		rv = profile_find(name, SYSCONFDIR, add_ext);
 +		// look for a user profile in /usr/share/defaults/firejail directory
 +		rv = profile_find(name, DATADIR "/defaults/firejail", add_ext);
-+
+ 
  	return rv;
  #else
- 	return profile_find(name, SYSCONFDIR, add_ext);
 diff --git a/src/firejail/restricted_shell.c b/src/firejail/restricted_shell.c
 index bda1d716d..47fcfee83 100644
 --- a/src/firejail/restricted_shell.c
