@@ -123,22 +123,27 @@ function _notify-send() {
     done
 }
 
+function _exit() {
+    systemd-notify --ready
+    exit "$@"
+}
+
 if [[ "${EPOCH_ENABLE}" != "yes" ]]
 then
     echo "Not enabled, refusing to transition"
-    exit 0
+    _exit 0
 fi
 
 if [[ ! -e "${MERGE_FLAG_FILE}" ]]
 then
     echo "Not ready: not usr-merged"
-    exit 1
+    _exit 1
 fi
 
 if [[ "$(readlink /usr/bin/eopkg)" != "eopkg.bin" ]]
 then
     echo "Not ready: eopkg is not python3"
-    exit 1
+    _exit 1
 fi
 
 desktop=""
