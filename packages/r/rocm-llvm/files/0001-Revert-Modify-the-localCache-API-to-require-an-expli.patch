@@ -1,0 +1,207 @@
+From c19d84dfd2862e8302a7b5c07d5a0c0187a55724 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Tue, 13 May 2025 09:56:56 -0400
+Subject: [PATCH 1/2] Revert "Modify the localCache API to require an explicit
+ commit on CachedFileStream."
+
+This reverts commit 961af95b10e6f0a867c3ea5403d19b96f13621ba.
+---
+ lldb/source/Core/DataFileCache.cpp  |  5 ----
+ llvm/include/llvm/Support/Caching.h |  1 -
+ llvm/lib/Debuginfod/Debuginfod.cpp  |  9 -------
+ llvm/lib/LTO/LTOBackend.cpp         |  3 ---
+ llvm/lib/Support/Caching.cpp        | 40 ++++++++---------------------
+ llvm/tools/gold/gold-plugin.cpp     |  4 +--
+ llvm/tools/llvm-lto2/llvm-lto2.cpp  |  4 +--
+ 7 files changed, 13 insertions(+), 53 deletions(-)
+
+diff --git a/lldb/source/Core/DataFileCache.cpp b/lldb/source/Core/DataFileCache.cpp
+index 910926971123..ef0e07a8b034 100644
+--- a/lldb/source/Core/DataFileCache.cpp
++++ b/lldb/source/Core/DataFileCache.cpp
+@@ -132,11 +132,6 @@ bool DataFileCache::SetCachedData(llvm::StringRef key,
+       if (file_or_err) {
+         llvm::CachedFileStream *cfs = file_or_err->get();
+         cfs->OS->write((const char *)data.data(), data.size());
+-        if (llvm::Error err = cfs->commit()) {
+-          Log *log = GetLog(LLDBLog::Modules);
+-          LLDB_LOG_ERROR(log, std::move(err),
+-                         "failed to commit to the cache for key: {0}");
+-        }
+         return true;
+       } else {
+         Log *log = GetLog(LLDBLog::Modules);
+diff --git a/llvm/include/llvm/Support/Caching.h b/llvm/include/llvm/Support/Caching.h
+index 120bcd9da02e..cf45145619d9 100644
+--- a/llvm/include/llvm/Support/Caching.h
++++ b/llvm/include/llvm/Support/Caching.h
+@@ -30,7 +30,6 @@ public:
+   CachedFileStream(std::unique_ptr<raw_pwrite_stream> OS,
+                    std::string OSPath = "")
+       : OS(std::move(OS)), ObjectPathName(OSPath) {}
+-  virtual Error commit() { return Error::success(); }
+   std::unique_ptr<raw_pwrite_stream> OS;
+   std::string ObjectPathName;
+   virtual ~CachedFileStream() = default;
+diff --git a/llvm/lib/Debuginfod/Debuginfod.cpp b/llvm/lib/Debuginfod/Debuginfod.cpp
+index 78dbfb1b1f15..4c785117ae8e 100644
+--- a/llvm/lib/Debuginfod/Debuginfod.cpp
++++ b/llvm/lib/Debuginfod/Debuginfod.cpp
+@@ -188,7 +188,6 @@ class StreamedHTTPResponseHandler : public HTTPResponseHandler {
+ public:
+   StreamedHTTPResponseHandler(CreateStreamFn CreateStream, HTTPClient &Client)
+       : CreateStream(CreateStream), Client(Client) {}
+-  Error commit();
+   virtual ~StreamedHTTPResponseHandler() = default;
+ 
+   Error handleBodyChunk(StringRef BodyChunk) override;
+@@ -211,12 +210,6 @@ Error StreamedHTTPResponseHandler::handleBodyChunk(StringRef BodyChunk) {
+   return Error::success();
+ }
+ 
+-Error StreamedHTTPResponseHandler::commit() {
+-  if (FileStream)
+-    return FileStream->commit();
+-  return Error::success();
+-}
+-
+ // An over-accepting simplification of the HTTP RFC 7230 spec.
+ static bool isHeader(StringRef S) {
+   StringRef Name;
+@@ -305,8 +298,6 @@ Expected<std::string> getCachedOrDownloadArtifact(
+       Error Err = Client.perform(Request, Handler);
+       if (Err)
+         return std::move(Err);
+-      if ((Err = Handler.commit()))
+-        return std::move(Err);
+ 
+       unsigned Code = Client.responseCode();
+       if (Code && Code != 200)
+diff --git a/llvm/lib/LTO/LTOBackend.cpp b/llvm/lib/LTO/LTOBackend.cpp
+index 37852bdc2326..3c150b1487b7 100644
+--- a/llvm/lib/LTO/LTOBackend.cpp
++++ b/llvm/lib/LTO/LTOBackend.cpp
+@@ -477,9 +477,6 @@ static void codegen(const CodegenConfig &Conf, TargetMachine *TM,
+ 
+   if (DwoOut)
+     DwoOut->keep();
+-
+-  if (Error Err = Stream->commit())
+-    report_fatal_error(std::move(Err));
+ }
+ 
+ static void splitCodeGen(const CodegenConfig &CodegenC, TargetMachine *TM,
+diff --git a/llvm/lib/Support/Caching.cpp b/llvm/lib/Support/Caching.cpp
+index 2ecdf5370103..66e540efaca9 100644
+--- a/llvm/lib/Support/Caching.cpp
++++ b/llvm/lib/Support/Caching.cpp
+@@ -80,7 +80,6 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
+       sys::fs::TempFile TempFile;
+       std::string ModuleName;
+       unsigned Task;
+-      bool Committed = false;
+ 
+       CacheStream(std::unique_ptr<raw_pwrite_stream> OS, AddBufferFn AddBuffer,
+                   sys::fs::TempFile TempFile, std::string EntryPath,
+@@ -89,10 +88,9 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
+             AddBuffer(std::move(AddBuffer)), TempFile(std::move(TempFile)),
+             ModuleName(ModuleName), Task(Task) {}
+ 
+-      Error commit() override {
+-        if (Committed)
+-          return Error::success();
+-        Committed = true;
++      ~CacheStream() {
++        // TODO: Manually commit rather than using non-trivial destructor,
++        // allowing to replace report_fatal_errors with a return Error.
+ 
+         // Make sure the stream is closed before committing it.
+         OS.reset();
+@@ -102,12 +100,10 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
+             MemoryBuffer::getOpenFile(
+                 sys::fs::convertFDToNativeFile(TempFile.FD), ObjectPathName,
+                 /*FileSize=*/-1, /*RequiresNullTerminator=*/false);
+-        if (!MBOrErr) {
+-          std::error_code EC = MBOrErr.getError();
+-          return createStringError(EC, Twine("Failed to open new cache file ") +
+-                                           TempFile.TmpName + ": " +
+-                                           EC.message() + "\n");
+-        }
++        if (!MBOrErr)
++          report_fatal_error(Twine("Failed to open new cache file ") +
++                             TempFile.TmpName + ": " +
++                             MBOrErr.getError().message() + "\n");
+ 
+         // On POSIX systems, this will atomically replace the destination if
+         // it already exists. We try to emulate this on Windows, but this may
+@@ -122,10 +118,7 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
+         E = handleErrors(std::move(E), [&](const ECError &E) -> Error {
+           std::error_code EC = E.convertToErrorCode();
+           if (EC != errc::permission_denied)
+-            return createStringError(
+-                EC, Twine("Failed to rename temporary file ") +
+-                        TempFile.TmpName + " to " + ObjectPathName + ": " +
+-                        EC.message() + "\n");
++            return errorCodeToError(EC);
+ 
+           auto MBCopy = MemoryBuffer::getMemBufferCopy((*MBOrErr)->getBuffer(),
+                                                        ObjectPathName);
+@@ -138,22 +131,11 @@ Expected<FileCache> llvm::localCache(const Twine &CacheNameRef,
+         });
+ 
+         if (E)
+-          return E;
++          report_fatal_error(Twine("Failed to rename temporary file ") +
++                             TempFile.TmpName + " to " + ObjectPathName + ": " +
++                             toString(std::move(E)) + "\n");
+ 
+         AddBuffer(Task, ModuleName, std::move(*MBOrErr));
+-        return Error::success();
+-      }
+-
+-      ~CacheStream() {
+-        // In Debug builds, try to track down places where commit() was not
+-        // called before destruction.
+-        assert(Committed);
+-        // In Release builds, fall back to the previous behaviour of committing
+-        // during destruction and reporting errors with report_fatal_error.
+-        if (Committed)
+-          return;
+-        if (Error Err = commit())
+-          report_fatal_error(Twine(toString(std::move(Err))));
+       }
+     };
+ 
+diff --git a/llvm/tools/gold/gold-plugin.cpp b/llvm/tools/gold/gold-plugin.cpp
+index b42bfbed3b87..ae965e6f486a 100644
+--- a/llvm/tools/gold/gold-plugin.cpp
++++ b/llvm/tools/gold/gold-plugin.cpp
+@@ -1119,9 +1119,7 @@ static std::vector<std::pair<SmallString<128>, bool>> runLTO() {
+ 
+   auto AddBuffer = [&](size_t Task, const Twine &moduleName,
+                        std::unique_ptr<MemoryBuffer> MB) {
+-    auto Stream = *AddStream(Task, ModuleName);
+-    Stream->OS << MB->getBuffer();
+-    check(Stream->commit(), "Failed to commit cache");
++    *AddStream(Task, moduleName)->OS << MB->getBuffer();
+   };
+ 
+   FileCache Cache;
+diff --git a/llvm/tools/llvm-lto2/llvm-lto2.cpp b/llvm/tools/llvm-lto2/llvm-lto2.cpp
+index 270510a01319..d4f022ef021a 100644
+--- a/llvm/tools/llvm-lto2/llvm-lto2.cpp
++++ b/llvm/tools/llvm-lto2/llvm-lto2.cpp
+@@ -448,9 +448,7 @@ static int run(int argc, char **argv) {
+ 
+   auto AddBuffer = [&](size_t Task, const Twine &ModuleName,
+                        std::unique_ptr<MemoryBuffer> MB) {
+-    auto Stream = AddStream(Task, ModuleName);
+-    *Stream->OS << MB->getBuffer();
+-    check(Stream->commit(), "Failed to commit cache");
++    *AddStream(Task, ModuleName)->OS << MB->getBuffer();
+   };
+ 
+   FileCache Cache;
+-- 
+2.51.0
+
