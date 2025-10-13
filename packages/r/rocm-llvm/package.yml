@@ -1,10 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : rocm-llvm
-version    : 6.2.4
-release    : 5
+version    : 7.0.2
+release    : 6
 source     :
-    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-6.2.4.tar.gz : 7af782bf5835fcd0928047dbf558f5000e7f0207ca39cf04570969343e789528
-    # - https://github.com/ROCm/hip-tests/archive/refs/tags/rocm-6.0.0.tar.gz#hip-tests-6.0.0.tar.gz : e8f92a0f5d1f6093ca1fb24ff1b7140128900fcdc6e9f01f153d6907e5c2d807
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-7.0.2.tar.gz : fd612fa750bebd0c3be0ea642b2cae8ff5c7e00a2280b22b9ea16ee86a11d763
 homepage   : https://github.com/ROCm/llvm-project
 license    : Apache-2.0-with-LLVM-exception
 summary    : ROCm's patched LLVM
@@ -29,7 +28,7 @@ environment: |
     unset CFLAGS
     unset CXXFLAGS
 
-    export _PROJECTS="clang;clang-tools-extra;lld;llvm"
+    export _PROJECTS="clang;lld;llvm"
     export _RUNTIMES="compiler-rt"
     export _TARGETS="X86;AMDGPU;NVPTX"
 
@@ -78,53 +77,48 @@ environment: |
     export HIP_TESTS_DIR=$workdir/hip-tests-6.0.0
     # I don't know why LLVM stores the profile data there, but they're there
     export PROF_DIR=/home/build/YPKG/root/rocm-llvm/pgo
-# TODO(GZGavinZhao): maybe build openmp as well after bootstrapping?
+# TODO(GZGavinZhao): revisit patches to determine necessity as we now have the
+# ability to use ROCm clang to solely compile HIP code and give the CXX part to
+# host compiler.
 setup      : |
     # Just annoying.
     %patch -p1 -i $pkgfiles/0001-Silently-ignore-copy-dt-needed-entries.patch
     # Support solus, it's triplet, etc.
     %patch -p1 -i $pkgfiles/0001-Support-solus-as-a-distro.patch
     # Allow us to force ignore -Werror
-    %patch -p1 -i $pkgfiles/ignore-werror.patch
-    # # This warning appears during profiling phase, not sure if it affects
-    # # profile data generation
-    # %patch -p1 -i $pkgfiles/fix-inconsistent-md5-checksum.patch
+    # %patch -p1 -i $pkgfiles/ignore-werror.patch
 
     # Patch cfe for Solus specific options
-    pushd clang
+    # pushd clang
         %patch -p1 -i $pkgfiles/0001-cfe-Use-correct-Solus-multilib-paths.patch
-    popd
+    # popd
 
     # Pull lld in line with binutils linkers for consistency
-    pushd lld
+    # pushd lld
         %patch -p1 -i $pkgfiles/0001-Enable-as-needed-with-LD_AS_NEEDED-variable.patch
-        %patch -p1 -i $pkgfiles/0002-Make-gnuhash-the-default-when-not-specified.patch
-    popd
+        # %patch -p1 -i $pkgfiles/0001-Make-gnuhash-the-default-when-not-specified.patch
+    # popd
 
     # This API is required to extend HIP ISA compatibility for compressed GPU
     # code object bundles (used in composable_kernel, rocSOLVER, and MIOpen)
     %patch -p1 -i $pkgfiles/0001-ClangOffloadBundler-Add-GetBundleIDsInFile-to-Offloa.patch
 
-    # Fix building with new LLVM
-    %patch -p1 -i $pkgfiles/IncludeCstdintInAMDGPUMCTargetDesc.patch
-    %patch -p1 -i $pkgfiles/AddCstdintToSmallVector.diff
-    %patch -p1 -i $pkgfiles/IncludeCstdintInX86CTargetDesc.patch
-
-    # Fix build with new glibc
+    # Fix build failure
+    %patch -p1 -i $pkgfiles/0001-Revert-Modify-the-localCache-API-to-require-an-expli.patch
+    %patch -p1 -i $pkgfiles/0002-Removed-by-upstream-StreamedHTTPResponseHandler-comm.patch
     %patch -p1 -i $pkgfiles/RemoveInterceptorsForDeprecatedStructTermio.diff
 
-    # Fix building of PyTorch
-    %patch -p1 -i $pkgfiles/AddA__device__versionOfStd____glibcxx_assert_fail.patch
-
-    %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
-                 $CMAKE_COMMON_OPTIONS \
-                 -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
-                 -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
-                 -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
-                 -DLLVM_BUILD_DOCS=OFF \
-                 # -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 # -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
-                 # -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
+    # TODO(GZGavinZhao): renable LTO, the previous one was not emitting
+    # profiling data...
+#     %cmake_ninja -S llvm -L $CMAKE_X86_64_OPTIONS \
+#                  $CMAKE_COMMON_OPTIONS \
+#                  -DLLVM_ENABLE_PROJECTS=$_PROJECTS \
+#                  -DLLVM_ENABLE_RUNTIMES=$_RUNTIMES \
+#                  -DLLVM_TARGETS_TO_BUILD=$_TARGETS \
+#                  -DLLVM_BUILD_DOCS=OFF \
+#                  # -DCMAKE_C_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+#                  # -DCMAKE_CXX_FLAGS="-fprofile-instr-generate=default-%m.profraw" \
+#                  # -DCMAKE_INSTALL_PREFIX=$PGO_INSTALL_DIR \
 # build      : |
 #     # ninja -C solusBuildDir install %JOBS%
 #     # cp -TRv $PGO_INSTALL_DIR/lib $PGO_INSTALL_DIR/lib64
@@ -157,4 +151,4 @@ install    : |
     %ninja_install
 
     cp -TRv $installdir/usr/lib64/llvm-rocm/lib $installdir/usr/lib64/llvm-rocm/lib64
-    rm -rf $installdir/usr/lib64/llvm-rocm/lib
+    ln -svf /usr/lib64/llvm-rocm/lib64 $installdir/usr/lib64/llvm-rocm/lib
