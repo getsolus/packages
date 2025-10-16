@@ -45,7 +45,7 @@ The shipped version for each of the bundled internal libraries is recorded at th
 Checking the necessary versions might be done with the following bash snippet executed from the clone root:
 
 ```
-for pkg in talloc tevent tdb ldb; do
+for pkg in talloc tevent tdb; do
     grep -EHin '^VERSION =' "lib/${pkg}/wscript"
     eopkg info ${pkg} |grep Name |uniq
 done
@@ -56,7 +56,7 @@ done
 
 ```
 ermo@solbox:~/repos/samba [samba-4.19.6]
-$ for pkg in talloc tdb tevent ldb; do
+$ for pkg in talloc tdb tevent; do
     grep -EHin '^VERSION =' "lib/${pkg}/wscript"
     eopkg info ${pkg} |grep Name |uniq
 done
@@ -67,8 +67,6 @@ lib/tdb/wscript:4:VERSION = '1.4.9'
 Name                : tdb, version: 1.4.7, release: 24
 lib/tevent/wscript:4:VERSION = '0.15.0'
 Name                : tevent, version: 0.13.0, release: 18
-lib/ldb/wscript:5:VERSION = '2.8.0'
-Name                : ldb, version: 2.6.2, release: 28
 ```
 
 In this example (samba 4.17.12 -> 4.19.6):
@@ -76,7 +74,6 @@ In this example (samba 4.17.12 -> 4.19.6):
 - talloc needs to be updated from 2.3.4 -> 2.4.1
 - tevent needs to be updated from 0.13.0 -> 0.15.0
 - tdb needs to be updated from 1.4.7 -> 1.4.9
-- ldb needs to be updated from 2.6.2 -> 2.8.0
 
 in the Solus repo prior to building and landing Samba-4.19.6.
 
@@ -90,9 +87,9 @@ Fortunately, both are mature pieces of software which means that new releases ar
 
 ## Worst case Samba rebuild stack:
 
-Samba and its dependencies need to be rebuilt in a certain order.  For major version updates, the procedure typically involves rebuilding talloc, tevent, tdb and ldb before rebuilding Samba proper.
+Samba and its dependencies need to be rebuilt in a certain order.  For major version updates, the procedure typically involves rebuilding talloc, tevent, and tdb before rebuilding Samba proper.
 
-Within the same major version branch, the need to rebuild talloc/tevent/tdb/ldb is typically lower.
+Within the same major version branch, the need to rebuild talloc/tevent/tdb is typically lower.
 
 When doing major version updates, create a GH PR with commits ordered per the below list for review and easy pushing+building.
 
@@ -100,15 +97,14 @@ When doing major version updates, create a GH PR with commits ordered per the be
 ### Tiers and rebuild order
 
 ```
-$ autobuild query -t src:packages/ samba ldb tdb tevent talloc
+$ autobuild query -t src:packages/ samba tdb tevent talloc
 Build order:
  Tier 1: talloc tdb
  Tier 2: cifs-utils notmuch tevent
- Tier 3: ldb
- Tier 4: samba
- Tier 5: *acccheck ffmpeg python-pysmbc
- Tier 6: budgie-control-center gvfs kio-extras mpd *nautilus-share *nemo-extensions rhythmbox vlc
- Tier 7: gnome-control-center
+ Tier 3: samba
+ Tier 4: *acccheck ffmpeg python-pysmbc
+ Tier 5: budgie-control-center gvfs kio-extras mpd *nautilus-share *nemo-extensions rhythmbox vlc
+ Tier 6: gnome-control-center
 ```
 
 A few of the above packages only have samba as a rundep (marked with *), so can be ignored for rebuilds.
@@ -130,7 +126,6 @@ A few of the above packages only have samba as a rundep (marked with *), so can 
 - Ensure that smb:// URI playback works in:
   - `celluloid` (used by Budgie and GNOME)
   - `haruna` (used by KDE)
-  - `kodi`
   - `mpv` (unauthenticated access will work fine, but authenticated access will not)
   - `parole` (used by XFCE)
   - `vlc` -- note that vlc can be temperamental in this regard -- see T8538
