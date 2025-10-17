@@ -1,4 +1,4 @@
-From 22c17a0ac09c6b77866febf366591f669a1ed133 Mon Sep 17 00:00:00 2001
+From 733ee38ef8ad5c84926970981821f446dfcb00af Mon Sep 17 00:00:00 2001
 From: Cordell Bloor <cgmb@slerp.xyz>
 Date: Wed, 13 Jul 2022 18:45:41 -0600
 Subject: [PATCH 1/2] improve rocclr isa compatibility check
@@ -15,16 +15,17 @@ However, when combined with matching changes within rocr and hipamd,
 this patch should allow HIP to load compatible kernels even when the
 GFX ISA number is not an exact match.
 
-Signed-off-by: Gavin Zhao <git@gzgz.dev>
+Co-authored-by: Gavin Zhao <git@gzgz.dev>
+Co-authored-by: Cordell Bloor <cgmb@slerp.xyz>
 ---
- rocclr/device/device.cpp | 39 ++++++++++++++++++++++++++++++++++++---
- 1 file changed, 36 insertions(+), 3 deletions(-)
+ rocclr/device/device.cpp | 46 +++++++++++++++++++++++++++++++++++++---
+ 1 file changed, 43 insertions(+), 3 deletions(-)
 
 diff --git a/rocclr/device/device.cpp b/rocclr/device/device.cpp
-index ada709fa1..21f7d2c47 100644
+index f1419cc26..b6a802f9b 100644
 --- a/rocclr/device/device.cpp
 +++ b/rocclr/device/device.cpp
-@@ -236,10 +236,43 @@ std::string Isa::isaName() const {
+@@ -251,6 +251,48 @@ std::string Isa::isaName() const {
    return std::string(hsaIsaNamePrefix) + targetId();
  }
  
@@ -47,13 +48,20 @@ index ada709fa1..21f7d2c47 100644
 +      if (codeObjectIsa.versionMajor() == 9 &&
 +          codeObjectIsa.versionMinor() == 0) {
 +        const std::array<uint32_t, 4> equivalent_gfx90x = { 0, 2, 9, 12 };
++        const std::array<uint32_t, 5> supserset_gfx90x = { 0, 2, 6, 9, 12 };
 +        if (Contains(equivalent_gfx90x, codeObjectIsa.versionStepping()) &&
-+            Contains(equivalent_gfx90x, agentIsa.versionStepping())) {
++            Contains(supserset_gfx90x, agentIsa.versionStepping())) {
 +          return true; // gfx900 compatible object and agent
 +        }
 +      } else if (codeObjectIsa.versionMajor() == 10) {
 +        if (codeObjectIsa.versionMinor() == 1) {
-+          return true; // gfx1010 compatible object and agent
++          // gfx1010 object compatible with all RDNA1 agents
++          if (codeObjectIsa.versionStepping() == 0) {
++            return true;
++          // non-gfx1010 object only compatible with non-gfx1010 agents
++          } else if (agentIsa.versionStepping() != 0) {
++            return true;
++          }
 +        } else if (codeObjectIsa.versionMinor() == 3) {
 +          return true; // gfx1030 compatible object and agent
 +        }
@@ -64,13 +72,19 @@ index ada709fa1..21f7d2c47 100644
 +}
 +
  bool Isa::isCompatible(const Isa &codeObjectIsa, const Isa &agentIsa) {
--  if (codeObjectIsa.versionMajor() != agentIsa.versionMajor() ||
--      codeObjectIsa.versionMinor() != agentIsa.versionMinor() ||
--      codeObjectIsa.versionStepping() != agentIsa.versionStepping())
-+  if (!IsVersionCompatible(codeObjectIsa, agentIsa))
-     return false;
- 
-   assert(codeObjectIsa.isSrameccSupported() == agentIsa.isSrameccSupported() &&
+   bool isGeneric = std::strstr(codeObjectIsa.targetId(), "generic") != nullptr;
+   if (isGeneric) {
+@@ -273,9 +315,7 @@ bool Isa::isCompatible(const Isa &codeObjectIsa, const Isa &agentIsa) {
+     }
+ #endif
+   } else {
+-    if (codeObjectIsa.versionMajor() != agentIsa.versionMajor() ||
+-        codeObjectIsa.versionMinor() != agentIsa.versionMinor() ||
+-        codeObjectIsa.versionStepping() != agentIsa.versionStepping())
++    if (!IsVersionCompatible(codeObjectIsa, agentIsa))
+       return false;
+     assert(codeObjectIsa.isSrameccSupported() == agentIsa.isSrameccSupported() &&
+            agentIsa.sramecc() != Feature::Any);
 -- 
-2.47.0
+2.51.0
 
