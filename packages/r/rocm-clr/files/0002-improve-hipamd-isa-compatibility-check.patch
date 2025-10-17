@@ -1,0 +1,219 @@
+From 1f0b54ee9b0de08f4dc8cd38b6728928b180048a Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Wed, 20 Aug 2025 21:00:59 -0400
+Subject: [PATCH 2/2] improve hipamd isa compatibility check
+
+---
+ hipamd/src/hip_code_object.cpp  | 52 +------------------
+ hipamd/src/hip_comgr_helper.cpp | 91 ++++++++++++++++++++++++++++++++-
+ hipamd/src/hip_comgr_helper.hpp |  8 +++
+ 3 files changed, 100 insertions(+), 51 deletions(-)
+
+diff --git a/hipamd/src/hip_code_object.cpp b/hipamd/src/hip_code_object.cpp
+index 4ef4271ca..a1e3bebf1 100644
+--- a/hipamd/src/hip_code_object.cpp
++++ b/hipamd/src/hip_code_object.cpp
+@@ -508,54 +508,6 @@ static bool getTripleTargetID(std::string bundled_co_entry_id, const void* code_
+   return true;
+ }
+ 
+-static bool isCodeObjectCompatibleWithDevice(std::string co_triple_target_id,
+-                std::string agent_triple_target_id, unsigned int genericVersion) {
+-  // Primitive Check
+-  if (co_triple_target_id == agent_triple_target_id) return true;
+-
+-  // Parse code object triple target id
+-  if (!consume(co_triple_target_id, std::string(kAmdgcnTargetTriple) + '-')) {
+-    return false;
+-  }
+-
+-  std::string co_processor;
+-  char co_sram_ecc, co_xnack;
+-  if (!getTargetIDValue(co_triple_target_id, co_processor, co_sram_ecc, co_xnack)) {
+-    return false;
+-  }
+-
+-  if (!co_triple_target_id.empty()) return false;
+-
+-  // Parse agent isa triple target id
+-  if (!consume(agent_triple_target_id, std::string(kAmdgcnTargetTriple) + '-')) {
+-    return false;
+-  }
+-
+-  std::string agent_isa_processor;
+-  char isa_sram_ecc, isa_xnack;
+-  if (!getTargetIDValue(agent_triple_target_id, agent_isa_processor, isa_sram_ecc, isa_xnack)) {
+-    return false;
+-  }
+-
+-  if (!agent_triple_target_id.empty()) return false;
+-
+-  // Check for compatibility
+-  if (genericVersion >= EF_AMDGPU_GENERIC_VERSION_MIN) {
+-    // co_processor is generic target
+-    if (!helpers::IsCompatibleWithGenericTarget(co_processor, agent_isa_processor))
+-      return false;
+-  } else if (agent_isa_processor != co_processor) {
+-    return false;
+-  }
+-  if (co_sram_ecc != ' ') {
+-    if (co_sram_ecc != isa_sram_ecc) return false;
+-  }
+-  if (co_xnack != ' ') {
+-    if (co_xnack != isa_xnack) return false;
+-  }
+-  return true;
+-}
+-
+ bool CodeObject::QueryGenericTarget(std::string agentTarget, std::string& processor,
+ 		char& sram_ecc, char& xnack) {
+   static const std::string head = std::string(kAmdgcnTargetTriple) + '-';
+@@ -651,7 +603,7 @@ hipError_t CodeObject::extractCodeObjectFromFatBinary(
+           continue; // Generic target already found, no need to check another generic
+         }
+       }
+-      if (isCodeObjectCompatibleWithDevice(co_triple_target_id, agent_triple_target_ids[dev],
++      if (helpers::IsCodeObjectCompatibleWithDevice(co_triple_target_id, agent_triple_target_ids[dev],
+         genericVersion)) {
+         if (code_objs[dev].first == nullptr) --num_code_objs;
+         code_objs[dev] = std::make_pair(image, image_size);
+@@ -939,7 +891,7 @@ hipError_t CodeObject::extractCodeObjectFromFatBinaryUsingComgr(
+         }
+         ClPrint(amd::LOG_DEBUG, amd::LOG_COMGR, "agent_triple_target_ids[%zu]=%s, bundleEntryId=%s",
+                 dev, agent_triple_target_ids[dev].c_str(), bundleEntryId.c_str());
+-        if (isCodeObjectCompatibleWithDevice(bundleEntryId, agent_triple_target_ids[dev],
++        if (helpers::IsCodeObjectCompatibleWithDevice(bundleEntryId, agent_triple_target_ids[dev],
+                                              genericVersion)) {
+           if (itemData == nullptr) {
+             itemSize = 0;
+diff --git a/hipamd/src/hip_comgr_helper.cpp b/hipamd/src/hip_comgr_helper.cpp
+index a8ee6ea9b..87b27c6a0 100644
+--- a/hipamd/src/hip_comgr_helper.cpp
++++ b/hipamd/src/hip_comgr_helper.cpp
+@@ -427,7 +427,7 @@ bool UnbundleBitCode(const std::vector<char>& bundled_llvm_bitcode, const std::s
+ 
+     // Check if the device id and code object id are compatible
+     unsigned genericVersion = getGenericVersion(image);
+-    if (isCodeObjectCompatibleWithDevice(bundleEntryId, isa, genericVersion)) {
++    if (IsCodeObjectCompatibleWithDevice(bundleEntryId, isa, genericVersion)) {
+       co_offset = (reinterpret_cast<uintptr_t>(image) - reinterpret_cast<uintptr_t>(data));
+       co_size = image_size;
+       break;
+@@ -1112,6 +1112,95 @@ bool IsCompatibleWithGenericTarget(const std::string& coTarget, const std::strin
+   auto search = map.find(agentTarget);
+   return search != map.end() && coTarget == search->second;
+ }
++
++struct GfxPattern {
++  std::string root;
++  std::string suffixes;
++};
++
++static bool matches(const GfxPattern& p, const std::string& s) {
++  if (p.root.size() + 1 != s.size()) {
++    return false;
++  }
++  if (0 != std::memcmp(p.root.data(), s.data(), p.root.size())) {
++    return false;
++  }
++  return p.suffixes.find(s[p.root.size()]) != std::string::npos;
++}
++
++static bool isGfx900EquivalentProcessor(const std::string& processor) {
++  return matches(GfxPattern{"gfx90", "029c"}, processor);
++}
++
++static bool isGfx900SupersetProcessor(const std::string& processor) {
++  return matches(GfxPattern{"gfx90", "0269c"}, processor);
++}
++
++static bool isGfx1030EquivalentProcessor(const std::string& processor) {
++  return matches(GfxPattern{"gfx103", "0123456"}, processor);
++}
++
++static bool isGfx1010EquivalentProcessor(const std::string& processor) {
++  return matches(GfxPattern{"gfx101", "0"}, processor);
++}
++
++static bool isGfx1010SupersetProcessor(const std::string& processor) {
++  return matches(GfxPattern{"gfx101", "0123"}, processor);
++}
++
++bool IsCodeObjectCompatibleWithDevice(std::string co_triple_target_id,
++                std::string agent_triple_target_id, unsigned int genericVersion) {
++  // Primitive Check
++  if (co_triple_target_id == agent_triple_target_id) return true;
++
++  // Parse code object triple target id
++  if (!consume(co_triple_target_id, std::string(AMDGCN_TARGET_TRIPLE) + '-')) {
++    return false;
++  }
++
++  std::string co_processor;
++  char co_sram_ecc, co_xnack;
++  if (!getTargetIDValue(co_triple_target_id, co_processor, co_sram_ecc, co_xnack)) {
++    return false;
++  }
++
++  if (!co_triple_target_id.empty()) return false;
++
++  // Parse agent isa triple target id
++  if (!consume(agent_triple_target_id, std::string(AMDGCN_TARGET_TRIPLE) + '-')) {
++    return false;
++  }
++
++  std::string agent_isa_processor;
++  char isa_sram_ecc, isa_xnack;
++  if (!getTargetIDValue(agent_triple_target_id, agent_isa_processor, isa_sram_ecc, isa_xnack)) {
++    return false;
++  }
++
++  if (!agent_triple_target_id.empty()) return false;
++
++  // Check for compatibility
++  if (genericVersion >= EF_AMDGPU_GENERIC_VERSION_MIN) {
++    // co_processor is generic target
++    if (!helpers::IsCompatibleWithGenericTarget(co_processor, agent_isa_processor))
++      return false;
++  } else if (agent_isa_processor != co_processor) {
++    if (isGfx900SupersetProcessor(agent_isa_processor) && isGfx900EquivalentProcessor(co_processor)) {
++    } else if (isGfx1010SupersetProcessor(agent_isa_processor) && isGfx1010EquivalentProcessor(co_processor)) {
++    } else if (isGfx1030EquivalentProcessor(agent_isa_processor) && isGfx1030EquivalentProcessor(co_processor)) {
++    } else {
++      return false;
++    }
++  }
++  if (co_sram_ecc != ' ') {
++    if (co_sram_ecc != isa_sram_ecc) return false;
++  }
++  if (co_xnack != ' ') {
++    if (co_xnack != isa_xnack) return false;
++  }
++  return true;
++}
++
+ }  // namespace helpers
+ 
+ std::vector<std::string> getLinkOptions(const LinkArguments& args) {
+diff --git a/hipamd/src/hip_comgr_helper.hpp b/hipamd/src/hip_comgr_helper.hpp
+index 2dfd14833..ac41bc4b1 100644
+--- a/hipamd/src/hip_comgr_helper.hpp
++++ b/hipamd/src/hip_comgr_helper.hpp
+@@ -79,6 +79,14 @@ const std::map<std::string, std::string>& GenericTargetMapping();
+ // Return true if agent target compatible with generic code object target, false otherwise.
+ // Both targets should not have any feature.
+ bool IsCompatibleWithGenericTarget(const std::string& coTarget, const std::string& agentTarget);
++
++// Return true if agent target is compatible with code object target, false otherwise,
++// taking into account of generic targets if `genericVersion` is greater than or
++// equal to `EF_AMDGPU_GENERIC_VERSION_MIN`.
++//
++// In other words, to check compatibility without considering generic target, pass `0`
++// as `genericVersion`.
++bool IsCodeObjectCompatibleWithDevice(std::string coTarget, std::string agentTarget, unsigned int genericVersion);
+ }  // namespace helpers
+ 
+ struct LinkArguments {
+-- 
+2.51.0
+
