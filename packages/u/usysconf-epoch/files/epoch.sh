@@ -48,11 +48,14 @@ function update_repo() {
         then
             echo "Updating repo ${repo} to ${NEW_REPO}"
 
-            eopkg add-repo -y "${repo}" "${NEW_REPO}"
+            if ! eopkg add-repo -y "${repo}" "${NEW_REPO}"
+            then
+                return 1
+            fi
 
             if [[ "${active}" == "[inactive]" ]]
             then
-                eopkg disable-repo "${repo}"
+                eopkg disable-repo "${repo}" || true
             fi
         fi
 
@@ -94,6 +97,14 @@ function sc_name() {
     done
 }
 
+function wait_network() {
+    while ! curl -sL -m 10 https://cdn.getsol.us/repo/polaris/eopkg-index.xml.xz > /dev/null
+    do
+        echo "Waiting for network"
+        sleep 10
+    done
+}
+
 function wait_login() {
     while true
     do
@@ -123,8 +134,15 @@ function _notify-send() {
     done
 }
 
+function _systemd-notify() {
+    if [[ -n "${NOTIFY_SOCKET+x}" ]]
+    then
+        systemd-notify "$@"
+    fi
+}
+
 function _exit() {
-    systemd-notify --ready
+    _systemd-notify --ready
     exit "$@"
 }
 
@@ -149,6 +167,8 @@ fi
 desktop=""
 removed_sc=false
 
+wait_network
+
 # Install appropriate software centre
 for d in "${!DESKTOP_FLAG_FILES[@]}"
 do
@@ -165,7 +185,11 @@ echo "Detected desktop: ${desktop}"
 if ! is_installed "${sc_package}"
 then
     echo "Installing new SC: ${sc_package}"
-    eopkg install --yes-all "${DESKTOP_SOFTWARE_CENTRE[$desktop]}"
+    while ! eopkg install --yes-all "${DESKTOP_SOFTWARE_CENTRE[$desktop]}"
+    do
+        echo "Install failed, will retry."
+        sleep 10
+    done
 fi
 
 if is_installed solus-sc
@@ -176,10 +200,14 @@ then
 fi
 
 echo "Checking repository"
-update_repo
+while ! update_repo
+do
+    echo "Failed to check repository, will retry."
+    sleep 10
+done
 
 echo "Finished! Welcome to the new epoch."
-systemd-notify --ready
+_systemd-notify --ready
 
 if [[ "${removed_sc}" == "true" ]]
 then
