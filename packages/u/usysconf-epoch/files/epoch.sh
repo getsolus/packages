@@ -2,7 +2,7 @@
 set -euo pipefail
 shopt -s nullglob
 
-EPOCH_ENABLE="${EPOCH_ENABLE:=no}"
+EPOCH_ENABLE="${EPOCH_ENABLE:=yes}"
 
 STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
 MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
