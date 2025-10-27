@@ -4,8 +4,10 @@ shopt -s nullglob
 
 EPOCH_ENABLE="${EPOCH_ENABLE:=yes}"
 
-STATE_DIR="${STATE_DIR:=/var/solus/usr-merge}"
-MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/merge-complete}"
+STATE_DIR="${STATE_DIR:=/var/solus}"
+MERGE_FLAG_FILE="${MERGE_FLAG_FILE:=${STATE_DIR}/usr-merge/merge-complete}"
+EPOCH_STATE_DIR="${EPOCH_STATE_DIR:=${STATE_DIR}/epoch}"
+EPOCH_FLAG_FILE="${EPOCH_FLAG_FILE:=${EPOCH_STATE_DIR}/epoch-complete}"
 
 OLD_REPO="https://cdn.getsol.us/repo/shannon/eopkg-index.xml.xz"
 NEW_REPO="https://cdn.getsol.us/repo/polaris/eopkg-index.xml.xz"
@@ -193,6 +195,12 @@ then
     _exit 0
 fi
 
+if [[ -e "${EPOCH_FLAG_FILE}" ]]
+then
+    echo "This system is running on the new epoch"
+    _exit 0
+fi
+
 if [[ ! -e "${MERGE_FLAG_FILE}" ]]
 then
     echo "Not ready: not usr-merged"
@@ -244,6 +252,9 @@ do
     echo "Failed to check repository, will retry."
     sleep 10
 done
+
+mkdir -p "${EPOCH_STATE_DIR}"
+touch "${EPOCH_FLAG_FILE}"
 
 echo "Finished! Welcome to the new epoch."
 _systemd-notify --ready
