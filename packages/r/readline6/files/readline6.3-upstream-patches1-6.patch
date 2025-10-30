@@ -1,0 +1,126 @@
+From 549b257cc32325658360b2e349dfc9cadc33ff80 Mon Sep 17 00:00:00 2001
+From: Jan Chaloupka <jchaloup@redhat.com>
+Date: Mon, 21 Jul 2014 14:40:03 +0200
+Subject: [PATCH] upstream
+
+---
+ display.c    | 10 ++++++++--
+ readline.c   |  6 ++++--
+ rltypedefs.h | 19 +++++++++++++++++++
+ util.c       |  3 ++-
+ 4 files changed, 33 insertions(+), 5 deletions(-)
+
+diff --git a/display.c b/display.c
+index 913e0da..10a7b81 100644
+--- a/display.c
++++ b/display.c
+@@ -1637,7 +1637,7 @@ update_line (old, new, current_line, omax, nmax, inv_botlin)
+   /* If we are changing the number of invisible characters in a line, and
+      the spot of first difference is before the end of the invisible chars,
+      lendiff needs to be adjusted. */
+-  if (current_line == 0 && !_rl_horizontal_scroll_mode &&
++  if (current_line == 0 && /* !_rl_horizontal_scroll_mode && */
+       current_invis_chars != visible_wrap_offset)
+     {
+       if (MB_CUR_MAX > 1 && rl_byte_oriented == 0)
+@@ -1825,8 +1825,13 @@ update_line (old, new, current_line, omax, nmax, inv_botlin)
+ 	      else
+ 		_rl_last_c_pos += bytes_to_insert;
+ 
++	      /* XXX - we only want to do this if we are at the end of the line
+++                so we move there with _rl_move_cursor_relative */
+ 	      if (_rl_horizontal_scroll_mode && ((oe-old) > (ne-new)))
+-		goto clear_rest_of_line;
++		{
++                  _rl_move_cursor_relative (ne-new, new);
++                  goto clear_rest_of_line;
++                }
+ 	    }
+ 	}
+       /* Otherwise, print over the existing material. */
+@@ -2677,6 +2682,7 @@ _rl_clean_up_for_exit ()
+ {
+   if (_rl_echoing_p)
+     {
++      if (_rl_vis_botlin > 0) /* minor optimization plus bug fix */
+       _rl_move_vert (_rl_vis_botlin);
+       _rl_vis_botlin = 0;
+       fflush (rl_outstream);
+diff --git a/readline.c b/readline.c
+index 03eefa6..684a589 100644
+--- a/readline.c
++++ b/readline.c
+@@ -744,7 +744,9 @@ _rl_dispatch_callback (cxt)
+     r = _rl_subseq_result (r, cxt->oldmap, cxt->okey, (cxt->flags & KSEQ_SUBSEQ));
+ 
+   RL_CHECK_SIGNALS ();
+-  if (r == 0)			/* success! */
++  /* We only treat values < 0 specially to simulate recursion. */
++  if (r >= 0 || (r == -1 && (cxt->flags & KSEQ_SUBSEQ) == 0)) /* success! or 
++failure! */
+     {
+       _rl_keyseq_chain_dispose ();
+       RL_UNSETSTATE (RL_STATE_MULTIKEY);
+@@ -964,7 +966,7 @@ _rl_dispatch_subseq (key, map, got_subseq)
+ #if defined (VI_MODE)
+   if (rl_editing_mode == vi_mode && _rl_keymap == vi_movement_keymap &&
+       key != ANYOTHERKEY &&
+-      rl_key_sequence_length == 1 &&	/* XXX */
++      _rl_dispatching_keymap == vi_movement_keymap &&
+       _rl_vi_textmod_command (key))
+     _rl_vi_set_last (key, rl_numeric_arg, rl_arg_sign);
+ #endif
+diff --git a/rltypedefs.h b/rltypedefs.h
+index b113ee6..f9f5cd3 100644
+--- a/rltypedefs.h
++++ b/rltypedefs.h
+@@ -26,6 +26,25 @@
+ extern "C" {
+ #endif
+ 
++/* Old-style, attempt to mark as deprecated in some way people will notice. */
++
++#if !defined (_FUNCTION_DEF)
++#  define _FUNCTION_DEF
++
++#if defined(__GNUC__) || defined(__clang__)
++typedef int Function () __attribute__ ((deprecated));
++typedef void VFunction () __attribute__ ((deprecated));
++typedef char *CPFunction () __attribute__ ((deprecated));
++typedef char **CPPFunction () __attribute__ ((deprecated));
++#else
++typedef int Function ();
++typedef void VFunction ();
++typedef char *CPFunction ();
++typedef char **CPPFunction ();
++#endif
++
++#endif /* _FUNCTION_DEF */
++
+ /* New style. */
+ 
+ #if !defined (_RL_FUNCTION_TYPEDEF)
+diff --git a/util.c b/util.c
+index fa3a667..a8ab81a 100644
+--- a/util.c
++++ b/util.c
+@@ -476,6 +476,7 @@ _rl_savestring (s)
+   return (strcpy ((char *)xmalloc (1 + (int)strlen (s)), (s)));
+ }
+ 
++#if defined (DEBUG)
+ #if defined (USE_VARARGS)
+ static FILE *_rl_tracefp;
+ 
+@@ -538,7 +539,7 @@ _rl_settracefp (fp)
+   _rl_tracefp = fp;
+ }
+ #endif
+-
++#endif /* DEBUG */
+ 
+ #if HAVE_DECL_AUDIT_USER_TTY && defined (ENABLE_TTY_AUDIT_SUPPORT)
+ #include <sys/socket.h>
+-- 
+1.9.3
+
