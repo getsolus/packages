@@ -1,26 +1,70 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : guile
-version    : 2.0.14
-release    : 13
+version    : 3.0.11
+release    : 14
 source     :
-    - https://mirrors.rit.edu/gnu/guile/guile-2.0.14.tar.xz : e8442566256e1be14e51fc18839cd799b966bc5b16c6a1d7a7c35155a8619d82
+    - https://ftpmirror.gnu.org/gnu/guile/guile-3.0.11.tar.gz : 3c9c16972a73bb792752f2e4f1cce7212d7638d5494b5f7e8e19f3819dbf3a19
 homepage   : http://www.gnu.org/software/guile
 license    : LGPL-3.0-or-later
 component  : programming.tools
 emul32     : true
 summary    : GNU Ubiquitous Intelligent Language for Extensions
 builddeps  :
+    - pkgconfig32(bdw-gc)
     - pkgconfig32(gmp)
     - pkgconfig32(libffi)
     - pkgconfig32(libxcrypt)
-    - bdwgc-32bit-devel
     - libtool-32bit-devel
     - libunistring-32bit-devel
 description: |
-    Guile is the official extension language for GNU, designed to help programmers create flexiable applications by allowing extension through plug-ins, modules, or scripts.
+    Guile is the official extension language for GNU, designed to help programmers create flexible applications by allowing extension through plug-ins, modules, or scripts.
+environment: |
+    # guile is not ready for gnu23, reported upstream
+    # meanwhile revert standard back to gnu17
+    export CFLAGS="$CFLAGS -std=gnu17"
+
+    export mver="3.0"
 setup      : |
-    %configure_no_runstatedir --disable-static --prefix=/usr
+    %patch -p1 -i ${pkgfiles}/guile-3.0.7-headers.patch
+
+    # Out of memory test is not stable, so disable it
+    %patch -p1 -i ${pkgfiles}/guile-3.0.7-disable-oom-test.patch
+
+    # add chdir call before chroot to make it more secure
+    %patch -p1 -i ${pkgfiles}/guile-3.0.7-chroot.patch
+
+    # Disable unstable stack overflow test
+    %patch -p1 -i ${pkgfiles}/guile-3.0.7-disable-stackoverflow-test.patch
+
+    %reconfigure \
+        --disable-static \
+        --disable-error-on-warning \
+        --prefix=/usr
+
+    sed -i -e 's/ -shared / -Wl,-O1,--as-needed\0/g' libtool
 build      : |
     %make
 install    : |
     %make_install
+    %install_license COPYING COPYING.LESSER LICENSE
+
+    rm -f ${installdir}/%libdir/libguile*.la
+
+    # Our gdb doesn't support guile yet
+    rm ${installdir}/%libdir%/libguile-3.?.so.*-gdb.scm
+
+    # Adjust mtimes so they are all identical on all architectures.
+    # When guile and guile-32bit are installed at the same time on a system,
+    # the *.scm files' timestamps change, as they normally reside in /usr/share/guile/.
+    # Their corresponding compiled *.go file go to /usr/lib64/, or /usr/lib32/, depending on the arch.
+    # The mismatch in timestamps between *.scm and *.go files makes guile to compile itself
+    # every time it's run. The following code adjusts the files so that their timestamps are the same
+    # for every file, but unique between builds.
+    # See https://bugzilla.redhat.com/show_bug.cgi?id=1208760.
+    find ${installdir}/usr/share -name '*.scm' -exec touch '{}' \;
+    find ${installdir}/%libdir% -name '*.go' -exec touch '{}' \;
+
+    # Remove Libtool archive
+    rm ${installdir}/%libdir%/guile/${mver}/extensions/guile-readline.la
+check      : |
+    %make check || true
