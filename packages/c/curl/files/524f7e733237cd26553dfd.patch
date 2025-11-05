@@ -1,0 +1,81 @@
+From 524f7e733237cd26553dfd76adda521d3150d852 Mon Sep 17 00:00:00 2001
+From: Samuel Henrique <samueloph@debian.org>
+Date: Sun, 12 Oct 2025 14:39:46 +0100
+Subject: [PATCH] Don't percent-decode '/' and '\' in output file name
+
+Co-Authored-by: Sergio Durigan Junior <sergiodj@sergiodj.net>
+---
+ tests/tests.sh |  7 +++++++
+ wcurl          | 26 ++++++++++++++++++++++++--
+ 2 files changed, 31 insertions(+), 2 deletions(-)
+
+diff --git a/tests/tests.sh b/tests/tests.sh
+index 30ac37b..b4636c0 100755
+--- a/tests/tests.sh
++++ b/tests/tests.sh
+@@ -200,6 +200,13 @@ testUrlDecodingWhitespaceTrailingSlash()
+     assertContains "Verify whether 'wcurl' successfully uses the default filename when the URL ends with a slash" "${ret}" 'index.html'
+ }
+ 
++testUrlDecodingBackslashes()
++{
++    url='example.com/filename%5Cwith%2Fbackslashes%5c%2f'
++    ret=$(${WCURL_CMD} ${url} 2>&1)
++    assertContains "Verify whether 'wcurl' successfully uses the default filename when the URL ends with a slash" "${ret}" 'filename%5Cwith%2Fbackslashes%5c%2f'
++}
++
+ # Test decoding a bunch of different languages (that don't use the latin
+ # alphabet), we could split each language on its own test, but for now it
+ # doesn't make a difference.
+diff --git a/wcurl b/wcurl
+index 66ce954..b1a06ef 100755
+--- a/wcurl
++++ b/wcurl
+@@ -113,6 +113,13 @@ readonly PER_URL_PARAMETERS="\
+     --remote-time \
+     --retry 5 "
+ 
++# Valid percent-encode codes that are considered unsafe to be decoded.
++# This is a list of space-separated percent-encoded uppercase
++# characters.
++# 2F = /
++# 5C = \
++readonly UNSAFE_PERCENT_ENCODE="2F 5C"
++
+ # Whether to invoke curl or not.
+ DRY_RUN="false"
+ 
+@@ -137,6 +144,20 @@ is_subset_of()
+     esac
+ }
+ 
++# Indicate via exit code whether the HTML code given in the first
++# parameter is safe to be decoded.
++is_safe_percent_encode()
++{
++    upper_str=$(printf "%s" "${1}" | tr "[:lower:]" "[:upper:]")
++    for unsafe in ${UNSAFE_PERCENT_ENCODE}; do
++        if [ "${unsafe}" = "${upper_str}" ]; then
++            return 1
++        fi
++    done
++
++    return 0
++}
++
+ # Print the given string percent-decoded.
+ percent_decode()
+ {
+@@ -151,9 +172,10 @@ percent_decode()
+                 decode_out="${decode_out}${decode_hex2}"
+                 # Skip decoding if this is a control character (00-1F).
+                 # Skip decoding if DECODE_FILENAME is not "true".
+-                if is_subset_of "${decode_hex1}" "23456789abcdefABCDEF" \
++                if [ "${DECODE_FILENAME}" = "true" ] \
++                    && is_subset_of "${decode_hex1}" "23456789abcdefABCDEF" \
+                     && is_subset_of "${decode_hex2}" "0123456789abcdefABCDEF" \
+-                    && [ "${DECODE_FILENAME}" = "true" ]; then
++                    && is_safe_percent_encode "${decode_out}"; then
+                     # Use printf to decode it into octal and then decode it to the final format.
+                     decode_out="$(printf "%b" "\\$(printf %o "0x${decode_hex1}${decode_hex2}")")"
+                 fi
