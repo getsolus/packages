@@ -3,7 +3,3 @@ This file is used to indicate primary maintainership for this package. A package
 - Evan Maddock
   - Matrix: @ebonjaeger:matrix.org
   - Email: maddock.evan@vivaldi.net
-
-- Zach Bacon
-  - Matrix: @thatzachbacon:matrix.org
-  - Email: zachbacon@vba-m.com

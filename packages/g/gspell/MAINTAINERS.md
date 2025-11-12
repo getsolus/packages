@@ -3,7 +3,3 @@ This file is used to indicate primary maintainership for this package. A package
 - Joey Riches
   - Matrix: joebonrichie@matrix.org
   - Email: josephriches@gmail.com | joey@getsol.us
-
-- Zach Bacon
-  - Matrix: thatzachbacon:matrix.org
-  - Email: zachbacon@vba-m.com
