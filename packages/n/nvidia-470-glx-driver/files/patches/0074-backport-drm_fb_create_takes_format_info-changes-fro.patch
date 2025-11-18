@@ -1,0 +1,118 @@
+From ce98de2a66eae83126d19d44b249452f86a1b1c4 Mon Sep 17 00:00:00 2001
+From: Andreas Beckmann <anbe@debian.org>
+Date: Sun, 2 Nov 2025 08:18:20 +0100
+Subject: [PATCH] backport drm_fb_create_takes_format_info changes from
+ 535.274.02
+
+---
+ conftest.sh                  | 19 +++++++++++++++++++
+ nvidia-drm/nvidia-drm-drv.c  |  6 ++++++
+ nvidia-drm/nvidia-drm-fb.c   |  6 ++++++
+ nvidia-drm/nvidia-drm-fb.h   |  3 +++
+ nvidia-drm/nvidia-drm.Kbuild |  1 +
+ 5 files changed, 35 insertions(+)
+
+diff --git a/conftest.sh b/conftest.sh
+index 603bf8ba..af402ab0 100755
+--- a/conftest.sh
++++ b/conftest.sh
+@@ -3442,6 +3442,25 @@ compile_test() {
+             compile_check_conftest "$CODE" "NV_DMA_BUF_OWNER_PRESENT" "" "types"
+         ;;
+ 
++        drm_fb_create_takes_format_info)
++            #
++            # Determine if a `struct drm_format_info *` is passed into
++            # the .fb_create callback. If so, it will have 4 arguments.
++            # This parameter was added in commit 81112eaac559 ("drm:
++            # Pass the format info to .fb_create") in linux-next
++            # (2025-07-16)
++            CODE="
++            #include <drm/drm_mode_config.h>
++            #include <drm/drm_framebuffer.h>
++
++            static const struct drm_mode_config_funcs funcs;
++            void conftest_drm_fb_create_takes_format_info(void) {
++                funcs.fb_create(NULL, NULL, NULL, NULL); 
++            }"
++
++            compile_check_conftest "$CODE" "NV_DRM_FB_CREATE_TAKES_FORMAT_INFO" "" "types"
++        ;;
++
+         drm_connector_funcs_have_mode_in_name)
+             #
+             # Determine if _mode_ is present in connector function names.  We
+diff --git a/nvidia-drm/nvidia-drm-drv.c b/nvidia-drm/nvidia-drm-drv.c
+index ec0b4495..ac5f3170 100644
+--- a/nvidia-drm/nvidia-drm-drv.c
++++ b/nvidia-drm/nvidia-drm-drv.c
+@@ -137,6 +137,9 @@ static void nv_drm_output_poll_changed(struct drm_device *dev)
+ static struct drm_framebuffer *nv_drm_framebuffer_create(
+     struct drm_device *dev,
+     struct drm_file *file,
++#if defined(NV_DRM_FB_CREATE_TAKES_FORMAT_INFO)
++    const struct drm_format_info *info,
++#endif
+     #if defined(NV_DRM_HELPER_MODE_FILL_FB_STRUCT_HAS_CONST_MODE_CMD_ARG)
+     const struct drm_mode_fb_cmd2 *cmd
+     #else
+@@ -152,6 +155,9 @@ static struct drm_framebuffer *nv_drm_framebuffer_create(
+     fb = nv_drm_internal_framebuffer_create(
+             dev,
+             file,
++#if defined(NV_DRM_FB_CREATE_TAKES_FORMAT_INFO)
++            info,
++#endif
+             &local_cmd);
+ 
+     #if !defined(NV_DRM_HELPER_MODE_FILL_FB_STRUCT_HAS_CONST_MODE_CMD_ARG)
+diff --git a/nvidia-drm/nvidia-drm-fb.c b/nvidia-drm/nvidia-drm-fb.c
+index d119e7c9..81018e39 100644
+--- a/nvidia-drm/nvidia-drm-fb.c
++++ b/nvidia-drm/nvidia-drm-fb.c
+@@ -184,6 +184,9 @@ static int nv_drm_framebuffer_init(struct drm_device *dev,
+ struct drm_framebuffer *nv_drm_internal_framebuffer_create(
+     struct drm_device *dev,
+     struct drm_file *file,
++#if defined(NV_DRM_FB_CREATE_TAKES_FORMAT_INFO)
++    const struct drm_format_info *info,
++#endif
+     struct drm_mode_fb_cmd2 *cmd)
+ {
+     struct nv_drm_device *nv_dev = to_nv_device(dev);
+@@ -237,6 +240,9 @@ struct drm_framebuffer *nv_drm_internal_framebuffer_create(
+         dev,
+         #endif
+         &nv_fb->base,
++#if defined(NV_DRM_FB_CREATE_TAKES_FORMAT_INFO)
++        info,
++#endif 
+         cmd);
+ 
+     /*
+diff --git a/nvidia-drm/nvidia-drm-fb.h b/nvidia-drm/nvidia-drm-fb.h
+index cf477cc7..c853559c 100644
+--- a/nvidia-drm/nvidia-drm-fb.h
++++ b/nvidia-drm/nvidia-drm-fb.h
+@@ -59,6 +59,9 @@ static inline struct nv_drm_framebuffer *to_nv_framebuffer(
+ struct drm_framebuffer *nv_drm_internal_framebuffer_create(
+     struct drm_device *dev,
+     struct drm_file *file,
++#if defined(NV_DRM_FB_CREATE_TAKES_FORMAT_INFO)
++    const struct drm_format_info *info,
++#endif
+     struct drm_mode_fb_cmd2 *cmd);
+ 
+ #endif /* NV_DRM_ATOMIC_MODESET_AVAILABLE */
+diff --git a/nvidia-drm/nvidia-drm.Kbuild b/nvidia-drm/nvidia-drm.Kbuild
+index 926bc075..718e3a72 100644
+--- a/nvidia-drm/nvidia-drm.Kbuild
++++ b/nvidia-drm/nvidia-drm.Kbuild
+@@ -127,3 +127,4 @@ NV_CONFTEST_TYPE_COMPILE_TESTS += drm_output_poll_changed
+ NV_CONFTEST_TYPE_COMPILE_TESTS += drm_driver_has_date
+ NV_CONFTEST_TYPE_COMPILE_TESTS += file_operations_fop_unsigned_offset_present
+ NV_CONFTEST_TYPE_COMPILE_TESTS += drm_connector_helper_funcs_mode_valid_has_const_mode_arg
++NV_CONFTEST_TYPE_COMPILE_TESTS += drm_fb_create_takes_format_info
+-- 
+2.39.5
+

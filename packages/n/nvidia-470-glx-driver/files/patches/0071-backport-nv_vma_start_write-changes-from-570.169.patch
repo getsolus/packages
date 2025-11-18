@@ -1,0 +1,162 @@
+From 45c41ade1e8e6874152addc7adb6e63d45dc3d10 Mon Sep 17 00:00:00 2001
+From: Andreas Beckmann <anbe@debian.org>
+Date: Thu, 19 Jun 2025 10:20:07 +0200
+Subject: [PATCH] backport nv_vma_start_write changes from 570.169
+
+---
+ common/inc/nv-mm.h           | 23 ++++++++++++
+ nvidia-drm/nvidia-drm.Kbuild |  1 +
+ nvidia/nv-mmap.c             | 72 ++++++++++++++++++++++++++++++++++++
+ nvidia/nvidia.Kbuild         |  1 +
+ 4 files changed, 97 insertions(+)
+
+diff --git a/common/inc/nv-mm.h b/common/inc/nv-mm.h
+index da5065dc..f335abb7 100644
+--- a/common/inc/nv-mm.h
++++ b/common/inc/nv-mm.h
+@@ -245,15 +245,38 @@ static inline struct rw_semaphore *nv_mmap_get_lock(struct mm_struct *mm)
+ #endif
+ }
+ 
++#if NV_IS_EXPORT_SYMBOL_GPL___vma_start_write
++#define NV_CAN_CALL_VMA_START_WRITE 0
++#else // NV_IS_EXPORT_SYMBOL_GPL___vma_start_write
++#define NV_CAN_CALL_VMA_START_WRITE 1
++#endif
++
++#if !NV_CAN_CALL_VMA_START_WRITE
++/*
++ * Commit 45ad9f5290dc updated vma_start_write() to call __vma_start_write().
++ */
++void nv_vma_start_write(struct vm_area_struct *);
++#endif
++
+ #if defined(NV_VM_AREA_STRUCT_HAS_CONST_VM_FLAGS)
+ static inline void nv_vm_flags_set(struct vm_area_struct *vma, vm_flags_t flags)
+ {
++#if !NV_CAN_CALL_VMA_START_WRITE
++    nv_vma_start_write(vma);
++    ACCESS_PRIVATE(vma, __vm_flags) |= flags;
++#else
+     vm_flags_set(vma, flags);
++#endif
+ }
+ 
+ static inline void nv_vm_flags_clear(struct vm_area_struct *vma, vm_flags_t flags)
+ {
++#if !NV_CAN_CALL_VMA_START_WRITE
++    nv_vma_start_write(vma);
++    ACCESS_PRIVATE(vma, __vm_flags) &= ~flags;
++#else
+     vm_flags_clear(vma, flags);
++#endif
+ }
+ #else
+ static inline void nv_vm_flags_set(struct vm_area_struct *vma, unsigned long flags)
+diff --git a/nvidia-drm/nvidia-drm.Kbuild b/nvidia-drm/nvidia-drm.Kbuild
+index 212568ec..926bc075 100644
+--- a/nvidia-drm/nvidia-drm.Kbuild
++++ b/nvidia-drm/nvidia-drm.Kbuild
+@@ -56,6 +56,7 @@ NV_CONFTEST_GENERIC_COMPILE_TESTS += is_export_symbol_gpl_refcount_dec_and_test
+ NV_CONFTEST_GENERIC_COMPILE_TESTS += drm_alpha_blending_available
+ NV_CONFTEST_GENERIC_COMPILE_TESTS += is_export_symbol_present_drm_gem_prime_fd_to_handle
+ NV_CONFTEST_GENERIC_COMPILE_TESTS += is_export_symbol_present_drm_gem_prime_handle_to_fd
++NV_CONFTEST_GENERIC_COMPILE_TESTS += is_export_symbol_gpl___vma_start_write
+ 
+ NV_CONFTEST_FUNCTION_COMPILE_TESTS += drm_dev_unref
+ NV_CONFTEST_FUNCTION_COMPILE_TESTS += drm_reinit_primary_mode_group
+diff --git a/nvidia/nv-mmap.c b/nvidia/nv-mmap.c
+index a3ed2e6b..1611d99c 100644
+--- a/nvidia/nv-mmap.c
++++ b/nvidia/nv-mmap.c
+@@ -798,3 +798,75 @@ void NV_API_CALL nv_set_safe_to_mmap_locked(
+ 
+     nvl->safe_to_mmap = safe_to_mmap;
+ }
++
++#if !NV_CAN_CALL_VMA_START_WRITE
++static NvBool nv_vma_enter_locked(struct vm_area_struct *vma, NvBool detaching)
++{
++    NvU32 tgt_refcnt = VMA_LOCK_OFFSET;
++    NvBool interrupted = NV_FALSE;
++    if (!detaching)
++    {
++        tgt_refcnt++;
++    }
++    if (!refcount_add_not_zero(VMA_LOCK_OFFSET, &vma->vm_refcnt))
++    {
++        return NV_FALSE;
++    }
++
++    rwsem_acquire(&vma->vmlock_dep_map, 0, 0, _RET_IP_);
++    prepare_to_rcuwait(&vma->vm_mm->vma_writer_wait);
++
++    for (;;)
++    {
++        set_current_state(TASK_UNINTERRUPTIBLE);
++        if (refcount_read(&vma->vm_refcnt) == tgt_refcnt)
++            break;
++
++        if (signal_pending_state(TASK_UNINTERRUPTIBLE, current))
++        {
++            interrupted = NV_TRUE;
++            break;
++        }
++
++        schedule();
++    }
++
++    // This is an open-coded version of finish_rcuwait().
++    rcu_assign_pointer(vma->vm_mm->vma_writer_wait.task, NULL);
++    __set_current_state(TASK_RUNNING);
++
++    if (interrupted)
++    {
++        // Clean up on error: release refcount and dep_map
++        refcount_sub_and_test(VMA_LOCK_OFFSET, &vma->vm_refcnt);
++        rwsem_release(&vma->vmlock_dep_map, _RET_IP_);
++        return NV_FALSE;
++    }
++
++    lock_acquired(&vma->vmlock_dep_map, _RET_IP_);
++    return NV_TRUE;
++}
++
++/*
++ * Helper function to handle VMA locking and refcount management.
++ */
++void nv_vma_start_write(struct vm_area_struct *vma)
++{
++    NvU32 mm_lock_seq;
++    NvBool locked;
++    if (__is_vma_write_locked(vma, &mm_lock_seq))
++        return;
++
++    locked = nv_vma_enter_locked(vma, NV_FALSE);
++
++    WRITE_ONCE(vma->vm_lock_seq, mm_lock_seq);
++    if (locked)
++    {
++        NvBool detached;
++        detached = refcount_sub_and_test(VMA_LOCK_OFFSET, &vma->vm_refcnt);
++        rwsem_release(&vma->vmlock_dep_map, _RET_IP_);
++        WARN_ON_ONCE(detached);
++    }
++}
++EXPORT_SYMBOL(nv_vma_start_write);
++#endif // !NV_CAN_CALL_VMA_START_WRITE
+diff --git a/nvidia/nvidia.Kbuild b/nvidia/nvidia.Kbuild
+index 1269fcd5..6d1c337b 100644
+--- a/nvidia/nvidia.Kbuild
++++ b/nvidia/nvidia.Kbuild
+@@ -189,6 +189,7 @@ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_tegra_dram_types
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_screen_info
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_gpl_screen_info
+ NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_present_timer_delete_sync
++NV_CONFTEST_SYMBOL_COMPILE_TESTS += is_export_symbol_gpl___vma_start_write
+ 
+ NV_CONFTEST_TYPE_COMPILE_TESTS += acpi_op_remove
+ NV_CONFTEST_TYPE_COMPILE_TESTS += file_operations
+-- 
+2.39.5
+

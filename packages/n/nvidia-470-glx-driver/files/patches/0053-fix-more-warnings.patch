@@ -1,0 +1,150 @@
+From 4b51793c96f8d6bbe8418020b16ad05beb53738e Mon Sep 17 00:00:00 2001
+From: Andreas Beckmann <anbe@debian.org>
+Date: Sun, 8 Dec 2024 22:13:22 +0100
+Subject: [PATCH] fix more warnings
+
+---
+ common/inc/nv-linux.h                 | 8 ++++++++
+ nvidia-drm/nvidia-drm-crtc.c          | 2 ++
+ nvidia-modeset/nvidia-modeset-linux.c | 1 +
+ nvidia/nv-dma.c                       | 1 +
+ nvidia/nv-frontend.c                  | 2 --
+ nvidia/nv-frontend.h                  | 3 +++
+ nvidia/nv-mmap.c                      | 1 +
+ nvidia/nv.c                           | 1 +
+ 8 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/common/inc/nv-linux.h b/common/inc/nv-linux.h
+index d22f9dc5..b05f88f7 100644
+--- a/common/inc/nv-linux.h
++++ b/common/inc/nv-linux.h
+@@ -550,7 +550,9 @@ static inline void *nv_ioremap_cache(NvU64 phys, NvU64 size)
+ #if defined(NV_IOREMAP_CACHE_PRESENT)
+     void *ptr = ioremap_cache(phys, size);
+     if (ptr)
++    {
+         NV_MEMDBG_ADD(ptr, size);
++    }
+     return ptr;
+ #elif defined(NVCPU_PPC64LE)
+     //
+@@ -612,14 +614,18 @@ static NvBool nv_numa_node_has_memory(int node_id)
+     { \
+         (ptr) = kmalloc(size, NV_GFP_KERNEL); \
+         if (ptr) \
++        { \
+             NV_MEMDBG_ADD(ptr, size); \
++        } \
+     }
+ 
+ #define NV_KMALLOC_ATOMIC(ptr, size) \
+     { \
+         (ptr) = kmalloc(size, NV_GFP_ATOMIC); \
+         if (ptr) \
++        { \
+             NV_MEMDBG_ADD(ptr, size); \
++        } \
+     }
+ 
+ #if defined(__GFP_RETRY_MAYFAIL)
+@@ -634,7 +640,9 @@ static NvBool nv_numa_node_has_memory(int node_id)
+     { \
+         (ptr) = kmalloc(size, NV_GFP_NO_OOM); \
+         if (ptr) \
++        { \
+             NV_MEMDBG_ADD(ptr, size); \
++        } \
+     }
+ 
+ #define NV_KFREE(ptr, size) \
+diff --git a/nvidia-drm/nvidia-drm-crtc.c b/nvidia-drm/nvidia-drm-crtc.c
+index 8a9ea276..33bdef05 100644
+--- a/nvidia-drm/nvidia-drm-crtc.c
++++ b/nvidia-drm/nvidia-drm-crtc.c
+@@ -367,8 +367,10 @@ static int nv_drm_plane_atomic_set_property(
+     uint64_t val)
+ {
+     struct nv_drm_device *nv_dev = to_nv_device(plane->dev);
++#if defined(NV_LINUX_NVHOST_H_PRESENT) && defined(CONFIG_TEGRA_GRHOST)
+     struct nv_drm_plane_state *nv_drm_plane_state =
+         to_nv_drm_plane_state(state);
++#endif
+ 
+     if (property == nv_dev->nv_out_fence_property) {
+ #if defined(NV_LINUX_NVHOST_H_PRESENT) && defined(CONFIG_TEGRA_GRHOST)
+diff --git a/nvidia-modeset/nvidia-modeset-linux.c b/nvidia-modeset/nvidia-modeset-linux.c
+index 8c4d0949..3c7f4dc8 100644
+--- a/nvidia-modeset/nvidia-modeset-linux.c
++++ b/nvidia-modeset/nvidia-modeset-linux.c
+@@ -1219,6 +1219,7 @@ failed:
+     return NULL;
+ }
+ 
++static
+ void nvkms_close_common(struct nvkms_per_open *popen)
+ {
+     /*
+diff --git a/nvidia/nv-dma.c b/nvidia/nv-dma.c
+index 649de347..f8c1d3bc 100644
+--- a/nvidia/nv-dma.c
++++ b/nvidia/nv-dma.c
+@@ -960,6 +960,7 @@ void NV_API_CALL nv_dma_enable_nvlink
+ 
+ #if defined(NV_DRM_AVAILABLE) && defined(NV_DRM_DRM_GEM_H_PRESENT)
+ 
++#undef IMPORT_SGT_STUBS_NEEDED
+ #define IMPORT_SGT_STUBS_NEEDED 0
+ 
+ /*
+diff --git a/nvidia/nv-frontend.c b/nvidia/nv-frontend.c
+index 4d6d8af2..4f4ba241 100644
+--- a/nvidia/nv-frontend.c
++++ b/nvidia/nv-frontend.c
+@@ -39,8 +39,6 @@ struct semaphore nv_module_table_lock;
+ // minor number table
+ nvidia_module_t *nv_minor_num_table[NV_FRONTEND_CONTROL_DEVICE_MINOR_MAX + 1];
+ 
+-int nvidia_init_module(void);
+-void nvidia_exit_module(void);
+ 
+ /* EXPORTS to Linux Kernel */
+ 
+diff --git a/nvidia/nv-frontend.h b/nvidia/nv-frontend.h
+index d6501832..83b03b91 100644
+--- a/nvidia/nv-frontend.h
++++ b/nvidia/nv-frontend.h
+@@ -32,4 +32,7 @@ int nvidia_frontend_remove_device(nvidia_module_t *, nv_linux_state_t *);
+ 
+ extern nvidia_module_t *nv_minor_num_table[];
+ 
++int nvidia_init_module(void);
++void nvidia_exit_module(void);
++
+ #endif
+diff --git a/nvidia/nv-mmap.c b/nvidia/nv-mmap.c
+index 1c103a6a..a3ed2e6b 100644
+--- a/nvidia/nv-mmap.c
++++ b/nvidia/nv-mmap.c
+@@ -349,6 +349,7 @@ int nv_encode_caching(
+             if (NV_ALLOW_CACHING(memory_type))
+                 break;
+             // Intentional fallthrough.
++            __attribute__((__fallthrough__));
+         default:
+             nv_printf(NV_DBG_ERRORS,
+                 "NVRM: VM: cache type %d not supported for memory type %d!\n",
+diff --git a/nvidia/nv.c b/nvidia/nv.c
+index 04606e5d..540ebd23 100644
+--- a/nvidia/nv.c
++++ b/nvidia/nv.c
+@@ -3658,6 +3658,7 @@ NvBool NV_API_CALL nv_is_rm_firmware_active(
+     return NV_FALSE;
+ }
+ 
++static
+ const char *nv_firmware_path(
+     nv_firmware_t fw_type
+ )
+-- 
+2.39.5
+

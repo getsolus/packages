@@ -1,0 +1,91 @@
+From b459a16515766b157b4b0b29102cece1eacf2a12 Mon Sep 17 00:00:00 2001
+From: Andreas Beckmann <anbe@debian.org>
+Date: Thu, 1 Feb 2024 14:58:45 -0500
+Subject: [PATCH] import pfn_valid() w/o GPL rcu_read_lock/unlock from v6.8-rc3
+
+linux-6.1.76, 6.6.15, and 6.7.3 have modified the non-ARCH-specific
+pfn_valid() to use __rcu_read_lock/unlock[1] that is marked GPL and
+cannot be used here[2][3][4] unless using the open source variant.
+
+pfn_valid() has been changed to use GPL rcu_read_lock/unlock by
+"mm/sparsemem: fix race in accessing memory_section->usage" in Linux
+  v6.8-rc1 (5ec8e8ea8b7783fab150cf86404fc38cb4db8800)
+which has been backported to Linux
+  v6.7.3   (3a01daace71b521563c38bbbf874e14c3e58adb7)
+  v6.6.15  (70064241f2229f7ba7b9599a98f68d9142e81a97)
+  v6.1.76  (68ed9e33324021e9d6b798e9db00ca3093d2012a)
+  v5.10.210 (90ad17575d26874287271127d43ef3c2af876cea)
+
+pfn_valid() has been further changed to use non-GPL
+rcu_read_lock_sched()/rcu_read_unlock_sched() by
+"mm, kmsan: fix infinite recursion due to RCU critical section" in Linux
+  v6.8-rc3 (f6564fce256a3944aa1bc76cb3c40e792d97c1eb)
+which has been backported to Linux
+  v6.7.4   (5a33420599fa0288792537e6872fd19cc8607ea6)
+  v6.6.16  (6335c0cdb2ea0ea02c999e04d34fd84f69fb27ff)
+  v6.1.77  (dc904345e3771aa01d0b8358b550802fdc6fe00b)
+but not (yet) to Linux v5.10.x
+
+As a workaround, use the v6.8-rc3 implementation for all kernels
+having only the first patch until NVIDIA makes a fixed release
+(that no longer will be using pfn_valid[5]).
+
+[1] https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/include/linux/mmzone.h?h=v6.7.3&id=3a01daace71b521563c38bbbf874e14c3e58adb7
+[2] https://bugs.gentoo.org/923456
+[3] https://forums.developer.nvidia.com/t/280908
+[4] https://github.com/NVIDIA/open-gpu-kernel-modules/issues/594
+[5] https://github.com/NVIDIA/open-gpu-kernel-modules/issues/594#issuecomment-1916197641
+
+Bug-Debian: https://bugs.debian.org/1062932
+Origin: gentoo, https://github.com/gentoo/gentoo/blob/c64caf53/x11-drivers/nvidia-drivers/files/nvidia-drivers-470.223.02-gpl-pfn_valid.patch
+---
+ common/inc/nv-linux.h | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/common/inc/nv-linux.h b/common/inc/nv-linux.h
+index e095a89..7f93fd0 100644
+--- a/common/inc/nv-linux.h
++++ b/common/inc/nv-linux.h
+@@ -1987,6 +1987,39 @@ static inline NvU32 nv_default_irq_flags(nv_state_t *nv)
+     #define NV_SET_CLOSE_ON_EXEC(fd, fdt) __set_bit(fd, fdt->close_on_exec)
+ #endif
+ 
++#if (!defined(CONFIG_HAVE_ARCH_PFN_VALID)) && \
++        ((LINUX_VERSION_CODE == KERNEL_VERSION(6,7,3)) || \
++         (LINUX_VERSION_CODE == KERNEL_VERSION(6,6,15)) || \
++         (LINUX_VERSION_CODE == KERNEL_VERSION(6,1,76)) || \
++	 ((LINUX_VERSION_CODE >= KERNEL_VERSION(5,10,210)) && (LINUX_VERSION_CODE < KERNEL_VERSION(5,11,0))))
++
++/* Linux v6.8-rc3 pfn_valid version without GPL rcu_read_lock/unlock() */
++static inline int nv_pfn_valid(unsigned long pfn)
++{
++        struct mem_section *ms;
++        int ret;
++
++        if (PHYS_PFN(PFN_PHYS(pfn)) != pfn)
++                return 0;
++
++        if (pfn_to_section_nr(pfn) >= NR_MEM_SECTIONS)
++                return 0;
++        ms = __pfn_to_section(pfn);
++        rcu_read_lock_sched();
++        if (!valid_section(ms)) {
++                rcu_read_unlock_sched();
++                return 0;
++        }
++        ret = early_section(ms) || pfn_section_valid(ms, pfn);
++        rcu_read_unlock_sched();
++
++        return ret;
++}
++
++#else
++#  define nv_pfn_valid pfn_valid
++#endif
++
+ #define MODULE_BASE_NAME "nvidia"
+ #define MODULE_INSTANCE_NUMBER 0
+ #define MODULE_INSTANCE_STRING ""
+-- 
+2.39.5
+

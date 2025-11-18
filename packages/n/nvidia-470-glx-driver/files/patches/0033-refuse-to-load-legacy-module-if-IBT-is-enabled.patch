@@ -1,0 +1,63 @@
+From 142c8a9c82eac6bc920e01976b63e860ed0dc305 Mon Sep 17 00:00:00 2001
+From: Andreas Beckmann <anbe@debian.org>
+Date: Sat, 4 Nov 2023 00:44:56 +0100
+Subject: [PATCH] refuse to load legacy module if IBT is enabled
+
+IBT (Indirect Branch Tracking) has been enabled by default (compiled in
+everywhere since it is effectively a no-op and enabled at runtime on
+supported CPUs, i.e. 11th gen. Intel Core processors (aka Tigerlake) or
+newer) since Linux 6.2, it can be disabled by booting with ibt=off.
+All entry points reachable from indirect JMP or CALL instructions need
+to contain the ENDBR instruction (actually just a NOP that is given a
+special meaning by enabling IBT) otherwise the CPU will raise a control
+flow exception.
+
+If the BLOB part of the NVIDIA module hasn't been built with IBT
+support, the module cannot be used if IBT is active. Check for that
+condition and abort module load to avoid kernel errors later.
+
+https://bugs.debian.org/1052069
+---
+ nvidia-modeset/nvidia-modeset-linux.c | 7 +++++++
+ nvidia/nv.c                           | 7 +++++++
+ 2 files changed, 14 insertions(+)
+
+diff --git a/nvidia-modeset/nvidia-modeset-linux.c b/nvidia-modeset/nvidia-modeset-linux.c
+index de0c748..e9c8eab 100644
+--- a/nvidia-modeset/nvidia-modeset-linux.c
++++ b/nvidia-modeset/nvidia-modeset-linux.c
+@@ -1655,6 +1655,13 @@ static int __init nvkms_init(void)
+ {
+     int ret;
+ 
++#ifdef CONFIG_X86_KERNEL_IBT
++    if (cpu_feature_enabled(X86_FEATURE_IBT)) {
++        printk(KERN_ERR NVKMS_LOG_PREFIX "This NVIDIA driver version is incompatible with IBT. Try booting with ibt=off.");
++        return -EINVAL;
++    }
++#endif
++
+     atomic_set(&nvkms_alloc_called_count, 0);
+ 
+     ret = nvkms_alloc_rm();
+diff --git a/nvidia/nv.c b/nvidia/nv.c
+index 9d7da39..14e8f1d 100644
+--- a/nvidia/nv.c
++++ b/nvidia/nv.c
+@@ -743,6 +743,13 @@ int __init nvidia_init_module(void)
+     nvidia_stack_t *sp = NULL;
+     NvU32 allow_no_gpu_init = 0;
+ 
++#ifdef CONFIG_X86_KERNEL_IBT
++    if (cpu_feature_enabled(X86_FEATURE_IBT)) {
++        printk(KERN_ERR "NVRM: This NVIDIA driver version is incompatible with IBT. Try booting with ibt=off.");
++        return -EINVAL;
++    }
++#endif
++
+     nv_memdbg_init();
+ 
+     rc = nv_procfs_init();
+-- 
+2.20.1
+
