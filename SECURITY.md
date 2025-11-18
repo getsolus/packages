@@ -11,5 +11,5 @@ A vulnerability in can be reported in the following ways:
 
 ## Supported versions
 
-- **Packages**: both the *unstable* and *stable* ('shannon') releases of Solus are supported with security updates. Please report a security issue if you feel that one is present in either release.
+- **Packages**: both the *unstable* and *stable* ('polaris') releases of Solus are supported with security updates. Please report a security issue if you feel that one is present in either release.
 - **Software**: both the latest tagged release and master/main branch are supported.
