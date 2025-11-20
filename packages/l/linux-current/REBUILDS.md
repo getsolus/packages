@@ -14,3 +14,4 @@ This is a list of things to rebuild after this, in the right order:
 * virtualbox
 * vhba-module
 * xone
+* zenergy
