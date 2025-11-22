@@ -479,16 +479,28 @@ class PackageBumped(PullRequestCheck):
             case _:
                 return None
 
+    def _is_fixup_commit(self, commit_msg: str) -> bool:
+        return commit_msg.startswith('fixup! ')
+
     def _check(self, ref: Optional[str], file: str, loader: Callable[[str], Package], level: Level) -> Optional[Result]:
         if ref is not None:
             new = loader(self.git.file_from_commit(ref, file))
             prev = f'{ref}~1'
+
+            commit_msg = self.git.commit_message(ref)
+            # Skip fixup commits entirely
+            if self._is_fixup_commit(commit_msg):
+                return None
         else:
             new = loader(self._read(file))
             prev = 'HEAD'
 
         try:
             old = loader(self.git.file_from_commit(prev, file))
+            # Skip if this is effectively an amended commit with no release change
+            if ref is not None and self.git.commit_message(ref) == self.git.commit_message(prev):
+                return None
+
             if old.release + 1 != new.release:
                 return Result(level=level, file=file, message=f'{self._msg} (ref: {ref})')
 
