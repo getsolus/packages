@@ -11,15 +11,24 @@ elif [[ $# -gt 0 && $# -ne 2 ]]; then
     echo "Usage: $0 <package name> <tarball>"
     exit 1
 else
-    read -p "Package name: " prompt
-    PACKAGE=${prompt}
+    # Loop until a valid package name is entered
+    while true; do
+        read -p "Package name: " prompt
+        if [[ "$prompt" =~ ^[a-z0-9.]+(-[a-z0-9.]+)*$ ]]; then
+            PACKAGE="$prompt"
+            break
+        else
+            echo "Invalid package name! Only lowercase letters, numbers, dashes, and dots are allowed."
+        fi
+    done
+
     read -p "Tarball URL: " prompt
-    TARBALL=${prompt}
+    TARBALL="${prompt}"
 fi
 
 YAUTO=$(git rev-parse --show-toplevel)/common/Scripts/yauto.py
 
-# Basic repo name linting check
+# Basic repo name linting check (for non-interactive calls)
 if [[ ! "${PACKAGE}" =~ ^[a-z0-9.]+(-[a-z0-9.]+)*$ ]]; then
     echo "Package names are restricted to US ASCII lowercase letters, numbers, dashes, and, dots."
     exit 1
