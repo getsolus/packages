@@ -1,4 +1,4 @@
-![Solus logo](https://getsol.us/imgs/logo-with-text.png)
+<img src="https://getsol.us/imgs/Solus_With_Text.svg" alt="Solus logo with text" width="250px">
 
 *Packages* contains all the packages definitions for [Solus](https://getsol.us). It also contains the main issue tracker.
 
