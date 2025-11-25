@@ -1,10 +1,6 @@
-<p align="center">
-  <a href="https://getsol.us">
-    <img src="https://getsol.us/imgs/logo.png" alt="Solus logo"/>
-  </a>
-</p>
+![Solus logo](https://getsol.us/imgs/logo-with-text.png)
 
-*Packages* contains all the packages definitions for [Solus]. It also contains the main issue tracker.
+*Packages* contains all the packages definitions for [Solus](https://getsol.us). It also contains the main issue tracker.
 
 # Welcome
 
