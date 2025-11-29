@@ -1,0 +1,83 @@
+From 4b4c6a553f0d7f3907f7b459002caf9db87bfb2e Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 20 Dec 2024 16:04:41 -0500
+Subject: [PATCH 2/3] [Comgr] Extend ISA compatibility
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ amd/comgr/src/comgr-metadata.cpp | 52 +++++++++++++++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/amd/comgr/src/comgr-metadata.cpp b/amd/comgr/src/comgr-metadata.cpp
+index a89786ab8e49..5cd48ffa2822 100644
+--- a/amd/comgr/src/comgr-metadata.cpp
++++ b/amd/comgr/src/comgr-metadata.cpp
+@@ -931,6 +931,55 @@ constexpr size_t OffloadBundleMagicLen =
+     strLiteralLength(ClangOffloadBundlerMagic);
+ } // namespace
+ 
++struct GfxPattern {
++  StringRef root;
++  StringRef suffixes;
++};
++
++static bool matches(const GfxPattern& p, const StringRef s) {
++  if (p.root.size() + 1 != s.size()) {
++    return false;
++  }
++  if (0 != std::memcmp(p.root.data(), s.data(), p.root.size())) {
++    return false;
++  }
++  return p.suffixes.find(s[p.root.size()]) != std::string::npos;
++}
++
++static bool isGfx900EquivalentProcessor(const StringRef processor) {
++  return matches(GfxPattern{"gfx90", "029c"}, processor);
++}
++
++static bool isGfx900SupersetProcessor(const StringRef processor) {
++  return matches(GfxPattern{"gfx90", "0269c"}, processor);
++}
++
++static bool isGfx1030EquivalentProcessor(const StringRef processor) {
++  return matches(GfxPattern{"gfx103", "0123456"}, processor);
++}
++
++static bool isGfx1010EquivalentProcessor(const StringRef processor) {
++  return matches(GfxPattern{"gfx101", "0"}, processor);
++}
++
++static bool isGfx1010SupersetProcessor(const StringRef processor) {
++  return matches(GfxPattern{"gfx101", "0123"}, processor);
++}
++
++static bool isIsaCompatible(const StringRef isaIdent, const StringRef codeObjectIdent) {
++  if (isaIdent == codeObjectIdent) {
++    return true;
++  } else if (isGfx900SupersetProcessor(isaIdent) && isGfx900EquivalentProcessor(codeObjectIdent)) {
++    return true;
++  } else if (isGfx1010SupersetProcessor(isaIdent) && isGfx1010EquivalentProcessor(codeObjectIdent)) {
++    return true;
++  } else if (isGfx1030EquivalentProcessor(isaIdent) && isGfx1030EquivalentProcessor(codeObjectIdent)) {
++    return true;
++  } else {
++    return false;
++  }
++}
++
+ bool isCompatibleIsaName(StringRef IsaName, StringRef CodeObjectIsaName) {
+   if (IsaName == CodeObjectIsaName) {
+     return true;
+@@ -946,7 +995,8 @@ bool isCompatibleIsaName(StringRef IsaName, StringRef CodeObjectIsaName) {
+     return false;
+   }
+ 
+-  if (CodeObjectIdent.Processor != IsaIdent.Processor) {
++  if (CodeObjectIdent.Processor != IsaIdent.Processor
++      && !isIsaCompatible(IsaIdent.Processor, CodeObjectIdent.Processor)) {
+     return false;
+   }
+ 
+-- 
+2.51.0
+
