@@ -1,0 +1,187 @@
+From 5e7a26efd5acc3cdeeda8d1954459bff1a7e373e Mon Sep 17 00:00:00 2001
+From: Naomi Kirby <oskirby@gmail.com>
+Date: Wed, 22 Oct 2025 09:57:38 -0700
+Subject: [PATCH] VPN-7309: Qt 6.10 QML loading fixes (#10832)
+
+* Fix compile/link fail on Qt 6.10
+* navigator: Load screens by URL instead of component
+---
+ .../navigator/MZNavigatorLoader.qml           |  2 +-
+ .../navigator/navigatorLoaderInternal.qml     |  2 +-
+ src/CMakeLists.txt                            |  3 ++
+ src/frontend/navigator.cpp                    | 35 +++++--------------
+ src/frontend/navigator.h                      |  8 ++---
+ 5 files changed, 17 insertions(+), 33 deletions(-)
+
+diff --git a/nebula/ui/components/navigator/MZNavigatorLoader.qml b/nebula/ui/components/navigator/MZNavigatorLoader.qml
+index 0ac30dc80c..67e7a0f1b5 100644
+--- a/nebula/ui/components/navigator/MZNavigatorLoader.qml
++++ b/nebula/ui/components/navigator/MZNavigatorLoader.qml
+@@ -56,7 +56,7 @@ StackView {
+       if (stackView.get(pos+1).sourceComponent === null ||
+           (MZNavigator.loadingFlags === MZNavigator.ForceReload)) {
+         stackView.get(pos+1).sourceComponent = null;
+-        stackView.get(pos+1).sourceComponent = MZNavigator.component;
++        stackView.get(pos+1).source = MZNavigator.loadUrl;
+       }
+ 
+       for (let i = 0; i < stackView.screens.length; ++i) {
+diff --git a/nebula/ui/components/navigator/navigatorLoaderInternal.qml b/nebula/ui/components/navigator/navigatorLoaderInternal.qml
+index 413cc2df85..fbf51a965d 100644
+--- a/nebula/ui/components/navigator/navigatorLoaderInternal.qml
++++ b/nebula/ui/components/navigator/navigatorLoaderInternal.qml
+@@ -12,5 +12,5 @@ Loader {
+ 
+     // Let's use `onCompleted` to take the current value of
+     // MZNavigator.component without creating a property binding.
+-    Component.onCompleted: () => { loader.sourceComponent = MZNavigator.component }
++    Component.onCompleted: () => { loader.source = MZNavigator.loadUrl }
+ }
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 552033a8bf..c57833a201 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -10,6 +10,9 @@ qt_add_executable(mozillavpn MANUAL_FINALIZATION)
+ mz_target_handle_warnings(mozillavpn)
+ 
+ find_package(Qt6 REQUIRED COMPONENTS Svg)
++if(Qt6_VERSION VERSION_GREATER_EQUAL 6.10.0)
++    find_package(Qt6 REQUIRED COMPONENTS GuiPrivate QmlPrivate)
++endif()
+ 
+ target_link_libraries(mozillavpn PRIVATE
+     Qt6::Quick
+diff --git a/src/frontend/navigator.cpp b/src/frontend/navigator.cpp
+index 1c65596936..721977a409 100644
+--- a/src/frontend/navigator.cpp
++++ b/src/frontend/navigator.cpp
+@@ -14,7 +14,6 @@
+ #include "logger.h"
+ #include "loglevel.h"
+ #include "mozillavpn.h"
+-#include "qmlengineholder.h"
+ 
+ namespace {
+ Navigator* s_instance = nullptr;
+@@ -41,7 +40,7 @@ struct ScreenData {
+   Navigator::LoadPolicy m_loadPolicy;
+ 
+   // The URL of the component.
+-  QString m_qmlComponentUrl;
++  QUrl m_qmlComponentUrl;
+ 
+   // The list of acceptable App states. Empty means any state is OK.
+   QVector<int> m_requiredState;
+@@ -57,9 +56,6 @@ struct ScreenData {
+   // app will quit.
+   bool (*m_quitBlocked)() = nullptr;
+ 
+-  // The cache of the QML component.
+-  QQmlComponent* m_qmlComponent = nullptr;
+-
+   // List of stack views, or views registered by this screen.
+   QList<Layer> m_layers;
+ 
+@@ -104,17 +100,6 @@ QList<ScreenData*> computeScreens(int* requestedScreen) {
+   return screens;
+ }
+ 
+-void maybeGenerateComponent(Navigator* navigator, ScreenData* screen) {
+-  if (!screen->m_qmlComponent) {
+-    QQmlComponent* qmlComponent = new QQmlComponent(
+-        QmlEngineHolder::instance()->engine(), screen->m_qmlComponentUrl,
+-        QQmlComponent::Asynchronous, navigator);
+-
+-    Q_ASSERT(!qmlComponent->isError());
+-    screen->m_qmlComponent = qmlComponent;
+-  }
+-}
+-
+ };  // namespace
+ 
+ // static
+@@ -159,9 +144,8 @@ void Navigator::computeComponent() {
+   }
+   Q_ASSERT(topPriorityScreen);
+ 
+-  maybeGenerateComponent(this, topPriorityScreen);
+   loadScreen(topPriorityScreen->m_screen, topPriorityScreen->m_loadPolicy,
+-             topPriorityScreen->m_qmlComponent, ForceReloadAll);
++             topPriorityScreen->m_qmlComponentUrl, ForceReloadAll);
+ }
+ 
+ void Navigator::requestScreenFromBottomBar(
+@@ -182,16 +166,14 @@ void Navigator::requestScreen(int requestedScreen,
+ 
+   for (ScreenData* screen : screens) {
+     if (screen->m_screen == requestedScreen) {
+-      maybeGenerateComponent(this, screen);
+-
+-      if (screen->m_qmlComponent == m_currentComponent &&
++      if (screen->m_qmlComponentUrl == m_currentLoadUrl &&
+           loadingFlags == NoFlags) {
+         logger.debug() << "Already in the right screen";
+         return;
+       }
+ 
+-      loadScreen(screen->m_screen, screen->m_loadPolicy, screen->m_qmlComponent,
+-                 loadingFlags);
++      loadScreen(screen->m_screen, screen->m_loadPolicy,
++                 screen->m_qmlComponentUrl, loadingFlags);
+       return;
+     }
+   }
+@@ -236,9 +218,8 @@ void Navigator::requestPreviousScreen() {
+ }
+ 
+ void Navigator::loadScreen(int screen, LoadPolicy loadPolicy,
+-                           QQmlComponent* component,
+-                           LoadingFlags loadingFlags) {
+-  logger.debug() << "Loading screen" << component->url().toString();
++                           const QUrl& loadUrl, LoadingFlags loadingFlags) {
++  logger.debug() << "Loading screen" << loadUrl.toString();
+ 
+   if (screen == m_currentScreen) {
+     logger.debug()
+@@ -256,7 +237,7 @@ void Navigator::loadScreen(int screen, LoadPolicy loadPolicy,
+   }
+ 
+   m_currentLoadPolicy = loadPolicy;
+-  m_currentComponent = component;
++  m_currentLoadUrl = loadUrl;
+   m_currentLoadingFlags = loadingFlags;
+ 
+   emit currentComponentChanged();
+diff --git a/src/frontend/navigator.h b/src/frontend/navigator.h
+index 1ad915b46a..5ffd0bc5ef 100644
+--- a/src/frontend/navigator.h
++++ b/src/frontend/navigator.h
+@@ -20,8 +20,8 @@ class Navigator final : public QObject {
+                  currentComponentChanged)
+   Q_PROPERTY(LoadingFlags loadingFlags MEMBER m_currentLoadingFlags NOTIFY
+                  currentComponentChanged)
+-  Q_PROPERTY(QQmlComponent* component MEMBER m_currentComponent NOTIFY
+-                 currentComponentChanged)
++  Q_PROPERTY(
++      QUrl loadUrl MEMBER m_currentLoadUrl NOTIFY currentComponentChanged)
+ 
+  public:
+   enum LoadPolicy {
+@@ -87,7 +87,7 @@ class Navigator final : public QObject {
+   explicit Navigator(QObject* parent);
+ 
+   void computeComponent();
+-  void loadScreen(int screen, LoadPolicy loadPolicy, QQmlComponent* component,
++  void loadScreen(int screen, LoadPolicy loadPolicy, const QUrl& loadUrl,
+                   LoadingFlags loadingFlags);
+ 
+   void removeItem(QObject* obj);
+@@ -96,7 +96,7 @@ class Navigator final : public QObject {
+   int m_currentScreen = -1;
+   LoadPolicy m_currentLoadPolicy = LoadTemporarily;
+   LoadingFlags m_currentLoadingFlags = NoFlags;
+-  QQmlComponent* m_currentComponent = nullptr;
++  QUrl m_currentLoadUrl;
+ 
+   QList<int> m_screenHistory;
+ 
