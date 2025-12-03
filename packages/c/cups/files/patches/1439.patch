@@ -1,0 +1,38 @@
+From 6efa179b8446a7999b9149c5101fb11580ea8998 Mon Sep 17 00:00:00 2001
+From: Zdenek Dohnal <zdohnal@redhat.com>
+Date: Wed, 3 Dec 2025 09:39:02 +0100
+Subject: [PATCH] http.c: Fix infinite loop in GTK print dialog
+
+GTK has a specific IPP processing which stopped working after
+CVE-2025-58436 fix. GTK depends on internal behavior of `_httpUpdate()`
+which read a line from connection at the start of function, which was
+one of culprits behind CVE-2025-58436.
+
+To mitigate CVE-2025-58436 `_httpUpdate()` started to read from
+connection only if there was data in internal HTTP buffer and there
+was at least one newline buffered - otherwise the function returns
+HTTP_ERROR/HTTP_CONTINUE, which caused the loop in GTK.
+
+The change which fixes GTK behavior in the PR is to read data from
+connection at the start of `_httpUpdate()` for non-blocking connections
+immediately with no timeout if internal HTTP buffer is not full. The
+change mitigates the CVE as well as the previous implementation.
+
+Fixes #1429
+---
+ cups/http.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cups/http.c b/cups/http.c
+index 5cc41c3c0..d6523aa39 100644
+--- a/cups/http.c
++++ b/cups/http.c
+@@ -2909,7 +2909,7 @@ _httpUpdate(http_t        *http,	// I - HTTP connection
+     // See whether our read buffer is full...
+     DEBUG_printf("2_httpUpdate: used=%d", http->used);
+ 
+-    if (http->used > 0 && !memchr(http->buffer, '\n', (size_t)http->used) && (size_t)http->used < sizeof(http->buffer))
++    if ((size_t)http->used < sizeof(http->buffer))
+     {
+       // No, try filling in more data...
+       if ((bytes = http_read(http, http->buffer + http->used, sizeof(http->buffer) - (size_t)http->used, /*timeout*/0)) > 0)
