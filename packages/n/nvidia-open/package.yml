@@ -1,0 +1,132 @@
+name       : nvidia-open
+version    : 580.105.08 # This has to be kept at the same version as nvidia-glx-driver
+release    : 1
+source     :
+    - https://download.nvidia.com/XFree86/NVIDIA-kernel-module-source/NVIDIA-kernel-module-source-580.105.08.tar.xz : 59c518a2014f83efaf2a9f539b3097c55e74e8878aca01aedb59e92e3116080d
+homepage   : https://github.com/NVIDIA/open-gpu-kernel-modules
+license    : GPL-2.0-only
+component  :
+    - kernel.drivers
+    - current : kernel.drivers
+    - modaliases : kernel.drivers
+summary    :
+    - NVIDIA open GPU kernel modules (LTS Kernel)
+    - current : NVIDIA open GPU kernel modules (Current Kernel)
+    - modaliases : These files are used by software centers for hardware detection
+description:
+    - NVIDIA open GPU kernel modules (LTS Kernel)
+    - current : NVIDIA open GPU kernel modules (Current Kernel)
+    - modaliases : These files are used by the software centers for hardware detection
+rundeps    :
+    - current : nvidia-glx-driver-common
+    - main : nvidia-glx-driver-common
+conflicts  :
+    - nvidia-470-glx-driver
+    - nvidia-beta-driver
+    - nvidia-developer-driver
+    - nvidia-glx-driver
+    - current :
+        - nvidia-470-glx-driver-current
+        - nvidia-beta-driver-current
+        - nvidia-developer-driver-current
+        - nvidia-glx-driver-current
+builddeps  :
+    - cpio
+    - linux-current
+    - linux-current-headers
+    - linux-lts
+    - linux-lts-headers
+optimize   :
+    - no-bind-now
+extract    : false
+environment: |
+    unset LDFLAGS
+setup      : |
+    mkdir current lts
+    tar --strip-components=1 -xf $sources/NVIDIA-kernel-module-source-%version%.tar.xz -C current
+    tar --strip-components=1 -xf $sources/NVIDIA-kernel-module-source-%version%.tar.xz -C lts
+build      : |
+    pushd current
+    %make KERNEL_UNAME=%kernel_version_current% NV_VERBOSE=1 modules
+    popd
+
+    pushd lts
+    %make KERNEL_UNAME=%kernel_version_lts% NV_VERBOSE=1 modules
+    popd
+install    : |
+    pushd current
+    %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_current%
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video
+    # zstd compress all .ko and install them to the video driver directory
+    for module in $(find . -name '*.ko'); do
+        # llvm-strip --strip-unneeded $module
+        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_current%/kernel/drivers/video/$(basename $module).zst
+    done
+    popd
+
+    pushd lts
+    %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_lts%
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video
+    for module in $(find . -name '*.ko'); do
+        # llvm-strip --strip-unneeded $module
+        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_lts%/kernel/drivers/video/$(basename $module).zst
+    done
+    # Prepare modaliases from the LTS kernel
+    sh -e $pkgfiles/nvidia_supported nvidia ${package} README.md kernel-open/nvidia/nv-kernel.o_binary > modalias
+    install -D -m 00644 modalias $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
+    popd
+
+    # Set required kernel in appstream files
+    curmajkernelv=$(echo %kernel_version_current% | cut -d '.' -f 1,2)
+    ltsmajkernelv=$(echo %kernel_version_lts% | cut -d '.' -f 1,2)
+    # FIXME: use xmllint
+    sed -i "s/9.99/${curmajkernelv}/" $pkgfiles/nvidia-open-current.metainfo.xml
+    sed -i "s/9.99/${ltsmajkernelv}/" $pkgfiles/nvidia-open-lts.metainfo.xml
+    # Appstream metainfo
+    install -Dm00644 $pkgfiles/nvidia-open-current.metainfo.xml $installdir/usr/share/metainfo/nvidia-open-current.metainfo.xml
+    install -Dm00644 $pkgfiles/nvidia-open-lts.metainfo.xml $installdir/usr/share/metainfo/nvidia-open-lts.metainfo.xml
+    # Add modalias provides to appstream metainfo
+    cat lts/modalias | cut -d" " -f2 | $pkgfiles/modalias-util.py $installdir/usr/share/metainfo/nvidia-open-current.metainfo.xml
+    cat lts/modalias | cut -d" " -f2 | $pkgfiles/modalias-util.py $installdir/usr/share/metainfo/nvidia-open-lts.metainfo.xml
+
+    # Generate per-kernel initrd with embedded nvidia kernel drivers
+    for i in current lts; do
+        mkdir -p init-$i/dracut-nvidia
+
+        # This file triggers a dracut service that regenerates the depmod index files
+        touch init-$i/.dracut-depmod-invalidate
+
+        pushd $installdir/usr/lib64/modules/*.$i
+        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        popd
+
+        # Strip the debug symobls (we can get them from the normal kernel modules).
+        # Don't compress the kernel modules here so that the final archive is slightly smaller
+        find init-$i -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
+
+        # Create the initrd
+        pushd init-$i
+        find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
+
+        # TODO Sign it
+        popd
+    done
+
+    # Install it (do it here so that we don't copy this again during the second loop of the above for)
+    kernel_current=%kernel_version_current%
+    current_string="${kernel_current/.current}"
+    install -D -m 00644 $workdir/initrd-current $installdir/usr/lib64/kernel/initrd-com.solus-project.current.$current_string.nvidia
+    kernel_lts=%kernel_version_lts%
+    lts_string="${kernel_lts/.lts}"
+    install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
+patterns   :
+    - modaliases :
+        - /usr/share/linux-driver-management/modaliases
+    - main :
+        - /usr/lib64/kernel/initrd-com.solus-project.lts.*
+        - /usr/share/metainfo/nvidia-lts-current.metainfo.xml
+        - /usr/lib64/modules/*.lts
+    - current :
+        - /usr/lib64/kernel/initrd-com.solus-project.current.*
+        - /usr/share/metainfo/nvidia-open-current.metainfo.xml
+        - /usr/lib64/modules/*.current
