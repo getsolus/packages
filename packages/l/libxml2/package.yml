@@ -1,10 +1,12 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : libxml2
-version    : 2.13.9
-release    : 57
+version    : 2.15.1
+release    : 58
 source     :
-    - https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.9.tar.xz : a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a
+    - https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz : c008bac08fd5c7b4a87f7b8a71f283fa581d80d80ff8d2efd3b26224c39bc54c
     - https://www.w3.org/XML/Test/xmlts20130923.tar.gz#xmlts.tar.gz : 9b61db9f5dbffa545f4b8d78422167083a8568c59bd1129f94138f936cf6fc1f
+    # Don't delete this source, just comment it out if it's not needed. The build recipe accounts for it possibly not existing
+    - https://download.gnome.org/sources/libxml2/2.13/libxml2-2.13.9.tar.xz#compat.tar.xz : a2c9ae7b770da34860050c309f903221c67830c86e4a7e760692b803df95143a
 license    :
     - MIT
 component  : system.base
@@ -13,42 +15,85 @@ summary    : GNOME XML Library
 description: |
     The libxml2 package contains libraries and utilities used for parsing XML files.
 builddeps  :
-    - pkgconfig32(icu-i18n)
+    - pkgconfig32(icu-uc)
     - pkgconfig32(liblzma)
+    - pkgconfig32(libxslt)
+    - pkgconfig32(readline)
     - pkgconfig32(zlib)
     - pkgconfig(python3)
+    - docbook-xml
+    - doxygen
+    - git
+    - perl
 optimize   :
     - lto
     - speed
 devel      : true
 emul32     : true
+environment: |
+    _IS_64BIT_BOOL="true"
+    _IS_64BIT_FEAT="enabled"
+
+    if [[ "${EMUL32BUILD}" ]]; then
+        _IS_64BIT_BOOL="false"
+        _IS_64BIT_FEAT="disabled"
+    fi
+setup      : |
+    if [ -f ${sources}/compat.tar.xz ]; then
+        mkdir "${workdir}/../compat/"
+        tar -x -C "${workdir}/../compat/" --strip-components=1 -f "${sources}/compat.tar.xz"
+
+        pushd "${workdir}/../compat"
+        %patch -p1 -i ${pkgfiles}/0001-build-Check-for-icu-uc-instead-of-icu-i18n.patch
+        %meson_configure \
+            -Dhistory=true \
+            -Dicu="${_IS_64BIT_FEAT}" \
+            -Dlegacy=true \
+            -Dpython=false
+        popd
+    fi
+
+    # Build the static library so that we can build a static version of bsdtar
+    %meson_configure \
+        -Ddefault_library=both \
+        -Ddocs="${_IS_64BIT_FEAT}" \
+        -Dhistory=enabled \
+        -Dicu="${_IS_64BIT_FEAT}" \
+        -Dlegacy=enabled \
+        -Dpython="${_IS_64BIT_FEAT}"
+build      : |
+    if [[ -d "${workdir}/../compat" ]]; then
+        pushd "${workdir}/../compat"
+        env CCACHE_BASEDIR="${pwd}" %ninja_build
+        popd
+    fi
+
+    env CCACHE_BASEDIR="${pwd}" %ninja_build
+install    : |
+    if [[ -d "${workdir}/../compat" ]]; then
+        pushd "${workdir}/../compat"
+        mkdir tmp
+        DESTDIR="${pwd}/tmp" meson install --no-rebuild -C solusBuildDir
+
+        # Only copy the sonames
+        install -dm00755 ${installdir}/%libdir%
+        find "${pwd}"/tmp/%libdir% -name "libxml2.so.*" -print -exec mv {} ${installdir}/%libdir% \;
+        popd
+    fi
+
+    %ninja_install
+    %install_license Copyright
+profile    : |
+    # AerynOS Inspiration.
+    perl ${pkgfiles}/dbgenattr.pl 100000 > dba100000.xml
+
+    ${workdir}/solusBuildDir/xmllint --noout  dba100000.xml
+    ${workdir}/solusBuildDir/xmllint --stream  dba100000.xml
+    ${workdir}/solusBuildDir/xmllint --noout --valid test/valid/REC-xml-19980210.xml
+    ${workdir}/solusBuildDir/xmllint --stream --valid test/valid/REC-xml-19980210.xml
+
+    %ninja_check
+check      : |
+    %ninja_check
 patterns   :
     - docs : /usr/share/doc
-environment: |
-    # set common build options here to avoid copy pasta spam.
-    export COMMON_OPTS="--disable-static --with-python --with-legacy --with-ftp --with-icu --with-threads --with-xptr-locs"
-setup      : |
-    %patch -p1 -i $pkgfiles/libxml2-2.12.9-icu-pkgconfig.patch
-
-    mkdir xmlconf
-    tar -xf $sources/xmlts.tar.gz -C xmlconf --strip-components=1
-    if [[ ! -z "${EMUL32BUILD}" ]]; then
-        %reconfigure $COMMON_OPTS --without-python
-    else
-        %reconfigure $COMMON_OPTS
-    fi
-build      : |
-    %make
-install    : |
-    %make_install
-    install -m 00755 $pkgfiles/buildDocBookCatalog $installdir/usr/bin/buildDocBookCatalog
-profile    : |
-    # Clear Inspiration.
-    %make dba100000.xml
-    ./xmllint --noout  dba100000.xml
-    ./xmllint --stream  dba100000.xml
-    ./xmllint --noout --valid test/valid/REC-xml-19980210.xml
-    ./xmllint --stream --valid test/valid/REC-xml-19980210.xml
-    %make check
-check      : |
-    %make check
