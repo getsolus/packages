@@ -1,0 +1,111 @@
+From ef4504320de2c3a7c7aebcf083d75db361f802ae Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Fri, 12 Dec 2025 14:37:56 +0100
+Subject: [PATCH] core/sessions: don't take ownership of an fd that Qt will
+ close
+
+QDBusUnixFileDescriptor closes the file descriptor in its destructor, if we
+want to take ownership of it, we need to duplicate the file descriptor.
+If we don't duplicate it, but directly take "ownership" of the file descriptor,
+the following sequence of events can happen:
+
+1. ~QDBusUnixFileDescriptor closes file descriptor A
+2. some new fd B is allocated, which happens to have the same handle as fd A
+3. ~FileDescriptor closes fd A, but it has the same handle as fd, so it actually
+   closes fd B!
+4. whenever fd B is used, we run into problems
+
+To make such issues easier to debug in the future, this also adds debug logging
+for when closing a file descriptor fails.
+
+BUG: 513151
+(cherry picked from commit 30a7f52841dd1c449965d0c9d5cd4915697ab129)
+---
+ src/core/session_consolekit.cpp |  2 +-
+ src/core/session_logind.cpp     |  2 +-
+ src/utils/filedescriptor.cpp    | 22 +++++++++++++++++++---
+ 3 files changed, 21 insertions(+), 5 deletions(-)
+
+diff --git a/src/core/session_consolekit.cpp b/src/core/session_consolekit.cpp
+index 0200407e63d..c0e8449f8a2 100644
+--- a/src/core/session_consolekit.cpp
++++ b/src/core/session_consolekit.cpp
+@@ -239,7 +239,7 @@ FileDescriptor ConsoleKitSession::delaySleep(const QString &reason)
+         return FileDescriptor{};
+     }
+     const QDBusUnixFileDescriptor descriptor = reply.arguments().constFirst().value<QDBusUnixFileDescriptor>();
+-    return FileDescriptor{descriptor.fileDescriptor()};
++    return FileDescriptor{fcntl(descriptor.fileDescriptor(), F_DUPFD_CLOEXEC, 0)};
+ }
+ 
+ ConsoleKitSession::ConsoleKitSession(const QString &sessionPath)
+diff --git a/src/core/session_logind.cpp b/src/core/session_logind.cpp
+index 978c410cfea..5f6541c289b 100644
+--- a/src/core/session_logind.cpp
++++ b/src/core/session_logind.cpp
+@@ -237,7 +237,7 @@ FileDescriptor LogindSession::delaySleep(const QString &reason)
+         return FileDescriptor{};
+     }
+     const QDBusUnixFileDescriptor descriptor = reply.arguments().constFirst().value<QDBusUnixFileDescriptor>();
+-    return FileDescriptor{descriptor.fileDescriptor()};
++    return FileDescriptor(fcntl(descriptor.fileDescriptor(), F_DUPFD_CLOEXEC, 0));
+ }
+ 
+ LogindSession::LogindSession(const QString &sessionPath)
+diff --git a/src/utils/filedescriptor.cpp b/src/utils/filedescriptor.cpp
+index d60c429e446..f76f07aad1a 100644
+--- a/src/utils/filedescriptor.cpp
++++ b/src/utils/filedescriptor.cpp
+@@ -7,6 +7,7 @@
+     SPDX-License-Identifier: GPL-2.0-or-later
+ */
+ #include "filedescriptor.h"
++#include "common.h"
+ 
+ #include <fcntl.h>
+ #include <sys/poll.h>
+@@ -29,7 +30,12 @@ FileDescriptor::FileDescriptor(FileDescriptor &&other)
+ FileDescriptor &FileDescriptor::operator=(FileDescriptor &&other)
+ {
+     if (m_fd != -1) {
+-        ::close(m_fd);
++        const int err = ::close(m_fd);
++        if (Q_UNLIKELY(err != 0)) {
++            // If this failed, we've either closed the fd somewhere else, or we end up
++            // leaking this fd here. Either way, there's some significant bug!
++            qCCritical(KWIN_CORE, "::close() failed: %s", strerror(errno));
++        }
+     }
+     m_fd = std::exchange(other.m_fd, -1);
+     return *this;
+@@ -38,7 +44,12 @@ FileDescriptor &FileDescriptor::operator=(FileDescriptor &&other)
+ FileDescriptor::~FileDescriptor()
+ {
+     if (m_fd != -1) {
+-        ::close(m_fd);
++        const int err = ::close(m_fd);
++        if (Q_UNLIKELY(err != 0)) {
++            // If this failed, we've either closed the fd somewhere else, or we end up
++            // leaking this fd here. Either way, there's some significant bug!
++            qCCritical(KWIN_CORE, "::close() failed: %s", strerror(errno));
++        }
+     }
+ }
+ 
+@@ -60,7 +71,12 @@ int FileDescriptor::take()
+ void FileDescriptor::reset()
+ {
+     if (m_fd != -1) {
+-        ::close(m_fd);
++        const int err = ::close(m_fd);
++        if (Q_UNLIKELY(err != 0)) {
++            // If this failed, we've either closed the fd somewhere else, or we end up
++            // leaking this fd here. Either way, there's some significant bug!
++            qCCritical(KWIN_CORE, "::close() failed: %s", strerror(errno));
++        }
+         m_fd = -1;
+     }
+ }
+-- 
+GitLab
+
