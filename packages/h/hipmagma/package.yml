@@ -1,10 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : hipmagma
-version    : 2.8.0
-release    : 2
+version    : 2.9.0
+release    : 3
 source     :
-    # tag: v2.8.0
-    - git|https://github.com/icl-utk-edu/magma.git : 06368d9b817710566f654b96114549216f8cee70
+    - https://github.com/icl-utk-edu/magma/archive/refs/tags/v2.9.0.tar.gz : c9307e3e10dd89cb0b8d00653e78291a868aef2c1a1c56956325600cc38f7284
 homepage   : https://icl.utk.edu/magma/
 license    : BSD-3-Clause
 component  : programming.library
@@ -23,46 +22,58 @@ builddeps  :
     - rocm-hip
 environment: |
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
-    # Enabling debug causes relocation out of range error
-    export CXXFLAGS="${CXXFLAGS/ -g2/}"
     # Too noisy
     export CXXFLAGS+=" -w"
 
     export ROCM_PATH=/usr
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
-    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
 
     export AMDGPU_TARGETS="%AMDGPUTARGETS%"
 
-    if [ -e /usr/bin/sccache ]; then
-        export HIP_CLANG_LAUNCHER=/usr/bin/sccache
-    fi
+    # Otherwise the HIP object code takes up too much space in the ELF and we
+    # get relocation out of range errors.
+    export OFFLOAD_BUNDLER_COMPRESS=1
+
+    # Otherwise for some reason `flang` in $HIP_CMAKE_PATH gets picked up
+    export FC=gfortran
+
+    # sccache bug that generates duplicate __hip_cuid symbol names despite
+    # different kernels, causing a linking error at the end of the build.
+    # if [ -e /usr/bin/sccache ]; then
+    #     export CMAKE_C_COMPILER_LAUNCHER=/usr/bin/sccache
+    #     export CMAKE_CXX_COMPILER_LAUNCHER=/usr/bin/sccache
+    # fi
 setup      : |
-    echo "set_target_properties(magma PROPERTIES VERSION %version% SOVERSION 2.8)" >> CMakeLists.txt
-    echo "set_target_properties(magma_sparse PROPERTIES VERSION %version% SOVERSION 2.8)" >> CMakeLists.txt
+    %patch -p1 -i $pkgfiles/magma-ROCm-7.0-compat.patch
+
+    sed -i 's|HIP_SEPARABLE_COMPILATION ON|HIP_SEPARABLE_COMPILATION OFF|' CMakeLists.txt
+
+    echo "set_target_properties(magma PROPERTIES VERSION %version%)" >> CMakeLists.txt
+    echo "set_target_properties(magma_sparse PROPERTIES VERSION %version%)" >> CMakeLists.txt
 
     cp make.inc-examples/make.inc.hip-gcc-openblas make.inc
-    %make OPENBLASDIR=/usr ROCM_PATH=$ROCM_PATH generate
+    %make CC=gcc CXX=$HIP_CLANG_PATH/clang++ HIPCC=$HIP_CLANG_PATH/clang++ OPENBLASDIR=/usr ROCM_PATH=$ROCM_PATH generate
 
-    %patch -p1 -i $pkgfiles/add-hip-device-to-magma.patch
-
-    # Similarly, use Release instead of RelWithDbgInfo to prevent 
-    # relocation out of range error
+    # NOTE to future packagers:
+    # Ignore whatever DEVCCFLAGS says the architectures it's building against.
+    # This project uses
+    # https://rocm.docs.amd.com/en/latest/conceptual/cmake-packages.html#compiling-device-code-in-c-language-mode
+    # to compile HIP code, and ultimately the architectures are controlled by
+    # `GPU_TARGET`.
     %cmake_ninja -L \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
-      -DCMAKE_BUILD_TYPE=Release \
       -DROCM_CORE=$ROCM_PATH \
-      -DCMAKE_CXX_COMPILER=hipcc \
+      -DCMAKE_C_COMPILER=$HIP_CLANG_PATH/clang \
+      -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
       -DMAGMA_ENABLE_CUDA=OFF \
       -DMAGMA_ENABLE_HIP=ON \
+      -DUSE_FORTRAN=ON \
       -DBUILD_SHARED_LIBS=ON \
       -DGPU_TARGET="$AMDGPU_TARGETS" \
-      -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
+      -DAMDGPU_TARGETS="$AMDGPU_TARGETS"
 build      : |
-    # We don't need to build for all architectures during setup/install phase.
-    # This makes CMake compiler checks much faster.
-    # export HCC_AMDGPU_TARGET="$(echo $AMDGPU_TARGETS | tr ";" ",")"
     %ninja_build lib sparse-lib
 install    : |
     %ninja_install
