@@ -1,36 +1,28 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : hipblaslt
-version    : 0.8.0
-release    : 1
+version    : 7.0.2
+release    : 2
 source     :
-    # tag: rocm-6.2.4
-    - git|https://github.com/ROCm/hipBLASLt : b805079704ecff8522ce5efaadf119b45a0d9410
+    # Note: this is actually NOT 7.0.2 but a newer commit around 7.1.0 which has
+    # some new fixes that are quite hard to backport.
+    - git|https://github.com/ROCm/rocm-libraries.git : a676499add42941ff6af1e8d3f0504416dac7429
 homepage   : https://github.com/ROCm/hipBLASLt
 license    : MIT
 component  : programming.library
 summary    : hipBLASLt is a library that provides general matrix-matrix operations with a flexible API and extends functionalities beyond a traditional BLAS library
 description: |
     hipBLASLt is a library that provides general matrix-matrix operations. It has a flexible API that extends functionalities beyond a traditional BLAS library, such as adding flexibility to matrix data layouts, input types, compute types, and algorithmic implementations and heuristics.
-environment: |
-    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
-
-    export ROCM_PATH=/usr
-    export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
-    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
-    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
-    export TENSILE_ROCM_ASSEMBLER_PATH=$HIP_CLANG_PATH/clang
-    export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=$HIP_CLANG_PATH/clang-offload-bundler
-
-    # hipBLASLt supports gfx90a, gfx941, gfx942, gfx1100, gfx1101
-    # only the last 2 are consumer GPUs, hence we build only those two
-    export AMDGPU_TARGETS="gfx1100;gfx1101"
-
-    if [ -e /usr/bin/sccache ]; then
-        export HIP_CLANG_LAUNCHER=/usr/bin/sccache
-    fi
+networking : yes # TODO: figure out why nanobind refuse to work
 builddeps  :
-    - hipblas-devel
+    - pkgconfig(lapack)
+    - pkgconfig(python3)
+    - pkgconfig(gtest)
+    - pkgconfig(libdrm_amdgpu)
+    - amd-blis-devel
+    - hipblas-common-devel
     - libboost-devel
+    - rocm-openmp-devel
+    - roctracer-devel
     - msgpack-cxx
     - python-joblib
     - python-msgpack
@@ -41,28 +33,57 @@ builddeps  :
     - rocm-cmake
     - rocm-hip
     - virtualenv
+    - nanobind
+rundeps    :
+    - devel:
+      - hipblas-common-devel
+environment: |
+    export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+    # Too noisy
+    export CXXFLAGS+=" -w"
+
+    export ROCM_PATH=/usr
+    export HIP_PATH=$ROCM_PATH
+    export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
+    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
+    export TENSILE_ROCM_ASSEMBLER_PATH=$HIP_CLANG_PATH/clang
+    export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=$HIP_CLANG_PATH/clang-offload-bundler
+    # For Tensile toolchain detection to work
+    export PATH="$PATH:$HIP_CLANG_PATH"
+
+    if [ -e /usr/bin/sccache ]; then
+        export CMAKE_C_COMPILER_LAUNCHER=sccache
+        export CMAKE_CXX_COMPILER_LAUNCHER=sccache
+        export CMAKE_HIP_COMPILER_LAUNCHER=sccache
+        export Tensile_ASM_COMPILER_LAUNCHER=sccache
+        export Tensile_CXX_COMPILER_LAUNCHER=sccache
+    fi
+
+    # It seems that hipBLASLt only supports GPUs with WMMA
+    export AMDGPU_TARGETS="gfx1100;gfx1101;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
 setup      : |
-    pushd tensilelite
-        sed -i 's|find_package(msgpack REQUIRED)|find_package(msgpack-cxx REQUIRED)|' Tensile/Source/lib/CMakeLists.txt
-        sed -i 's|llvm/bin|lib%LIBSUFFIX%/llvm-rocm/bin|g' Tensile/Ops/gen_assembly.sh
+    %patch -p1 -i $pkgfiles/blis-use-pkg-config.diff
+
+    pushd projects/hipblaslt
+        %patch -p1 -i $pkgfiles/messagepack-compression-support.patch
+        %patch -p1 -i $pkgfiles/TensileCreateLibrary-refactor.patch
+        %patch -p1 -i $pkgfiles/Tensile-interning.patch
     popd
 
-    sed -i 's|"lib"|"lib64"|' CMakeLists.txt
-
-    %cmake_ninja -Wno-dev -L \
-      -DCMAKE_C_COMPILER=hipcc \
-      -DCMAKE_CXX_COMPILER=hipcc \
+    %cmake_ninja -S projects/hipblaslt -Wno-dev -L \
+      -DCMAKE_C_COMPILER=$HIP_CLANG_PATH/clang \
+      -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DROCM_SYMLINK_LIBS=OFF \
-      -DAMDGPU_TARGETS="$AMDGPU_TARGETS" \
-      -DBUILD_SHARED_LIBS=ON \
-      -DBUILD_CLIENTS_TESTS=OFF \
-      -DBUILD_CLIENTS_BENCHMARKS=OFF \
-      -DBUILD_CLIENTS_SAMPLES=OFF \
-      -DBUILD_WITH_TENSILE=ON \
-      -DTensile_PRINT_DEBUG=ON \
-      -DTensile_LIBRARY_FORMAT=msgpack \
-      -DTensile_CPU_THREADS=%YJOBS%
+      -DROCM_FOUND=ON \
+      -DHIPBLASLT_BUILD_SHARED_LIBS=ON \
+      -DHIPBLASLT_ENABLE_ROCROLLER=OFF \
+      -DHIPBLASLT_BUNDLE_PYTHON_DEPS=ON \
+      -DHIPBLASLT_BUILD_TESTING=OFF \
+      -DHIPBLASLT_ENABLE_SAMPLES=OFF \
+      -DTENSILELITE_BUILD_PARALLEL_LEVEL=%YJOBS% \
+      -DGPU_TARGETS="$AMDGPU_TARGETS" \
 build      : |
     %ninja_build
 install    : |
