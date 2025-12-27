@@ -30,7 +30,7 @@ fi
 if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" != "y" ]]
   then
 
-  if [[ -n "${BAMF_DESKTOP_FILE_HINT+x}" ]]
+  if [[ -n "${BAMF_DESKTOP_FILE_HINT+x}" ]] || [[ -n "${GIO_LAUNCHED_DESKTOP_FILE+x}" ]]
   then
   # Ensure the notify-send meets the freedesktop standards
   # https://specifications.freedesktop.org/notification-spec/latest/
@@ -41,11 +41,10 @@ if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" 
           --urgency critical \
           --icon dialog-warning \
           "Snap has ${CONFINEMENT} confinement" \
-          "Snaps may stop working in 2025. See ${URL}"
+          "See ${URL}"
   else
       echo -e "${YELLOW}WARNING:${NC} snap is running with ${CONFINEMENT} confinement." \
-        "Snaps may stop working in 2025." \
-        "See ${URL} for details"
+        "See ${URL} for details."
   fi
 fi
 
