@@ -1,0 +1,1269 @@
+From 14e46ad83bac5fd82569a43c7cbd3e791a1eacc8 Mon Sep 17 00:00:00 2001
+From: "Smyth, Edward" <Edward.Smyth@amd.com>
+Date: Tue, 3 Jun 2025 16:20:43 +0100
+Subject: [PATCH] Improvements to x86 make_defs files (#29)
+
+Various changes to simplify and improve x86 related make_defs files:
+- Make better use of common definitions in config/zen/amd_config.mk
+  from config/zen*/make_defs.mk files
+- Similarly for config/zen/amd_config.make from the
+  config/zen*/make_defs.cmake files
+- Pass cc_major, cc_minor and cc_revision definitions from configure
+  to generated config.mk file, and use these instead of defining
+  GCC_VERSION in config/zen*/make_defs.mk files
+- Add znver3 support for LLVM 13 in config/zen3/make_defs.{mk,cmake}
+- Add znver5 support for LLVM 19 in config/zen5/make_defs.{mk,cmake}
+- Improve readability of haswell, intel64, skx and x86_64 files
+- Correct and tidy some comments
+
+AMD-Internal: [CPUPL-6579]
+---
+ build/config.mk.in          |  7 +++-
+ config/haswell/make_defs.mk | 39 +++++++++-----------
+ config/intel64/make_defs.mk | 31 +++++++---------
+ config/skx/make_defs.mk     | 71 +++++++++++++++++--------------------
+ config/x86_64/make_defs.mk  | 27 ++++++--------
+ config/zen/amd_config.cmake | 12 ++++---
+ config/zen/amd_config.mk    | 38 ++++++++++----------
+ config/zen/make_defs.cmake  | 37 ++++---------------
+ config/zen/make_defs.mk     | 49 +++----------------------
+ config/zen2/make_defs.cmake | 35 +++++-------------
+ config/zen2/make_defs.mk    | 37 ++-----------------
+ config/zen3/make_defs.cmake | 39 +++++---------------
+ config/zen3/make_defs.mk    | 44 ++++-------------------
+ config/zen4/make_defs.cmake | 28 ++-------------
+ config/zen4/make_defs.mk    | 47 ++++--------------------
+ config/zen5/make_defs.cmake | 34 +++++-------------
+ config/zen5/make_defs.mk    | 55 +++++++---------------------
+ configure                   |  5 ++-
+ 18 files changed, 177 insertions(+), 458 deletions(-)
+
+diff --git a/build/config.mk.in b/build/config.mk.in
+index cf6be8255e..0be18a389a 100644
+--- a/build/config.mk.in
++++ b/build/config.mk.in
+@@ -5,7 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
+-#  Copyright (C) 2022, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2022 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -90,6 +90,11 @@ endif
+ CC_VENDOR         := @CC_VENDOR@
+ CC                := @CC@
+ 
++# Gather details of compiler version
++CC_MAJOR    := @cc_major@
++CC_MINOR    := @cc_minor@
++CC_REVISION := @cc_revision@
++
+ # Important C compiler ranges.
+ GCC_OT_4_9_0      := @gcc_older_than_4_9_0@
+ GCC_OT_6_1_0      := @gcc_older_than_6_1_0@
+diff --git a/config/haswell/make_defs.mk b/config/haswell/make_defs.mk
+index a8135c1070..feea18bb56 100644
+--- a/config/haswell/make_defs.mk
++++ b/config/haswell/make_defs.mk
+@@ -5,6 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
++#  Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -55,9 +56,9 @@ CDBGFLAGS      := -g
+ endif
+ 
+ ifeq ($(DEBUG_TYPE),noopt)
+-COPTFLAGS      := -O0
++  COPTFLAGS      := -O0
+ else
+-COPTFLAGS      := -O2
++  COPTFLAGS      := -O2
+ endif
+ 
+ # Flags specific to optimized kernels.
+@@ -65,33 +66,27 @@ endif
+ # they make explicit use of the rbp register.
+ CKOPTFLAGS     := $(COPTFLAGS) -O3 -fomit-frame-pointer
+ ifeq ($(CC_VENDOR),gcc)
+-CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=haswell
+-ifeq ($(GCC_OT_4_9_0),yes)
+-# If gcc is older than 4.9.0, we must use a different label for -march.
+-CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=core-avx2
+-endif
+-else
+-ifeq ($(CC_VENDOR),icc)
+-CKVECFLAGS     := -xCORE-AVX2
++  CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=haswell
++  ifeq ($(GCC_OT_4_9_0),yes)
++    # If gcc is older than 4.9.0, we must use a different label for -march.
++    CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=core-avx2
++  endif
++else ifeq ($(CC_VENDOR),icc)
++  CKVECFLAGS     := -xCORE-AVX2
++else ifeq ($(CC_VENDOR),clang)
++  CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=haswell
+ else
+-ifeq ($(CC_VENDOR),clang)
+-CKVECFLAGS     := -mavx2 -mfma -mfpmath=sse -march=haswell
+-else
+-$(error gcc, icc, or clang is required for this configuration.)
+-endif
+-endif
++  $(error gcc, icc, or clang is required for this configuration.)
+ endif
+ 
+ # Flags specific to reference kernels.
+ CROPTFLAGS     := $(CKOPTFLAGS)
+ ifeq ($(CC_VENDOR),gcc)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++else ifeq ($(CC_VENDOR),clang)
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+ else
+-CRVECFLAGS     := $(CKVECFLAGS)
+-endif
++  CRVECFLAGS     := $(CKVECFLAGS)
+ endif
+ 
+ # Store all of the variables here to new variables containing the
+diff --git a/config/intel64/make_defs.mk b/config/intel64/make_defs.mk
+index 95f21f6f9c..5a445c1202 100644
+--- a/config/intel64/make_defs.mk
++++ b/config/intel64/make_defs.mk
+@@ -5,6 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
++#  Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -55,37 +56,31 @@ CDBGFLAGS      := -g
+ endif
+ 
+ ifeq ($(DEBUG_TYPE),noopt)
+-COPTFLAGS      := -O0
++  COPTFLAGS      := -O0
+ else
+-COPTFLAGS      := -O2
++  COPTFLAGS      := -O2
+ endif
+ 
+ # Flags specific to optimized kernels.
+ CKOPTFLAGS     := $(COPTFLAGS) -O3
+ ifeq ($(CC_VENDOR),gcc)
+-CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
++  CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
++else ifeq ($(CC_VENDOR),icc)
++  CKVECFLAGS     := -xSSSE3
++else ifeq ($(CC_VENDOR),clang)
++  CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
+ else
+-ifeq ($(CC_VENDOR),icc)
+-CKVECFLAGS     := -xSSSE3
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
+-else
+-$(error gcc, icc, or clang is required for this configuration.)
+-endif
+-endif
++  $(error gcc, icc, or clang is required for this configuration.)
+ endif
+ 
+ # Flags specific to reference kernels.
+ CROPTFLAGS     := $(CKOPTFLAGS)
+ ifeq ($(CC_VENDOR),gcc)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++else ifeq ($(CC_VENDOR),clang)
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+ else
+-CRVECFLAGS     := $(CKVECFLAGS)
+-endif
++  CRVECFLAGS     := $(CKVECFLAGS)
+ endif
+ 
+ # Store all of the variables here to new variables containing the
+diff --git a/config/skx/make_defs.mk b/config/skx/make_defs.mk
+index bba0363b72..07cede4d11 100644
+--- a/config/skx/make_defs.mk
++++ b/config/skx/make_defs.mk
+@@ -5,6 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
++#  Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -55,9 +56,9 @@ CDBGFLAGS      := -g
+ endif
+ 
+ ifeq ($(DEBUG_TYPE),noopt)
+-COPTFLAGS      := -O0
++  COPTFLAGS      := -O0
+ else
+-COPTFLAGS      := -O2
++  COPTFLAGS      := -O2
+ endif
+ 
+ # Flags specific to optimized kernels.
+@@ -66,31 +67,27 @@ endif
+ CKOPTFLAGS     := $(COPTFLAGS) -O3 -fomit-frame-pointer
+ 
+ ifeq ($(CC_VENDOR),gcc)
+-CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=skylake-avx512
++  CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=skylake-avx512
++else ifeq ($(CC_VENDOR),icc)
++  CKVECFLAGS     := -xCORE-AVX512
++else ifeq ($(CC_VENDOR),clang)
++  # NOTE: We have to use -march=haswell on Windows because apparently AVX512
++  # uses an alternate calling convention where xmm registers are not callee-saved
++  # on the stack. When this is mixed with framework code compiled for general
++  # x86_64 mode then chaos ensues (e.g. #514).
++  ifeq ($(IS_WIN),yes)
++    CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=haswell
++  else
++    CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=skylake-avx512
++  endif
+ else
+-ifeq ($(CC_VENDOR),icc)
+-CKVECFLAGS     := -xCORE-AVX512
+-else
+-ifeq ($(CC_VENDOR),clang)
+-# NOTE: We have to use -march=haswell on Windows because apparently AVX512
+-# uses an alternate calling convention where xmm registers are not callee-saved
+-# on the stack. When this is mixed with framework code compiled for general
+-# x86_64 mode then chaos ensues (e.g. #514).
+-ifeq ($(IS_WIN),yes)
+-CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=haswell
+-else
+-CKVECFLAGS     := -mavx512f -mavx512dq -mavx512bw -mavx512vl -mfpmath=sse -march=skylake-avx512
+-endif
+-else
+-$(error gcc, icc, or clang is required for this configuration.)
+-endif
+-endif
++  $(error gcc, icc, or clang is required for this configuration.)
+ endif
+ 
+ # The assembler on OS X won't recognize AVX512 without help
+ ifneq ($(CC_VENDOR),icc)
+ ifeq ($(OS_NAME),Darwin)
+-CKVECFLAGS     += -Wa,-march=skylake-avx512
++  CKVECFLAGS     += -Wa,-march=skylake-avx512
+ endif
+ endif
+ 
+@@ -100,25 +97,21 @@ endif
+ # to overcome the AVX-512 frequency drop". (Issue #187)
+ CROPTFLAGS     := $(CKOPTFLAGS)
+ ifeq ($(CC_VENDOR),gcc)
+-CRVECFLAGS     := -march=skylake-avx512 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -funsafe-math-optimizations -ffp-contract=fast
++  CRVECFLAGS     := -march=skylake-avx512 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -funsafe-math-optimizations -ffp-contract=fast
++else ifeq ($(CC_VENDOR),icc)
++  CRVECFLAGS     := -xCORE-AVX2
++else ifeq ($(CC_VENDOR),clang)
++  # NOTE: We have to use -march=haswell on Windows because apparently AVX512
++  # uses an alternate calling convention where xmm registers are not callee-saved
++  # on the stack. When this is mixed with framework code compiled for general
++  # x86_64 mode then chaos ensues (e.g. #514).
++  ifeq ($(IS_WIN),yes)
++    CRVECFLAGS     := -march=haswell -funsafe-math-optimizations -ffp-contract=fast
++  else
++    CRVECFLAGS     := -march=skylake-avx512 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -funsafe-math-optimizations -ffp-contract=fast
++  endif
+ else
+-ifeq ($(CC_VENDOR),icc)
+-CRVECFLAGS     := -xCORE-AVX2
+-else
+-ifeq ($(CC_VENDOR),clang)
+-# NOTE: We have to use -march=haswell on Windows because apparently AVX512
+-# uses an alternate calling convention where xmm registers are not callee-saved
+-# on the stack. When this is mixed with framework code compiled for general
+-# x86_64 mode then chaos ensues (e.g. #514).
+-ifeq ($(IS_WIN),yes)
+-CRVECFLAGS     := -march=haswell -funsafe-math-optimizations -ffp-contract=fast
+-else
+-CRVECFLAGS     := -march=skylake-avx512 -mno-avx512f -mno-avx512vl -mno-avx512bw -mno-avx512dq -mno-avx512cd -funsafe-math-optimizations -ffp-contract=fast
+-endif
+-else
+-$(error gcc, icc, or clang is required for this configuration.)
+-endif
+-endif
++  $(error gcc, icc, or clang is required for this configuration.)
+ endif
+ 
+ # Store all of the variables here to new variables containing the
+diff --git a/config/x86_64/make_defs.mk b/config/x86_64/make_defs.mk
+index 6a05a1f8f9..2e4514d5ea 100644
+--- a/config/x86_64/make_defs.mk
++++ b/config/x86_64/make_defs.mk
+@@ -5,6 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
++#  Copyright (C) 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -63,29 +64,23 @@ endif
+ # Flags specific to optimized kernels.
+ CKOPTFLAGS     := $(COPTFLAGS) -O3
+ ifeq ($(CC_VENDOR),gcc)
+-CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
++  CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
++else ifeq ($(CC_VENDOR),icc)
++  CKVECFLAGS     := -xSSE3
++else ifeq ($(CC_VENDOR),clang)
++  CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
+ else
+-ifeq ($(CC_VENDOR),icc)
+-CKVECFLAGS     := -xSSE3
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CKVECFLAGS     := -mssse3 -mfpmath=sse -march=core2
+-else
+-$(error gcc, icc, or clang is required for this configuration.)
+-endif
+-endif
++  $(error gcc, icc, or clang is required for this configuration.)
+ endif
+ 
+ # Flags specific to reference kernels.
+ CROPTFLAGS     := $(CKOPTFLAGS)
+ ifeq ($(CC_VENDOR),gcc)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++else ifeq ($(CC_VENDOR),clang)
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+ else
+-CRVECFLAGS     := $(CKVECFLAGS)
+-endif
++  CRVECFLAGS     := $(CKVECFLAGS)
+ endif
+ 
+ # Store all of the variables here to new variables containing the
+diff --git a/config/zen/amd_config.cmake b/config/zen/amd_config.cmake
+index 70fb5b23e4..fc4d3dfcaf 100644
+--- a/config/zen/amd_config.cmake
++++ b/config/zen/amd_config.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -40,18 +40,20 @@ if(NOT WIN32)
+     if(DEBUG_TYPE STREQUAL "noopt")
+         set(COPTFLAGS -O0)
+     else() # off or opt
+-        set(COPTFLAGS -O2 -fomit-frame-pointer)
++        set(COPTFLAGS -O3)
+     endif()
+ endif()
+ 
++# Flags specific to LPGEMM kernels.
++set(CKLPOPTFLAGS "")
++
+ # Flags specific to optimized kernels.
+ # NOTE: The -fomit-frame-pointer option is needed for some kernels because
+ # they make explicit use of the rbp register.
+ if(MSVC)
+-    set(COPTFLAGS /Oy)
+-    set(CKOPTFLAGS ${COPTFLAGS})
++    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+ else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -O3)
++    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+ endif()
+ 
+ if(MSVC)
+diff --git a/config/zen/amd_config.mk b/config/zen/amd_config.mk
+index 10c3e09491..ccf906736e 100644
+--- a/config/zen/amd_config.mk
++++ b/config/zen/amd_config.mk
+@@ -4,7 +4,7 @@
+ #  An object-based framework for developing high-performance BLAS-like
+ #  libraries.
+ #
+-#  Copyright (C) 2021 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2021 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -37,6 +37,7 @@
+ # NOTE: The build system will append these variables with various
+ # general-purpose/configuration-agnostic flags in common.mk. You
+ # may specify additional flags here as needed.
++
+ CPPROCFLAGS    :=
+ CMISCFLAGS     :=
+ CPICFLAGS      :=
+@@ -47,37 +48,36 @@ CDBGFLAGS      := -g
+ endif
+ 
+ ifeq ($(DEBUG_TYPE),noopt)
+-COPTFLAGS      := -O0
++  COPTFLAGS      := -O0
+ else
+-COPTFLAGS      := -O2 -fomit-frame-pointer
++  COPTFLAGS      := -O3
+ endif
+ 
+ # Flags specific to optimized kernels.
+ # NOTE: The -fomit-frame-pointer option is needed for some kernels because
+ # they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -O3
++CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
++# Additional flag which is required for lpgemm kernels
++CKLPOPTFLAGS     :=
++
+ ifeq ($(CC_VENDOR),gcc)
+-CKVECFLAGS     := -mavx2 -mfpmath=sse -mfma
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CKVECFLAGS     := -mavx2 -mfpmath=sse -mfma -mno-fma4 -mno-tbm -mno-xop -mno-lwp
+-ifeq ($(strip $(shell $(CC) -v |&head -1 |grep -c 'AOCC.LLVM')),1)
+-CKVECFLAGS += -mllvm -disable-licm-vrp
+-endif
++  CKVECFLAGS     := -mavx2 -mfpmath=sse -mfma
++else ifeq ($(CC_VENDOR),clang)
++  CKVECFLAGS     := -mavx2 -mfpmath=sse -mfma -mno-fma4 -mno-tbm -mno-xop -mno-lwp
++  ifeq ($(strip $(shell $(CC) -v |&head -1 |grep -c 'AOCC.LLVM')),1)
++    CKVECFLAGS += -mllvm -disable-licm-vrp
++  endif
+ else
+-$(error gcc or clang are required for this configuration.)
+-endif
++  $(error gcc or clang are required for this configuration.)
+ endif
+ 
+ # Flags specific to reference kernels.
+ CROPTFLAGS     := $(CKOPTFLAGS)
+ ifeq ($(CC_VENDOR),gcc)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+-else
+-ifeq ($(CC_VENDOR),clang)
+-CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
++else ifeq ($(CC_VENDOR),clang)
++  CRVECFLAGS     := $(CKVECFLAGS) -funsafe-math-optimizations -ffp-contract=fast
+ else
+-CRVECFLAGS     := $(CKVECFLAGS)
+-endif
++  CRVECFLAGS     := $(CKVECFLAGS)
+ endif
+ 
+diff --git a/config/zen/make_defs.cmake b/config/zen/make_defs.cmake
+index 449f441805..ff2bdcd13f 100644
+--- a/config/zen/make_defs.cmake
++++ b/config/zen/make_defs.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -32,38 +32,19 @@
+ 
+ ]=]
+ 
++# FLAGS that are specific to the 'zen' architecture are added here.
++# FLAGS that are common for all the AMD architectures are present in
++# config/zen/amd_config.mk.
++
+ # Include file containing common flags for all AMD architectures
+ include(${CMAKE_SOURCE_DIR}/config/zen/amd_config.cmake)
+-if(NOT WIN32)
+-    if(NOT (DEBUG_TYPE STREQUAL "off"))
+-        set(CDBGFLAGS -g)
+-    endif()
+-
+-    if(DEBUG_TYPE STREQUAL "noopt")
+-        set(COPTFLAGS -O0)
+-    else() # off or opt
+-        set(COPTFLAGS -O3)
+-    endif()
+-endif()
+-
+-# Flags specific to LPGEMM kernels.
+-set(CKLPOPTFLAGS "")
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-if(MSVC)
+-    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+-else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+-endif()
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+     list(APPEND CKVECFLAGS -march=znver1)
+     if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 9.0.0)
+         list(APPEND CKLPOPTFLAGS -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse)
+     endif()
+-endif()
++endif() # gcc
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     list(APPEND CKVECFLAGS -march=znver1)
+@@ -71,8 +52,4 @@ endif() # clang
+ 
+ # Flags specific to reference kernels.
+ set(CROPTFLAGS ${CKOPTFLAGS})
+-if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+-    set(CRVECFLAGS ${CKVECFLAGS})
+-else()
+-    set(CRVECFLAGS ${CKVECFLAGS})
+-endif()
++set(CRVECFLAGS ${CKVECFLAGS})
+diff --git a/config/zen/make_defs.mk b/config/zen/make_defs.mk
+index ef8a21cff9..e3f6fb6d25 100644
+--- a/config/zen/make_defs.mk
++++ b/config/zen/make_defs.mk
+@@ -5,7 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
+-#  Copyright (C) 2022 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2022 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -47,49 +47,12 @@ AMD_CONFIG_FILE := amd_config.mk
+ AMD_CONFIG_PATH := $(BASE_SHARE_PATH)/config/zen
+ -include $(AMD_CONFIG_PATH)/$(AMD_CONFIG_FILE)
+ 
+-#
+-# --- Determine the C compiler and related flags ---
+-#
+-
+-# NOTE: The build system will append these variables with various
+-# general-purpose/configuration-agnostic flags in common.mk. You
+-# may specify additional flags here as needed.
+-
+-CPPROCFLAGS    :=
+-CMISCFLAGS     :=
+-CPICFLAGS      :=
+-CWARNFLAGS     :=
+-
+-ifneq ($(DEBUG_TYPE),off)
+-  CDBGFLAGS    := -g
+-endif
+-
+-ifeq ($(DEBUG_TYPE),noopt)
+-  COPTFLAGS    := -O0
+-else
+-  COPTFLAGS    := -O3
+-endif
+-
+-#
+-# --- Enable ETRACE across the library if enabled ETRACE_ENABLE=[0,1] -----------------------
+-#
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
+-# Additional flag which is required for lpgemm kernels
+-CKLPOPTFLAGS   :=
+-
+ ifeq ($(CC_VENDOR),gcc)
+   CKVECFLAGS += -march=znver1
+-  GCC_VERSION := $(strip $(shell $(CC) -dumpversion | cut -d. -f1))
+-
+-  ifeq ($(shell test $(GCC_VERSION) -ge 9; echo $$?),0)
++  ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse
+   endif
+-endif# gcc
+-
++endif # gcc
+ 
+ ifeq ($(CC_VENDOR),clang)
+   CKVECFLAGS += -march=znver1
+@@ -97,11 +60,7 @@ endif # clang
+ 
+ # Flags specific to reference kernels.
+ CROPTFLAGS     := $(CKOPTFLAGS)
+-ifeq ($(CC_VENDOR),gcc)
+-  CRVECFLAGS   := $(CKVECFLAGS)
+-else
+-  CRVECFLAGS   := $(CKVECFLAGS)
+-endif
++CRVECFLAGS   := $(CKVECFLAGS)
+ 
+ # Store all of the variables here to new variables containing the
+ # configuration name.
+diff --git a/config/zen2/make_defs.cmake b/config/zen2/make_defs.cmake
+index dfd5624e66..d335077528 100644
+--- a/config/zen2/make_defs.cmake
++++ b/config/zen2/make_defs.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -32,35 +32,15 @@
+ 
+ ]=]
+ 
++# FLAGS that are specific to the 'zen2' architecture are added here.
++# FLAGS that are common for all the AMD architectures are present in
++# config/zen/amd_config.mk.
++
+ # Include file containing common flags for all AMD architectures
+ include(${CMAKE_SOURCE_DIR}/config/zen/amd_config.cmake)
+-if(NOT WIN32)
+-    if(NOT (DEBUG_TYPE STREQUAL "off"))
+-        set(CDBGFLAGS -g)
+-    endif()
+-
+-    if(DEBUG_TYPE STREQUAL "noopt")
+-        set(COPTFLAGS -O0)
+-    else() # off or opt
+-        set(COPTFLAGS -O3)
+-    endif()
+-endif()
+ 
+-# Flags specific to LPGEMM kernels.
+-set(CKLPOPTFLAGS "")
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-if(MSVC)
+-    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+-else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+-endif()
+-
+-# gcc or clang version must be at least 4.0
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+-    if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL  9.0.0)
++    if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 9.0.0)
+         # gcc 9.0 or later
+         list(APPEND CKVECFLAGS -march=znver2)
+         list(APPEND CKLPOPTFLAGS -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse)
+@@ -74,6 +54,7 @@ endif() # gcc
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     # AOCC clang has various formats for the version line
++
+     # AOCC.LLVM.2.0.0.B191.2019_07_19 clang version 8.0.0 (CLANG: Jenkins AOCC_2_0_0-Build#191) (based on LLVM AOCC.LLVM.2.0.0.B191.2019_07_19)
+     # AOCC.LLVM.2.1.0.B1030.2019_11_12 clang version 9.0.0 (CLANG: Build#1030) (based on LLVM AOCC.LLVM.2.1.0.B1030.2019_11_12)
+     # AMD clang version 10.0.0 (CLANG: AOCC_2.2.0-Build#93 2020_06_25) (based on LLVM Mirror.Version.10.0.0)
+@@ -104,7 +85,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     else()
+         list(APPEND CKVECFLAGS -march=znver1)
+     endif()
+-endif()
++endif() # clang
+ 
+ # Flags specific to reference kernels.
+ set(CROPTFLAGS ${CKOPTFLAGS})
+diff --git a/config/zen2/make_defs.mk b/config/zen2/make_defs.mk
+index 995fb8c644..3bfb823332 100644
+--- a/config/zen2/make_defs.mk
++++ b/config/zen2/make_defs.mk
+@@ -5,7 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
+-#  Copyright (C) 2019 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2019 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -47,41 +47,8 @@ AMD_CONFIG_FILE := amd_config.mk
+ AMD_CONFIG_PATH := $(BASE_SHARE_PATH)/config/zen
+ -include $(AMD_CONFIG_PATH)/$(AMD_CONFIG_FILE)
+ 
+-#
+-# --- Determine the C compiler and related flags ---
+-#
+-
+-# NOTE: The build system will append these variables with various
+-# general-purpose/configuration-agnostic flags in common.mk. You
+-# may specify additional flags here as needed.
+-
+-CPPROCFLAGS    :=
+-CMISCFLAGS     :=
+-CPICFLAGS      :=
+-CWARNFLAGS     :=
+-
+-ifneq ($(DEBUG_TYPE),off)
+-  CDBGFLAGS    := -g
+-endif
+-
+-ifeq ($(DEBUG_TYPE),noopt)
+-  COPTFLAGS    := -O0
+-else
+-  COPTFLAGS    := -O3
+-endif
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
+-# Additional flag which is required for lpgemm kernels
+-CKLPOPTFLAGS   :=
+-
+-# gcc or clang version must be at least 4.0
+ ifeq ($(CC_VENDOR),gcc)
+-  GCC_VERSION := $(strip $(shell $(CC) -dumpversion | cut -d. -f1))
+-
+-  ifeq ($(shell test $(GCC_VERSION) -ge 9; echo $$?),0)
++  ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     # gcc 9.0 or later
+     CKVECFLAGS += -march=znver2
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse
+diff --git a/config/zen3/make_defs.cmake b/config/zen3/make_defs.cmake
+index adb808ce42..05a5cbf232 100644
+--- a/config/zen3/make_defs.cmake
++++ b/config/zen3/make_defs.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -39,33 +39,8 @@
+ # Include file containing common flags for all AMD architectures
+ include(${CMAKE_SOURCE_DIR}/config/zen/amd_config.cmake)
+ 
+-# --- Determine the C compiler and related flags ---
+-if(NOT WIN32)
+-    if(NOT (DEBUG_TYPE STREQUAL "off"))
+-        set(CDBGFLAGS -g)
+-    endif()
+-
+-    if(DEBUG_TYPE STREQUAL "noopt")
+-        set(COPTFLAGS -O0)
+-    else() # off or opt
+-        set(COPTFLAGS -O3)
+-    endif()
+-endif()
+-
+-# Flags specific to LPGEMM kernels.
+-set(CKLPOPTFLAGS "")
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-if(MSVC)
+-    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+-else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+-endif()
+-
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+-    if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL  11.0.0)
++    if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 11.0.0)
+         # gcc 11.0 or later
+         list(APPEND CKVECFLAGS -march=znver3)
+         # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+@@ -74,7 +49,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+         # The -ftree-loop-vectorize results in inefficient code gen
+         # for amd optimized l1 kernels based on instrinsics.
+         list(APPEND CKLPOPTFLAGS -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse)
+-    elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL  9.0.0)
++    elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 9.0.0)
+        # gcc 9.0 or later
+         list(APPEND CKVECFLAGS -march=znver2)
+         list(APPEND CKLPOPTFLAGS -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse)
+@@ -84,10 +59,11 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+         list(APPEND CKVECFLAGS -march=znver1 -mno-avx256-split-unaligned-store)
+         list(APPEND CRVECFLAGS -march=znver1 -mno-avx256-split-unaligned-store)
+     endif()
+-endif()
++endif() # gcc
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     # AOCC clang has various formats for the version line
++
+     # AOCC.LLVM.2.0.0.B191.2019_07_19 clang version 8.0.0 (CLANG: Jenkins AOCC_2_0_0-Build#191) (based on LLVM AOCC.LLVM.2.0.0.B191.2019_07_19)
+     # AOCC.LLVM.2.1.0.B1030.2019_11_12 clang version 9.0.0 (CLANG: Build#1030) (based on LLVM AOCC.LLVM.2.1.0.B1030.2019_11_12)
+     # AMD clang version 10.0.0 (CLANG: AOCC_2.2.0-Build#93 2020_06_25) (based on LLVM Mirror.Version.10.0.0)
+@@ -112,13 +88,16 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     elseif("${CLANG_STRING}" MATCHES "(AOCC_2|LLVM)")
+         # AOCC version 2x we will enable znver2
+         list(APPEND CKVECFLAGS -march=znver2)
++    elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0.0)
++        # LLVM clang 13.0 or later
++        list(APPEND CKVECFLAGS -march=znver3)
+     elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 9.0.0)
+         # LLVM clang 9.0 or later
+         list(APPEND CKVECFLAGS -march=znver2)
+     else()
+         list(APPEND CKVECFLAGS -march=znver1)
+     endif()
+-endif()
++endif() # clang
+ 
+ # Flags specific to reference kernels.
+ set(CROPTFLAGS ${CKOPTFLAGS})
+diff --git a/config/zen3/make_defs.mk b/config/zen3/make_defs.mk
+index d1943f6ac9..0842ea2bb9 100644
+--- a/config/zen3/make_defs.mk
++++ b/config/zen3/make_defs.mk
+@@ -5,7 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
+-#  Copyright (C) 2019 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2019 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -47,50 +47,17 @@ AMD_CONFIG_FILE := amd_config.mk
+ AMD_CONFIG_PATH := $(BASE_SHARE_PATH)/config/zen
+ -include $(AMD_CONFIG_PATH)/$(AMD_CONFIG_FILE)
+ 
+-#
+-# --- Determine the C compiler and related flags ---
+-#
+-
+-# NOTE: The build system will append these variables with various
+-# general-purpose/configuration-agnostic flags in common.mk. You
+-# may specify additional flags here as needed.
+-
+-CPPROCFLAGS    :=
+-CMISCFLAGS     :=
+-CPICFLAGS      :=
+-CWARNFLAGS     :=
+-
+-ifneq ($(DEBUG_TYPE),off)
+-  CDBGFLAGS    := -g
+-endif
+-
+-ifeq ($(DEBUG_TYPE),noopt)
+-  COPTFLAGS    := -O0
+-else
+-  COPTFLAGS    := -O3
+-endif
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
+-# Additional flag which is required for lpgemm kernels
+-CKLPOPTFLAGS   :=
+-
+-# gcc or clang version must be at least 4.0
+ ifeq ($(CC_VENDOR),gcc)
+-  GCC_VERSION := $(strip $(shell $(CC) -dumpversion | cut -d. -f1))
+-
+-  ifeq ($(shell test $(GCC_VERSION) -ge 11; echo $$?),0)
++  ifeq ($(shell test $(CC_MAJOR) -ge 11; echo $$?),0)
+     # gcc 11.0 or later
+     CKVECFLAGS += -march=znver3
+-    # Update CKOPTFLAGS for gcc to use O3 optimization without
++    # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+     # -ftree-pre and -ftree-partial-pre flag. These flag results
+     # in suboptimal code generation for instrinsic based kernels.
+     # The -ftree-loop-vectorize results in inefficient code gen
+     # for amd optimized l1 kernels based on instrinsics.
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 9; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     # gcc 9.0 or later
+     CKVECFLAGS += -march=znver2
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize -fno-gcse
+@@ -127,6 +94,9 @@ ifeq ($(CC_VENDOR),clang)
+   else ifeq ($(strip $(shell $(CC) -v |&head -1 |grep -c 'AOCC.LLVM.2\|AOCC_2')),1)
+     # AOCC version 2x we will enable znver2
+     CKVECFLAGS += -march=znver2
++  else ifeq ($(shell test $(CC_MAJOR) -ge 13; echo $$?),0)
++    # LLVM clang 13.0 or later
++    CKVECFLAGS += -march=znver3
+   else ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     # LLVM clang 9.0 or later
+     CKVECFLAGS += -march=znver2
+diff --git a/config/zen4/make_defs.cmake b/config/zen4/make_defs.cmake
+index 78106bb7e6..dbb0e2e791 100644
+--- a/config/zen4/make_defs.cmake
++++ b/config/zen4/make_defs.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -38,29 +38,6 @@
+ 
+ # Include file containing common flags for all AMD architectures
+ include(${CMAKE_SOURCE_DIR}/config/zen/amd_config.cmake)
+-if(NOT WIN32)
+-    if(NOT (DEBUG_TYPE STREQUAL "off"))
+-        set(CDBGFLAGS -g)
+-    endif()
+-
+-    if(DEBUG_TYPE STREQUAL "noopt")
+-        set(COPTFLAGS -O0)
+-    else() # off or opt
+-        set(COPTFLAGS -O3)
+-    endif()
+-endif()
+-
+-# Flags specific to LPGEMM kernels.
+-set(CKLPOPTFLAGS "")
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-if(MSVC)
+-    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+-else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+-endif()
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+     if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0.0)
+@@ -108,6 +85,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     # AMD clang version 11.0.0 (CLANG: AOCC_2.3.0-Build#85 2020_11_10) (based on LLVM Mirror.Version.11.0.0)
+     # AMD clang version 12.0.0 (CLANG: AOCC_3.0.0-Build#2 2020_11_05) (based on LLVM Mirror.Version.12.0.0)
+     # AMD clang version 14.0.0 (CLANG: AOCC_4.0.0-Build#98 2022_06_15) (based on LLVM Mirror.Version.14.0.0)
++
+     # For our purpose we just want to know if it version 2x or 3x or 4x
+ 
+     # But also set these in case we are using upstream LLVM clang
+@@ -147,7 +125,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+       list(APPEND CKVECFLAGS -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi ${alignloops})
+       list(APPEND CRVECFLAGS -march=znver1)
+     endif()
+-endif()
++endif() # clang
+ 
+ # Flags specific to reference kernels.
+ set(CROPTFLAGS ${CKOPTFLAGS})
+diff --git a/config/zen4/make_defs.mk b/config/zen4/make_defs.mk
+index 95008d8b6e..ffa1f4d581 100644
+--- a/config/zen4/make_defs.mk
++++ b/config/zen4/make_defs.mk
+@@ -4,7 +4,7 @@
+ #  An object-based framework for developing high-performance BLAS-like
+ #  libraries.
+ #
+-#  Copyright (C) 2022 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2022 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -46,65 +46,32 @@ AMD_CONFIG_FILE := amd_config.mk
+ AMD_CONFIG_PATH := $(BASE_SHARE_PATH)/config/zen
+ -include $(AMD_CONFIG_PATH)/$(AMD_CONFIG_FILE)
+ 
+-#
+-# --- Determine the C compiler and related flags ---
+-#
+-
+-# NOTE: The build system will append these variables with various
+-# general-purpose/configuration-agnostic flags in common.mk. You
+-# may specify additional flags here as needed.
+-
+-CPPROCFLAGS    :=
+-CMISCFLAGS     :=
+-CPICFLAGS      :=
+-CWARNFLAGS     :=
+-
+-ifneq ($(DEBUG_TYPE),off)
+-  CDBGFLAGS    := -g
+-endif
+-
+-ifeq ($(DEBUG_TYPE),noopt)
+-  COPTFLAGS    := -O0
+-else
+-  COPTFLAGS    := -O3
+-endif
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
+-# Additional flag which is required for lpgemm kernels
+-CKLPOPTFLAGS   :=
+-
+-# gcc or clang version must be at least 4.0
+ ifeq ($(CC_VENDOR),gcc)
+-  GCC_VERSION := $(strip $(shell $(CC) -dumpversion | cut -d. -f1))
+-
+-  ifeq ($(shell test $(GCC_VERSION) -ge 13; echo $$?),0)
++  ifeq ($(shell test $(CC_MAJOR) -ge 13; echo $$?),0)
+     # gcc 13.0 or later
+     CKVECFLAGS += -march=znver4
+     CRVECFLAGS += -march=znver4
+-    # Update CKOPTFLAGS for gcc to use O3 optimization without
++    # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+     # -ftree-pre and -ftree-partial-pre flag. These flag results
+     # in suboptimal code generation for instrinsic based kernels.
+     # The -ftree-loop-vectorize results in inefficient code gen
+     # for amd optimized l1 kernels based on instrinsics.
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 11; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 11; echo $$?),0)
+     # gcc 11.0 or later
+     CKVECFLAGS += -march=znver3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512bf16 -mavx512vbmi
+     CRVECFLAGS += -march=znver3
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 9; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     # gcc 9.0 or later
+     CKVECFLAGS += -march=znver2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi
+     CRVECFLAGS += -march=znver2
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 8; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 8; echo $$?),0)
+     # gcc 8.0 or later
+     CKVECFLAGS += -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi
+     CRVECFLAGS += -march=znver1
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 7; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 7; echo $$?),0)
+     # gcc 7.0 or later
+     CKVECFLAGS += -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl
+     CRVECFLAGS += -march=znver1
+diff --git a/config/zen5/make_defs.cmake b/config/zen5/make_defs.cmake
+index 9f6d4476af..29ef9630fd 100644
+--- a/config/zen5/make_defs.cmake
++++ b/config/zen5/make_defs.cmake
+@@ -4,7 +4,7 @@
+    An object-based framework for developing high-performance BLAS-like
+    libraries.
+ 
+-   Copyright (C) 2023 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++   Copyright (C) 2023 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ 
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are
+@@ -38,29 +38,6 @@
+ 
+ # Include file containing common flags for all AMD architectures
+ include(${CMAKE_SOURCE_DIR}/config/zen/amd_config.cmake)
+-if(NOT WIN32)
+-    if(NOT (DEBUG_TYPE STREQUAL "off"))
+-        set(CDBGFLAGS -g)
+-    endif()
+-
+-    if(DEBUG_TYPE STREQUAL "noopt")
+-        set(COPTFLAGS -O0)
+-    else() # off or opt
+-        set(COPTFLAGS -O3)
+-    endif()
+-endif()
+-
+-# Flags specific to LPGEMM kernels.
+-set(CKLPOPTFLAGS "")
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-if(MSVC)
+-    set(CKOPTFLAGS ${COPTFLAGS} /Oy)
+-else()
+-    set(CKOPTFLAGS ${COPTFLAGS} -fomit-frame-pointer)
+-endif()
+ 
+ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+     if(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 14.0.0)
+@@ -77,7 +54,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "GNU")
+         # gcc 13.0 or later
+         list(APPEND CKVECFLAGS -march=znver4)
+         list(APPEND CRVECFLAGS -march=znver4)
+-        # Update CKOPTFLAGS for gcc to use O3 optimization without
++        # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+         # -ftree-pre and -ftree-partial-pre flag. These flag results
+         # in suboptimal code generation for instrinsic based kernels.
+         # The -ftree-loop-vectorize results in inefficient code gen
+@@ -118,6 +95,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+     # AMD clang version 11.0.0 (CLANG: AOCC_2.3.0-Build#85 2020_11_10) (based on LLVM Mirror.Version.11.0.0)
+     # AMD clang version 12.0.0 (CLANG: AOCC_3.0.0-Build#2 2020_11_05) (based on LLVM Mirror.Version.12.0.0)
+     # AMD clang version 14.0.0 (CLANG: AOCC_4.0.0-Build#98 2022_06_15) (based on LLVM Mirror.Version.14.0.0)
++
+     # For our purpose we just want to know if it version 2x or 3x or 4x
+ 
+     # But also set these in case we are using upstream LLVM clang
+@@ -145,6 +123,10 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+       # AOCC version 2x we will enable znver2
+       list(APPEND CKVECFLAGS -march=znver2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi)
+       list(APPEND CRVECFLAGS -march=znver2)
++    elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 19.0.0)
++      # LLVM clang 19.0 or later
++      list(APPEND CKVECFLAGS -march=znver5 ${alignloops})
++      list(APPEND CRVECFLAGS -march=znver5)
+     elseif(CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL 16.0.0)
+       # LLVM clang 16.0 or later
+       list(APPEND CKVECFLAGS -march=znver4 ${alignloops})
+@@ -161,7 +143,7 @@ if("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang")
+       list(APPEND CKVECFLAGS -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi ${alignloops})
+       list(APPEND CRVECFLAGS -march=znver1)
+     endif()
+-endif()
++endif() # clang
+ 
+ # Flags specific to reference kernels.
+ set(CROPTFLAGS ${CKOPTFLAGS})
+diff --git a/config/zen5/make_defs.mk b/config/zen5/make_defs.mk
+index 1830290373..3329fcbec6 100644
+--- a/config/zen5/make_defs.mk
++++ b/config/zen5/make_defs.mk
+@@ -4,7 +4,7 @@
+ #  An object-based framework for developing high-performance BLAS-like
+ #  libraries.
+ #
+-#  Copyright (C) 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2024 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -46,75 +46,42 @@ AMD_CONFIG_FILE := amd_config.mk
+ AMD_CONFIG_PATH := $(BASE_SHARE_PATH)/config/zen
+ -include $(AMD_CONFIG_PATH)/$(AMD_CONFIG_FILE)
+ 
+-#
+-# --- Determine the C compiler and related flags ---
+-#
+-
+-# NOTE: The build system will append these variables with various
+-# general-purpose/configuration-agnostic flags in common.mk. You
+-# may specify additional flags here as needed.
+-
+-CPPROCFLAGS    :=
+-CMISCFLAGS     :=
+-CPICFLAGS      :=
+-CWARNFLAGS     :=
+-
+-ifneq ($(DEBUG_TYPE),off)
+-  CDBGFLAGS    := -g
+-endif
+-
+-ifeq ($(DEBUG_TYPE),noopt)
+-  COPTFLAGS    := -O0
+-else
+-  COPTFLAGS    := -O3
+-endif
+-
+-# Flags specific to optimized kernels.
+-# NOTE: The -fomit-frame-pointer option is needed for some kernels because
+-# they make explicit use of the rbp register.
+-CKOPTFLAGS     := $(COPTFLAGS) -fomit-frame-pointer
+-# Additional flag which is required for lpgemm kernels
+-CKLPOPTFLAGS     :=
+-
+-# gcc or clang version must be at least 4.0
+ ifeq ($(CC_VENDOR),gcc)
+-  GCC_VERSION := $(strip $(shell $(CC) -dumpversion | cut -d. -f1))
+-
+-  ifeq ($(shell test $(GCC_VERSION) -ge 14; echo $$?),0)
++  ifeq ($(shell test $(CC_MAJOR) -ge 14; echo $$?),0)
+     # gcc 14.0 or later
+     CKVECFLAGS += -march=znver5
+     CRVECFLAGS += -march=znver5
+-    # Update CKOPTFLAGS for gcc to use O3 optimization without
++    # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+     # -ftree-pre and -ftree-partial-pre flag. These flag results
+     # in suboptimal code generation for instrinsic based kernels.
+     # The -ftree-loop-vectorize results in inefficient code gen
+     # for amd optimized l1 kernels based on instrinsics.
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 13; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 13; echo $$?),0)
+     # gcc 13.0 or later
+     CKVECFLAGS += -march=znver4
+     CRVECFLAGS += -march=znver4
+-    # Update CKOPTFLAGS for gcc to use O3 optimization without
++    # Update CKLPOPTFLAGS for gcc to use O3 optimization without
+     # -ftree-pre and -ftree-partial-pre flag. These flag results
+     # in suboptimal code generation for instrinsic based kernels.
+     # The -ftree-loop-vectorize results in inefficient code gen
+     # for amd optimized l1 kernels based on instrinsics.
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 11; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 11; echo $$?),0)
+     # gcc 11.0 or later
+     CKVECFLAGS += -march=znver3 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512bf16 -mavx512vbmi
+     CRVECFLAGS += -march=znver3
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 9; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 9; echo $$?),0)
+     # gcc 9.0 or later
+     CKVECFLAGS += -march=znver2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi
+     CRVECFLAGS += -march=znver2
+     CKLPOPTFLAGS += -fno-tree-partial-pre -fno-tree-pre -fno-tree-loop-vectorize
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 8; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 8; echo $$?),0)
+     # gcc 8.0 or later
+     CKVECFLAGS += -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi
+     CRVECFLAGS += -march=znver1
+-  else ifeq ($(shell test $(GCC_VERSION) -ge 7; echo $$?),0)
++  else ifeq ($(shell test $(CC_MAJOR) -ge 7; echo $$?),0)
+     # gcc 7.0 or later
+     CKVECFLAGS += -march=znver1 -mavx512f -mavx512dq -mavx512bw -mavx512vl
+     CRVECFLAGS += -march=znver1
+@@ -158,6 +125,10 @@ ifeq ($(CC_VENDOR),clang)
+     # AOCC version 2x we will enable znver2
+     CKVECFLAGS += -march=znver2 -mavx512f -mavx512dq -mavx512bw -mavx512vl -mavx512vnni -mavx512vbmi
+     CRVECFLAGS += -march=znver2
++  else ifeq ($(shell test $(CC_MAJOR) -ge 19; echo $$?),0)
++    # LLVM clang 19.0 or later
++    CKVECFLAGS += -march=znver5 -falign-loops=64
++    CRVECFLAGS += -march=znver5
+   else ifeq ($(shell test $(CC_MAJOR) -ge 16; echo $$?),0)
+     # LLVM clang 16.0 or later
+     CKVECFLAGS += -march=znver4 -falign-loops=64
+diff --git a/configure b/configure
+index cd1133ace6..9f061f148a 100755
+--- a/configure
++++ b/configure
+@@ -5,7 +5,7 @@
+ #  libraries.
+ #
+ #  Copyright (C) 2014, The University of Texas at Austin
+-#  Copyright (C) 2020 - 2024, Advanced Micro Devices, Inc. All rights reserved.
++#  Copyright (C) 2020 - 2025, Advanced Micro Devices, Inc. All rights reserved.
+ #
+ #  Redistribution and use in source and binary forms, with or without
+ #  modification, are permitted provided that the following conditions are
+@@ -3522,6 +3522,9 @@ main()
+ 		| sed -e "s/@gcc_older_than_11_2_0@/${gcc_older_than_11_2_0}/g" \
+ 		| sed -e "s/@CC@/${cc_esc}/g" \
+ 		| sed -e "s/@CXX@/${cxx_esc}/g" \
++		| sed -e "s/@cc_major@/${cc_major}/g" \
++		| sed -e "s/@cc_minor@/${cc_minor}/g" \
++		| sed -e "s/@cc_revision@/${cc_revision}/g" \
+ 		| sed -e "s/@RANLIB@/${ranlib_esc}/g" \
+ 		| sed -e "s/@AR@/${ar_esc}/g" \
+ 		| sed -e "s/@PYTHON@/${python_esc}/g" \
