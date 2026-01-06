@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : pytorch
-version    : 2.7.1
-release    : 39
+version    : 2.9.1
+release    : 40
 source     :
-    - https://github.com/pytorch/pytorch/releases/download/v2.7.1/pytorch-v2.7.1.tar.gz : 5befd2e540fd55ce4782d0ca7610ce5b572d756d7ea38090ef0f3c7c428fb20f
+    - https://github.com/pytorch/pytorch/releases/download/v2.9.1/pytorch-v2.9.1.tar.gz : e17504700ebc4c87f9b57059df1c4d790b769458c04db144c7a92aea90f2c92b
 homepage   : https://pytorch.org/
 license    : BSD-3-Clause
 component  :
@@ -20,7 +20,7 @@ patterns   :
     - ^libtorch-devel :
         - /usr/lib64/cmake
         - /usr/include
-avx2       : true
+# avx2       : true
 networking : true
 # clang      : true
 ccache     : false
@@ -33,6 +33,7 @@ builddeps  :
     - pkgconfig(libuv)
     - pkgconfig(libzmq)
     - pkgconfig(ompi)
+    - pkgconfig(lapack)
     - pkgconfig(openblas)
     - pkgconfig(opencv4)
     - pkgconfig(openssl)
@@ -43,6 +44,9 @@ builddeps  :
     - pkgconfig(vulkan)
     - intel-tbb-devel
     - leveldb-devel
+    # TODO(gzgz): verify where libomp.so linkage is coming from. Make sure it's
+    # intended to be pointing to libomp, not rocm-openmp.
+    # - libomp-devel
     - lmdb-devel
     - numpy
     - git
@@ -58,9 +62,10 @@ builddeps  :
     - vulkan-headers
 
     # ROCm packages
+    - amd-blis-devel
     - pkgconfig(numa)
-    - pkgconfig(libhsakmt)
     - composable-kernel-devel
+    - rocm-smi-devel
     - rocm-core-devel
     - rocm-cmake
     - rocm-hip
@@ -72,7 +77,6 @@ builddeps  :
     - hipsparse-devel
     - hipmagma-devel
     - miopen-devel
-    - miopengemm-devel
     - rccl-devel
     - rocblas-devel
     - rocfft-devel
@@ -94,6 +98,7 @@ rundeps    :
     - sympy
     - ^libtorch :
         - pybind11
+        - libomp
     - ^libtorch-devel :
         - gflags-devel
         - glog-devel
@@ -130,7 +135,7 @@ environment: |
 
     # USE_CCACHE=0 allows us to handle caching by ourselves, in particular
     # allowing us to cache HIP compilations with sccache.
-    export BLAS=OpenBLAS \
+    export \
         BUILD_BINARY=1 \
         BUILD_CUSTOM_PROTOBUF=0 \
         BUILD_TEST=0 \
@@ -148,9 +153,9 @@ environment: |
         USE_MEM_EFF_ATTENTION=0 \
         USE_MKLDNN=0 \
         USE_BLAS=1 \
+        BLAS=OpenBLAS \
         USE_ROCM=1 \
         USE_REDIS=1 \
-        USE_TBB=1 \
         USE_VULKAN=1 \
         USE_XPU=0 \
         USE_SYSTEM_EIGEN_INSTALL=1 \
@@ -158,42 +163,45 @@ environment: |
         REL_WITH_DEB_INFO=1 \
 
     export ROCM_PATH=/usr
-    export HIP_PATH=$ROCM_PATH
-    export ROCM_SOURCE_DIR=$ROCM_PATH
+    export ROCM_SOURCE_DIR=/usr
     export HIP_COMPILER=clang
     export HIP_RUNTIME=amd
     export HIP_ROCCLR_HOME=/usr/lib64/llvm-rocm
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
-    export HIP_CXX_COMPILER=/usr/bin/hipcc
-    export HIP_DEVICE_LIB_PATH="/usr/lib64/amdgcn/bitcode"
+    export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export DEVICE_LIB_PATH=$HIP_DEVICE_LIB_PATH
+    export HIP_CXX_COMPILER=$HIP_CLANG_PATH/clang
+    export CMAKE_HIP_COMPILER=$HIP_CLANG_PATH/clang
     export AMDGPU_TARGETS="%AMDGPUTARGETS%"
     export GPU_TARGETS="$AMDGPU_TARGETS"
     export PYTORCH_ROCM_ARCH="$AMDGPU_TARGETS"
-    # export HIP_CLANG_LAUNCHER=/usr/bin/sccache #causes sccache errors
-    # export HIPCC_COMPILE_FLAGS_APPEND="-parallel-jobs=4"
 
     # Needs llvm in order to find system zstd
     export CMAKE_MODULE_PATH="/usr/lib64/cmake/hip;/usr/lib64/cmake/llvm"
 
     # # Cannot compile C code with clang due to https://github.com/pytorch/pytorch/issues/103222
-    export CC=gcc
+    # export CC=gcc
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
     # Too noisy
     export CFLAGS+=" -w"
     export CXXFLAGS+=" -w"
-    export HIPCC_COMPILE_FLAGS_APPEND+=" -w"
 
     # Set it in case your computer starts chocking horribly
     # export MAX_JOBS=$((%YJOBS%/4))
     export MAX_JOBS=%YJOBS%
+
+    export CMAKE_C_COMPILER_LAUNCHER=sccache
+    export CMAKE_CXX_COMPILER_LAUNCHER=sccache
+    export CMAKE_HIP_COMPILER_LAUNCHER=sccache
     # For packagers. The default 5G is barely enough for a single build.
-    # export CCACHE_MAXSIZE=20G
+    export SCCACHE_MAXSIZE=20G
 setup      : |
+    %patch -p1 -i $pkgfiles/rocm-smi.diff
+
     echo %version% > version.txt
 
-    # Make sure lapack is detected.
-    sed -i 's|(BLAS_INFO STREQUAL "generic")|TRUE|' cmake/Modules/FindLAPACK.cmake
+    # # Make sure lapack is detected.
+    # sed -i 's|(BLAS_INFO STREQUAL "generic")|TRUE|' cmake/Modules/FindLAPACK.cmake
 
     # The CMake option HIP_CXX_COMPILER is set by default to CMAKE_CXX_COMPILER
     # by HIP, so we have to cheeze this option to CMake using PyTorch existing
@@ -203,16 +211,11 @@ setup      : |
     sed -i 's|CMAKE_CUDA_COMPILER|HIP_CXX_COMPILER|' tools/setup_helpers/cmake.py
     sed -i 's|CUDACXX|HIPCXX|' tools/setup_helpers/cmake.py
 
-    sed -i -e 's@    checkout_nccl()@#    checkout_nccl()@' tools/build_pytorch_libs.py
+    # Don't use vendored CK headers, they don't have support for RDNA1
+    rm -rv third_party/composable_kernel/include/{ck,ck_tile}
+    cp -rv /usr/include/{ck,ck_tile} third_party/composable_kernel/include
 
-    %patch -p1 -i $pkgfiles/gcc-15.patch
-    sed -i 's|Python_EXECUTABLE=sys.executable,|Python_EXECUTABLE=sys.executable,PYTHON_EXECUTABLE=sys.executable,|' tools/setup_helpers/cmake.py
-    sed -i 's|caffe2_hip_binary_target("hip/inspect_gpu.cc")||' binaries/CMakeLists.txt
     python3 ./tools/amd_build/build_amd.py
-
-    %patch -p1 -i $pkgfiles/rocm-jit.patch
-
-    %patch -p1 -i $pkgfiles/RDNA1ComposableKernel.patch
 build      : |
     %python3_setup --skip-dependency-check
 install    : |
