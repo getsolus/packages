@@ -5,7 +5,7 @@ if [[ -z "${SBT_OPTS}" ]]; then
 fi
 
 if [ -z "$JAVA_HOME" ]; then
-    export JAVA_HOME=/usr/lib64/openjdk-11
+    export JAVA_HOME=/usr/lib64/openjdk-21
 fi
 
 exec $JAVA_HOME/bin/java $SBT_OPTS -jar /usr/share/sbt/sbt.jar "$@"
