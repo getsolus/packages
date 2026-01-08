@@ -26,10 +26,13 @@ JAVA_VERSION="$(${JAVA_EXEC} -version 2>&1 | grep ' version ' | head -1 | cut -d
 # Fix for Java 16 compatibility
 # https://bugs.archlinux.org/task/71255
 # https://sourceforge.net/p/sweethome3d/bugs/1021/
-if [ $(vercmp "${JAVA_VERSION}" "16") -gt 0 ]
-then
-  # Add illegal-access=permit argument
-  JAVA_OPTS="${JAVA_OPTS} --add-opens=java.desktop/sun.awt=ALL-UNNAMED --add-opens=java.desktop/com.apple.eio=ALL-UNNAMED --add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED"
+java_major=$(printf '%s\n' "$JAVA_VERSION" | sed 's/\..*//')
+
+if [ "$java_major" -gt 16 ]; then
+  JAVA_OPTS="$JAVA_OPTS \
+    --add-opens=java.desktop/sun.awt=ALL-UNNAMED \
+    --add-opens=java.desktop/com.apple.eio=ALL-UNNAMED \
+    --add-opens=java.desktop/com.apple.eawt=ALL-UNNAMED"
 fi
 
 # Build classpath
