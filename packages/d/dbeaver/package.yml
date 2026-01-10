@@ -1,11 +1,12 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : dbeaver
-version    : 24.1.3
-release    : 64
+version    : 25.3.2
+release    : 65
 source     :
-    - https://github.com/dbeaver/dbeaver/archive/refs/tags/24.1.3.tar.gz#dbeaver.tar.gz : 47dff9a64d2d7502e07bb4b93cb029c43f0dca6890f9703a7eea6f7355fcb752
+    - https://github.com/dbeaver/dbeaver/archive/refs/tags/25.3.2.tar.gz#dbeaver.tar.gz : 2683033e4e2b993a3419df43f78df612db0dadf9576a7e843c9ca7ba43236bc5
     # I wish they'd create a tag instead of a branch but whatever I guess
-    - https://github.com/dbeaver/dbeaver-common/archive/refs/heads/release_24_1_3.tar.gz#dbeaver-common.tar.gz : b19c9ff4555ed702f30251fc1c3279cf7b0d6f9aebae7f56193fb2d16cba4c6e
+    - https://github.com/dbeaver/dbeaver-common/archive/refs/heads/release_25_3_2.tar.gz#dbeaver-common.tar.gz : c567832ff86d9590f5fc30ea3cf22284947ed7176433af85d2c20bf154eda406
+    - https://github.com/dbeaver/dbeaver-jdbc-libsql/archive/refs/heads/release_25_3_2.tar.gz#dbeaver-jdbc-libsql.tar.gz : 6a18f2f28f889f2300f918492523bf9c0e583060ec023a466bd45655546c8598
 extract    : false
 license    : Apache-2.0
 component  : database
@@ -16,37 +17,51 @@ description: |
 networking : true
 builddeps  :
     - apache-maven
-    - openjdk-17
+    - openjdk-21
 rundeps    :
     - openjdk-21
 environment: |
-    export JAVA_HOME=/usr/lib64/openjdk-17
+    export JAVA_HOME=/usr/lib64/openjdk-21
     export PATH=$JAVA_HOME/bin:$PATH
 setup      : |
-    mkdir dbeaver dbeaver-common
+    mkdir dbeaver dbeaver-common dbeaver-jdbc-libsql
     tar --strip-components=1 -xf $sources/dbeaver.tar.gz -C dbeaver
     tar --strip-components=1 -xf $sources/dbeaver-common.tar.gz -C dbeaver-common
+    tar --strip-components=1 -xf $sources/dbeaver-jdbc-libsql.tar.gz -C dbeaver-jdbc-libsql
 
     cd dbeaver
     %patch -Np1 -i $pkgfiles/0001-Disable-auto-update-check-by-default.patch
     %patch -p1 -i $pkgfiles/0001-Change-default-theme-to-dark.patch
 
-    # Skip broken test.platform
-    sed -i '/org.jkiss.dbeaver.test.platform/d' test/pom.xml
-
     export MAVEN_OPTS="-Xmx2048m"
-    mvn --batch-mode validate
+    mvn --batch-mode -T 1C validate
 build      : |
     cd product/aggregate
     export MAVEN_OPTS="-Xmx2048m"
-    mvn -Dmaven.repo.local=$workdir/.m2 --batch-mode package
+    mvn --batch-mode -Pall-platforms -Djdk.xml.maxGeneralEntitySizeLimit=0 -Djdk.xml.totalEntitySizeLimit=0 -T 1C package
 install    : |
+    %install_license LICENSE.md
+    ln -s /usr/share/dbeaver/licenses ${installdir}/usr/share/licenses/${package}/licenses
+
     export _target_dir=product/community/target/products/org.jkiss.dbeaver.core.product/linux/gtk/x86_64/dbeaver
+
+    # Remove different architecture libraries
+    for _dir in aix-ppc aix-ppc64 darwin-aarch64 darwin-x86-64 \
+        dragonflybsd-x86-64 freebsd-aarch64 freebsd-x86 freebsd-x86-64 \
+        linux-aarch64 linux-arm linux-armel linux-loongarch64 linux-mips64el \
+        linux-ppc linux-ppc64le linux-riscv64 linux-s390x linux-x86 \
+        openbsd-x86 openbsd-x86-64 \
+        sunos-sparc sunos-sparcv9 sunos-x86 sunos-x86-64 \
+        win32 win32-aarch64 win32-x86 win32-x86-64
+    do
+        rm -r "${_target_dir}/plugins/com.sun.jna_5.18.1.v20251001-0800/com/sun/jna/${_dir}"
+    done
 
     install -dm00755 $installdir/usr/{bin,share}/
     cp -a $_target_dir $installdir/usr/share
     ln -s /usr/share/dbeaver/dbeaver $installdir/usr/bin/dbeaver
 
+    # Install icons
     for _size in 16 32 48 64 128 256 512
     do
       install -Dm00644 product/community/icons-sources/icon_${_size}x${_size}.png \
@@ -59,7 +74,7 @@ install    : |
     install -Dm00644 $_target_dir/dbeaver.png $installdir/usr/share/pixmaps/dbeaver.png
     install -Dm00644 $_target_dir/icon.xpm $installdir/usr/share/pixmaps/dbeaver.xpm
 
-    #Desktop file and appstream metainfo
+    # Desktop file and appstream metainfo
     install -Dm00644 $pkgfiles/DBeaver.desktop -t $installdir/usr/share/applications/
     install -Dm00644 $pkgfiles/io.dbeaver.DBeaverCommunity.appdata.xml $installdir/usr/share/metainfo/io.dbeaver.DBeaverCommunity.appdata.xml
 
