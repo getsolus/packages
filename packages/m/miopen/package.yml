@@ -1,10 +1,11 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : miopen
-version    : 3.2.0
-release    : 6
+version    : 7.0.2
+release    : 7
 source     :
     # tag: rocm-6.2.4
-    - git|https://github.com/ROCm/MIOpen.git : ba89256497cc8e98eff8fa957116d0ca7611aec5
+    - git|https://github.com/ROCm/rocm-libraries.git : rocm-7.0.2
+    - https://sourceforge.net/projects/half/files/half/1.12.0/half-1.12.0.zip : cdd70d3bf3fe091b688e7ab3f48471c881a197d2c186c95cca8bf156961fb41c
 homepage   : https://github.com/ROCmSoftwarePlatform/MIOpen
 license    : MIT
 component  : programming.library
@@ -19,12 +20,13 @@ builddeps  :
     - pkgconfig(sqlite3)
     - pkgconfig(libzstd)
     - composable-kernel-devel
+    - hipblaslt-devel
+    - hipblas-devel
     - libboost-devel
     - rocblas-devel
     - roctracer-devel
     - rocrand-devel
     - git-lfs
-    - half
     - frugally-deep
     - rocm-cmake
     - rocm-hip
@@ -32,55 +34,64 @@ builddeps  :
 debug      : false
 environment: |
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
+    export CXXFLAGS="${CXXFLAGS/-g2 /}"
     # Too noisy
     export CXXFLAGS+=" -w"
     export CLANG_IGNORE_WERROR=1
 
+    export HALF_DIR=$workdir/half
+
     export ROCM_PATH=/usr
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
-    export DEVICE_LIB_PATH=$HIP_DEVICE_LIB_PATH
-    export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
-    export CMAKE_MODULE_PATH=/usr/lib64/llvm-rocm/lib64/cmake/llvm
+    export CMAKE_PREFIX_PATH="/usr/lib64/llvm-rocm:$HALF_DIR"
 
-    # export HIP_CLANG_LAUNCHER=sccache
+    # sccache has problems with duplicate _cuid
     # export SCCACHE_IDLE_TIMEOUT=0
     # export CMAKE_C_COMPILER_LAUNCHER=sccache
     # export CMAKE_CXX_COMPILER_LAUNCHER=sccache
+
     export OFFLOAD_BUNDLER_COMPRESS=1
 setup      : |
-    # Otherwise git LFS doesn't pull anything donw
-    git rm .lfsconfig
-    git config --local user.name "Packager"
-    git config --local user.email "no-reply@getsol.us"
-    git commit -m "Remove .lfsconfig"
-    git lfs install
-    git lfs fetch
-    git lfs checkout
+    unzip $sources/half-1.12.0.zip -d $HALF_DIR
+    # The tarball has `include/half.hpp` but MIOpen expects
+    # `include/half/half.hpp`
+    mkdir -p $HALF_DIR/include/half
+    mv $HALF_DIR/include/*.hpp $HALF_DIR/include/half/
 
-    %patch -p1 -i $pkgfiles/0001-Extend-MIOpen-ISA-compatibility.patch
+    pushd projects/miopen
+        # Otherwise git LFS doesn't pull anything...
+        git rm .lfsconfig
+        git config --local user.name "Packager"
+        git config --local user.email "no-reply@getsol.us"
+        git commit -m "Remove .lfsconfig"
+        git lfs install
+        git lfs pull
+        git submodule update --init --recursive --recommend-shallow --force 
+        %patch -p1 -i $pkgfiles/0001-Extend-MIOpen-ISA-compatibility.patch
+    popd
 
-    %cmake_ninja -L \
+    %cmake_ninja -S projects/miopen -L \
       -DCMAKE_BUILD_TYPE="Release" \
+      -DCMAKE_MODULE_PATH=/usr/lib64/llvm-rocm/lib64/cmake/llvm \
       -DCMAKE_C_COMPILER=$HIP_CLANG_PATH/clang \
       -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DROCM_SYMLINK_LIBS=OFF \
       -DBoost_USE_STATIC_LIBS=OFF \
       -DBUILD_TESTING=OFF \
-      -DMIOPEN_TEST_ALL=OFF \
-      -DMIOPEN_USE_COMGR=ON \
       -DMIOPEN_BACKEND=HIP \
       -DMIOPEN_AMDGCN_ASSEMBLER_PATH=$HIP_CLANG_PATH \
+      -DMIOPEN_INSTALL_CXX_HEADERS=ON \
+      -DMIOPEN_USE_COMGR=ON \
       -DMIOPEN_USE_COMPOSABLEKERNEL=ON \
       -DMIOPEN_USE_MIOPENGEMM=OFF \
       -DMIOPEN_USE_MLIR=ON \
-      -DMIOPEN_USE_MIOPENTENSILE=OFF \
       -DMIOPEN_USE_ROCBLAS=ON \
-      -DGPU_TARGETS="%AMDGPUTARGETS%" \
-      -DAMDGPU_TARGETS="%AMDGPUTARGETS%"
+      -DMIOPEN_USE_HIPBLASLT=ON \
+      -DMIOPEN_STRIP_SYMBOLS=OFF \
+      -DGPU_TARGETS="%AMDGPUTARGETS%"
 build      : |
     %ninja_build
 install    : |
     %ninja_install
-    rm $installdir/usr/bin/install_precompiled_kernels.sh

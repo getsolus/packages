@@ -1,0 +1,90 @@
+From 74a971febdfd68924e53108bd3d7dfed0eb2b6a1 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Sun, 14 Dec 2025 11:36:20 -0500
+Subject: [PATCH 1/2] [rocfft] Extend HIP ISA compatibility
+
+---
+ .../library/src/device/kernels/memory_gfx.h   |  2 +-
+ .../rocfft/library/src/include/tree_node.h    | 36 ++++++++++++++-----
+ 2 files changed, 29 insertions(+), 9 deletions(-)
+
+diff --git a/projects/rocfft/library/src/device/kernels/memory_gfx.h b/projects/rocfft/library/src/device/kernels/memory_gfx.h
+index defb9e9012..ba12a3617a 100644
+--- a/projects/rocfft/library/src/device/kernels/memory_gfx.h
++++ b/projects/rocfft/library/src/device/kernels/memory_gfx.h
+@@ -44,7 +44,7 @@
+     || defined(__gfx942__) // test device
+ #define USE_GFX_BUFFER_INTRINSIC
+ #define BUFFER_RESOURCE_3RD_DWORD 0x00020000
+-#elif defined(__gfx1030__) // special device
++#elif defined(__gfx1010__) || defined(__gfx1030__) // special device
+ #define USE_GFX_BUFFER_INTRINSIC
+ #define BUFFER_RESOURCE_3RD_DWORD 0x31014000
+ #else // not support
+diff --git a/projects/rocfft/library/src/include/tree_node.h b/projects/rocfft/library/src/include/tree_node.h
+index 84602b2ae1..848705bf98 100644
+--- a/projects/rocfft/library/src/include/tree_node.h
++++ b/projects/rocfft/library/src/include/tree_node.h
+@@ -81,6 +81,33 @@ struct GridParam
+     }
+ };
+ 
++static bool is_device_gcn_arch(const hipDeviceProp_t& prop, const std::string& cmpTarget)
++{
++    std::string archName(prop.gcnArchName);
++
++    if (cmpTarget == "gfx1030" && archName.find("gfx103") != std::string::npos)
++    {
++        return true;
++    }
++    else if (cmpTarget == "gfx1010" && archName.find("gfx101") != std::string::npos)
++    {
++        return true;
++    }
++    else if (cmpTarget == "gfx900")
++    {
++        auto pos = archName.find("gfx90");
++        const auto cmpIdx = cmpTarget.size() - 1;
++        if (pos != std::string::npos && pos + cmpIdx < archName.size())
++        {
++            return archName.at(pos + cmpIdx) == '0' || archName.at(pos + cmpIdx) == '2' || archName.at(pos + cmpIdx) == '9' || archName.at(pos + cmpIdx) == 'c';
++        }
++    }
++    else
++    {
++        return archName.find(cmpTarget) != std::string::npos;
++    }
++}
++
+ // get the arch name, as a part of key of solution map
+ static std::string get_arch_name(const hipDeviceProp_t& prop)
+ {
+@@ -98,11 +125,10 @@ static std::string get_arch_name(const hipDeviceProp_t& prop)
+                                                        "gfx1201"};
+ 
+     static const std::string anyArch("any");
+-    std::string              archName(prop.gcnArchName);
+ 
+     for(const auto& arch : arch_list)
+     {
+-        if(archName.find(arch) != std::string::npos)
++        if(is_device_gcn_arch(prop, arch))
+             return arch;
+     }
+ 
+@@ -110,12 +136,6 @@ static std::string get_arch_name(const hipDeviceProp_t& prop)
+     return anyArch;
+ }
+ 
+-static bool is_device_gcn_arch(const hipDeviceProp_t& prop, const std::string& cmpTarget)
+-{
+-    std::string archName(prop.gcnArchName);
+-    return archName.find(cmpTarget) != std::string::npos;
+-}
+-
+ static bool is_diagonal_sbrc_3D_length(size_t len)
+ {
+     // SBRC diagonal-transpose dimensions are currently 128, 256
+-- 
+2.52.0
+
