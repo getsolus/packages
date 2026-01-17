@@ -36,6 +36,14 @@ You can [get involved][Getting Involved] in many ways:
 - Help [maintain packages][Packaging].
 - [Report Bugs]
 
+## License
+
+Unless stated otherwise, the package recipes in this repository are available under the terms of the GNU General Public License, Version 2. Please see [LICENSE](./LICENSE) for details.
+
+### Historical note
+
+[This is the 2015 commit](https://github.com/solus-cold-storage/repository/commit/aa1cf545f60caa21bd15d2e6b9f80216977954fb#diff-b335630551682c19a781afebcf4d07bf978fb1f8ac04c6bf87428ed5106870f5R7) where Solus began distributing its package recipes under the GPLv2 license. 
+
 # Funding
 
 Donations are welcome on our [Open Collective].
