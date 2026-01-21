@@ -1,8 +1,15 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Reilly Brogan <reilly@reillybrogan.com>
 Date: Thu, 12 Dec 2024 20:50:14 -0600
-Subject: [PATCH] Solus: Use zstd compression for debug symbols by default
+Subject: [PATCH] lld: Use zstd compression for debug symbols by default
 
+This causes LLVM to always behave as though `--compress-debug-sections=zstd` is present.
+
+It would be nice if llvm supported configuring this at build time like binutils does.
+
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2025-03-29
 ---
  clang/include/clang/Driver/Options.td  | 4 ++--
  clang/tools/driver/cc1as_main.cpp      | 4 ++--
@@ -14,10 +21,10 @@ Subject: [PATCH] Solus: Use zstd compression for debug symbols by default
  7 files changed, 14 insertions(+), 14 deletions(-)
 
 diff --git a/clang/include/clang/Driver/Options.td b/clang/include/clang/Driver/Options.td
-index ed2973435afc..f5aecdfecf5c 100644
+index 958d0d05ade2..b21d40b6dd68 100644
 --- a/clang/include/clang/Driver/Options.td
 +++ b/clang/include/clang/Driver/Options.td
-@@ -7079,9 +7079,9 @@ def record_command_line : Separate<["-"], "record-command-line">,
+@@ -7597,9 +7597,9 @@ def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
  def compress_debug_sections_EQ : Joined<["-", "--"], "compress-debug-sections=">,
      HelpText<"DWARF debug sections compression type">, Values<"none,zlib,zstd">,
      NormalizedValuesScope<"llvm::DebugCompressionType">, NormalizedValues<["None", "Zlib", "Zstd"]>,
@@ -30,10 +37,10 @@ index ed2973435afc..f5aecdfecf5c 100644
    HelpText<"Mark the file as not needing an executable stack">,
    MarshallingInfoFlag<CodeGenOpts<"NoExecStack">>;
 diff --git a/clang/tools/driver/cc1as_main.cpp b/clang/tools/driver/cc1as_main.cpp
-index b661a43c88b0..22debfe3bff0 100644
+index f938e7e4041e..65150b17d6c7 100644
 --- a/clang/tools/driver/cc1as_main.cpp
 +++ b/clang/tools/driver/cc1as_main.cpp
-@@ -107,7 +107,7 @@ struct AssemblerInvocation {
+@@ -104,7 +104,7 @@ struct AssemblerInvocation {
    std::string DebugCompilationDir;
    llvm::SmallVector<std::pair<std::string, std::string>, 0> DebugPrefixMap;
    llvm::DebugCompressionType CompressDebugSections =
@@ -42,7 +49,7 @@ index b661a43c88b0..22debfe3bff0 100644
    std::string MainFileName;
    std::string SplitDwarfOutput;
  
-@@ -287,7 +287,7 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
+@@ -293,7 +293,7 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
              .Case("none", llvm::DebugCompressionType::None)
              .Case("zlib", llvm::DebugCompressionType::Zlib)
              .Case("zstd", llvm::DebugCompressionType::Zstd)
@@ -50,13 +57,13 @@ index b661a43c88b0..22debfe3bff0 100644
 +            .Default(llvm::DebugCompressionType::Zstd);
    }
  
-   Opts.RelaxELFRelocations = !Args.hasArg(OPT_mrelax_relocations_no);
+   if (auto *DwarfFormatArg = Args.getLastArg(OPT_gdwarf64, OPT_gdwarf32))
 diff --git a/lld/ELF/Config.h b/lld/ELF/Config.h
-index 5b2a1541e529..6846a56a95ea 100644
+index 602ffb4f5e0d..569422c12990 100644
 --- a/lld/ELF/Config.h
 +++ b/lld/ELF/Config.h
-@@ -229,7 +229,7 @@ struct Config {
-   CGProfileSortKind callGraphProfileSort;
+@@ -309,7 +309,7 @@ struct Config {
+   bool branchToBranch = false;
    bool checkSections;
    bool checkDynamicRelocs;
 -  std::optional<llvm::DebugCompressionType> compressDebugSections;
@@ -65,11 +72,11 @@ index 5b2a1541e529..6846a56a95ea 100644
        std::tuple<llvm::GlobPattern, llvm::DebugCompressionType, unsigned>, 0>
        compressSections;
 diff --git a/lld/ELF/Driver.cpp b/lld/ELF/Driver.cpp
-index 7a0a4006a099..a15ca77f446e 100644
+index 37037d8d90a6..205596159b01 100644
 --- a/lld/ELF/Driver.cpp
 +++ b/lld/ELF/Driver.cpp
-@@ -1124,10 +1124,10 @@ static CGProfileSortKind getCGProfileSortKind(opt::InputArgList &args) {
- static DebugCompressionType getCompressionType(StringRef s, StringRef option) {
+@@ -1246,10 +1246,10 @@ static DebugCompressionType getCompressionType(Ctx &ctx, StringRef s,
+                                                StringRef option) {
    DebugCompressionType type = StringSwitch<DebugCompressionType>(s)
                                    .Case("zlib", DebugCompressionType::Zlib)
 -                                  .Case("zstd", DebugCompressionType::Zstd)
@@ -80,14 +87,14 @@ index 7a0a4006a099..a15ca77f446e 100644
 +                                  .Default(DebugCompressionType::Zstd);
 +  if (type == DebugCompressionType::Zstd) {
 +    if (s != "zstd")
-       error("unknown " + option + " value: " + s);
+       ErrAlways(ctx) << "unknown " << option << " value: " << s;
    } else if (const char *reason = compression::getReasonIfUnsupported(
                   compression::formatFor(type))) {
 diff --git a/lld/ELF/Options.td b/lld/ELF/Options.td
-index 72f35eec9d65..b94f03e43360 100644
+index cc91680550b4..0d3a1a35e407 100644
 --- a/lld/ELF/Options.td
 +++ b/lld/ELF/Options.td
-@@ -64,7 +64,7 @@ defm check_sections: B<"check-sections",
+@@ -68,7 +68,7 @@ defm check_sections: B<"check-sections",
      "Do not check section addresses for overlaps">;
  
  defm compress_debug_sections:
@@ -97,23 +104,23 @@ index 72f35eec9d65..b94f03e43360 100644
  
  defm compress_sections: EEq<"compress-sections",
 diff --git a/lld/ELF/OutputSections.cpp b/lld/ELF/OutputSections.cpp
-index 29f18f89274f..acff113ca1e2 100644
+index 1020dd9f2569..2c9f631acb12 100644
 --- a/lld/ELF/OutputSections.cpp
 +++ b/lld/ELF/OutputSections.cpp
-@@ -357,9 +357,9 @@ template <class ELFT> void OutputSection::maybeCompress() {
+@@ -374,9 +374,9 @@ template <class ELFT> void OutputSection::maybeCompress(Ctx &ctx) {
    DebugCompressionType ctype = DebugCompressionType::None;
    size_t compressedSize = sizeof(Elf_Chdr);
    unsigned level = 0; // default compression level
--  if (!(flags & SHF_ALLOC) && config->compressDebugSections &&
+-  if (!(flags & SHF_ALLOC) && ctx.arg.compressDebugSections &&
 +  if (!(flags & SHF_ALLOC) &&
        name.starts_with(".debug_"))
--    ctype = *config->compressDebugSections;
-+    ctype = config->compressDebugSections;
-   for (auto &[glob, t, l] : config->compressSections)
+-    ctype = *ctx.arg.compressDebugSections;
++    ctype = ctx.arg.compressDebugSections;
+   for (auto &[glob, t, l] : ctx.arg.compressSections)
      if (glob.match(name))
        std::tie(ctype, level) = {t, l};
 diff --git a/llvm/tools/llvm-objcopy/ObjcopyOpts.td b/llvm/tools/llvm-objcopy/ObjcopyOpts.td
-index b26c497ca399..927c59bbed51 100644
+index fbc6a59d9461..ed42239f8b19 100644
 --- a/llvm/tools/llvm-objcopy/ObjcopyOpts.td
 +++ b/llvm/tools/llvm-objcopy/ObjcopyOpts.td
 @@ -35,9 +35,9 @@ def compress_debug_sections
