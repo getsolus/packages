@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : zstd
 version    : 1.5.7
-release    : 32
+release    : 33
 source     :
     - https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.zst : 5b331d961d6989dc21bb03397fc7a2a4d86bc65a14adc5ffbbce050354e30fd2
 license    :
@@ -19,21 +19,41 @@ builddeps  :
     - pkgconfig(liblzma)
 environment: |
     export PREFIX=/usr LIBDIR=%libdir%
-build      : |
-    %make
-    if [ -z "${EMUL32BUILD+set}" ]; then
-        %make manual
-        make zstd-dll -C programs
-        %make -C contrib/pzstd
-    fi
-profile    : |
-    %make check
-install    : |
-    %make_install
-    rm -v $installdir/%libdir%/*.a
+setup      : |
+    # Ignore error on tests without static libs, we use LD_LIBRARY_PATH when
+    # running tests to make sure the dynamic libraries are loaded correctly
+    sed '/build static library to build tests/d' -i build/cmake/CMakeLists.txt
+    sed 's/libzstd_static/libzstd_shared/g' -i build/cmake/tests/CMakeLists.txt
 
     if [ -z "${EMUL32BUILD+set}" ]; then
-        install -m00755 contrib/pzstd/pzstd $installdir/usr/bin/pzstd
+        %cmake_ninja -S build/cmake -L \
+          -DBUILD_SHARED_LIBS=ON \
+          -DZSTD_ZLIB_SUPPORT=ON \
+          -DZSTD_LZMA_SUPPORT=ON \
+          -DZSTD_LZ4_SUPPORT=OFF \
+          -DZSTD_BUILD_CONTRIB=ON \
+          -DZSTD_BUILD_SHARED=ON \
+          -DZSTD_BUILD_STATIC=OFF \
+          -DZSTD_BUILD_TESTS=ON \
+          -DZSTD_PROGRAMS_LINK_SHARED=ON
+    fi
+build      : |
+    if [ -z "${EMUL32BUILD+set}" ]; then
+        %ninja_build
+    else
+        %make
+    fi
+install    : |
+    if [ -z "${EMUL32BUILD+set}" ]; then
+        %ninja_install
+    else
+        %make_install
+        rm -v $installdir/%libdir%/*.a
+        # Otherwise CMake refuses to install the x86_64 binaries for some
+        # reason...
+        rm -rv $installdir/usr/bin
     fi
 check      : |
-    %make -C contrib/pzstd test
+    # if [ -z "${EMUL32BUILD+set}" ]; then
+    #     LD_LIBRARY_PATH=$PWD/solusBuildDir/lib ctest --test-dir solusBuildDir
+    # fi
