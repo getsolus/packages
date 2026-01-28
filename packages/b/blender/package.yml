@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : blender
-version    : 4.4.3
-release    : 99
+version    : 5.0.1
+release    : 100
 source     :
-    - https://download.blender.org/source/blender-4.4.3.tar.xz : 99ecdef24ece14084016ee47c756eeb2fc8a09c8487a0296b45a117224dc5ca7
+    - https://download.blender.org/source/blender-5.0.1.tar.xz : 0077a41f59843433154fdf2d8aeb6c43f6bf6951cd46987305e67f89cb4f1fbf
     - https://download.blender.org/demo/test/BMW27.blend.zip : 08170de260488c14855a13db81c8d5ad844bc6162c3db13e1d9ba8094f55fe2b
     - https://developer.download.nvidia.com/compute/cuda/12.6.2/local_installers/cuda_12.6.2_560.35.03_linux.run#cuda-sdk.run : 3729a89cb58f7ca6a46719cff110d6292aec7577585a8d71340f0dbac54fb237
     - https://developer.download.nvidia.com/redist/optix/v8.0/OptiX-8.0-Include.zip : ba617fbb61587bac99106dbd6cda5a27c9d178308cc423878ed72b220b8b951c
@@ -64,9 +64,7 @@ clang      : true
 environment: |
     export ROCM_PATH=/usr
     export HIP_PATH=/usr
-    # ROCm's LLVM fork has a bug that causes memory access
-    # fault when rendering the classroom example with cycles.
-    export HIP_CLANG_PATH=/usr/bin
+    export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
 
     # CUDA only supports GCC 13
@@ -87,6 +85,10 @@ setup      : |
     sed -i "/.*unsupported clang version.*/d" cuda-sdk/include/crt/host_config.h
 
     %patch -p1 -i $pkgfiles/fix-glibc241.patch
+    %patch -p1 -i $pkgfiles/fix-glibc242.patch
+
+    # -O3 crashes some RDNA3.5 GPU... For safety let's tune down to O2
+    sed -i 's|set(hip_opt_flags)|set(hip_opt_flags "-O2")|' intern/cycles/kernel/CMakeLists.txt
 
     export LDFLAGS="$LDFLAGS -Wl,--undefined-version"
 
@@ -101,7 +103,7 @@ setup      : |
         -DWITH_ALEMBIC=ON \
         -DWITH_CODEC_FFMPEG=ON \
         -DWITH_CODEC_SNDFILE=ON \
-        -DWITH_CYCLES_CUDA_BINARIES=ON \
+        -DWITH_CYCLES_CUDA_BINARIES=OFF \
         -DWITH_CYCLES_EMBREE=ON \
         -DWITH_CYCLES_HIP_BINARIES=ON \
         -DWITH_CYCLES_OSL=ON \
@@ -124,7 +126,7 @@ setup      : |
         -DWITH_SYSTEM_LZO=ON \
         -DWITH_USD=ON \
         -DWITH_X11_XINPUT=ON \
-        -DCYCLES_HIP_BINARIES_ARCH="gfx803;gfx900;gfx902;gfx904;gfx906;gfx908;gfx90a;gfx90c;gfx1010;gfx1011;gfx1012;gfx1013;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103"
+        -DCYCLES_HIP_BINARIES_ARCH="gfx803;gfx900;gfx902;gfx904;gfx906;gfx90c;gfx1010;gfx1011;gfx1012;gfx1013;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
 build      : |
     %ninja_build
 install    : |
@@ -133,11 +135,11 @@ install    : |
     install -Dm00644 $pkgfiles/blender.thumbnailer -t $installdir/usr/share/thumbnailers
     rm -r $installdir/usr/share/doc/blender/license/
 check      : |
-    unzip $sources/BMW27.blend.zip
-
     # TODO(GZGavinZhao): some Python scripts/modules still can't be found at
     # runtime... Render still processes normally, but who knows if they will
     # cause issues in the future.
+    #
+    # unzip $sources/BMW27.blend.zip
     # export PYTHONPATH=%installroot%/usr/lib/python%python3_version%/site-packages:$PWD
     # $installdir/usr/bin/blender -b BMW27.blend -f 0
     # TODO(GZGavinZhao): iGPUs require HSA_ENABLE_SDMA=0 to not hang. Enable
