@@ -53,6 +53,29 @@ function whatuses() {
     grep "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_used_libs
 }
 
+function quickfixup() {
+    if [[ ! -f "package.yml" ]]; then
+        echo "No package.yml found in current directory, aborting!"
+        return 1
+    fi
+
+    if ! git status --porcelain -- . | grep -q '^ M'; then
+        echo "No files in current directory are modified, aborting!"
+        return 1
+    fi
+
+    # Be explicit about adding files specific to packaging to avoid
+    # adding aliens
+    git add abi_* package.yml pspec_x86_64.xml monitoring.yaml files/
+
+    # Fixup the last commit in the directory
+    git commit --fixup "$(git log -1 --format="%h" -- .)"
+    git rebase origin/HEAD --autosquash --autostash
+
+    # Print out the commit for the user
+    git log -1 -- .
+}
+
 
 # Bash completions
 _gotopkg()
