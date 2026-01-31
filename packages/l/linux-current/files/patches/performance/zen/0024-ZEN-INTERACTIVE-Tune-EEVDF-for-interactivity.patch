@@ -1,0 +1,113 @@
+From 2b41f32a61a44e16ffcf949cd5b814effd48aa35 Mon Sep 17 00:00:00 2001
+From: "Jan Alexander Steffens (heftig)" <heftig@archlinux.org>
+Date: Tue, 31 Oct 2023 19:03:10 +0100
+Subject: [PATCH 24/29] ZEN: INTERACTIVE: Tune EEVDF for interactivity
+
+5.7:
+Take "sysctl_sched_nr_migrate" tune from early XanMod builds of 128. As
+of 5.7, XanMod uses 256 but that may affect applications that require
+timely response to IRQs.
+
+5.15:
+Per [a comment][1] on our ZEN INTERACTIVE commit, reducing the cost of
+migration causes the system less responsive under high load.  Most
+likely the combination of reduced migration cost + the higher number of
+tasks that can be migrated at once contributes to this.
+
+To better handle this situation, restore the mainline migration cost
+value and also reduce the max number of tasks that can be migrated in
+batch from 128 to 64.
+
+If this doesn't help, we'll restore the reduced migration cost and keep
+total number of tasks that can be migrated at once to 32.
+
+[1]: https://github.com/zen-kernel/zen-kernel/commit/be5ba234ca0a5aabe74bfc7e1f636f085bd3823c#commitcomment-63159674
+
+6.6:
+Port the tuning to EEVDF, which removed a couple of settings.
+
+6.7:
+Instead of increasing the number of tasks that migrate at once, migrate
+the amount acceptable for PREEMPT_RT, but reduce the cost so migrations
+occur more often.
+
+This should make CFS/EEVDF behave more like out-of-tree schedulers that
+aggressively use idle cores to reduce latency, but without the jank
+caused by rebalancing too many tasks at once.
+---
+ init/Kconfig         |  7 +++++++
+ kernel/sched/fair.c  | 13 +++++++++++++
+ kernel/sched/sched.h |  2 +-
+ 3 files changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/init/Kconfig b/init/Kconfig
+index 182fb240a5e6..f1101695badb 100644
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -202,6 +202,13 @@ config ZEN_INTERACTIVE
+ 
+ 	    Background-reclaim hugepages...:   no   ->   yes
+ 
++	  --- EEVDF CPU Scheduler --------------------------------
++
++	    Minimal granularity............:   0.7  ->   0.4  ms
++	    Migration cost.................:   0.5  ->   0.3  ms
++	    Bandwidth slice size...........:   5    ->   3    ms
++	    Task rebalancing threshold.....:  32    ->   8
++
+ config BROKEN
+ 	bool
+ 	help
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index 5b752324270b..a31912c241cf 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -76,10 +76,19 @@ unsigned int sysctl_sched_tunable_scaling = SCHED_TUNABLESCALING_LOG;
+  *
+  * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
+  */
++#ifdef CONFIG_ZEN_INTERACTIVE
++unsigned int sysctl_sched_base_slice			= 400000ULL;
++static unsigned int normalized_sysctl_sched_base_slice	= 400000ULL;
++#else
+ unsigned int sysctl_sched_base_slice			= 700000ULL;
+ static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
++#endif
+ 
++#ifdef CONFIG_ZEN_INTERACTIVE
++__read_mostly unsigned int sysctl_sched_migration_cost	= 300000UL;
++#else
+ __read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
++#endif
+ 
+ static int __init setup_sched_thermal_decay_shift(char *str)
+ {
+@@ -122,8 +131,12 @@ int __weak arch_asym_cpu_priority(int cpu)
+  *
+  * (default: 5 msec, units: microseconds)
+  */
++#ifdef CONFIG_ZEN_INTERACTIVE
++static unsigned int sysctl_sched_cfs_bandwidth_slice		= 3000UL;
++#else
+ static unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
+ #endif
++#endif
+ 
+ #ifdef CONFIG_NUMA_BALANCING
+ /* Restrict the NUMA promotion throughput (MB/s) for each target node. */
+diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+index adfb6e3409d7..a5addab8f3f2 100644
+--- a/kernel/sched/sched.h
++++ b/kernel/sched/sched.h
+@@ -2800,7 +2800,7 @@ extern void deactivate_task(struct rq *rq, struct task_struct *p, int flags);
+ 
+ extern void wakeup_preempt(struct rq *rq, struct task_struct *p, int flags);
+ 
+-#ifdef CONFIG_PREEMPT_RT
++#if defined(CONFIG_PREEMPT_RT) || defined(CONFIG_ZEN_INTERACTIVE)
+ # define SCHED_NR_MIGRATE_BREAK 8
+ #else
+ # define SCHED_NR_MIGRATE_BREAK 32
+-- 
+2.52.0
+
