@@ -4,7 +4,6 @@ This is a list of things to rebuild after this, in the right order:
 * broadcom-sta
 * lenovo-legion-linux
 * nvidia-470-glx-driver
-* nvidia-open
 * nvidia-glx-driver
 * nvidia-beta-driver
 * nvidia-developer-driver
