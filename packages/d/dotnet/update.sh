@@ -13,7 +13,7 @@ fi
 
 go-task update -- $version https://github.com/dotnet/dotnet/archive/refs/tags/v$sdk_version.tar.gz --cache
 
-curl -Ls https://github.com/dotnet/dotnet/releases/download/v$sdk_version/release.json > files/release.json || {
+curl -Lsf https://github.com/dotnet/dotnet/releases/download/v$sdk_version/release.json > files/release.json || {
   echo "Failed to download release file from https://github.com/dotnet/dotnet/releases/download/v$sdk_version/release.json"
   exit 1
 }
