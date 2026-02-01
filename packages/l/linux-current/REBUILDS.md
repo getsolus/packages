@@ -7,6 +7,7 @@ This is a list of things to rebuild after this, in the right order:
 * nvidia-glx-driver
 * nvidia-beta-driver
 * nvidia-developer-driver
+* nvidia-open
 * open-vm-tools
 * openrazer
 * rtl8852bu
