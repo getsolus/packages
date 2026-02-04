@@ -3,3 +3,7 @@ This file is used to indicate primary maintainership for this package. A package
 - Wouter Horlings
   - Matrix: @achilleshiel:utwente.io
   - Email: wouter@horlin.gs
+
+- Gavin Zhaqo
+  - Matrix: @gzgavinzhao:matrix.org
+  - Email: me@gzgz.dev
