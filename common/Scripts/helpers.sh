@@ -66,10 +66,7 @@ function quickfixup() {
 
     # Be explicit about adding files specific to packaging to avoid
     # adding aliens
-    local paths=(abi_* package.yml pspec_x86_64.xml monitoring.yaml files/)
-    for path in "${paths[@]}"; do
-        [[ -e $path ]] && git add "$path"
-    done
+    git add abi_* package.yml pspec_x86_64.xml monitoring.yaml MAINTAINERS.md files/ 2>/dev/null || true
 
     # Fixup the last commit in the directory
     git commit --fixup "$(git log -1 --format="%h" -- .)"
