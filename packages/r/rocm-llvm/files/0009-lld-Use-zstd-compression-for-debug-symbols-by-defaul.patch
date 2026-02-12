@@ -1,0 +1,140 @@
+From fd6ddb5f0119b093e2387bcdb74a710b5bc7b0c6 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Thu, 12 Dec 2024 20:50:14 -0600
+Subject: [PATCH 09/15] lld: Use zstd compression for debug symbols by default
+
+This causes LLVM to always behave as though `--compress-debug-sections=zstd` is present.
+
+It would be nice if llvm supported configuring this at build time like binutils does.
+
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2025-03-29
+---
+ clang/include/clang/Driver/Options.td  | 4 ++--
+ clang/tools/driver/cc1as_main.cpp      | 4 ++--
+ lld/ELF/Config.h                       | 2 +-
+ lld/ELF/Driver.cpp                     | 8 ++++----
+ lld/ELF/Options.td                     | 2 +-
+ lld/ELF/OutputSections.cpp             | 4 ++--
+ llvm/tools/llvm-objcopy/ObjcopyOpts.td | 4 ++--
+ 7 files changed, 14 insertions(+), 14 deletions(-)
+
+diff --git a/clang/include/clang/Driver/Options.td b/clang/include/clang/Driver/Options.td
+index 23fcc6a170a5..e89dcbca8698 100644
+--- a/clang/include/clang/Driver/Options.td
++++ b/clang/include/clang/Driver/Options.td
+@@ -7858,9 +7858,9 @@ def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
+ def compress_debug_sections_EQ : Joined<["-", "--"], "compress-debug-sections=">,
+     HelpText<"DWARF debug sections compression type">, Values<"none,zlib,zstd">,
+     NormalizedValuesScope<"llvm::DebugCompressionType">, NormalizedValues<["None", "Zlib", "Zstd"]>,
+-    MarshallingInfoEnum<CodeGenOpts<"CompressDebugSections">, "None">;
++    MarshallingInfoEnum<CodeGenOpts<"CompressDebugSections">, "Zstd">;
+ def compress_debug_sections : Flag<["-", "--"], "compress-debug-sections">,
+-  Alias<compress_debug_sections_EQ>, AliasArgs<["zlib"]>;
++  Alias<compress_debug_sections_EQ>, AliasArgs<["zstd"]>;
+ def mno_exec_stack : Flag<["-"], "mnoexecstack">,
+   HelpText<"Mark the file as not needing an executable stack">,
+   MarshallingInfoFlag<CodeGenOpts<"NoExecStack">>;
+diff --git a/clang/tools/driver/cc1as_main.cpp b/clang/tools/driver/cc1as_main.cpp
+index ef79e45364a2..3a936dc09cf1 100644
+--- a/clang/tools/driver/cc1as_main.cpp
++++ b/clang/tools/driver/cc1as_main.cpp
+@@ -104,7 +104,7 @@ struct AssemblerInvocation {
+   std::string DebugCompilationDir;
+   llvm::SmallVector<std::pair<std::string, std::string>, 0> DebugPrefixMap;
+   llvm::DebugCompressionType CompressDebugSections =
+-      llvm::DebugCompressionType::None;
++      llvm::DebugCompressionType::Zstd;
+   std::string MainFileName;
+   std::string SplitDwarfOutput;
+ 
+@@ -296,7 +296,7 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
+             .Case("none", llvm::DebugCompressionType::None)
+             .Case("zlib", llvm::DebugCompressionType::Zlib)
+             .Case("zstd", llvm::DebugCompressionType::Zstd)
+-            .Default(llvm::DebugCompressionType::None);
++            .Default(llvm::DebugCompressionType::Zstd);
+   }
+ 
+   if (auto *DwarfFormatArg = Args.getLastArg(OPT_gdwarf64, OPT_gdwarf32))
+diff --git a/lld/ELF/Config.h b/lld/ELF/Config.h
+index 01c0203d7035..174117eb0e04 100644
+--- a/lld/ELF/Config.h
++++ b/lld/ELF/Config.h
+@@ -309,7 +309,7 @@ struct Config {
+   bool branchToBranch = false;
+   bool checkSections;
+   bool checkDynamicRelocs;
+-  std::optional<llvm::DebugCompressionType> compressDebugSections;
++  llvm::DebugCompressionType compressDebugSections = llvm::DebugCompressionType::Zstd;
+   llvm::SmallVector<
+       std::tuple<llvm::GlobPattern, llvm::DebugCompressionType, unsigned>, 0>
+       compressSections;
+diff --git a/lld/ELF/Driver.cpp b/lld/ELF/Driver.cpp
+index 490647de292e..7929af381169 100644
+--- a/lld/ELF/Driver.cpp
++++ b/lld/ELF/Driver.cpp
+@@ -1246,10 +1246,10 @@ static DebugCompressionType getCompressionType(Ctx &ctx, StringRef s,
+                                                StringRef option) {
+   DebugCompressionType type = StringSwitch<DebugCompressionType>(s)
+                                   .Case("zlib", DebugCompressionType::Zlib)
+-                                  .Case("zstd", DebugCompressionType::Zstd)
+-                                  .Default(DebugCompressionType::None);
+-  if (type == DebugCompressionType::None) {
+-    if (s != "none")
++                                  .Case("none", DebugCompressionType::None)
++                                  .Default(DebugCompressionType::Zstd);
++  if (type == DebugCompressionType::Zstd) {
++    if (s != "zstd")
+       ErrAlways(ctx) << "unknown " << option << " value: " << s;
+   } else if (const char *reason = compression::getReasonIfUnsupported(
+                  compression::formatFor(type))) {
+diff --git a/lld/ELF/Options.td b/lld/ELF/Options.td
+index 898a19c1a157..8cf30a87fc7d 100644
+--- a/lld/ELF/Options.td
++++ b/lld/ELF/Options.td
+@@ -68,7 +68,7 @@ defm check_sections: B<"check-sections",
+     "Do not check section addresses for overlaps">;
+ 
+ defm compress_debug_sections:
+-  Eq<"compress-debug-sections", "Compress DWARF debug sections">,
++  Eq<"compress-debug-sections", "Compress DWARF debug sections (default: zstd)">,
+   MetaVarName<"[none,zlib,zstd]">;
+ 
+ defm compress_sections: EEq<"compress-sections",
+diff --git a/lld/ELF/OutputSections.cpp b/lld/ELF/OutputSections.cpp
+index c9c63b3620b1..597db646e268 100644
+--- a/lld/ELF/OutputSections.cpp
++++ b/lld/ELF/OutputSections.cpp
+@@ -374,9 +374,9 @@ template <class ELFT> void OutputSection::maybeCompress(Ctx &ctx) {
+   DebugCompressionType ctype = DebugCompressionType::None;
+   size_t compressedSize = sizeof(Elf_Chdr);
+   unsigned level = 0; // default compression level
+-  if (!(flags & SHF_ALLOC) && ctx.arg.compressDebugSections &&
++  if (!(flags & SHF_ALLOC) &&
+       name.starts_with(".debug_"))
+-    ctype = *ctx.arg.compressDebugSections;
++    ctype = ctx.arg.compressDebugSections;
+   for (auto &[glob, t, l] : ctx.arg.compressSections)
+     if (glob.match(name))
+       std::tie(ctype, level) = {t, l};
+diff --git a/llvm/tools/llvm-objcopy/ObjcopyOpts.td b/llvm/tools/llvm-objcopy/ObjcopyOpts.td
+index fbc6a59d9461..ed42239f8b19 100644
+--- a/llvm/tools/llvm-objcopy/ObjcopyOpts.td
++++ b/llvm/tools/llvm-objcopy/ObjcopyOpts.td
+@@ -35,9 +35,9 @@ def compress_debug_sections
+     : Joined<["--"], "compress-debug-sections=">,
+       MetaVarName<"format">,
+       HelpText<"Compress DWARF debug sections using specified format. Supported "
+-               "formats: zlib, zstd. Select zlib if <format> is omitted">;
++               "formats: zlib, zstd. Select zstd if <format> is omitted.">;
+ def : Flag<["--"], "compress-debug-sections">, Alias<compress_debug_sections>,
+-      AliasArgs<["zlib"]>;
++      AliasArgs<["zstd"]>;
+ def decompress_debug_sections : Flag<["--"], "decompress-debug-sections">,
+                                 HelpText<"Decompress DWARF debug sections">;
+ defm compress_sections
+-- 
+2.52.0
+
