@@ -26,10 +26,10 @@ index 8f2a80d..ce44a0f 100644
          Request::ConfirmPendingConfig(command) => {
              ok_response(handler.confirm_pending_config(command)?)
 diff --git a/lact-daemon/src/system.rs b/lact-daemon/src/system.rs
-index e444ee5..9601be8 100644
+index c932ebf..7972c00 100644
 --- a/lact-daemon/src/system.rs
 +++ b/lact-daemon/src/system.rs
-@@ -29,6 +29,7 @@ static OC_TOGGLED: AtomicBool = AtomicBool::new(false);
+@@ -32,6 +32,7 @@ static OC_TOGGLED: AtomicBool = AtomicBool::new(false);
  const PP_OVERDRIVE_MASK: u64 = 0x4000;
  pub const PP_FEATURE_MASK_PATH: &str = "/sys/module/amdgpu/parameters/ppfeaturemask";
  pub const BASE_MODULE_CONF_PATH: &str = "/etc/modprobe.d/99-amdgpu-overdrive.conf";
@@ -37,20 +37,18 @@ index e444ee5..9601be8 100644
  pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
  
  pub static IS_FLATBOX: LazyLock<bool> =
-@@ -60,8 +61,10 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
-         .trim()
-         .to_owned();
+@@ -61,7 +62,9 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
+         |info| info.release().to_string_lossy().into_owned(),
+     );
  
 -    let amdgpu_overdrive_enabled = if let Ok(mask) = read_current_mask() {
--        Some((mask & PP_OVERDRIVE_MASK) > 0)
-+     let amdgpu_overdrive_enabled = if let Ok(true) = is_overdrive_enabled_flag() {
++    let amdgpu_overdrive_enabled = if let Ok(true) = is_overdrive_enabled_flag() {
 +        Some(true)
 +    } else if let Ok(mask) = read_current_mask() {
-+    	Some((mask & PP_OVERDRIVE_MASK) > 0)
+         Some((mask & PP_OVERDRIVE_MASK) > 0)
      } else {
          None
-     };
-@@ -82,110 +85,14 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
+@@ -83,109 +86,14 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
      })
  }
  
@@ -145,14 +143,7 @@ index e444ee5..9601be8 100644
 -
 -    // Returning a string only to maintain API compat
 -    Ok(String::new())
-+fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
-+	let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
-+	if overdrive_enabled.trim() != "0" {
-+		Ok(true)
-+	} else {
-+		Ok(false)
-+	}
- }
+-}
 -
 -async fn regenerate_initramfs(initramfs_type: InitramfsType) -> anyhow::Result<()> {
 -    info!("detected initramfs type {initramfs_type:?}, regenerating");
@@ -164,15 +155,22 @@ index e444ee5..9601be8 100644
 -    result.context("Initramfs generation command failed")?;
 -    Ok(())
 -}
--
++fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
++	let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
++	if overdrive_enabled.trim() != "0" {
++		Ok(true)
++	} else {
++		Ok(false)
++	}
++ }
+ 
  fn read_current_mask() -> anyhow::Result<u64> {
      let ppfeaturemask = fs::read_to_string(PP_FEATURE_MASK_PATH)?;
-     let ppfeaturemask = ppfeaturemask
 diff --git a/lact-gui/src/app.rs b/lact-gui/src/app.rs
-index 82b26ec..eb8af81 100644
+index 1e4d55f..69d1d99 100644
 --- a/lact-gui/src/app.rs
 +++ b/lact-gui/src/app.rs
-@@ -356,9 +356,6 @@ impl AppModel {
+@@ -383,9 +383,6 @@ impl AppModel {
                      self.update_gpu_data(gpu_id, sender).await?;
                  }
              }
@@ -182,7 +180,7 @@ index 82b26ec..eb8af81 100644
              AppMsg::SelectProfile {
                  profile,
                  auto_switch,
-@@ -512,18 +509,6 @@ impl AppModel {
+@@ -539,18 +536,6 @@ impl AppModel {
              AppMsg::DebugSnapshot => {
                  self.generate_debug_snapshot(root).await;
              }
@@ -202,10 +200,10 @@ index 82b26ec..eb8af81 100644
                  self.daemon_client.reset_config().await?;
                  sender.input(AppMsg::ReloadData { full: true });
 diff --git a/lact-gui/src/app/header.rs b/lact-gui/src/app/header.rs
-index 1d5251b..9c745a8 100644
+index 412f232..bb9bebd 100644
 --- a/lact-gui/src/app/header.rs
 +++ b/lact-gui/src/app/header.rs
-@@ -184,14 +184,6 @@ impl Component for Header {
+@@ -186,14 +186,6 @@ impl Component for Header {
  
                          gtk::Separator {},
  
@@ -221,7 +219,7 @@ index 1d5251b..9c745a8 100644
                              set_label: &fl!(I18N, "reset-all-config"),
                              connect_clicked => move |_| {
 diff --git a/lact-gui/src/app/msg.rs b/lact-gui/src/app/msg.rs
-index 1e8a352..6b20c29 100644
+index 4c91261..77ef9b6 100644
 --- a/lact-gui/src/app/msg.rs
 +++ b/lact-gui/src/app/msg.rs
 @@ -22,9 +22,6 @@ pub enum AppMsg {
@@ -235,14 +233,13 @@ index 1e8a352..6b20c29 100644
      FetchProcessList,
      ReloadProfiles {
 diff --git a/lact-gui/src/app/overdrive_dialog.rs b/lact-gui/src/app/overdrive_dialog.rs
-index 12ca98a..4006b29 100644
+index 12ca98a..f2a6612 100644
 --- a/lact-gui/src/app/overdrive_dialog.rs
 +++ b/lact-gui/src/app/overdrive_dialog.rs
-@@ -78,25 +78,7 @@ impl relm4::Component for OverdriveDialog {
- 
+@@ -79,24 +79,6 @@ impl relm4::Component for OverdriveDialog {
                  gtk::Box {
                      set_spacing: 10,
--                    set_orientation: gtk::Orientation::Horizontal,
+                     set_orientation: gtk::Orientation::Horizontal,
 -
 -                    gtk::Button {
 -                        #[watch]
@@ -261,35 +258,34 @@ index 12ca98a..4006b29 100644
 -                            APP_BROKER.send(AppMsg::DisableOverdrive);
 -                        },
 -                    },
-+                    set_orientation: gtk::Orientation::Horizontal,    
                  },
  
                  gtk::Label {
 diff --git a/lact-gui/src/app/pages/oc_page.rs b/lact-gui/src/app/pages/oc_page.rs
-index 22c45e1..a9a97cf 100644
+index 50c5688..64eced2 100644
 --- a/lact-gui/src/app/pages/oc_page.rs
 +++ b/lact-gui/src/app/pages/oc_page.rs
-@@ -78,21 +78,6 @@ impl relm4::Component for OcPage {
-                         set_orientation: gtk::Orientation::Vertical,
-                         set_spacing: 2,
-                         set_margin_all: 10,
+@@ -77,21 +77,6 @@ impl relm4::Component for OcPage {
+                     set_orientation: gtk::Orientation::Vertical,
+                     set_spacing: 2,
+                     set_margin_all: 10,
 -
--                        gtk::Label {
--                            set_markup: &fl!(I18N, "amd-oc-disabled"),
--                            set_wrap: true,
--                            set_wrap_mode: pango::WrapMode::Word,
--                        },
+-                    gtk::Label {
+-                        set_markup: &fl!(I18N, "amd-oc-disabled"),
+-                        set_wrap: true,
+-                        set_wrap_mode: pango::WrapMode::Word,
+-                    },
 -
--                        gtk::Button {
--                            set_label: &fl!(I18N, "enable-amd-oc"),
--                            set_halign: gtk::Align::End,
+-                    gtk::Button {
+-                        set_label: &fl!(I18N, "enable-amd-oc"),
+-                        set_halign: gtk::Align::End,
 -
--                            connect_clicked[sender] => move |_| {
--                                sender.output(AppMsg::ShowOverdriveDialog).expect("Channel closed");
--                            }
--                        },
-                     },
+-                        connect_clicked[sender] => move |_| {
+-                            sender.output(AppMsg::ShowOverdriveDialog).expect("Channel closed");
+-                        }
+-                    },
                  },
+             },
  
 diff --git a/lact-schema/src/request.rs b/lact-schema/src/request.rs
 index 5bec83a..fc148d1 100644
