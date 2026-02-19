@@ -2,4 +2,4 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Troy Harvey
   - Matrix: @harveydevel:matrix.org
-  - Email: harveydevel@gmail.com
+  - Email: harvey@getsol.us
