@@ -1,0 +1,218 @@
+From 3d430b9b468c2b3e3a4245a4e002d082fcbe464f Mon Sep 17 00:00:00 2001
+From: David Mohammed <fossfreedom@ubuntu.com>
+Date: Thu, 19 Feb 2026 22:12:23 +0000
+Subject: [PATCH] Ensure we return TRUE for inhibt dbus calls - false is
+ invalid in this context which should stop invalid dbus crashes
+
+---
+ gnome-session/gsm-manager.c | 119 +++++++++++++++++++++++++++++++-----
+ 1 file changed, 104 insertions(+), 15 deletions(-)
+
+diff --git a/gnome-session/gsm-manager.c b/gnome-session/gsm-manager.c
+index 244e706d..06309824 100644
+--- a/gnome-session/gsm-manager.c
++++ b/gnome-session/gsm-manager.c
+@@ -2381,8 +2381,30 @@ on_inhibitor_vanished (GsmInhibitor *inhibitor,
+                        GsmManager   *manager)
+ {
+         GsmManagerPrivate *priv = gsm_manager_get_instance_private (manager);
++        const char *id;
++        const char *app_id;
++        const char *bus_name;
++        guint flags;
++
++        /* Take a ref to prevent the inhibitor from being destroyed while we work with it */
++        g_object_ref (inhibitor);
++
++        id = gsm_inhibitor_peek_id (inhibitor);
++        app_id = gsm_inhibitor_peek_app_id (inhibitor);
++        bus_name = gsm_inhibitor_peek_bus_name (inhibitor);
++        flags = gsm_inhibitor_peek_flags (inhibitor);
+ 
+-        gsm_store_remove (priv->inhibitors, gsm_inhibitor_peek_id (inhibitor));
++        g_debug ("GsmManager: Inhibitor vanished: id=%s app_id=%s bus_name=%s flags=%u",
++                 id ? id : "(null)",
++                 app_id ? app_id : "(null)",
++                 bus_name ? bus_name : "(null)",
++                 flags);
++
++        if (id != NULL) {
++                gsm_store_remove (priv->inhibitors, id);
++        }
++
++        g_object_unref (inhibitor);
+ }
+ 
+ static void
+@@ -2393,11 +2415,26 @@ on_store_inhibitor_added (GsmStore   *store,
+         GsmManagerPrivate *priv = gsm_manager_get_instance_private (manager);
+         GsmInhibitor *i;
+         GsmInhibitorFlag new_inhibited_actions;
+-
+-        g_debug ("GsmManager: Inhibitor added: %s", id);
++        const char *bus_name;
++        const char *app_id;
++        const char *reason;
++        guint flags;
+ 
+         i = GSM_INHIBITOR (gsm_store_lookup (store, id));
+ 
++        bus_name = gsm_inhibitor_peek_bus_name (i);
++        app_id = gsm_inhibitor_peek_app_id (i);
++        reason = gsm_inhibitor_peek_reason (i);
++        flags = gsm_inhibitor_peek_flags (i);
++
++        g_debug ("GsmManager: Inhibitor added: id=%s bus_name=%s app_id=%s flags=%u reason=%s cookie=%u",
++                 id,
++                 bus_name ? bus_name : "(null)",
++                 app_id ? app_id : "(null)",
++                 flags,
++                 reason ? reason : "(null)",
++                 gsm_inhibitor_peek_cookie (i));
++
+         new_inhibited_actions = priv->inhibited_actions | gsm_inhibitor_peek_flags (i);
+         update_inhibited_actions (manager, new_inhibited_actions);
+ 
+@@ -2415,7 +2452,14 @@ collect_inhibition_flags (const char *id,
+ {
+         GsmInhibitorFlag *new_inhibited_actions = user_data;
+ 
+-        *new_inhibited_actions |= gsm_inhibitor_peek_flags (GSM_INHIBITOR (object));
++        if (GSM_IS_INHIBITOR (object)) {
++                GsmInhibitorFlag flags = gsm_inhibitor_peek_flags (GSM_INHIBITOR (object));
++                *new_inhibited_actions |= flags;
++                g_debug ("GsmManager: Collecting inhibitor %s flags=%u", id, flags);
++        } else {
++                g_warning ("GsmManager: collect_inhibition_flags called with non-inhibitor object for id %s",
++                          id ? id : "(null)");
++        }
+ 
+         return FALSE;
+ }
+@@ -2427,8 +2471,10 @@ on_store_inhibitor_removed (GsmStore   *store,
+ {
+         GsmManagerPrivate *priv = gsm_manager_get_instance_private (manager);
+         GsmInhibitorFlag new_inhibited_actions;
++        guint inhibitor_count;
+ 
+-        g_debug ("GsmManager: Inhibitor removed: %s", id);
++        inhibitor_count = gsm_store_size (priv->inhibitors);
++        g_debug ("GsmManager: Inhibitor removed: %s (remaining: %u)", id, inhibitor_count);
+ 
+         new_inhibited_actions = 0;
+         gsm_store_foreach (priv->inhibitors,
+@@ -3198,7 +3244,7 @@ gsm_manager_inhibit (GsmExportedManager    *skeleton,
+                                          "Reason not specified");
+                 g_debug ("GsmManager: Unable to inhibit: %s", new_error->message);
+                 g_dbus_method_invocation_take_error (invocation, new_error);
+-                return FALSE;
++                return TRUE;
+         }
+ 
+         if (flags == 0) {
+@@ -3209,7 +3255,7 @@ gsm_manager_inhibit (GsmExportedManager    *skeleton,
+                                          "Invalid inhibit flags");
+                 g_debug ("GsmManager: Unable to inhibit: %s", new_error->message);
+                 g_dbus_method_invocation_take_error (invocation, new_error);
+-                return FALSE;
++                return TRUE;
+         }
+ 
+         cookie = _generate_unique_cookie (manager);
+@@ -3220,6 +3266,14 @@ gsm_manager_inhibit (GsmExportedManager    *skeleton,
+                                        g_dbus_method_invocation_get_sender (invocation),
+                                        cookie);
+         gsm_store_add (priv->inhibitors, gsm_inhibitor_peek_id (inhibitor), G_OBJECT (inhibitor));
++        g_debug ("GsmManager: Inhibit successful - cookie=%u app_id=%s xid=%u flags=%u reason=%s sender=%s",
++                 cookie,
++                 app_id,
++                 toplevel_xid,
++                 flags,
++                 reason,
++                 g_dbus_method_invocation_get_sender (invocation));
++
+         g_object_unref (inhibitor);
+ 
+         gsm_exported_manager_complete_inhibit (skeleton, invocation, cookie);
+@@ -3235,8 +3289,16 @@ gsm_manager_uninhibit (GsmExportedManager    *skeleton,
+ {
+         GsmManagerPrivate *priv = gsm_manager_get_instance_private (manager);
+         GsmInhibitor *inhibitor;
++        const char *sender;
++        const char *inhibitor_id;
++        const char *app_id;
++        const char *bus_name;
++        const char *reason;
++        guint flags;
++
++        sender = g_dbus_method_invocation_get_sender (invocation);
+ 
+-        g_debug ("GsmManager: Uninhibit %u", cookie);
++        g_debug ("GsmManager: Uninhibit %u from sender %s", cookie, sender);
+ 
+         inhibitor = (GsmInhibitor *)gsm_store_find (priv->inhibitors,
+                                                     (GsmStoreFunc)_find_by_cookie,
+@@ -3244,22 +3306,47 @@ gsm_manager_uninhibit (GsmExportedManager    *skeleton,
+         if (inhibitor == NULL) {
+                 GError *new_error;
+ 
++                g_warning ("GsmManager: Uninhibit called with invalid/unknown cookie %u from %s",
++                          cookie, sender);
++
+                 new_error = g_error_new (GSM_MANAGER_ERROR,
+                                          GSM_MANAGER_ERROR_GENERAL,
+                                          "Unable to uninhibit: Invalid cookie");
+-                g_debug ("Unable to uninhibit: %s", new_error->message);
+                 g_dbus_method_invocation_take_error (invocation, new_error);
+                 return TRUE;
+         }
+ 
+-        g_debug ("GsmManager: removing inhibitor %s %u reason '%s' %u connection %s",
+-                 gsm_inhibitor_peek_app_id (inhibitor),
++        /* Take a ref to prevent premature destruction */
++        g_object_ref (inhibitor);
++
++        inhibitor_id = gsm_inhibitor_peek_id (inhibitor);
++        app_id = gsm_inhibitor_peek_app_id (inhibitor);
++        bus_name = gsm_inhibitor_peek_bus_name (inhibitor);
++        reason = gsm_inhibitor_peek_reason (inhibitor);
++        flags = gsm_inhibitor_peek_flags (inhibitor);
++
++        g_debug ("GsmManager: removing inhibitor id=%s app_id=%s xid=%u reason='%s' flags=%u bus_name=%s",
++                 inhibitor_id ? inhibitor_id : "(null)",
++                 app_id ? app_id : "(null)",
+                  gsm_inhibitor_peek_toplevel_xid (inhibitor),
+-                 gsm_inhibitor_peek_reason (inhibitor),
+-                 gsm_inhibitor_peek_flags (inhibitor),
+-                 gsm_inhibitor_peek_bus_name (inhibitor));
++                 reason ? reason : "(null)",
++                 flags,
++                 bus_name ? bus_name : "(null)");
++
++        if (inhibitor_id == NULL) {
++                g_critical ("GsmManager: Inhibitor has NULL id, cannot remove from store");
++                g_object_unref (inhibitor);
++
++                GError *new_error = g_error_new (GSM_MANAGER_ERROR,
++                                                 GSM_MANAGER_ERROR_GENERAL,
++                                                 "Unable to uninhibit: Inhibitor has invalid state");
++                g_dbus_method_invocation_take_error (invocation, new_error);
++                return TRUE;
++        }
+ 
+-        gsm_store_remove (priv->inhibitors, gsm_inhibitor_peek_id (inhibitor));
++        gsm_store_remove (priv->inhibitors, inhibitor_id);
++
++        g_object_unref (inhibitor);
+ 
+         gsm_exported_manager_complete_uninhibit (skeleton, invocation);
+ 
+@@ -3286,6 +3373,8 @@ gsm_manager_is_inhibited (GsmExportedManager    *skeleton,
+                 if (inhibitor == NULL) {
+                         is_inhibited = FALSE;
+                 } else {
++                        g_debug ("GsmManager: IsInhibited(%u) = TRUE (found inhibitor: %s)",
++                                flags, gsm_inhibitor_peek_id (inhibitor));
+                         is_inhibited = TRUE;
+                 }
+         }
