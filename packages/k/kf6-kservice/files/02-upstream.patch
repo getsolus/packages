@@ -1,0 +1,191 @@
+From 3ec3e084db1005b34fd1debd73346ef6c79fe6da Mon Sep 17 00:00:00 2001
+From: Harald Sitter <sitter@kde.org>
+Date: Fri, 27 Feb 2026 19:31:10 +0100
+Subject: [PATCH] ksycoca: do not allow for recursive repairs
+
+this is a mighty complicated issue.
+
+fiddling with kservice/ksycoca will trigger creation of KSycoca and
+KServiceFactory instances. eventually the call chains arrive in
+KSycocaFactory and move on to findFactory. findFactory performs a
+checkDatabase and that may auto-repair the database if it finds it to be
+out of date or broken. this then closes and reopens the database (a
+singleton by virtue of KSycoca being a singleton) and eventually issues
+databaseChanged.
+
+at this point an observant user may react to the database change and
+adopt the changes... by calling into kservice/ksycoca. A fatal problem.
+
+this produces a recursive call chain where we perform the entire
+factorization dance again. If now, and this is the tricky bit, anything
+caused another rebuild to be needed (e.g. a desktop file changing) then
+the database will get closed and opened again and now the outer call
+chain has a thrashed state (both call chains worked on the same
+singleton, mind, so closing it in the inner chain breaks the outter
+chain).
+
+a specific scenario of this is happening in plasma-nm where QRCA tech
+reacts to database changes with a service lookup, producing another
+database change, thrashing the state, and eventually cashing.
+
+to deal with this we simply emit database changes in a queued fashion.
+
+we really really really should simplify this framework!
+
+BUG: 516426
+(cherry picked from commit 2de8b433550f5614778394f441f6635769c9613f)
+---
+ autotests/kservicetest.cpp       | 33 +++++++++++++++++++++++++++++++-
+ autotests/kservicetest.h         |  3 ++-
+ src/services/kservicefactory.cpp | 13 +++++++++++++
+ src/sycoca/ksycoca.cpp           | 14 ++++++++++++--
+ 4 files changed, 59 insertions(+), 4 deletions(-)
+
+diff --git a/autotests/kservicetest.cpp b/autotests/kservicetest.cpp
+index c4b19088..630a191b 100644
+--- a/autotests/kservicetest.cpp
++++ b/autotests/kservicetest.cpp
+@@ -1,6 +1,6 @@
+ /*
+     SPDX-FileCopyrightText: 2006 David Faure <faure@kde.org>
+-    SPDX-FileCopyrightText: 2022 Harald Sitter <sitter@kde.org>
++    SPDX-FileCopyrightText: 2022-2026 Harald Sitter <sitter@kde.org>
+ 
+     SPDX-License-Identifier: LGPL-2.0-only
+ */
+@@ -25,6 +25,7 @@
+ #include <kservicegroup.h>
+ 
+ #include <QFile>
++#include <QScopedValueRollback>
+ #include <QSignalSpy>
+ #include <QStandardPaths>
+ #include <QThread>
+@@ -33,6 +34,9 @@
+ #include <QLoggingCategory>
+ #include <QMimeDatabase>
+ 
++using namespace std::chrono_literals;
++using namespace Qt::StringLiterals;
++
+ QTEST_MAIN(KServiceTest)
+ 
+ extern KSERVICE_EXPORT int ksycoca_ms_between_checks;
+@@ -572,4 +576,31 @@ void KServiceTest::testStartupNotify()
+     }
+ }
+ 
++void KServiceTest::testRecursiveUpdate()
++{
++    if (!KSycoca::isAvailable()) {
++        QSKIP("ksycoca not available");
++    }
++
++    // Make sure updates trigger immediately.
++    QScopedValueRollback rollback(ksycoca_ms_between_checks, 0);
++
++    const QString filePath = QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation) + "/org.kde.testRecursiveUpdate.desktop"_L1;
++    {
++        QFile f(filePath);
++        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
++    }
++    QVERIFY(QFile::exists(filePath));
++
++    QSignalSpy spy(KSycoca::self(), &KSycoca::databaseChanged);
++
++    auto service = KService::serviceByDesktopPath(filePath);
++    // The signal must not have fired already. If it had we'd be able to recursively update and break the singleton.
++    QCOMPARE(spy.count(), 0);
++
++    // If we event loop it should fire though.
++    spy.wait(4s);
++    QCOMPARE(spy.count(), 1);
++}
++
+ #include "moc_kservicetest.cpp"
+diff --git a/autotests/kservicetest.h b/autotests/kservicetest.h
+index 482ddd77..bbee52fa 100644
+--- a/autotests/kservicetest.h
++++ b/autotests/kservicetest.h
+@@ -1,6 +1,6 @@
+ /*
+     SPDX-FileCopyrightText: 2006 David Faure <faure@kde.org>
+-    SPDX-FileCopyrightText: 2022 Harald Sitter <sitter@kde.org>
++    SPDX-FileCopyrightText: 2022-2026 Harald Sitter <sitter@kde.org>
+ 
+     SPDX-License-Identifier: LGPL-2.0-only
+ */
+@@ -46,6 +46,7 @@ private Q_SLOTS:
+     void testAliasFor();
+     void testServiceActionService();
+     void testStartupNotify();
++    void testRecursiveUpdate();
+ 
+ private:
+     void runKBuildSycoca(bool noincremental = false);
+diff --git a/src/services/kservicefactory.cpp b/src/services/kservicefactory.cpp
+index d44ebfec..f0e6a340 100644
+--- a/src/services/kservicefactory.cpp
++++ b/src/services/kservicefactory.cpp
+@@ -13,6 +13,7 @@
+ #include "servicesdebug.h"
+ #include <QDir>
+ #include <QFile>
++#include <QScopedValueRollback>
+ 
+ extern int servicesDebugArea();
+ 
+@@ -22,6 +23,18 @@ KServiceFactory::KServiceFactory(KSycoca *db)
+     , m_relNameDict(nullptr)
+     , m_menuIdDict(nullptr)
+ {
++    // Safety net against recursive calls. Because KSycocaFactory calls findFactory and that issues a checkDatabase
++    // and that may end up repairing the database and thus closing and reopening it, we must absolutely never find
++    // ourselves in a recursive call chain.
++    // The inner call would thrash the state of the outer call causing impossibly difficult to debug state corruption.
++    thread_local bool inside = false;
++    if (inside) {
++        qFatal(
++            "Recursive call detected in KServiceFactory. This is not allowed and indicates a bug in KSycoca/KServiceFactory. Please report this on "
++            "bugs.kde.org.");
++    }
++    QScopedValueRollback guard(inside, true);
++
+     m_offerListOffset = 0;
+     m_nameDictOffset = 0;
+     m_relNameDictOffset = 0;
+diff --git a/src/sycoca/ksycoca.cpp b/src/sycoca/ksycoca.cpp
+index fbb32389..e3075891 100644
+--- a/src/sycoca/ksycoca.cpp
++++ b/src/sycoca/ksycoca.cpp
+@@ -320,7 +320,12 @@ void KSycocaPrivate::slotDatabaseChanged()
+         m_databasePath = findDatabase();
+ 
+         // Now notify applications
+-        Q_EMIT q->databaseChanged();
++        QMetaObject::invokeMethod(q,
++                                  &KSycoca::databaseChanged,
++                                  // Guard against recursive call chains caused by database updates.
++                                  // Because of the self-healing nature of KSycoca we must absolutely never find ourselves in a recursive call chain
++                                  // where one database change causes another database change (for example because there was an intermediate file change).
++                                  Qt::QueuedConnection);
+     }
+ }
+ 
+@@ -676,7 +681,12 @@ bool KSycocaPrivate::buildSycoca()
+         qCDebug(SYCOCA) << "Still no database...";
+         return false;
+     }
+-    Q_EMIT q->databaseChanged();
++    QMetaObject::invokeMethod(q,
++                              &KSycoca::databaseChanged,
++                              // Guard against recursive call chains caused by database updates.
++                              // Because of the self-healing nature of KSycoca we must absolutely never find ourselves in a recursive call chain
++                              // where one database change causes another database change (for example because there was an intermediate file change).
++                              Qt::QueuedConnection);
+     return true;
+ }
+ 
+-- 
+GitLab
+
