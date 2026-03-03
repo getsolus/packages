@@ -1,0 +1,306 @@
+From b99c151746fff721aaf95b3ab79ed04acf0096b4 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Mon, 16 Dec 2024 16:52:13 -0600
+Subject: [PATCH 10/15] Use mimalloc for clang/lld/llvm
+
+In testing this resulted in approximately a 7% improvement in build times for a few simple tests.
+
+Downstream-only because upstream prefers to support this by passing in a static linking flag to use libmimalloc.a, but as a distro we prefer to use the shared library.
+
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2025-03-29
+---
+ bolt/tools/driver/CMakeLists.txt             |  1 +
+ bolt/tools/driver/llvm-bolt.cpp              |  3 +++
+ clang/tools/driver/CMakeLists.txt            |  5 ++++
+ clang/tools/driver/driver.cpp                |  2 ++
+ lld/tools/lld/CMakeLists.txt                 |  5 ++++
+ lld/tools/lld/lld.cpp                        |  2 ++
+ llvm/CMakeLists.txt                          |  2 ++
+ llvm/cmake/config-ix.cmake                   | 17 ++++++++++++++
+ llvm/include/llvm/Config/llvm-config.h.cmake |  3 +++
+ llvm/include/llvm/Mimalloc/Mimalloc.h        | 12 ++++++++++
+ llvm/lib/CMakeLists.txt                      |  1 +
+ llvm/lib/Mimalloc/CMakeLists.txt             | 10 ++++++++
+ llvm/lib/Mimalloc/Mimalloc.cpp               | 24 ++++++++++++++++++++
+ llvm/tools/llvm-ar/CMakeLists.txt            |  2 ++
+ llvm/tools/llvm-ar/llvm-ar.cpp               |  3 +++
+ 15 files changed, 92 insertions(+)
+ create mode 100644 llvm/include/llvm/Mimalloc/Mimalloc.h
+ create mode 100644 llvm/lib/Mimalloc/CMakeLists.txt
+ create mode 100644 llvm/lib/Mimalloc/Mimalloc.cpp
+
+diff --git a/bolt/tools/driver/CMakeLists.txt b/bolt/tools/driver/CMakeLists.txt
+index 4b3c7416de97..37b89c4831e1 100644
+--- a/bolt/tools/driver/CMakeLists.txt
++++ b/bolt/tools/driver/CMakeLists.txt
+@@ -25,6 +25,7 @@ target_link_libraries(llvm-bolt
+   LLVMBOLTProfile
+   LLVMBOLTRewrite
+   LLVMBOLTUtils
++  LLVMMimalloc
+   )
+ 
+ add_bolt_tool_symlink(perf2bolt llvm-bolt)
+diff --git a/bolt/tools/driver/llvm-bolt.cpp b/bolt/tools/driver/llvm-bolt.cpp
+index cf1b31f8c0c6..f0d1134621e7 100644
+--- a/bolt/tools/driver/llvm-bolt.cpp
++++ b/bolt/tools/driver/llvm-bolt.cpp
+@@ -17,6 +17,7 @@
+ #include "bolt/Rewrite/RewriteInstance.h"
+ #include "bolt/Utils/CommandLineOpts.h"
+ #include "llvm/MC/TargetRegistry.h"
++#include "llvm/Mimalloc/Mimalloc.h"
+ #include "llvm/Object/Binary.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/Errc.h"
+@@ -178,6 +179,8 @@ int main(int argc, char **argv) {
+   sys::PrintStackTraceOnErrorSignal(argv[0]);
+   PrettyStackTraceProgram X(argc, argv);
+ 
++  llvm::mimalloc::set_mimalloc_options();
++
+   llvm_shutdown_obj Y; // Call llvm_shutdown() on exit.
+ 
+   std::string ToolPath = llvm::sys::fs::getMainExecutable(argv[0], nullptr);
+diff --git a/clang/tools/driver/CMakeLists.txt b/clang/tools/driver/CMakeLists.txt
+index a9fa61f9f75e..b29f4a475758 100644
+--- a/clang/tools/driver/CMakeLists.txt
++++ b/clang/tools/driver/CMakeLists.txt
+@@ -65,6 +65,11 @@ clang_target_link_libraries(clang
+   clangFrontendTool
+   clangSerialization
+   )
++ 
++target_link_libraries(clang
++  PRIVATE
++  LLVMMimalloc
++  )
+ 
+ if(WIN32 AND NOT CYGWIN)
+   # Prevent versioning if the buildhost is targeting for Win32.
+diff --git a/clang/tools/driver/driver.cpp b/clang/tools/driver/driver.cpp
+index 6cf64d70c939..576a414f8d9a 100644
+--- a/clang/tools/driver/driver.cpp
++++ b/clang/tools/driver/driver.cpp
+@@ -30,6 +30,7 @@
+ #include "llvm/ADT/SmallVector.h"
+ #include "llvm/ADT/StringSet.h"
+ #include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
++#include "llvm/Mimalloc/Mimalloc.h"
+ #include "llvm/Option/ArgList.h"
+ #include "llvm/Option/OptTable.h"
+ #include "llvm/Option/Option.h"
+@@ -244,6 +245,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
+ 
+ int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
+   noteBottomOfStack();
++  llvm::mimalloc::set_mimalloc_options();
+   llvm::setBugReportMsg("PLEASE submit a bug report to " BUG_REPORT_URL
+                         " and include the crash backtrace, preprocessed "
+                         "source, and associated run script.\n");
+diff --git a/lld/tools/lld/CMakeLists.txt b/lld/tools/lld/CMakeLists.txt
+index 8498a91597a9..9416f38ebd91 100644
+--- a/lld/tools/lld/CMakeLists.txt
++++ b/lld/tools/lld/CMakeLists.txt
+@@ -34,6 +34,11 @@ lld_target_link_libraries(lld
+   lldWasm
+   )
+ 
++target_link_libraries(lld
++  PRIVATE
++  LLVMMimalloc
++  )
++
+ if(NOT LLD_SYMLINKS_TO_CREATE)
+   set(LLD_SYMLINKS_TO_CREATE
+       lld-link ld.lld ld64.lld wasm-ld)
+diff --git a/lld/tools/lld/lld.cpp b/lld/tools/lld/lld.cpp
+index d6800fa1eea4..4a134e337011 100644
+--- a/lld/tools/lld/lld.cpp
++++ b/lld/tools/lld/lld.cpp
+@@ -31,6 +31,7 @@
+ #include "llvm/ADT/STLExtras.h"
+ #include "llvm/ADT/SmallVector.h"
+ #include "llvm/ADT/Twine.h"
++#include "llvm/Mimalloc/Mimalloc.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/CrashRecoveryContext.h"
+ #include "llvm/Support/LLVMDriver.h"
+@@ -73,6 +74,7 @@ LLD_HAS_DRIVER(macho)
+ LLD_HAS_DRIVER(wasm)
+ 
+ int lld_main(int argc, char **argv, const llvm::ToolContext &) {
++  llvm::mimalloc::set_mimalloc_options();
+   sys::Process::UseANSIEscapeCodes(true);
+ 
+   if (::getenv("FORCE_LLD_DIAGNOSTICS_CRASH")) {
+diff --git a/llvm/CMakeLists.txt b/llvm/CMakeLists.txt
+index af28bf016910..c16124440dd5 100644
+--- a/llvm/CMakeLists.txt
++++ b/llvm/CMakeLists.txt
+@@ -621,6 +621,8 @@ set(LLVM_ENABLE_ICU "OFF" CACHE STRING "Use ICU for text encoding conversion sup
+ 
+ set(LLVM_ENABLE_ICONV "OFF" CACHE STRING "Use iconv for text encoding conversion support if available. Can be ON, OFF, or FORCE_ON")
+ 
++set(LLVM_ENABLE_MIMALLOC "ON" CACHE STRING "Use mimalloc for memory allocations. Can be ON, OFF, or FORCE_ON")
++
+ set(LLVM_ENABLE_ZLIB "ON" CACHE STRING "Use zlib for compression/decompression if available. Can be ON, OFF, or FORCE_ON")
+ 
+ set(LLVM_ENABLE_ZSTD "ON" CACHE STRING "Use zstd for compression/decompression if available. Can be ON, OFF, or FORCE_ON")
+diff --git a/llvm/cmake/config-ix.cmake b/llvm/cmake/config-ix.cmake
+index ed2bfa6df68f..8ef440ea64fb 100644
+--- a/llvm/cmake/config-ix.cmake
++++ b/llvm/cmake/config-ix.cmake
+@@ -162,6 +162,23 @@ if(HAVE_LIBPTHREAD)
+   set(LLVM_PTHREAD_LIB ${CMAKE_THREAD_LIBS_INIT})
+ endif()
+ 
++# Mimalloc will set the PACKAGE_VERSION in it's cmake files, which breaks other parts of the build.
++# Temporarily store the current value and set it back afterwards.
++set(TEMP_VERSION ${PACKAGE_VERSION})
++set(mimalloc_FOUND 0)
++if(LLVM_ENABLE_MIMALLOC)
++  if(LLVM_ENABLE_MIMALLOC STREQUAL FORCE_ON)
++    find_package(mimalloc REQUIRED)
++    if(NOT mimalloc_FOUND)
++      message(FATAL_ERROR "Failed to configure mimalloc, but LLVM_ENABLE_MIMALLOC is FORCE_ON")
++    endif()
++  elseif(NOT LLVM_USE_SANITIZER MATCHES "Memory.*")
++    find_package(mimalloc QUIET)
++  endif()
++endif()
++set(LLVM_ENABLE_MIMALLOC ${mimalloc_FOUND})
++set(PACKAGE_VERSION ${TEMP_VERSION})
++
+ if(LLVM_ENABLE_ZLIB)
+   if(LLVM_ENABLE_ZLIB STREQUAL FORCE_ON)
+     find_package(ZLIB REQUIRED)
+diff --git a/llvm/include/llvm/Config/llvm-config.h.cmake b/llvm/include/llvm/Config/llvm-config.h.cmake
+index aec8c37b05a0..67f4e50c0d42 100644
+--- a/llvm/include/llvm/Config/llvm-config.h.cmake
++++ b/llvm/include/llvm/Config/llvm-config.h.cmake
+@@ -97,6 +97,9 @@
+ /* Define if we have cpp-httplib and want to use it */
+ #cmakedefine LLVM_ENABLE_HTTPLIB ${LLVM_ENABLE_HTTPLIB}
+ 
++/* Define if mimalloc is available */
++#cmakedefine01 LLVM_ENABLE_MIMALLOC
++
+ /* Define if zlib compression is available */
+ #cmakedefine01 LLVM_ENABLE_ZLIB
+ 
+diff --git a/llvm/include/llvm/Mimalloc/Mimalloc.h b/llvm/include/llvm/Mimalloc/Mimalloc.h
+new file mode 100644
+index 000000000000..e9bf4ef87b16
+--- /dev/null
++++ b/llvm/include/llvm/Mimalloc/Mimalloc.h
+@@ -0,0 +1,12 @@
++#ifndef LLVM_SUPPORT_MIMALLOC
++#define LLVM_SUPPORT_MIMALLOC
++
++namespace llvm {
++
++namespace mimalloc {
++
++void set_mimalloc_options();
++}
++}
++
++#endif
+diff --git a/llvm/lib/CMakeLists.txt b/llvm/lib/CMakeLists.txt
+index a9432977718c..004577dff063 100644
+--- a/llvm/lib/CMakeLists.txt
++++ b/llvm/lib/CMakeLists.txt
+@@ -25,6 +25,7 @@ add_subdirectory(Analysis)
+ add_subdirectory(LTO)
+ add_subdirectory(MC)
+ add_subdirectory(MCA)
++add_subdirectory(Mimalloc)
+ add_subdirectory(ObjCopy)
+ add_subdirectory(Object)
+ add_subdirectory(ObjectYAML)
+diff --git a/llvm/lib/Mimalloc/CMakeLists.txt b/llvm/lib/Mimalloc/CMakeLists.txt
+new file mode 100644
+index 000000000000..b7adccb8a8e1
+--- /dev/null
++++ b/llvm/lib/Mimalloc/CMakeLists.txt
+@@ -0,0 +1,10 @@
++if(LLVM_ENABLE_MIMALLOC)
++  list(APPEND imported_libs mimalloc)
++endif()
++
++add_llvm_library(LLVMMimalloc
++  Mimalloc.cpp
++
++  LINK_LIBS
++  ${imported_libs}
++  )
+diff --git a/llvm/lib/Mimalloc/Mimalloc.cpp b/llvm/lib/Mimalloc/Mimalloc.cpp
+new file mode 100644
+index 000000000000..918e9c3778eb
+--- /dev/null
++++ b/llvm/lib/Mimalloc/Mimalloc.cpp
+@@ -0,0 +1,24 @@
++#if LLVM_ENABLE_MIMALLOC
++// Including mimalloc-new-delete.h overrides new/delete operators.
++// We need it only when we are using mimalloc as a dynamic library.
++# include <mimalloc-new-delete.h>
++
++
++// Silence mimalloc warning messages that users can just ignore.
++# include <mimalloc.h>
++#endif
++
++namespace llvm {
++
++namespace mimalloc {
++
++#if LLVM_ENABLE_MIMALLOC
++void set_mimalloc_options() {
++  mi_option_disable(mi_option_verbose);
++  mi_option_disable(mi_option_show_errors);
++}
++#else
++void set_mimalloc_options() {}
++#endif
++}
++}
+diff --git a/llvm/tools/llvm-ar/CMakeLists.txt b/llvm/tools/llvm-ar/CMakeLists.txt
+index 4d0718f8cefe..763512760a46 100644
+--- a/llvm/tools/llvm-ar/CMakeLists.txt
++++ b/llvm/tools/llvm-ar/CMakeLists.txt
+@@ -19,6 +19,8 @@ add_llvm_tool(llvm-ar
+   GENERATE_DRIVER
+   )
+ 
++target_link_libraries(llvm-ar PRIVATE LLVMMimalloc)
++
+ add_llvm_tool_symlink(llvm-ranlib llvm-ar)
+ add_llvm_tool_symlink(llvm-lib llvm-ar)
+ add_llvm_tool_symlink(llvm-dlltool llvm-ar)
+diff --git a/llvm/tools/llvm-ar/llvm-ar.cpp b/llvm/tools/llvm-ar/llvm-ar.cpp
+index ac3824419537..226b68a03224 100644
+--- a/llvm/tools/llvm-ar/llvm-ar.cpp
++++ b/llvm/tools/llvm-ar/llvm-ar.cpp
+@@ -18,6 +18,7 @@
+ #include "llvm/Object/Archive.h"
+ #include "llvm/Object/ArchiveWriter.h"
+ #include "llvm/Object/SymbolicFile.h"
++#include "llvm/Mimalloc/Mimalloc.h"
+ #include "llvm/Support/Chrono.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/ConvertUTF.h"
+@@ -1511,6 +1512,8 @@ static int ranlib_main(int argc, char **argv) {
+ int llvm_ar_main(int argc, char **argv, const llvm::ToolContext &) {
+   ToolName = argv[0];
+ 
++  llvm::mimalloc::set_mimalloc_options();
++
+   llvm::InitializeAllTargetInfos();
+   llvm::InitializeAllTargetMCs();
+   llvm::InitializeAllAsmParsers();
+-- 
+2.52.0
+

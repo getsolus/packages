@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : miopen
-version    : 7.0.2
-release    : 7
+version    : 7.2.0
+release    : 8
 source     :
-    # tag: rocm-6.2.4
-    - git|https://github.com/ROCm/rocm-libraries.git : rocm-7.0.2
+    # TODO(GZGavinZhao): switch to git commit hash
+    - git|https://github.com/ROCm/rocm-libraries.git : rocm-7.2.0
     - https://sourceforge.net/projects/half/files/half/1.12.0/half-1.12.0.zip : cdd70d3bf3fe091b688e7ab3f48471c881a197d2c186c95cca8bf156961fb41c
 homepage   : https://github.com/ROCmSoftwarePlatform/MIOpen
 license    : MIT
@@ -30,7 +30,13 @@ builddeps  :
     - frugally-deep
     - rocm-cmake
     - rocm-hip
+    - rocm-llvm
     - rocmlir
+    # MIOpen uses dvc instead of Git LFS.
+    # [dvc](https://doc.dvc.org/install/linux) is a Python package so there's no
+    # way I'm going through all those revdeps to package it just for this
+    # package. We pull in `uv` so we can run `dvc` through `uvx dvc[s3]`.
+    - uv
 debug      : false
 environment: |
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
@@ -47,9 +53,12 @@ environment: |
     export CMAKE_PREFIX_PATH="/usr/lib64/llvm-rocm:$HALF_DIR"
 
     # sccache has problems with duplicate _cuid
+    # if [ -e /usr/bin/sccache ]; then
+    #     export HIP_CLANG_LAUNCHER=/usr/bin/sccache
+    #     export CMAKE_CXX_COMPILER_LAUNCHER=$HIP_CLANG_LAUNCHER
+    #     export CMAKE_HIP_COMPILER_LAUNCHER=$HIP_CLANG_LAUNCHER
+    # fi
     # export SCCACHE_IDLE_TIMEOUT=0
-    # export CMAKE_C_COMPILER_LAUNCHER=sccache
-    # export CMAKE_CXX_COMPILER_LAUNCHER=sccache
 
     export OFFLOAD_BUNDLER_COMPRESS=1
 setup      : |
@@ -59,16 +68,18 @@ setup      : |
     mkdir -p $HALF_DIR/include/half
     mv $HALF_DIR/include/*.hpp $HALF_DIR/include/half/
 
+    %patch -p1 -i $pkgfiles/0010-miopen-Extend-HIP-ISA-compatibility.patch
     pushd projects/miopen
-        # Otherwise git LFS doesn't pull anything...
-        git rm .lfsconfig
-        git config --local user.name "Packager"
-        git config --local user.email "no-reply@getsol.us"
-        git commit -m "Remove .lfsconfig"
-        git lfs install
-        git lfs pull
-        git submodule update --init --recursive --recommend-shallow --force 
-        %patch -p1 -i $pkgfiles/0001-Extend-MIOpen-ISA-compatibility.patch
+        # # Otherwise git LFS doesn't pull anything...
+        # git rm .lfsconfig
+        # git rm src/kernels/.gitignore
+        # git config --local user.name "Packager"
+        # git config --local user.email "no-reply@getsol.us"
+        # git commit -m "Remove .lfsconfig"
+        # git lfs install
+        # git lfs pull
+        # git submodule update --init --recursive --recommend-shallow --force 
+        uvx dvc[s3] pull
     popd
 
     %cmake_ninja -S projects/miopen -L \

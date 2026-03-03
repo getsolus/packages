@@ -1,0 +1,115 @@
+From 2c1e44fc3eacadcafdd4ada3e3184a092b6f26c5 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Sat, 21 Dec 2024 09:43:46 -0500
+Subject: [PATCH 13/15] [Comgr] Extend ISA compatibility for CCOB
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ amd/comgr/src/comgr-compiler.cpp | 62 ++++++++++++++++++++++++++++++--
+ amd/comgr/src/comgr-metadata.h   |  2 ++
+ 2 files changed, 61 insertions(+), 3 deletions(-)
+
+diff --git a/amd/comgr/src/comgr-compiler.cpp b/amd/comgr/src/comgr-compiler.cpp
+index e568a4d07c4e..e083c9da12d8 100644
+--- a/amd/comgr/src/comgr-compiler.cpp
++++ b/amd/comgr/src/comgr-compiler.cpp
+@@ -20,6 +20,7 @@
+ #include "comgr-env.h"
+ #include "comgr-spirv-command.h"
+ #include "comgr-unbundle-command.h"
++#include "comgr-metadata.h"
+ #include "lld/Common/CommonLinkerContext.h"
+ #include "lld/Common/Driver.h"
+ #include "clang/CodeGen/CodeGenAction.h"
+@@ -1378,17 +1379,72 @@ amd_comgr_status_t AMDGPUCompiler::unbundle() {
+            << "   Unbundled Files Extension: ." << FileExtension << "\n";
+     }
+ 
++    std::set<std::string> CoEntryIds;
++    if (auto Error = OffloadBundler::GetBundleIDsInFile(InputFilePath, BundlerConfig, CoEntryIds)) {
++      if (env::shouldEmitVerboseLogs()) {
++        LogS << "Failed to get bundle IDs in "
++             << InputFilePath
++             << ", not trying to coerce compatible archs\n";
++        LogS.flush();
++      }
++    }
++    std::set<std::pair<std::string, std::string>> entry_ids_with_idents;
++    for (const auto& CoEntryId : CoEntryIds) {
++      std::string TargetIdent;
++      size_t Pos = std::string::npos;
++      for (const auto& Prefix : {"hipv4-", "hip-"}) {
++        if ((Pos = CoEntryId.find(Prefix)) == 0) {
++          TargetIdent = CoEntryId.substr(std::char_traits<char>::length(Prefix));
++          break;
++        }
++      }
++
++      if (TargetIdent.empty()) {
++        continue;
++      }
++
++      entry_ids_with_idents.emplace(CoEntryId, TargetIdent);
++    }
++
++    // Bundler target and output names
+     for (StringRef Entry : ActionInfo->BundleEntryIDs) {
++      std::string CompatEntry = Entry.str();
++
++      std::string EntryIdent;
++      size_t Pos = std::string::npos;
++      for (const auto& Prefix : {"hipv4-", "hip-"}) {
++        if ((Pos = Entry.find(Prefix)) == 0) {
++          EntryIdent = Entry.substr(std::char_traits<char>::length(Prefix));
++          break;
++        }
++      }
++
++      if (!EntryIdent.empty()) {
++        std::string BestEntry;
++        for (const auto& [CoEntry, CoIdent] : entry_ids_with_idents) {
++          if (EntryIdent == CoIdent) {
++            BestEntry = CoEntry;
++            break;
++          } else if (metadata::isCompatibleIsaName(EntryIdent, CoIdent)) {
++            BestEntry = CoEntry;
++          }
++        }
++
++        if (!BestEntry.empty()) {
++          CompatEntry = BestEntry;
++        }
++      }
++
+       // Add an output file for each target
+       SmallString<128> OutputFilePath = OutputDir;
+       sys::path::append(OutputFilePath,
+-                        OutputPrefix + "-" + Entry + "." + FileExtension);
++                        OutputPrefix + "-" + CompatEntry + "." + FileExtension);
+ 
+-      BundlerConfig.TargetNames.emplace_back(Entry);
++      BundlerConfig.TargetNames.emplace_back(CompatEntry);
+       BundlerConfig.OutputFileNames.emplace_back(OutputFilePath);
+ 
+       if (env::shouldEmitVerboseLogs()) {
+-        LogS << "\tBundle Entry ID: " << Entry << "\n"
++        LogS << "\tBundle (Compat)Entry ID: " << CompatEntry << "\n"
+              << "\tOutput Filename: " << OutputFilePath << "\n";
+         LogS.flush();
+       }
+diff --git a/amd/comgr/src/comgr-metadata.h b/amd/comgr/src/comgr-metadata.h
+index 7e16d42fa52d..58c24fa44940 100644
+--- a/amd/comgr/src/comgr-metadata.h
++++ b/amd/comgr/src/comgr-metadata.h
+@@ -28,6 +28,8 @@ amd_comgr_status_t getIsaMetadata(llvm::StringRef IsaName,
+ 
+ bool isValidIsaName(llvm::StringRef IsaName);
+ 
++bool isCompatibleIsaName(llvm::StringRef IsaName, llvm::StringRef CodeObjectIsaName);
++
+ amd_comgr_status_t getElfIsaName(DataObject *DataP, std::string &IsaName);
+ 
+ amd_comgr_status_t lookUpCodeObject(DataObject *DataP,
+-- 
+2.52.0
+

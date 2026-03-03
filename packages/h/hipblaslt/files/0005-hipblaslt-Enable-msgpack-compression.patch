@@ -1,0 +1,68 @@
+From 223cc667aa9ad2e35751a9dfca1e098bbac8397b Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Sat, 14 Feb 2026 15:01:12 -0500
+Subject: [PATCH 5/7] [hipblaslt] Enable msgpack compression
+
+---
+ .../tensilelite/src/msgpack/MessagePack.cpp   | 31 +++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp b/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
+index 2246cdc936..c83140f785 100644
+--- a/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
++++ b/projects/hipblaslt/tensilelite/src/msgpack/MessagePack.cpp
+@@ -28,6 +28,8 @@
+ 
+ #include <Tensile/msgpack/Loading.hpp>
+ 
++#include <zstd.h>
++
+ #include <fstream>
+ 
+ namespace TensileLite
+@@ -83,6 +85,34 @@ namespace TensileLite
+                 return false;
+             }
+ 
++            // Check if the file is zstd compressed
++            char magic[4];
++            in.read(magic, 4);
++            bool isCompressed = (in.gcount() == 4 && magic[0] == '\x28' && magic[1] == '\xB5' && magic[2] == '\x2F' && magic[3] == '\xFD');
++            // Reset file pointer to the beginning
++            in.seekg(0, std::ios::beg);
++
++            if (isCompressed) {
++                // Decompress zstd file
++                std::vector<char> compressedData((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
++
++                size_t decompressedSize = ZSTD_getFrameContentSize(compressedData.data(), compressedData.size());
++                if (decompressedSize == ZSTD_CONTENTSIZE_ERROR || decompressedSize == ZSTD_CONTENTSIZE_UNKNOWN) {
++                    if(Debug::Instance().printDataInit())
++                        std::cout << "Error: Unable to determine decompressed size for " << filename << std::endl;
++                    return false;
++                }
++
++                std::vector<char> decompressedData(decompressedSize);
++                size_t dSize = ZSTD_decompress(decompressedData.data(), decompressedSize, compressedData.data(), compressedData.size());
++                if (ZSTD_isError(dSize)) {
++                    if(Debug::Instance().printDataInit())
++                        std::cout << "Error: ZSTD decompression failed for " << filename << std::endl;
++                    return false;
++                }
++
++                msgpack::unpack(result, decompressedData.data(), dSize);
++            } else {
+             msgpack::unpacker unp;
+             bool              finished_parsing;
+             constexpr size_t  buffer_size = 1 << 19;
+@@ -106,6 +136,7 @@ namespace TensileLite
+ 
+                 return false;
+             }
++            }
+         }
+         catch(std::runtime_error const& exc)
+         {
+-- 
+2.52.0
+

@@ -1,0 +1,92 @@
+From c7de294b0d1d25f277f9d1cbb2c9e09c7600e210 Mon Sep 17 00:00:00 2001
+From: Gavin Zhao <git@gzgz.dev>
+Date: Fri, 20 Dec 2024 20:38:09 -0500
+Subject: [PATCH 11/15] [ClangOffloadBundler]: Add GetBundleIDsInFile to
+ OffloadBundler
+
+Signed-off-by: Gavin Zhao <git@gzgz.dev>
+---
+ clang/include/clang/Driver/OffloadBundler.h |  8 +++++
+ clang/lib/Driver/OffloadBundler.cpp         | 40 +++++++++++++++++++++
+ 2 files changed, 48 insertions(+)
+
+diff --git a/clang/include/clang/Driver/OffloadBundler.h b/clang/include/clang/Driver/OffloadBundler.h
+index e7306ce3cc9a..12a14ee9f625 100644
+--- a/clang/include/clang/Driver/OffloadBundler.h
++++ b/clang/include/clang/Driver/OffloadBundler.h
+@@ -23,6 +23,7 @@
+ #include <llvm/Support/MemoryBuffer.h>
+ #include <string>
+ #include <vector>
++#include <set>
+ 
+ namespace clang {
+ 
+@@ -65,6 +66,13 @@ public:
+   ListBundleIDsInFile(llvm::StringRef InputFileName,
+                       const OffloadBundlerConfig &BundlerConfig);
+ 
++  // Collect available bundle IDs into a std::set. Return true if an error was
++  // found.
++  static llvm::Error
++  GetBundleIDsInFile(llvm::StringRef InputFileName,
++                     const OffloadBundlerConfig &BundlerConfig,
++                     std::set<std::string> &BundleIds);
++
+   llvm::Error BundleFiles();
+   llvm::Error UnbundleFiles();
+   llvm::Error UnbundleArchive();
+diff --git a/clang/lib/Driver/OffloadBundler.cpp b/clang/lib/Driver/OffloadBundler.cpp
+index f69ac41dddb3..744394b1009c 100644
+--- a/clang/lib/Driver/OffloadBundler.cpp
++++ b/clang/lib/Driver/OffloadBundler.cpp
+@@ -1359,6 +1359,46 @@ Error OffloadBundler::ListBundleIDsInFile(
+   return FH->listBundleIDs(DecompressedInput);
+ }
+ 
++// List bundle IDs. Return true if an error was found.
++Error OffloadBundler::GetBundleIDsInFile(StringRef InputFileName,
++                                         const OffloadBundlerConfig &BundlerConfig,
++                                         std::set<std::string> &BundleIDs) {
++  // Open Input file.
++  ErrorOr<std::unique_ptr<MemoryBuffer>> CodeOrErr =
++      MemoryBuffer::getFileOrSTDIN(InputFileName);
++  if (std::error_code EC = CodeOrErr.getError())
++    return createFileError(InputFileName, EC);
++
++  // Decompress the input if necessary.
++  Expected<std::unique_ptr<MemoryBuffer>> DecompressedBufferOrErr =
++      CompressedOffloadBundle::decompress(**CodeOrErr, BundlerConfig.Verbose);
++  if (!DecompressedBufferOrErr)
++    return createStringError(
++        inconvertibleErrorCode(),
++        "Failed to decompress input: " +
++            llvm::toString(DecompressedBufferOrErr.takeError()));
++
++  MemoryBuffer &DecompressedInput = **DecompressedBufferOrErr;
++
++  // Select the right files handler.
++  Expected<std::unique_ptr<FileHandler>> FileHandlerOrErr =
++      CreateFileHandler(DecompressedInput, BundlerConfig);
++  if (!FileHandlerOrErr)
++    return FileHandlerOrErr.takeError();
++
++  std::unique_ptr<FileHandler> &FH = *FileHandlerOrErr;
++  assert(FH);
++
++  std::set<StringRef> BundleIDsRefs;
++  if (auto Error = FH->getBundleIDs(DecompressedInput, BundleIDsRefs))
++      return Error;
++
++  for (auto bundle_id : BundleIDsRefs)
++      BundleIDs.insert(bundle_id.str());
++  
++  return Error::success();
++}
++
+ /// @brief Checks if a code object \p CodeObjectInfo is compatible with a given
+ /// target \p TargetInfo.
+ /// @link https://clang.llvm.org/docs/ClangOffloadBundler.html#bundle-entry-id
+-- 
+2.52.0
+
