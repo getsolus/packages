@@ -1,0 +1,91 @@
+Fix configured arguments for spawned shells being ignored when use-fork = true.
+When opening the config editor (e.g. Ctrl+Shift+,), the editor would open with
+a scratch buffer instead of the config file. Wire shell args through
+create_pty_with_fork and default_shell_command.
+
+See: https://github.com/raphamorim/rio/pull/1303
+
+--- a/frontends/rioterm/src/context/mod.rs	2026-03-03 21:18:59.400647428 -0500
++++ b/frontends/rioterm/src/context/mod.rs	2026-03-03 21:19:10.065204541 -0500
+@@ -235,6 +235,7 @@
+                 tracing::info!("rio -> teletypewriter: create_pty_with_fork");
+                 pty = match create_pty_with_fork(
+                     &Cow::Borrowed(&config.shell.program),
++                    &config.shell.args,
+                     cols,
+                     rows,
+                 ) {
+
+--- a/teletypewriter/examples/spawn.rs	2026-03-03 21:18:59.412351275 -0500
++++ b/teletypewriter/examples/spawn.rs	2026-03-03 21:19:11.026211479 -0500
+@@ -10,7 +10,7 @@
+     use teletypewriter::{create_pty_with_fork, ProcessReadWrite, Pty};
+ 
+     let shell = Cow::Borrowed("bash");
+-    let mut process: Pty = create_pty_with_fork(&shell, 80, 25)?;
++    let mut process: Pty = create_pty_with_fork(&shell, &[], 80, 25)?;
+ 
+     process.writer().write_all(b"1").unwrap();
+     process.writer().write_all(b"2").unwrap();
+
+--- a/teletypewriter/src/unix/mod.rs	2026-03-03 21:18:59.412306565 -0500
++++ b/teletypewriter/src/unix/mod.rs	2026-03-03 21:19:08.668194456 -0500
+@@ -61,29 +61,19 @@
+     fn ptsname(fd: *mut libc::c_int) -> *mut libc::c_char;
+ }
+ 
+-#[cfg(target_os = "macos")]
+-fn default_shell_command(shell: &str) {
+-    let command_shell_string = CString::new(shell).unwrap();
+-    let command_pointer = command_shell_string.as_ptr();
+-    let args = CString::new("--login").unwrap();
+-    let args_pointer = args.as_ptr();
+-    unsafe {
+-        libc::execvp(command_pointer, vec![args_pointer].as_ptr());
++fn default_shell_command(shell: &str, args: &[String]) {
++    let program = CString::new(shell).unwrap();
++    let c_args: Vec<CString> = args
++        .iter()
++        .filter_map(|a| CString::new(a.as_str()).ok())
++        .collect();
++    let mut argv: Vec<*const libc::c_char> = vec![program.as_ptr()];
++    for c in &c_args {
++        argv.push(c.as_ptr());
+     }
+-}
+-
+-#[cfg(not(target_os = "macos"))]
+-fn default_shell_command(shell: &str) {
+-    let command_shell_string = CString::new(shell).unwrap();
+-    let command_pointer = command_shell_string.as_ptr();
+-    // let home = std::env::var("HOME").unwrap();
+-    // let args = CString::new(home).unwrap();
+-    // let args_pointer = args.as_ptr() as *const i8;
++    argv.push(std::ptr::null());
+     unsafe {
+-        libc::execvp(
+-            command_pointer,
+-            vec![command_pointer, std::ptr::null()].as_ptr(),
+-        );
++        libc::execvp(program.as_ptr(), argv.as_ptr());
+     }
+ }
+ 
+@@ -621,7 +611,7 @@
+ ///
+ /// It returns two [`Pty`] along with respective process name [`String`] and process id (`libc::pid_`)
+ ///
+-pub fn create_pty_with_fork(shell: &str, columns: u16, rows: u16) -> Result<Pty, Error> {
++pub fn create_pty_with_fork(shell: &str, args: &[String], columns: u16, rows: u16) -> Result<Pty, Error> {
+     let mut main = 0;
+     let winsize = Winsize {
+         ws_row: rows as libc::c_ushort,
+@@ -657,7 +647,7 @@
+         )
+     } {
+         0 => {
+-            default_shell_command(shell_program);
++            default_shell_command(shell_program, args);
+             Err(Error::other(format!(
+                 "forkpty has reach unreachable with {shell_program}"
+             )))
