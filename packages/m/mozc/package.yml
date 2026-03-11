@@ -1,112 +1,140 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : mozc
-version    : 2.29.5150.102
-release    : 11
+version    : 3.33.6089.102
+release    : 12
 source     :
-    - git|https://github.com/fcitx/mozc.git : 0049ee3a8ceb03144b4521e559449f2a7da34f42
-    - https://download.fcitx-im.org/fcitx-mozc/fcitx-mozc-icon.tar.gz : e1da3026bd79f8c5b1dc07080309f9568934a829271f4ab71850cb8088956d81
-homepage   : https://github.com/fcitx/mozc
-license    : BSD-3-Clause
+    - git|https://github.com/fcitx/mozc.git : e99761585263feec635b26e0dea1025ae12b25b7
+homepage   : https://github.com/google/mozc
+license    :
+    - Apache-2.0
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - LGPL-2.0-or-later
+    - MIT
+    - NAIST-2003
+    - Unicode-DFS-2015
 component  :
     - desktop.core
-    - ^fcitx-mozc : desktop.core
+    - ^fcitx5-mozc : desktop.core
     - ^ibus-mozc : desktop.core
 summary    :
     - Japanese Input Method for Linux
-    - ^fcitx-mozc : Mozc engine for Fcitx
+    - ^fcitx5-mozc : Mozc engine for Fcitx5
     - ^ibus-mozc : Mozc engine for IBus
 description: |
     Mozc is a Japanese Input Method Editor (IME) for Linux that provides support for Fcitx or IBus.
+networking : true
 builddeps  :
-    - pkgconfig(Qt5Core)
-    - pkgconfig(absl_base)
-    - pkgconfig(fcitx)
-    - pkgconfig(gtk+-2.0)
+    - pkgconfig(Fcitx5Core)
+    - pkgconfig(Qt6Core)
     - pkgconfig(ibus-1.0)
-    - pkgconfig(libprotobuf-c)
-    - pkgconfig(protobuf)
-    - pkgconfig(xcb)
-    - pkgconfig(zinnia)
-    - llvm-clang
+    - bazelisk
 rundeps    :
-    - ^fcitx-mozc :
-        - fcitx
+    - ^fcitx5-mozc :
+        - fcitx5
         - mozc
     - ^ibus-mozc :
+        - ibus
         - mozc
 setup      : |
-    %apply_patches
+    cd src
 
-    rm -rf src/unix/fcitx5
-    pushd ..
-    tar xf $sources/fcitx-mozc-icon.tar.gz
-    popd
-
-    rm -rf src/third_party/abseil-cpp
-
-    GYP_DEFINES="ibus_mozc_path=/usr/lib64/ibus-mozc/ibus-engine-mozc \
-        use_libprotobuf=1 \
-        use_libzinnia=1 \
-        use_system_abseil_cpp=1" \
-    python3 src/build_mozc.py gyp --server_dir=/usr/lib64/mozc --target_platform=Linux
+    # List the licenses of all bundled libraries
+    # Mozc: BSD-3-Clause
+    printf '1. Mozc\n\n' > MOZC_LICENSE
+    sed -n 67,94p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # Breakpad: BSD-3-Clause
+    printf '2. Breakpad\n\n' >> MOZC_LICENSE
+    sed -n 317,344p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # IPAdic: NAIST-2003
+    printf '3. IPAdic\n\n' >> MOZC_LICENSE
+    sed -n 355,424p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # Japanese Usage Dictionary: BSD-2-Clause
+    printf '4. Japanese Usage Dictionary\n\n' >> MOZC_LICENSE
+    sed -n 435,457p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # Okinawa Dictionary: Public Domain Data
+    printf '5. Okinawa Dictionary\n\n' >> MOZC_LICENSE
+    sed -n 468,470p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # Protobuf: BSD-3-Clause
+    printf '6. Protobuf\n\n' >> MOZC_LICENSE
+    sed -n 481,513p data/installer/credits_en.html >> MOZC_LICENSE
+    printf '\n---\n\n' >> MOZC_LICENSE
+    # Tamachi Phonetic Kanji Alphabet: MIT
+    printf '7. Tamachi Phonetic Kanji Library\n\n' >> MOZC_LICENSE
+    sed -n 698,704p data/installer/credits_en.html >> MOZC_LICENSE
 build      : |
-    targets="
-        unix/ibus/ibus.gyp:ibus_mozc
-        unix/fcitx/fcitx.gyp:fcitx-mozc
-        server/server.gyp:mozc_server
-        gui/gui.gyp:mozc_tool
-        renderer/renderer.gyp:mozc_renderer"
-    python3 src/build_mozc.py build -c Release $targets
+    cd src
+
+    # Inject glib2's arch-specific path into Bazel's toolchain probe
+    export C_INCLUDE_PATH="/usr/lib64/glib-2.0/include:${C_INCLUDE_PATH:-}"
+    export CPLUS_INCLUDE_PATH="/usr/lib64/glib-2.0/include:${CPLUS_INCLUDE_PATH:-}"
+
+    # List the build targets
+    mozc_targets=(
+        unix/fcitx5:fcitx5-mozc.so
+        renderer/qt:mozc_renderer
+        unix/ibus:ibus_mozc
+        server:mozc_server
+        gui/tool:mozc_tool
+    )
+
+    # Use sources for pre-download files and override registry with local mirror.
+    # bazel only respects CC from environment, not CXXFLAGS and LDFLAGS.
+    # Pass them with --cxxopt, and --linkopt.
+    bazel build \
+        --config oss_linux \
+        --config stable_channel \
+        --config release_build \
+        --copt="-DNDEBUG" \
+        --copt="-U_FORTIFY_SOURCE "\
+        --copt="-Wno-uninitialized" \
+        --host_copt="-Wno-uninitialized" \
+        --linkopt=-fuse-ld=bfd \
+        $(echo "${CFLAGS}"|xargs -n1 echo "--conlyopt") \
+        $(echo "${CXXFLAGS}"|xargs -n1 echo "--cxxopt") \
+        $(echo "${LDFLAGS}"|xargs -n1 echo "--linkopt") \
+        --nostart_end_lib \
+        --verbose_failures \
+        ${mozc_targets[@]}
 install    : |
-    pushd src
-    install -d $installdir/usr/lib/{mozc,fcitx}
-    pushd out_linux/Release
-    install -Dm00755 mozc_server $installdir/usr/lib/mozc
-    install -Dm00755 mozc_tool $installdir/usr/lib/mozc
-    install -Dm00644 fcitx-mozc.so $installdir/usr/lib/fcitx
-    mv ibus_mozc ibus-engine-mozc
-    for bin in ibus-engine-mozc; do
-        install -Dm00755 $bin $installdir/usr/lib/ibus-mozc/$bin
-    done
-    for bin in mozc_renderer mozc_server mozc_tool; do
-        install -Dm00755 $bin $installdir/usr/lib/mozc/$bin
-    done
-    for xml in gen/unix/ibus/mozc.xml; do
-        install -Dm00644 $xml $installdir/usr/share/ibus/component/${xml##*/}
-    done
-    popd
-    pushd data/images/unix
-    cp ime_product_icon_opensource-32.png product_icon.png
-    for icon in *.png; do
-        install -Dm00644 $icon $installdir/usr/share/ibus-mozc/${icon#ui-}
-    done
-    popd
-    install -Dm00644 unix/fcitx/fcitx-mozc.conf $installdir/usr/share/fcitx/addon/fcitx-mozc.conf
-    install -Dm00644 unix/fcitx/mozc.conf $installdir/usr/share/fcitx/inputmethod/mozc.conf
+    cd src
 
-    for dotmo in out_linux/Release/gen/unix/fcitx/po/*.mo; do
-        filename=$(basename $dotmo)
-        lang=${filename/.mo/}
-        install -Dm00644 $dotmo $installdir/usr/share/locale/$lang/LC_MESSAGES/fcitx-mozc.mo
-    done
-    popd
+    # Install main mozc and fcitx5 plugin
+    export PREFIX="${installdir}/%PREFIX%"
+    ../scripts/install_server_bazel
+    ../scripts/install_fcitx5_bazel
 
-    pushd ..
-    install -d $installdir/usr/share/fcitx/mozc/icon
-    install -m00644 fcitx-mozc-icons/mozc.png $installdir/usr/share/fcitx/mozc/icon/mozc.png
-    install -m00644 fcitx-mozc-icons/mozc-alpha_full.png $installdir/usr/share/fcitx/mozc/icon/mozc-alpha_full.png
-    install -m00644 fcitx-mozc-icons/mozc-alpha_half.png $installdir/usr/share/fcitx/mozc/icon/mozc-alpha_half.png
-    install -m00644 fcitx-mozc-icons/mozc-direct.png $installdir/usr/share/fcitx/mozc/icon/mozc-direct.png
-    install -m00644 fcitx-mozc-icons/mozc-hiragana.png $installdir/usr/share/fcitx/mozc/icon/mozc-hiragana.png
-    install -m00644 fcitx-mozc-icons/mozc-katakana_full.png $installdir/usr/share/fcitx/mozc/icon/mozc-katakana_full.png
-    install -m00644 fcitx-mozc-icons/mozc-katakana_half.png $installdir/usr/share/fcitx/mozc/icon/mozc-katakana_half.png
-    install -m00644 fcitx-mozc-icons/mozc-dictionary.png $installdir/usr/share/fcitx/mozc/icon/mozc-dictionary.png
-    install -m00644 fcitx-mozc-icons/mozc-properties.png $installdir/usr/share/fcitx/mozc/icon/mozc-properties.png
-    install -m00644 fcitx-mozc-icons/mozc-tool.png $installdir/usr/share/fcitx/mozc/icon/mozc-tool.png
+    # Install the IBus plugin and associated data
+    install -Dm00755 bazel-bin/renderer/qt/mozc_renderer ${installdir}/usr/lib/mozc/mozc_renderer
+    install -Dm00755 bazel-bin/unix/ibus/ibus_mozc ${installdir}/usr/lib/ibus-mozc/ibus-engine-mozc
+    install -Dm00644 bazel-bin/unix/ibus/mozc.xml ${installdir}/usr/share/ibus/component/mozc.xml
+
+    cp data/images/unix/ime_product_icon_opensource-32.png data/images/unix/product_icon.png
+    for icon in data/images/unix/ui-*.png
+    do
+        install -Dm00644 ${icon} ${installdir}/usr/share/ibus-mozc/"${icon##*/ui-}"
+    done
+
+    install -Dm00644 data/images/unix/ime_product_icon_opensource-32.png ${installdir}/usr/share/ibus-mozc/product_icon.png
+
+    # Install license
+    install -Dm00644 MOZC_LICENSE ${installdir}/usr/share/licenses/mozc/LICENSE
+    install -Dm00644 ../LICENSE ${installdir}/usr/share/licenses/mozc/BSD-3-Clause
 patterns   :
-    - ^fcitx-mozc :
-        - /usr/lib/fcitx
-        - /usr/share/fcitx
+    - ^fcitx5-mozc :
+        - /usr/lib/fcitx5/fcitx5-mozc.so
+        - /usr/share/fcitx5/
+        - /usr/share/icons/hicolor/*/apps/fcitx*.png
+        - /usr/share/icons/hicolor/*/apps/org.fcitx.Fcitx5.*.png
+        - /usr/share/locale/*/LC_MESSAGES/fcitx5-mozc.mo
+        - /usr/share/metainfo/org.fcitx.Fcitx5.Addon.Mozc.metainfo.xml
     - ^ibus-mozc :
         - /usr/lib/ibus-mozc
-        - /usr/share/ibus
+        - /usr/lib/mozc/mozc_renderer
+        - /usr/share/ibus/
+        - /usr/share/ibus-mozc/
