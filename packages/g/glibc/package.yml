@@ -1,42 +1,70 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : glibc
-version    : '2.42'
-release    : 137
+version    : '2.43'
+release    : 138
 source     :
-    # release/2.42/master
-    # Use the bminor mirror since the upstream is unreliable
-    - git|https://github.com/bminor/glibc : cbf39c26b25801e9bc88499b4fd361ac172d4125
+    # release/2.43/master
+    - git|https://sourceware.org/git/glibc.git : 305ce0b58809869295e62c3caa7eda4c8e41134f
 homepage   : https://www.gnu.org/software/libc/
-license    : GPL-3.0-or-later
+license    :
+    - GPL-2.0-or-later
+    - LGPL-2.1-or-later
+component  :
+    - system.base
+    - benchmarks : programming.tools
 summary    :
     - This package contains the GNU C libraries and header files
     - benchmarks : Various benchmarks to test the performance of GNU C libraries
 description: |
-    This package contains the GNU C libraries and header files.  The GNU C library was written originally by Roland McGrath, and is currently maintained by Ulrich Drepper.  Some parts of the library were contributed or worked on by other people. You'll need this package to compile programs.
+    This package contains the GNU C libraries and header files. The GNU C library was written originally by Roland McGrath, and is currently maintained by Ulrich Drepper. Some parts of the library were contributed or worked on by other people. You'll need this package to compile programs.
 libsplit   : false
 devel      : true
 autodep    : false
 emul32     : true
 avx2       : true
-component  : system.base
-patterns   :
-    - 32bit :
-        - /lib32/ld-linux.so.2
-        - /lib64/ld-linux.so.2
-        - /usr/lib64/ld-linux.so.2
-    - 32bit-devel :
-        - /usr/lib32/*.o
-        - /usr/lib32/libc_malloc_debug.so*
-    - benchmarks : /usr/bin/bench-*
-    - devel :
-        - /usr/bin/mtrace
-        - /usr/bin/pcprofiledump
-        - /usr/bin/xtrace
-        - /usr/lib64/*.o
-        - /usr/lib64/libc_malloc_debug.so*
-setup      : |
-    # Solus multilib integration
+environment: |
+    export LANGUAGE="C"
+    export LC_ALL="C"
+    export LANG="C"
+    export LDFLAGS="-Wl,-z,max-page-size=0x1000"
 
+    BUILDHOST="x86_64-solus-linux"
+    CFLAGS="-O3 -g2"
+
+    if [[ "${EMUL32BUILD}" ]]; then
+        BUILDHOST="i686-pc-linux-gnu"
+        CFLAGS="${CFLAGS} -mtune=generic -march=i686 -mstackrealign -Wl,-z,max-page-size=0x1000"
+    else
+        if [[ ! -z "${AVX2BUILD}" ]]; then
+            CFLAGS="${CFLAGS} -mtune=haswell -march=x86-64-v3 -mprefer-vector-width=128"
+        else
+            CFLAGS="${CFLAGS} -mtune=generic -march=x86-64"
+        fi
+    fi
+
+    export BUILDHOST
+    export CFLAGS
+
+    # The minimum kernel should track the supported kernel versions at kernel.org. Look under "longterm" and choose the fourth kernel.
+    # Example, at the time of writing this the LTS kernels are 6.6, 6.1, 5.15, 5.10, 5.4, 4.19, and 4.14. Therefore I would choose 5.10 as the kernel for glibc.
+    # The point of doing this and not tracking the kernel version of linux-lts is that some users may have manually compiled older kernels or be running
+    # in a container. We don't want to break such users, but there still needs to be a cutoff.
+
+    export COMMON_GLIBC_OPTIONS="\
+        %CONFOPTS% \
+        --build=${BUILDHOST} \
+        --disable-build-nscd \
+        --disable-nscd \
+        --disable-sframe \
+        --enable-bind-now \
+        --enable-kernel=6.1 \
+        --enable-multi-arch \
+        --enable-stack-protector=strong \
+        --enable-systemtap \
+        --with-pkgversion='Solus' \
+        --with-selinux=no
+    "
+setup      : |
     # Ensure that ldd can use all interpreters, allowing 64-bit host to run ldd
     # against 32-bit files.
     %patch -p1 -i $pkgfiles/0001-ldd-Force-correct-RTLDLIST-for-Solus.patch
@@ -77,82 +105,40 @@ setup      : |
     # Compress charmaps with zstd for space savings
     %patch -p1 -i $pkgfiles/0001-Compress-charmaps-with-zstd.patch
 
-    mkdir glibc-build
-    cd glibc-build
+    mkdir build && cd build
 
-    extra_conf_args=""
+    cet=""
     if [[ ! -z "${EMUL32BUILD}" ]]; then
         mkdir b32 && cd b32
-        export CC="gcc -m32"
-        export CXX="g++ -m32"
-        export BUILDHOST="i686-pc-linux-gnu"
-        export CFLAGS="-O3 -g2 -mtune=generic -march=i686 -mstackrealign"
+
+        cet="--disable-cet"
     else
         mkdir b64 && cd b64
-        export CC="gcc"
-        export CXX="g++"
-        export BUILDHOST="x86_64-solus-linux"
-        if [[ ! -z "${AVX2BUILD}" ]]; then
-            export CFLAGS="-O3 -g2 -mtune=haswell -march=x86-64-v3 -mprefer-vector-width=128"
-        else
-            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64"
-        fi
+
         # Only supported on x86_64 as of glibc v2.39
-        extra_conf_args="--enable-cet"
+        cet="--enable-cet=permissive"
     fi
-    export LDFLAGS="-Wl,-z,max-page-size=0x1000"
+
+    echo "LD_SO_CACHE=/var/cache/ldconfig/ld.so.cache" >> configparms
     echo "rootsbindir=/usr/sbin" >> configparms
     echo "rtlddir=%libdir%" >> configparms
     echo "sbindir=/usr/sbin" >> configparms
     echo "slibdir=%libdir%" >> configparms
-    # these params need to be coming from ypkg (build=)
+    # Note this deliberately excludes libsuffix and is not an error
+    echo "complocaledir=/usr/lib/locale" >> configparms
 
-    export LANGUAGE="C"
-    export LC_ALL="C"
-    export LANG="C"
-
-    # The minimum kernel should track the supported kernel versions at kernel.org. Look under "longterm" and choose the fourth kernel.
-    # Example, at the time of writing this the LTS kernels are 6.6, 6.1, 5.15, 5.10, 5.4, 4.19, and 4.14. Therefore I would choose 5.10 as the kernel for glibc.
-    # The point of doing this and not tracking the kernel version of linux-lts is that some users may have manually compiled older kernels or be running
-    # in a container. We don't want to break such users, but there still needs to be a cutoff.
     ../../configure \
-           --build=${BUILDHOST} \
-           --disable-build-nscd \
-           --disable-nscd \
-           --disable-sframe \
-           --enable-bind-now \
-           --enable-kernel=6.1 \
-           --enable-stack-protector=strong \
-           --enable-systemtap \
-           --prefix=/usr \
-           --mandir=/usr/share/man \
-           --infodir=/usr/share/info \
-           --libexecdir=%libdir%/misc \
-           --libdir=%libdir% \
-           --with-pkgversion='Solus' \
-           $extra_conf_args
+        ${COMMON_GLIBC_OPTIONS} \
+        ${cet}
 build      : |
-    cd glibc-build
-    export LANGUAGE="C"
-    export LC_ALL="C"
-    export LANG="C"
+    cd build
 
     if [[ "${EMUL32BUILD}" ]]; then
         cd b32
-        export CC="gcc -m32"
-        export CXX="g++ -m32"
-        export CFLAGS="-O3 -g2 mtune=generic -march=i686 -Wl,-z,max-page-size=0x1000"
     else
         cd b64
-        export CC="gcc"
-        export CXX="g++"
-        if [[ ! -z "${AVX2BUILD}" ]]; then
-            export CFLAGS="-O3 -g2 -mtune=haswell -march=x86-64-v3 -Wl,-z,max-page-size=0x1000"
-        else
-            export CFLAGS="-O3 -g2 -mtune=generic -march=x86-64 -Wl,-z,max-page-size=0x1000"
-        fi
     fi
-    export LDFLAGS="-Wl,-z,max-page-size=0x1000"
+
     %make
 
     # Ifdef to prevent running avx2 instructions on non-avx2 machines
@@ -160,7 +146,7 @@ build      : |
         %make bench-build
     fi
 install    : |
-    pushd glibc-build
+    pushd build
 
     if [[ ! -z "${EMUL32BUILD}" ]]; then
         cd b32
@@ -247,4 +233,20 @@ install    : |
 
     popd
 
-    %install_license LICENSES CONTRIBUTED-BY MAINTAINERS COPYING*
+    %install_license LICENSES COPYING*
+patterns   :
+    - 32bit :
+        - /lib32/ld-linux.so.2
+        - /lib64/ld-linux.so.2
+        - /usr/lib64/ld-linux.so.2
+    - 32bit-devel :
+        - /usr/lib32/*.o
+        - /usr/lib32/libc_malloc_debug.so*
+    - benchmarks :
+        - /usr/bin/bench-*
+    - devel :
+        - /usr/bin/mtrace
+        - /usr/bin/pcprofiledump
+        - /usr/bin/xtrace
+        - /usr/lib64/*.o
+        - /usr/lib64/libc_malloc_debug.so*
