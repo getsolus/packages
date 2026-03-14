@@ -1,0 +1,39 @@
+From 4c2692342efa7852cadd8535548a30745709e083 Mon Sep 17 00:00:00 2001
+From: Wim Taymans <wtaymans@redhat.com>
+Date: Mon, 9 Mar 2026 16:18:58 +0100
+Subject: [PATCH] impl-link: fix shared mem test
+
+We can only use non-shared memory when both nodes live in the same
+process _and_ we can be sure the output port is never going to be linked
+to a remote node because it is exclusive.
+
+This fixes the case where a null-sink is loaded inside the process space
+of the server and linked to the ALSA sink. This would create a link
+without shared mem and then as soon as something else (out of process)
+wants to link to the null-sink output, it would get a -22 EINVAL
+negotiation error because the memory can't be shared.
+
+Fixes #5159
+---
+ src/pipewire/impl-link.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/pipewire/impl-link.c b/src/pipewire/impl-link.c
+index a77dcf35f..a7ea65cb2 100644
+--- a/src/pipewire/impl-link.c
++++ b/src/pipewire/impl-link.c
+@@ -701,7 +701,10 @@ static int do_allocation(struct pw_impl_link *this)
+ 		/* always enable async mode */
+ 		alloc_flags = PW_BUFFERS_FLAG_ASYNC;
+ 
+-		if (output->node->remote || input->node->remote)
++		/* shared mem can only be used if both nodes are in the same process
++		 * and we are sure that the buffers are never going to be shared
++		 * because of the exclusive flag */
++		if (output->node->remote || input->node->remote || !output->exclusive)
+ 			alloc_flags |= PW_BUFFERS_FLAG_SHARED;
+ 
+ 		if (output->node->driver)
+-- 
+GitLab
+
