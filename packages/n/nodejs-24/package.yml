@@ -1,0 +1,153 @@
+# yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
+name       : nodejs-24
+version    : 24.15.0
+release    : 1
+source     :
+    - https://nodejs.org/dist/v24.15.0/node-v24.15.0.tar.gz : 729de494dd2872e5a3a6c32a1cd156a5413d4aca2772b2d873ee86bb5531bcd9
+homepage   : https://nodejs.org/
+license    : MIT
+component  : programming
+summary    : Node.js is a platform built on Chrome's JavaScript runtime for easily building fast, scalable network applications.
+description: |
+    Javascript platform to make fast, scalable network application. Node.js uses an event-driven, non-blocking I/O model that makes it lightweight and efficient, perfect for data-intensive real-time applications that run across distributed devices.
+builddeps  :
+    - pkgconfig(ada)
+    - pkgconfig(bzip2)
+    - pkgconfig(icu-i18n)
+    - pkgconfig(libbrotlicommon)
+    - pkgconfig(libcares)
+    - pkgconfig(libnghttp2)
+    - pkgconfig(libnghttp3)
+    - pkgconfig(libngtcp2)
+    - pkgconfig(libuv)
+    - pkgconfig(libzstd)
+    - pkgconfig(openssl)
+    - pkgconfig(sqlite3)
+    - pkgconfig(zlib)
+    - patchelf
+clang      : true
+environment: |
+    NODEJS_MAJOR=24
+    NODEJS_SONAME=137
+    NODEJS_PRIVATE_SITELIB=/usr/lib64/node_modules_$NODEJS_MAJOR
+setup      : |
+    python3 configure.py \
+            --ninja \
+            --enable-lto \
+            --prefix=%PREFIX% \
+            --libdir=lib64 \
+            --shared \
+            --shared-ada \
+            --shared-brotli \
+            --shared-cares \
+            --shared-libuv \
+            --shared-nghttp2 \
+            --shared-nghttp3 \
+            --shared-ngtcp2 \
+            --shared-openssl \
+            --shared-sqlite \
+            --shared-zlib \
+            --shared-zstd \
+            --verbose \
+            --with-intl=system-icu
+build      : |
+    %ninja_build -C out/Release
+install    : |
+    mv -v out/Release/lib/libnode.so.* out/Release/
+    ./tools/install.py install --dest-dir ${installdir} --prefix /usr
+
+    install -dm00755 ${installdir}/usr/lib64
+    mv ${installdir}/usr/lib/node_modules \
+       ${installdir}/${NODEJS_PRIVATE_SITELIB}
+    rmdir -v ${installdir}/usr/lib
+
+    # Fix the node permissions and move it
+    chmod 0755 ${installdir}/usr/bin/node
+    patchelf --remove-rpath ${installdir}/usr/bin/node
+    mv ${installdir}/usr/bin/node ${installdir}/usr/bin/node-${NODEJS_MAJOR}
+
+    # Move the corepack binary
+    rm -f ${installdir}/usr/bin/corepack
+
+    # Set the hashbang to use the matching Node.js interpreter
+    sed --in-place --regexp-extended \
+        "s;^#!/usr/bin/env node($|\ |\t)+;#!/usr/bin/node-$NODEJS_MAJOR;g" \
+        ${installdir}/${NODEJS_PRIVATE_SITELIB}/corepack/dist/corepack.js
+
+    ln -srf ${installdir}/${NODEJS_PRIVATE_SITELIB}/corepack/dist/corepack.js \
+            ${installdir}/usr/bin/corepack-${NODEJS_MAJOR}
+
+    # Move the npm binary
+    rm -f ${installdir}/usr/bin/npm
+
+    # Set the hashbang to use the matching Node.js interpreter
+    sed --in-place --regexp-extended \
+        "s;^#!/usr/bin/env node($|\ |\t)+;#!/usr/bin/node-$NODEJS_MAJOR;g" \
+        ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/bin/npm-cli.js
+
+    ln -srf ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/bin/npm-cli.js \
+            ${installdir}/usr/bin/npm-${NODEJS_MAJOR}
+
+    # Move the npx binary
+    rm -f ${installdir}/usr/bin/npx
+
+    # Set the hashbang to use the matching Node.js interpreter
+    sed --in-place --regexp-extended \
+        "s;^#!/usr/bin/env node($|\ |\t)+;#!/usr/bin/node-$NODEJS_MAJOR;g" \
+        ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/bin/npx-cli.js
+
+    ln -srf ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/bin/npx-cli.js \
+            ${installdir}/usr/bin/npx-${NODEJS_MAJOR}
+
+    # We don't need docs
+    rm -rfv ${installdir}/usr/share/doc
+
+    mv ${installdir}/usr/share/man/man1/node.1 ${installdir}/usr/share/man/man1/node-${NODEJS_MAJOR}.1
+
+    mv ${installdir}/usr/include/node ${installdir}/usr/include/node-${NODEJS_MAJOR}
+
+    # Some NPM bundled deps are executable but should not be
+    find ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm \
+        -not -path "${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/bin/*" \
+        -executable -type f \
+        -exec chmod -x {} \;
+    # The above command is a little overzealous. Add a few permissions back.
+    chmod +x ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/node_modules/@npmcli/run-script/lib/node-gyp-bin/node-gyp
+    chmod +x ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/node_modules/node-gyp/bin/node-gyp.js
+    chmod +x ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/node_modules/node-gyp/gyp/gyp_main.py
+
+    # Fix node-gyp
+    sed --in-place --regexp-extended \
+        "s;^#!/usr/bin/env node($|\ |\t)+;#!/usr/bin/node-$NODEJS_MAJOR;g" \
+        ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/node_modules/node-gyp/bin/node-gyp.js
+
+    find ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/node_modules \( \
+        -name '*.md'     -o \
+        -name 'AUTHOR*'  -o \
+        -name 'LICENSE*' -o \
+        -name 'PULL*'    -o \
+        -name Makefile   -o \
+        -name appveyor.yml -o \
+        -name doc  -o \
+        -name docs -o \
+        -name examples -o \
+        -name 'license*' -o \
+        -name '*.bak'  -o \
+        -name '*.d.ts' -o \
+        -name '*.markdown' -o \
+        -name '.*.yml' -o \
+        -name .editorconfig -o \
+        -name .github -o \
+        -name .nycrc \
+        \) -exec rm -rfv {} +
+    rm -rfv ${installdir}/${NODEJS_PRIVATE_SITELIB}/npm/docs
+
+    # Nothing links against this. If that ever becomes necessary we can re-add these with a customized pkgconfig
+    rm -rfv ${installdir}/usr/include
+
+    # This is a compat directory that is used when the binary name can't be overridden
+    # To use it do something like `export PATH=/usr/lib64/nodejs-24/bin:$PATH`
+    install -dm00755 ${installdir}/usr/lib64/nodejs-${NODEJS_MAJOR}/bin
+    for i in node npm npx corepack; do
+        ln -srv ${installdir}/usr/bin/$i-${NODEJS_MAJOR} ${installdir}/usr/lib64/nodejs-${NODEJS_MAJOR}/bin/$i
+    done
