@@ -1,0 +1,121 @@
+From 9636d7abf1de8ac4526b64b9c2462ede1778371f Mon Sep 17 00:00:00 2001
+From: Kai Koenig <kai@ventego-creative.co.nz>
+Date: Sat, 5 Sep 2026 17:37:04 +1200
+Subject: [PATCH] Fix screen locking with Budgie Screenlock D-Bus service
+
+Redux currently locks the screen by calling org.gnome.ScreenSaver
+over D-Bus. Modern Budgie sessions (e.g. Wayland/labwc on Ubuntu
+Budgie 26.04) instead expose locking through the
+org.buddiesofbudgie.BudgieScreenlock service, and no longer provide
+org.gnome.ScreenSaver at all. As a result, the Redux Lock button
+silently does nothing while the desktop's native lock shortcut
+(which calls BudgieScreenlock directly) still works.
+
+Add a BudgieScreenlockInterface D-Bus interface and prefer it when
+locking the screen, falling back to the legacy ScreenSaverInterface
+if the modern service is unavailable or the call fails. Since a
+GDBusProxy can be constructed successfully even when the underlying
+bus name has no owner, the fallback is driven by the actual lock()
+call failing rather than by proxy construction succeeding. If both
+mechanisms fail, a single warning is logged instead of crashing the
+applet. No other applet behavior is changed.
+---
+ src/dbus.vala    |  5 +++++
+ src/popover.vala | 44 +++++++++++++++++++++++++++++++++++++-------
+ 2 files changed, 42 insertions(+), 7 deletions(-)
+
+diff --git a/src/dbus.vala b/src/dbus.vala
+index 3de8671..836310b 100644
+--- a/src/dbus.vala
++++ b/src/dbus.vala
+@@ -20,6 +20,11 @@ namespace UserIndicatorRedux {
+         public abstract void hibernate (bool interactive) throws DBusError, IOError;
+     }
+ 
++    [DBus (name = "org.buddiesofbudgie.BudgieScreenlock")]
++    public interface BudgieScreenlockInterface : Object {
++        public abstract void lock () throws Error;
++    }
++
+     [DBus (name = "org.gnome.ScreenSaver")]
+     public interface ScreenSaverInterface : Object {
+         public abstract void lock () throws Error;
+diff --git a/src/popover.vala b/src/popover.vala
+index cdd36e3..eb6ae86 100644
+--- a/src/popover.vala
++++ b/src/popover.vala
+@@ -23,7 +23,8 @@ namespace UserIndicatorRedux {
+         private GLib.Settings settings;
+ 
+         private LogindInterface logind_interface;
+-        private ScreenSaverInterface screensaver_interface;
++        private BudgieScreenlockInterface? budgie_screenlock_interface;
++        private ScreenSaverInterface? screensaver_interface;
+         private SessionManagerInterface session_interface;
+ 
+         private unowned string username;
+@@ -134,11 +135,7 @@ namespace UserIndicatorRedux {
+                 hide ();
+ 
+                 Idle.add (() => {
+-                    try {
+-                        screensaver_interface.lock ();
+-                    } catch (Error e) {
+-                        warning ("Unable to lock the screen: %s", e.message);
+-                    }
++                    lock_screen ();
+                 });
+             });
+ 
+@@ -251,10 +248,16 @@ namespace UserIndicatorRedux {
+                 warning ("Unable to connect to LoginD interface: %s", e.message);
+             }
+ 
++            try {
++                budgie_screenlock_interface = yield Bus.get_proxy<BudgieScreenlockInterface> (BusType.SESSION, "org.buddiesofbudgie.BudgieScreenlock", "/org/buddiesofbudgie/Screenlock");
++            } catch (Error e) {
++                debug ("Budgie Screenlock service is not available: %s", e.message);
++            }
++
+             try {
+                 screensaver_interface = yield Bus.get_proxy<ScreenSaverInterface> (BusType.SESSION, "org.gnome.ScreenSaver", "/org/gnome/ScreenSaver");
+             } catch (Error e) {
+-                warning ("Unable to connect to ScreenSaver interface: %s", e.message);
++                debug ("Legacy GNOME ScreenSaver service is not available: %s", e.message);
+             }
+ 
+             try {
+@@ -264,6 +267,33 @@ namespace UserIndicatorRedux {
+             }
+         }
+ 
++        /**
++         * Lock the screen, preferring the modern Budgie Screenlock D-Bus
++         * service and falling back to the legacy GNOME ScreenSaver service
++         * if it is unavailable or the call fails.
++         */
++        private void lock_screen () {
++            if (budgie_screenlock_interface != null) {
++                try {
++                    budgie_screenlock_interface.lock ();
++                    return;
++                } catch (Error e) {
++                    warning ("Unable to lock the screen with Budgie Screenlock, falling back to legacy ScreenSaver: %s", e.message);
++                }
++            }
++
++            if (screensaver_interface != null) {
++                try {
++                    screensaver_interface.lock ();
++                    return;
++                } catch (Error e) {
++                    warning ("Unable to lock the screen with legacy ScreenSaver: %s", e.message);
++                }
++            }
++
++            warning ("Unable to lock the screen: no supported screen lock service is available");
++        }
++
+         private void init_user () {
+             if (!user_manager.is_loaded) return;
+ 
