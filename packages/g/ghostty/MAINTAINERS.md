@@ -2,3 +2,7 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Marcus Mellor
   - Email: infinitymdm@gmail.com
+
+- Jared Cervantes
+  - Matrix: @jaredy89:matrix.org
+  - Email: jared@jaredcervantes.com
