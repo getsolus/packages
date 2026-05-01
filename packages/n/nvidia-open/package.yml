@@ -1,6 +1,6 @@
 name       : nvidia-open
 version    : '580.142'     # This has to be kept at the same version as nvidia-glx-driver
-release    : 20
+release    : 21
 source     :
     - https://download.nvidia.com/XFree86/NVIDIA-kernel-module-source/NVIDIA-kernel-module-source-580.142.tar.xz : ad50b7f88559016dd4ee8d6cf3c0980cf5a4748eded157c8a89871c1f0719b90
 homepage   : https://github.com/NVIDIA/open-gpu-kernel-modules
@@ -65,20 +65,20 @@ build      : |
 install    : |
     pushd current
     %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_current%
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/extra/drivers/video
     # zstd compress all .ko and install them to the video driver directory
     for module in $(find . -name '*.ko'); do
         # llvm-strip --strip-unneeded $module
-        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_current%/kernel/drivers/video/$(basename $module).zst
+        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_current%/extra/drivers/video/$(basename $module).zst
     done
     popd
 
     pushd lts
     %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_lts%
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video
     for module in $(find . -name '*.ko'); do
         # llvm-strip --strip-unneeded $module
-        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_lts%/kernel/drivers/video/$(basename $module).zst
+        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_lts%/extra/drivers/video/$(basename $module).zst
     done
     # Prepare modaliases from the LTS kernel
     sh -e $pkgfiles/nvidia_supported nvidia ${package} README.md kernel-open/nvidia/nv-kernel.o_binary > modalias
@@ -100,13 +100,25 @@ install    : |
 
     # Generate per-kernel initrd with embedded nvidia kernel drivers
     for i in current lts; do
-        mkdir -p init-$i/dracut-nvidia
+        if [[ ${i} == "current" ]]; then
+            _kernel=%kernel_version_current%
+        else
+            _kernel=%kernel_version_lts%
+        fi
+
+        mkdir -p init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video
 
         # This file triggers a dracut service that regenerates the depmod index files
         touch init-$i/.dracut-depmod-invalidate
 
+        # Blacklist nouveau/nova
+        install -D -m 00644 $pkgfiles/nvidia-blacklist.conf init-$i/usr/lib64/modprobe.d/nvidia-blacklist.conf
+
+        # Nvidia module parameters
+        install -D -m 00644 $pkgfiles/nvidia.conf init-$i/usr/lib64/modprobe.d/nvidia.conf
+
         pushd $installdir/usr/lib64/modules/*.$i
-        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        find . -name "*.ko" -print -exec cp -v "{}" "${workdir}/init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video" \;
         popd
 
         # Strip the debug symobls (we can get them from the normal kernel modules).
