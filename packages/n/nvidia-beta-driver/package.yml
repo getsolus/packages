@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : nvidia-beta-driver
 version    : 590.48.01
-release    : 341
+release    : 342
 source     :
     - https://in.download.nvidia.com/XFree86/Linux-x86_64/590.48.01/NVIDIA-Linux-x86_64-590.48.01.run : b9e2f80693781431cc87f4cd29109e133dcecb50a50d6b68d4b3bf2d696bd689
 extract    : false
@@ -101,12 +101,12 @@ build      : |
     %make -C current_kernel SYSSRC="/lib/modules/%kernel_version_current%/build"
 install    : |
     # Install LTS kernel drivers
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video
-    install -m 00644 lts_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video/.
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video
+    install -m 00644 lts_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video/.
 
     # Install current kernel drivers
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video
-    install -m 00644 current_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_current%/kernel/drivers/video/.
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/extra/drivers/video
+    install -m 00644 current_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_current%/extra/drivers/video/.
 
     # Install nvidia driver for xorg
     install -D -m 00755 nvidia_drv.so $installdir/%libdir%/xorg/modules/drivers/nvidia_drv.so
@@ -190,9 +190,14 @@ install    : |
     install -D -d -m 00755 $installdir/%libdir%/nvidia/wine
     install -m 00644 *nvngx*.dll $installdir/%libdir%/nvidia/wine/.
 
-    # Blacklist nouveau
-    install -D -d -m 00755 $installdir/usr/lib64/modprobe.d
-    echo "blacklist nouveau" > $installdir/usr/lib64/modprobe.d/nvidia.conf
+    # Blacklist nouveau/nova
+    install -D -m 00644 $pkgfiles/nvidia-blacklist.conf $installdir/usr/lib64/modprobe.d/nvidia-blacklist.conf
+
+    # Nvidia module parameters
+    install -D -m 00644 $pkgfiles/nvidia.conf $installdir/usr/lib64/modprobe.d/nvidia.conf
+
+    # Force uvm load
+    install -D -m 00644 $pkgfiles/nvidia-uvm.conf $installdir/usr/lib64/modules-load.d/nvidia-uvm.conf
 
     # Fixes Wayland sleep
     install -D -m 00644 $pkgfiles/nvidia-sleep.modprobe $installdir/usr/lib64/modprobe.d/nvidia-sleep.conf
@@ -241,13 +246,25 @@ install    : |
 
     # Generate per-kernel initrd with embedded nvidia kernel drivers
     for i in current lts; do
-        mkdir -p init-$i/dracut-nvidia
+        if [[ ${i} == "current" ]]; then
+            _kernel=%kernel_version_current%
+        else
+            _kernel=%kernel_version_lts%
+        fi
+
+        mkdir -p init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video
 
         # This file triggers a dracut service that regenerates the depmod index files
         touch init-$i/.dracut-depmod-invalidate
 
+        # Blacklist nouveau/nova
+        install -D -m 00644 $pkgfiles/nvidia-blacklist.conf init-$i/usr/lib64/modprobe.d/nvidia-blacklist.conf
+
+        # Nvidia module parameters
+        install -D -m 00644 $pkgfiles/nvidia.conf init-$i//usr/lib64/modprobe.d/nvidia.conf
+
         pushd $installdir/usr/lib64/modules/*.$i
-        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        find . -name "*.ko" -print -exec cp -v "{}" "${workdir}/init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video" \;
         popd
 
         # Strip the debug symobls (we can get them from the normal kernel modules).
@@ -271,8 +288,8 @@ install    : |
     install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
 
     # Generate single initrd (to be shared between current and lts) with the GSP firmware
-    mkdir -p init-firmware/dracut-firmware-nvidia-proprietary && pushd init-firmware
-    cp -rav $installdir/usr/lib64/firmware/nvidia/* dracut-firmware-nvidia-proprietary/
+    mkdir -p init-firmware/usr/lib64/firmware/nvidia && pushd init-firmware/
+    cp -rav $installdir/usr/lib64/firmware/nvidia/* usr/lib64/firmware/nvidia/
     find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-firmware
     popd
     install -D -m 00644 $workdir/initrd-firmware $installdir/usr/lib64/kernel/initrd.d/com.solus-project.nvidia-firmware
