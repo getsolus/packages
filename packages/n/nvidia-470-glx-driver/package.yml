@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : nvidia-470-glx-driver
 version    : 470.256.02
-release    : 135
+release    : 136
 source     :
     - https://us.download.nvidia.com/XFree86/Linux-x86_64/470.256.02/NVIDIA-Linux-x86_64-470.256.02.run : d6451862deb695bb0447f3b7cd6268f73e81168c10e2c10597ff3fa01349b1de
 extract    : false
@@ -98,8 +98,8 @@ build      : |
     %make -C lts_kernel SYSSRC="/lib/modules/%kernel_version_lts%/build"
 install    : |
     # Install LTS kernel drivers
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video
-    install -m 00644 lts_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_lts%/kernel/drivers/video/.
+    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video
+    install -m 00644 lts_kernel/*.ko $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video/.
 
     # Prepare modaliases from the LTS kernel
     sh -e $pkgfiles/nvidia_supported nvidia ${package} README.txt lts_kernel/nvidia/nv-kernel.o_binary > modalias
@@ -191,9 +191,11 @@ install    : |
     install -D -d -m 00755 $installdir/%libdir%/nvidia/wine
     install -m 00644 *nvngx.dll $installdir/%libdir%/nvidia/wine/.
 
-    # Blacklist nouveau
-    install -D -d -m 00755 $installdir/usr/lib64/modprobe.d
-    echo "blacklist nouveau" > $installdir/usr/lib64/modprobe.d/nvidia.conf
+    # Blacklist nouveau/nova
+    install -D -m 00644 $pkgfiles/nvidia-blacklist.conf $installdir/usr/lib64/modprobe.d/nvidia-blacklist.conf
+
+    # Force uvm load
+    install -D -m 00644 $pkgfiles/nvidia-uvm.conf $installdir/usr/lib64/modules-load.d/nvidia-uvm.conf
 
     # Ensure that if sddm is installed that it never tries to use Wayland session
     install -Dm00644 $pkgfiles/sddm-override.conf $installdir/usr/share/sddm/sddm.conf.d/99_nvidia_470.conf
@@ -232,13 +234,16 @@ install    : |
 
     # Generate per-kernel initrd with embedded nvidia kernel drivers
     for i in lts; do
-        mkdir -p init-$i/dracut-nvidia
+        mkdir -p init-$i/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video
 
         # This file triggers a dracut service that regenerates the depmod index files
         touch init-$i/.dracut-depmod-invalidate
 
+        # Blacklist nouveau/nova
+        install -D -m 00644 $pkgfiles/nvidia-blacklist.conf init-$i/usr/lib64/modprobe.d/nvidia-blacklist.conf
+
         pushd $installdir/usr/lib64/modules/*.$i
-        find . -name "*.ko" -print -exec install -Dm0644 "{}" "${workdir}/init-$i/dracut-nvidia" \;
+        find . -name "*.ko" -print -exec cp -v "{}" "${workdir}/init-$i/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video" \;
         popd
 
         # Strip the debug symobls (we can get them from the normal kernel modules).
