@@ -3,3 +3,7 @@ This file is used to indicate primary maintainership for this package. A package
 - Mencel Dariusz
   - Matrix: bialy_wilk
   - Email: dariusz.bajon@gmail.com
+
+- Evan Maddock
+  - Matrix: @ebonjaeger:matrix.org
+  - Email: maddock.evan@vivaldi.net
