@@ -2,6 +2,6 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Muhammad Alfi Syahrin
   - Matrix: @alfisya:matrix.org
-  - Email: malfisya.dev@hotmail.com
+  - Email: alfi@getsol.us
 - Nathaniel Markham
   - Email: anzelknight@gmail.com
