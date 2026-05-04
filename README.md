@@ -36,6 +36,10 @@ You can [get involved][Getting Involved] in many ways:
 - Help [maintain packages][Packaging].
 - [Report Bugs]
 
+## License
+
+See [LICENSE.md](LICENSE.md) for the license of files in this repository.
+
 # Funding
 
 Donations are welcome on our [Open Collective].
