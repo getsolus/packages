@@ -22,4 +22,7 @@ fi
 # disable core dumps (matches upstream wrapper script)
 ulimit -c 0
 
+# memory protection: prevent debugger attachment and memory reads
+export LD_PRELOAD=/usr/share/bitwarden-desktop/libprocess_isolation.so
+
 exec /usr/share/bitwarden-desktop/bitwarden-desktop $BITWARDEN_FLAGS $@

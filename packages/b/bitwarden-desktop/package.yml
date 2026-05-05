@@ -1,14 +1,17 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : bitwarden-desktop
-license    : GPL-3.0-only
-version    : 2025.12.0
-release    : 34
+version    : 2026.3.1
+release    : 35
 source     :
-    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2025.12.0.tar.gz : 0afbb7e3111c4d2f612693f426b17e2cf0e66a826cb4478cb9c92e05519fff2e
-component  : security
+    - https://github.com/bitwarden/clients/archive/refs/tags/desktop-v2026.3.1.tar.gz : 08063da8e1c62bdb5ec09b5d3b2debf88492238549178fc3ff810a6714ec2c85
 homepage   : https://bitwarden.com/
+license    : GPL-3.0-only
+component  : security
 summary    : A secure and free password manager for all of your devices
-description: A secure and free password manager for all of your devices
+description: |
+    Bitwarden Desktop is an open source password manager for Linux that stores
+    and organizes your logins, secure notes, payment cards, and identities in
+    an encrypted vault with support for syncing across devices.
 networking : true
 builddeps  :
     - pkgconfig(cups)
@@ -19,60 +22,55 @@ builddeps  :
     - pkgconfig(libsecret-1)
     - pkgconfig(pangocairo)
     - pkgconfig(xtst)
-    - git
-    - jq
     - nodejs
     - rust
-rundeps    :
-    - nodejs
 setup      : |
-    pushd apps/desktop
-    %patch --strip=1 src/main/messaging.main.ts -i $pkgfiles/messaging.main.ts.patch
-    %patch --strip=3 -i $pkgfiles/0001-Update-proxy-location.patch
-    %patch --strip=3 -i $pkgfiles/0001-Don-t-pack-package.json-and-proxy-bin.patch
-    popd
-
-    # OpenSUSE patches
-    %patch -p1 -i $pkgfiles/no-sourcemaps.patch
+    %patch -p1 -i ${pkgfiles}/0001-Don-t-run-postinstall.patch
+    %patch -p1 -i ${pkgfiles}/messaging.patch
+    %patch -p1 -i ${pkgfiles}/native-messaging.patch
+    %patch -p1 -i ${pkgfiles}/nativelib.patch
+    %patch -p1 -i ${pkgfiles}/sourcemaps.patch
+    %patch -p1 -i ${pkgfiles}/unnecessary-deps.patch
 
     npm ci
 
-    cd apps/desktop/desktop_native/napi
+    cd apps/desktop/desktop_native
     %cargo_fetch
 build      : |
     cd apps/desktop
     pushd desktop_native
     cargo rustc --frozen --release --package desktop_napi --lib --crate-type cdylib
     cargo rustc --frozen --release --package desktop_proxy --bin desktop_proxy
-    mv -v target/release/*.so napi/desktop_napi.linux-x64-gnu.node
+    cargo rustc --frozen --release --package process_isolation --lib --crate-type cdylib
+    mv -v target/release/libdesktop_napi.so napi/desktop_napi.node
     popd
 
     npm run build
     npm run clean:dist
-    mv -v desktop_native/target/release/desktop_proxy build/desktop_proxy
+    pushd build
+    find -name '*.map' -type f -print -delete
+    find -name '*package-lock.json' -type f -print -delete
+    popd
     npm exec -c "electron-builder --linux --x64 --dir"
 install    : |
     export bwdir=/usr/share/bitwarden-desktop
-    install -dm00755 $installdir/usr/bin
-    install -dm00755 $installdir/$bwdir
+    install -dm00755 ${installdir}/usr/bin
+    install -dm00755 ${installdir}/${bwdir}
 
-    cp -R $workdir/apps/desktop/dist/linux-unpacked/* $installdir/$bwdir/
+    cp -R ${workdir}/apps/desktop/dist/linux-unpacked/* ${installdir}/${bwdir}/
 
-    mv $installdir/$bwdir/bitwarden $installdir/$bwdir/bitwarden-desktop
-    install -Dm00755 $pkgfiles/bitwarden.sh $installdir/usr/bin/bitwarden-desktop
+    mv ${installdir}/${bwdir}/bitwarden ${installdir}/${bwdir}/bitwarden-desktop
+    install -Dm00755 ${workdir}/apps/desktop/desktop_native/target/release/desktop_proxy ${installdir}/${bwdir}/desktop_proxy
+    install -Dm00755 ${workdir}/apps/desktop/desktop_native/target/release/libprocess_isolation.so ${installdir}/${bwdir}/libprocess_isolation.so
+    install -Dm00755 ${pkgfiles}/bitwarden.sh ${installdir}/usr/bin/bitwarden-desktop
 
-    install -Dm00644 $pkgfiles/com.bitwarden.desktop.desktop $installdir/usr/share/applications/com.bitwarden.desktop.desktop
-    install -Dm00644 $pkgfiles/com.bitwarden.desktop.metainfo.xml $installdir/usr/share/metainfo/com.bitwarden.desktop.metainfo.xml
-
-    # Fix appid since we can't seem to do this during the build
-    package_json=$installdir/$bwdir/resources/app.asar.unpacked/package.json
-    tmp=$(mktemp)
-    jq ".productName = \"com.bitwarden.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
-    jq ".desktopName = \"com.bitwarden.desktop.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
-    chmod 644 $package_json
+    install -Dm00644 ${pkgfiles}/com.bitwarden.desktop.desktop ${installdir}/usr/share/applications/com.bitwarden.desktop.desktop
+    install -Dm00644 ${pkgfiles}/com.bitwarden.desktop.metainfo.xml ${installdir}/usr/share/metainfo/com.bitwarden.desktop.metainfo.xml
 
     for i in 16 32 64 128 256 512 1024; do
-        install -Dm00644 $workdir/apps/desktop/resources/icons/${i}x${i}.png $installdir/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
+        install -Dm00644 ${workdir}/apps/desktop/resources/icons/${i}x${i}.png ${installdir}/usr/share/icons/hicolor/${i}x${i}/apps/bitwarden.png
     done
+
+    chmod -c u+s ${installdir}/${bwdir}/chrome-sandbox
 
     %install_license LICENSE_GPL.txt
