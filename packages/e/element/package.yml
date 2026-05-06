@@ -1,11 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : element
-version    : 1.12.11
-release    : 214
+version    : 1.12.17
+release    : 215
 homepage   : https://element.io/
 source     :
-    - git|https://github.com/element-hq/element-desktop.git : 993d2f9c36127e9ea5ceab291c53a58eac85d5c2
-    - git|https://github.com/element-hq/element-web.git : 1d3d0fa9f9c6f0ef8b082d93e00bcd54e7c03a85
+    - git|https://github.com/element-hq/element-web.git : a8cac85cf10ea72984a54b23738dc1ecd2109d08
 license    :
     - AGPL-3.0-or-later
     - GPL-3.0-or-later
@@ -46,43 +45,47 @@ environment: |
 setup      : |
     %apply_patches
 
-    # Copy element-web to the build directory
-    cp -a $sources/element-web.git element-web
-
     # Disable updates/tracking, enable labs settings
     jq '.update_base_url = null | .posthog = null | .show_labs_settings = true' \
-        element.io/release/config.json > config.json
+        apps/desktop/element.io/release/config.json > config.json
 
     # Perform pnpm install on both
     pnpm install --frozen-lockfile
-    pnpm -C element-web install --frozen-lockfile
+    pnpm -C apps/desktop install --frozen-lockfile
 
     # Symlink node so the correct version is used instead of /usr/bin/node
-    ln -s /usr/lib64/nodejs-22/bin/node element-web/node_modules/.bin/node
+    ln -s /usr/lib64/nodejs-22/bin/node apps/desktop/node_modules/.bin/node
     ln -s /usr/lib64/nodejs-22/bin/node node_modules/.bin/node
 build      : |
     # Build element-web while working around https://github.com/nrwl/nx/issues/22445
-    script -c "pnpm -C element-web build" /dev/null
+    script -c "pnpm -C apps/web build" /dev/null
 
-    # Build element-desktop
-    pnpm run build:native
-    pnpm run build
+    # Build native components
+    pnpm -C apps/desktop run build:native
+
+    # Build while working around https://github.com/nrwl/nx/issues/22445
+    script -c "pnpm -C apps/desktop run build --publish never" /dev/null
 install    : |
     # Installdir for Element
     element_installdir=$installdir/usr/share/element
+    install -dm00644 $element_installdir/resources
 
-    install -dm00644 $element_installdir
-    cp -Rv dist/linux-unpacked/* $element_installdir
-    cp -Rv element-web/webapp $element_installdir/resources/
+    pushd apps/web
+    cp -Rv webapp $element_installdir/resources/webapp
+    popd
 
     # Wrapper script
     install -Dm00755 $pkgfiles/electron-desktop.sh $installdir/usr/bin/element-desktop
 
     # Install configuration
-    install -Dm00644 config.json $element_installdir/resources/webapp/
+    install -Dm00644 config.json $element_installdir/resources/webapp/config.json
+
+    pushd apps/desktop
+    cp -Rv dist/linux-unpacked/* $element_installdir
 
     # Install Icons
     install -Dm00644 build/icon.png $installdir/usr/share/icons/hicolor/512x512/apps/element-desktop.png
+    popd
 
     # Symlink for existing .desktop files
     ln -s element-desktop.png $installdir/usr/share/icons/hicolor/512x512/apps/element.png
