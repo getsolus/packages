@@ -4,7 +4,7 @@
 # Additionally, if a package successfully builds it will then check if it gets successfully indexed into the repo.
 
 # Check requirements before starting
-REQUIREMENTS="curl unxz notify-send paplay jq"
+REQUIREMENTS="curl unxz notify-send pipewire jq"
 for i in $REQUIREMENTS; do
     if ! which $i &> /dev/null; then
         echo "Missing requirement: $i. Install it to continue."
@@ -61,7 +61,7 @@ while [[ ! $(jq '.[] | select(.tag == $ARGS.positional[0]) | .status' "${JSONPAG
     if [[ $(jq '.[] | select(.tag == $ARGS.positional[0]) | .status' "${JSONPAGE}" --args "${TAG}" | grep "FAILED") ]] ; then
         echo "Failed on the build server!"
         notify-send -u critical "${TAG} failed on the build server!" -t 0
-        paplay /usr/share/sounds/freedesktop/stereo/suspend-error.oga
+        pw-cat --playback /usr/share/sounds/freedesktop/stereo/suspend-error.oga
         exit 1
     fi
 done
@@ -108,7 +108,7 @@ while [[ $(grep ${TAG} < ${INDEX_XML} | wc -l) -lt 1 ]] ; do
     if [[ $var == 18 ]]; then
         echo "Successfully built but hasn't been found in the index yet, please manually check."
         notify-send -u low "${TAG} successfully built but hasen't been found in the index yet, please manually check." -t 0
-        paplay /usr/share/sounds/freedesktop/stereo/dialog-warning.oga
+        pw-cat --playback /usr/share/sounds/freedesktop/stereo/dialog-warning.oga
         if [ -f "${INDEX_XML}" ]; then rm ${INDEX_XML}; fi
         exit 1
     fi
@@ -121,7 +121,7 @@ done
 echo "Successfully indexed into the repo!"
 if [[ -z "${DISABLE_BUILD_SUCCESS_NOTIFY}" ]]; then
     notify-send "${TAG} indexed into the repo!" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+    pw-cat --playback /usr/share/sounds/freedesktop/stereo/complete.oga
 fi
 
 if [ -f "${INDEX_XML}" ]; then rm ${INDEX_XML}; fi
