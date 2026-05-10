@@ -209,7 +209,7 @@ class Publisher:
     def _notify_failed(self, build: APIBuild) -> None:
         self._run('notify-send', '--expire-time=0', '--urgency=critical', '--app-name=Solus Builds',
                   f'Build for {build.tag} failed!')
-        self._run('paplay', '/usr/share/sounds/freedesktop/stereo/suspend-error.oga')
+        self._run('pw-cat', '--playback', '/usr/share/sounds/freedesktop/stereo/suspend-error.oga')
 
     def _notify_finished(self) -> None:
         self._run('notify-send', '--expire-time=0', '--app-name=Solus Builds',

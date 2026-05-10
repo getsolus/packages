@@ -42,7 +42,7 @@ then
 fi
 
 # Check requirements before starting
-REQUIREMENTS="curl unxz notify-send paplay solbuild git go-task"
+REQUIREMENTS="curl unxz notify-send pipewire solbuild git go-task"
 for i in $REQUIREMENTS; do
     if ! which $i &> /dev/null; then
         echo "Missing requirement: $i. Install it to continue."
@@ -193,7 +193,7 @@ build() {
 
     echo -e "${PROGRESS} > All packages built! ${NC}"
     notify-send "All rebuilds against ${MAINPAK} successfully built locally!" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+    pw-cat --playback /usr/share/sounds/freedesktop/stereo/complete.oga
 }
 
 # Verify the change
@@ -337,7 +337,7 @@ publish() {
 
     echo -e "${PROGRESS} > All published packages successfully indexed into the repo! ${NC}"
     notify-send "All rebuilds against ${MAINPAK} successfully indexed into the repo!" -t 0
-    paplay /usr/share/sounds/freedesktop/stereo/complete.oga
+    pw-cat --playback /usr/share/sounds/freedesktop/stereo/complete.oga
 }
 
 NUKE() {
