@@ -1,0 +1,55 @@
+From 941e1f71ba67b726f27a474316bb8aa17a0ae148 Mon Sep 17 00:00:00 2001
+From: Lewis <llakerink@swin.edu.au>
+Date: Mon, 30 Mar 2026 14:56:00 +1100
+Subject: [PATCH] Client: fix set_max_size sending values > QWINDOWSIZE_MAX
+ with CSD
+
+setSizeHints() converts the window's maximum size to the xdg-shell
+"no maximum" sentinel value of (0, 0). It does this by checking whether
+the computed maxWidth/maxHeight equals QWINDOWSIZE_MAX after calling
+shrunkBy(margins).
+
+However, when a window has client-side decorations,
+windowContentMargins() - clientSideMargins() can yield negative margins
+(e.g. {-3, -30, -3, -3} for a 30px CSD title bar with no shadow).
+QSize::shrunkBy() with negative margins grows the dimension, so
+QWINDOWSIZE_MAX.shrunkBy() produces a value larger than QWINDOWSIZE_MAX
+(e.g. 16777221 instead of 16777215 for a 6px horizontal decoration).
+The equality check then fails and the oversized value is sent as-is.
+
+While this particular value does not crash all compositors, it is
+semantically wrong: xdg-shell specifies 0 as "no constraint", so any
+value at or above QWINDOWSIZE_MAX should be clamped to 0. Use >= instead
+of == to cover both the exact match and the margin-grown case.
+
+Fixes: QTBUG-145390
+Change-Id: Ib53fc007de765d6d0c17ca884d9f21f8cebf4d33
+Reviewed-by: Paul Olav Tvete <paul.tvete@qt.io>
+---
+ .../shellintegration/xdg-shell/qwaylandxdgshell.cpp      | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp b/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+index f964ee04923..3e0039a2fd1 100644
+--- a/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
++++ b/src/plugins/platforms/wayland/plugins/shellintegration/xdg-shell/qwaylandxdgshell.cpp
+@@ -489,9 +489,14 @@ void QWaylandXdgSurface::setSizeHints()
+         if (minWidth > maxWidth || minHeight > maxHeight)
+             return;
+ 
+-        if (maxWidth == QWINDOWSIZE_MAX)
++        // Use 0 to signal "no maximum" per xdg-shell protocol.
++        // When no maximum is set, windowMaximumSize() returns QWINDOWSIZE_MAX.
++        // After shrunkBy(margins) where margins can be negative (e.g. when CSD
++        // decorations make clientSideMargins() larger than windowContentMargins()),
++        // the result can exceed QWINDOWSIZE_MAX. Use >= to catch both cases.
++        if (maxWidth >= QWINDOWSIZE_MAX)
+             maxWidth = 0;
+-        if (maxHeight == QWINDOWSIZE_MAX)
++        if (maxHeight >= QWINDOWSIZE_MAX)
+             maxHeight = 0;
+ 
+         m_toplevel->set_min_size(minWidth, minHeight);
+-- 
+GitLab
+

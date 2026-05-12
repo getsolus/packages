@@ -1,0 +1,78 @@
+From f1fbd15105d17cecb6d0f01940c492b812fa4af3 Mon Sep 17 00:00:00 2001
+From: JiDe Zhang <zhangjide@uniontech.com>
+Date: Mon, 2 Feb 2026 16:06:22 +0800
+Subject: [PATCH] Fix unexpected window transparency after enabling CSD on
+ Wayland
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+After enabling client-side window decorations, an alpha buffer
+is forcibly enabled for the window. From the compositor’s
+perspective, this window supports transparency. This leads to
+a problem: although QWindow::requestedFormat requests an
+opaque window, subsequent rendering assumes the window is
+opaque.
+
+In QPA, forcing transparency for the window should not affect
+its visual result. Therefore, for windows that originally
+request to be opaque, when compositing the window content
+with the CSD, it should always be ensured that the final
+composited window region remains opaque.
+
+Fixes: QTBUG-143786
+Change-Id: I35a2b2de567737cfe071c20687bd13fecc060dfa
+Reviewed-by: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+---
+ .../wayland-egl/qwaylandglcontext.cpp                | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
+index 4842d4c5db5..2d5a745bf0b 100644
+--- a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
++++ b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
+@@ -119,9 +119,12 @@ public:
+                                                                     }");
+         m_blitProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, "varying highp vec2 outTexCoords;\n\
+                                                                         uniform sampler2D texture;\n\
++                                                                        uniform lowp float forceOpaque;\n\
+                                                                         void main()\n\
+                                                                         {\n\
+-                                                                            gl_FragColor = texture2D(texture, outTexCoords);\n\
++                                                                            lowp vec4 c = texture2D(texture, outTexCoords);\n\
++                                                                            c.a = mix(c.a, 1.0, forceOpaque);\n\
++                                                                            gl_FragColor = c;\n\
+                                                                         }");
+ 
+         m_blitProgram->bindAttributeLocation("position", 0);
+@@ -136,6 +139,9 @@ public:
+         m_blitProgram->enableAttributeArray(0);
+         m_blitProgram->enableAttributeArray(1);
+ 
++        // Default: keep sampled alpha.
++        m_blitProgram->setUniformValue("forceOpaque", 0.0f);
++
+         glDisable(GL_DEPTH_TEST);
+         glDisable(GL_BLEND);
+         glDisable(GL_CULL_FACE);
+@@ -192,6 +198,7 @@ public:
+ 
+         //Draw Decoration
+         if (auto *decoration = window->decoration()) {
++            m_blitProgram->setUniformValue("forceOpaque", 0.0f);
+             m_blitProgram->setAttributeBuffer(0, GL_FLOAT, m_inverseSquareVerticesOffset, 2);
+             QImage decorationImage = decoration->contentImage();
+             cache->bindTexture(m_context->context(), decorationImage);
+@@ -207,6 +214,9 @@ public:
+         glBindTexture(GL_TEXTURE_2D, window->contentTexture());
+         QRect r = window->contentsRect();
+         glViewport(r.x() * scale, r.y() * scale, r.width() * scale, r.height() * scale);
++
++        const bool opaqueWindow = window->window() && !window->window()->requestedFormat().hasAlpha();
++        m_blitProgram->setUniformValue("forceOpaque", opaqueWindow ? 1.0f : 0.0f);
+         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+     }
+ 
+-- 
+GitLab
+

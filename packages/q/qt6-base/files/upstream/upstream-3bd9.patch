@@ -1,0 +1,65 @@
+From 3bd97b0acef5988e58b8209c9aaab315d492502f Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Tue, 5 May 2026 17:43:19 +0200
+Subject: [PATCH] platforms/wayland: allocate shm buffers to be usable as
+ udmabufs
+
+Currently, compositors with hardware-accelerated rendering always have to copy
+shm buffers to a GPU-accessible buffer before they can be used. Especially with
+high resolution screens, this causes really high CPU usage and bad performance.
+
+By allocating the shm buffers with the size aligned to a full page, they can be
+imported into udmabuf. A udmabuf in turn can be used directly by GPUs if the
+stride is aligned to the requirements of the GPU. Since there is no feedback on
+which alignment is required by the compositor, this always sets the stride to be
+a multiple of 256, which all common GPUs are compatible with.
+
+This commit was tested with a matching change on the KWin side, and it reduced
+CPU usage by a factor of four when scrolling in KDevelop on a high dpi screen.
+
+Change-Id: I5942f15123b281019a8d208ecd2e0220d9f3b577
+Reviewed-by: David Edmundson <davidedmundson@kde.org>
+(cherry picked from commit 4095a8d054cdb0497d10467cab652db3b59b4e32)
+Reviewed-by: Qt Cherry-pick Bot <cherrypick_bot@qt-project.org>
+---
+ .../wayland/qwaylandshmbackingstore.cpp       | 20 +++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+index 58bc75d5853..9e0b8ef758a 100644
+--- a/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
++++ b/src/plugins/platforms/wayland/qwaylandshmbackingstore.cpp
+@@ -50,12 +50,28 @@ extern void qt_scrollRectInImage(QImage &, const QRect &, const QPoint &);
+ 
+ namespace QtWaylandClient {
+ 
++static int alignTo(int input, int alignment)
++{
++    Q_ASSERT(alignment > 0);
++    if (int remainder = input % alignment)
++        return input + (alignment - remainder);
++    else
++        return input;
++}
++
+ QWaylandShmBuffer::QWaylandShmBuffer(QWaylandDisplay *display,
+                                      const QSize &size, QImage::Format format, qreal scale, wl_event_queue *customEventQueue)
+     : mDirtyRegion(QRect(QPoint(0, 0), size / scale))
+ {
+-    int stride = size.width() * 4;
+-    int alloc = stride * size.height();
++    // This alignment of stride and size is done to improve performance of
++    // buffer accesses on the compositor side.
++    // Aligning the size of the shm pool to pages means the buffer can be
++    // imported as a udmabuf, and if the stride is additionally compatible with
++    // the GPU, that udmabuf can be used directly for rendering instead of needing
++    // to first copy to a GPU-accessible buffer.
++    // The 256 bytes stride alignment used here is what all common GPUs can read from.
++    const int stride = alignTo(size.width() * 4, 256);
++    const int alloc = alignTo(stride * size.height(), getpagesize());
+     int fd = -1;
+ 
+ #ifdef SYS_memfd_create
+-- 
+GitLab
+

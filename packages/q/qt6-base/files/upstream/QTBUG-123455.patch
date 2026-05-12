@@ -1,0 +1,296 @@
+From d789b1467c84580f18fec9f97818f3974aae3d3a Mon Sep 17 00:00:00 2001
+From: Paul Olav Tvete <paul.tvete@qt.io>
+Date: Tue, 14 Apr 2026 17:52:18 +0200
+Subject: [PATCH] [Wayland] Give focus to embedded windows
+
+The Wayland specification was changed to specify that sub-surfaces
+should no longer receive keyboard focus. Since Qt assumes that all
+windows will get focus/activation, we have to emulate that in the
+platform plugin. This change gives the active focus to a window
+with a sub-surface if it is pressed while its toplevel surface
+is active.
+
+Fixes: QTBUG-123455
+Change-Id: Ib1770e54f43b2d14b88d21bb8babf86b2a300b5e
+Reviewed-by: David Edmundson <davidedmundson@kde.org>
+---
+ .../platforms/wayland/qwaylanddisplay.cpp     | 26 +++++-
+ .../platforms/wayland/qwaylanddisplay_p.h     |  4 +
+ .../platforms/wayland/qwaylandinputdevice.cpp |  6 +-
+ .../platforms/wayland/qwaylandwindow.cpp      | 20 +++++
+ .../platforms/wayland/qwaylandwindow_p.h      |  2 +
+ tests/auto/wayland/surface/tst_surface.cpp    | 88 +++++++++++++++++++
+ 6 files changed, 143 insertions(+), 3 deletions(-)
+
+diff --git a/src/plugins/platforms/wayland/qwaylanddisplay.cpp b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
+index 6dfa874405f..d958ca5a398 100644
+--- a/src/plugins/platforms/wayland/qwaylanddisplay.cpp
++++ b/src/plugins/platforms/wayland/qwaylanddisplay.cpp
+@@ -453,6 +453,7 @@ void QWaylandDisplay::reconnect()
+     mLastInputWindow.clear();
+     mLastKeyboardFocus.clear();
+     mActiveWindows.clear();
++    mActiveSubSurface.clear();
+ 
+     const auto windows = QGuiApplication::allWindows();
+     QList<QWaylandWindow *> allPlatformWindows;
+@@ -954,7 +955,7 @@ void QWaylandDisplay::setLastInputDevice(QWaylandInputDevice *device, uint32_t s
+ 
+ bool QWaylandDisplay::isWindowActivated(const QWaylandWindow *window)
+ {
+-    return mActiveWindows.contains(const_cast<QWaylandWindow *>(window));
++    return mActiveWindows.contains(const_cast<QWaylandWindow *>(window)) || mActiveSubSurface == window;
+ }
+ 
+ void QWaylandDisplay::handleWindowActivated(QWaylandWindow *window)
+@@ -963,6 +964,7 @@ void QWaylandDisplay::handleWindowActivated(QWaylandWindow *window)
+         return;
+ 
+     mActiveWindows.append(window);
++    mActiveSubSurface.clear();
+     requestWaylandSync();
+ 
+     if (auto *decoration = window->decoration())
+@@ -977,6 +979,7 @@ void QWaylandDisplay::handleWindowDeactivated(QWaylandWindow *window)
+         requestWaylandSync();
+ 
+     mActiveWindows.removeOne(window);
++    mActiveSubSurface.clear();
+ 
+     if (QCoreApplication::closingDown())
+         return;
+@@ -1004,6 +1007,24 @@ void QWaylandDisplay::handleWindowDestroyed(QWaylandWindow *window)
+ {
+     if (mActiveWindows.contains(window))
+         handleWindowDeactivated(window);
++    if (mActiveSubSurface) {
++        auto *parent = mActiveSubSurface.get();
++        while (parent && parent != window)
++            parent = static_cast<QWaylandWindow *>(parent->QPlatformWindow::parent());
++        if (parent)
++            mActiveSubSurface.clear();
++    }
++}
++
++void QWaylandDisplay::setActiveSubSurface(QWaylandWindow *window)
++{
++    mActiveSubSurface = window;
++    requestWaylandSync();
++}
++
++QWaylandWindow *QWaylandDisplay::activeSubSurface() const
++{
++    return mActiveSubSurface;
+ }
+ 
+ void QWaylandDisplay::handleWaylandSync()
+@@ -1012,9 +1033,10 @@ void QWaylandDisplay::handleWaylandSync()
+     // pair, and the latter one would be lost in the QWindowSystemInterface queue, if we issue the
+     // handleWindowActivated() calls immediately.
+     QWindow *activeWindow = mActiveWindows.empty() ? nullptr : mActiveWindows.last()->window();
++    if (mActiveSubSurface)
++        activeWindow = mActiveSubSurface->window();
+     if (activeWindow != QGuiApplication::focusWindow())
+         QWindowSystemInterface::handleFocusWindowChanged(activeWindow);
+-
+     if (!activeWindow) {
+         if (lastInputDevice()) {
+ #if QT_CONFIG(clipboard)
+diff --git a/src/plugins/platforms/wayland/qwaylanddisplay_p.h b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
+index 43720671dea..ce06b115c0a 100644
+--- a/src/plugins/platforms/wayland/qwaylanddisplay_p.h
++++ b/src/plugins/platforms/wayland/qwaylanddisplay_p.h
+@@ -286,6 +286,9 @@ public:
+ 
+     void initEventThread();
+ 
++    QWaylandWindow *activeSubSurface() const;
++    void setActiveSubSurface(QWaylandWindow *window);
++
+ public Q_SLOTS:
+     void flushRequests();
+ 
+@@ -386,6 +389,7 @@ private:
+     QPointer<QWaylandWindow> mLastInputWindow;
+     QPointer<QWaylandWindow> mLastKeyboardFocus;
+     QList<QWaylandWindow *> mActiveWindows;
++    QPointer<QWaylandWindow> mActiveSubSurface;
+     struct wl_callback *mSyncCallback = nullptr;
+     static const wl_callback_listener syncCallbackListener;
+     bool mWaylandTryReconnect = false;
+diff --git a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+index 67324e15565..b7fd8bb404e 100644
+--- a/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
++++ b/src/plugins/platforms/wayland/qwaylandinputdevice.cpp
+@@ -870,6 +870,8 @@ void QWaylandInputDevice::Pointer::pointer_button(uint32_t serial, uint32_t time
+         window = grab;
+     }
+ 
++    if (state)
++        window->handleMousePressActivation();
+     if (state)
+         setFrameEvent(new PressEvent(window, time, pos, global, mButtons, qt_button, mParent->modifiers()));
+     else
+@@ -1341,7 +1343,9 @@ void QWaylandInputDevice::Keyboard::handleKey(ulong timestamp, QEvent::Type type
+     }
+ 
+     if (!filtered) {
+-        auto window = focusWindow()->window();
++        auto window = mParent->mQDisplay->activeSubSurface()
++                ? mParent->mQDisplay->activeSubSurface()->window()
++                : focusWindow()->window();
+ 
+         if (type == QEvent::KeyPress && key == Qt::Key_Menu) {
+             auto cursor = window->screen()->handle()->cursor();
+diff --git a/src/plugins/platforms/wayland/qwaylandwindow.cpp b/src/plugins/platforms/wayland/qwaylandwindow.cpp
+index 7f84090d08e..b3cf090e67b 100644
+--- a/src/plugins/platforms/wayland/qwaylandwindow.cpp
++++ b/src/plugins/platforms/wayland/qwaylandwindow.cpp
+@@ -1979,6 +1979,26 @@ QRect QWaylandWindow::parentControlGeometry() const
+     return m_popupInfo.parentControlGeometry;
+ }
+ 
++void QWaylandWindow::handleMousePressActivation()
++{
++    if (!window() || window()->flags() & Qt::WindowDoesNotAcceptFocus)
++        return;
++
++    const QWaylandWindow *currentActiveSubSurface = mDisplay->activeSubSurface();
++    const bool isSubsurface = !!subSurfaceWindow();
++
++    auto toplevelIsActive = [&](QWaylandWindow *w) -> bool {
++        while (w && w->subSurfaceWindow())
++            w = static_cast<QWaylandWindow *>(w->QPlatformWindow::parent());
++        return mDisplay->isWindowActivated(w);
++    };
++
++    if (isSubsurface && currentActiveSubSurface != this && toplevelIsActive(this))
++        mDisplay->setActiveSubSurface(this);
++    else if (!isSubsurface && currentActiveSubSurface)
++        mDisplay->setActiveSubSurface(nullptr);
++}
++
+ }
+ 
+ QT_END_NAMESPACE
+diff --git a/src/plugins/platforms/wayland/qwaylandwindow_p.h b/src/plugins/platforms/wayland/qwaylandwindow_p.h
+index b3df8151018..9ac3f4cefcb 100644
+--- a/src/plugins/platforms/wayland/qwaylandwindow_p.h
++++ b/src/plugins/platforms/wayland/qwaylandwindow_p.h
+@@ -265,6 +265,8 @@ public:
+     void setParentControlGeometry(const QRect &parentAnchor) override;
+     QRect parentControlGeometry() const;
+ 
++    void handleMousePressActivation();
++
+ public Q_SLOTS:
+     void applyConfigure();
+ 
+diff --git a/tests/auto/wayland/surface/tst_surface.cpp b/tests/auto/wayland/surface/tst_surface.cpp
+index e5512faad06..cd78d42c0e7 100644
+--- a/tests/auto/wayland/surface/tst_surface.cpp
++++ b/tests/auto/wayland/surface/tst_surface.cpp
+@@ -27,6 +27,7 @@ private slots:
+     void createSubsurface();
+     void createSubsurfaceForHiddenParent();
+     void changeToSubsurface();
++    void subsurfaceFocus();
+ };
+ 
+ tst_surface::tst_surface()
+@@ -243,5 +244,92 @@ void tst_surface::changeToSubsurface()
+     QCOMPOSITOR_TRY_VERIFY(xdgToplevel(1));
+ }
+ 
++// QTBUG-123455
++void tst_surface::subsurfaceFocus()
++{
++    m_config.autoFrameCallback = true;
++    auto autoFrameCallback = qScopeGuard([&] { m_config.autoFrameCallback = false; });
++
++    class CountingWindow : public QRasterWindow {
++    public:
++        int keyPressEventCount = 0;
++        int focusInEventCount = 0;
++    protected:
++        void keyPressEvent(QKeyEvent *) override { ++keyPressEventCount; }
++        void focusInEvent(QFocusEvent *) override { ++focusInEventCount; }
++    };
++
++    CountingWindow window;
++    window.setObjectName("main");
++    window.resize(200, 200);
++    CountingWindow subWindow;
++    subWindow.setObjectName("subwindow");
++    subWindow.setParent(&window);
++    subWindow.setGeometry(50, 50, 64, 64);
++    window.show();
++    subWindow.show();
++
++    QCOMPOSITOR_TRY_VERIFY(subSurface());
++    QCOMPOSITOR_TRY_VERIFY(xdgToplevel());
++    exec([&] { xdgToplevel()->sendCompleteConfigure(); });
++    QCOMPOSITOR_TRY_VERIFY(xdgSurface()->m_committedConfigureSerial);
++
++    Surface *mainSurface = exec([&] {return surface(0);});
++    Surface *childSurface = exec([&] {return surface(1);});
++
++    // Activate the toplevel by sending keyboard focus to it
++    exec([&] {
++        keyboard()->sendEnter(mainSurface);
++    });
++    QTRY_COMPARE(window.focusInEventCount, 1);
++    QCOMPARE(QGuiApplication::focusWindow(), &window);
++
++    // Click on the subsurface
++    exec([&] {
++        pointer()->sendLeave(mainSurface);
++        pointer()->sendFrame(client());
++        pointer()->sendEnter(childSurface, {10, 10});
++        pointer()->sendFrame(client());
++        pointer()->sendButton(client(), BTN_LEFT, Pointer::button_state_pressed);
++        pointer()->sendFrame(client());
++        pointer()->sendButton(client(), BTN_LEFT, Pointer::button_state_released);
++        pointer()->sendFrame(client());
++    });
++    QTRY_COMPARE(subWindow.focusInEventCount, 1);
++    QCOMPARE(QGuiApplication::focusWindow(), &subWindow);
++
++    // Key events should go to the subsurface, not the toplevel
++    uint keyCode = 80;
++    exec([&] {
++        keyboard()->sendKey(client(), keyCode - 8, Keyboard::key_state_pressed);
++    });
++    QTRY_COMPARE(subWindow.keyPressEventCount, 1);
++    QCOMPARE(window.keyPressEventCount, 0);
++    exec([&] {
++        keyboard()->sendKey(client(), keyCode - 8, Keyboard::key_state_released);
++    });
++
++    // Click on the toplevel - subsurface should lose focus and toplevel should gain focus
++    exec([&] {
++        pointer()->sendLeave(childSurface);
++        pointer()->sendFrame(client());
++        pointer()->sendEnter(mainSurface, {10, 10});
++        pointer()->sendFrame(client());
++        pointer()->sendButton(client(), BTN_LEFT, Pointer::button_state_pressed);
++        pointer()->sendFrame(client());
++        pointer()->sendButton(client(), BTN_LEFT, Pointer::button_state_released);
++        pointer()->sendFrame(client());
++    });
++    QTRY_COMPARE(window.focusInEventCount, 2);
++    QCOMPARE(QGuiApplication::focusWindow(), &window);
++
++    // Key events should now go back to the toplevel
++    exec([&] {
++        keyboard()->sendKey(client(), keyCode - 8, Keyboard::key_state_pressed);
++    });
++    QTRY_COMPARE(window.keyPressEventCount, 1);
++    QCOMPARE(subWindow.keyPressEventCount, 1); // unchanged
++}
++
+ QCOMPOSITOR_TEST_MAIN(tst_surface)
+ #include "tst_surface.moc"
+-- 
+GitLab
+
