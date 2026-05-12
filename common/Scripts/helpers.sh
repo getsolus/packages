@@ -45,12 +45,12 @@ function localrepo_reindex() {
 
 # What provides a lib
 function whatprovides() {
-    grep "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_libs
+    grep -E "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_libs
 }
 
 # What uses a lib
 function whatuses() {
-    grep "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_used_libs
+    grep -E "$1" "$(git rev-parse --show-toplevel)"/packages/*/*/abi_used_libs
 }
 
 function quickfixup() {
