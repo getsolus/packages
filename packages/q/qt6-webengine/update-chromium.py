@@ -37,7 +37,7 @@ with urllib.request.urlopen(qtwebengine_url) as qtwebengine_request:
         exit(1)
     qtwebengine_response = qtwebengine_request.read().decode()
 
-response_regex = re.compile('(?:Based on Chromium version: *)([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*)')
+response_regex = re.compile('(?:Based on Chromium version: *)([0-9]*\\.[0-9]*\\.[0-9]*\\.[0-9]*)')
 chromium_version = re.search(response_regex, qtwebengine_response).group(1)
 if chromium_version is None:
     logger.error("Chromium version not found")
