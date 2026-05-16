@@ -1,0 +1,193 @@
+From 2eaf23ac314124ca473b7ffe9e41ef3a910b2823 Mon Sep 17 00:00:00 2001
+From: Ivan Trepakov <liontiger23@gmail.com>
+Date: Sat, 16 May 2026 18:59:52 +0700
+Subject: [PATCH] Gradle 9.x.x fixes
+
+---
+ bin.dist.gradle                    |  4 ++-
+ build.gradle                       |  5 ++++
+ freeplane/build.gradle             | 42 ++++++++++++++----------------
+ freeplane/emoji.gradle             |  4 ++-
+ freeplane_debughelper/build.gradle |  8 +++---
+ freeplane_framework/build.gradle   |  4 ++-
+ linux-packages.gradle              |  4 ++-
+ 7 files changed, 41 insertions(+), 30 deletions(-)
+
+diff --git a/bin.dist.gradle b/bin.dist.gradle
+index e91d9deabb..10e1d2936d 100644
+--- a/bin.dist.gradle
++++ b/bin.dist.gradle
+@@ -9,7 +9,9 @@ task binZip(type: Zip) {
+ 
+     from(globalBin) {
+         include('freeplane.sh')
+-        fileMode = 0755
++        filePermissions {
++            unix(0755)
++        }
+     }
+ 
+     from(rootDir) {
+diff --git a/build.gradle b/build.gradle
+index 508c3d1af6..89baaf16be 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -170,6 +170,11 @@ configure(subprojects.findAll {it.name =~ /plugin/ || it.name =~ /^freeplane$/ |
+    task cleanBUILD(type: Delete) {
+        delete "$buildDir/libs"
+    }
++
++   // Gradle 9.0 is stricter about test discovery - many subprojects have non-JUnit test files
++   test {
++       failOnNoDiscoveredTests = false
++   }
+    
+    jar.dependsOn cleanBUILD
+ }
+diff --git a/freeplane/build.gradle b/freeplane/build.gradle
+index 28ec6c37ea..e90364d7d2 100644
+--- a/freeplane/build.gradle
++++ b/freeplane/build.gradle
+@@ -293,11 +293,21 @@ task copyOSGiManifest(type: Copy) {
+      into(globalBin + '/core/' + pluginid + '/META-INF/')
+ }
+ 
+-class PartialJar extends Jar {
+-	@Internal String[] includedClasses
+-}
+-
+-task editorJar(type: PartialJar) {
++// Define jar content patterns to avoid duplication
++ext.editorJarIncludes = [
++    "**/application/**",
++    "**/mindmapmode/**",
++    "**/ortho/**",
++    "**/filemode/**",
++    "**/core/resources/ui/**",
++    "translations/**"
++]
++
++ext.osgiJarIncludes = [
++    "**/osgi/**"
++]
++
++task editorJar(type: Jar) {
+     // use '= project.manifest' to avoid that an OSGi manifest is created!
+     manifest = project.java.manifest {
+         attributes("Manifest-Version": "1.0",
+@@ -305,34 +315,22 @@ task editorJar(type: PartialJar) {
+     }
+     archiveBaseName = 'freeplaneeditor'
+     dependsOn classes
+-	includedClasses = [
+-				"**/application/**",
+-				"**/mindmapmode/**",
+-				"**/ortho/**",
+-				"**/filemode/**",
+-				"**/core/resources/ui/**",
+-				"translations/**"
+-	]
+-
+     from (sourceSets.main.output) {
+-				include(includedClasses)
++        include editorJarIncludes
+     }
+     from (sourceSets.editor.resources)
+     includeEmptyDirs = false
+ }
+ 
+-task osgiJar(type: PartialJar) {
++task osgiJar(type: Jar) {
+ 	// use '= project.manifest' to avoid that an OSGi manifest is created!
+ 	manifest = project.java.manifest {
+ 		attributes("Manifest-Version": "1.0")
+ 	}
+ 	archiveBaseName = 'freeplaneosgi'
+ 	dependsOn classes
+-	includedClasses = [
+-				"**/osgi/**"
+-	]
+     from (sourceSets.main.output) {
+-				include(includedClasses)
++        include osgiJarIncludes
+     }
+     includeEmptyDirs = false
+ }
+@@ -352,8 +350,8 @@ task viewerJar(type: Jar) {
+     dependsOn classes
+     dependsOn createEmojiList
+     from (sourceSets.main.output) {
+-        exclude (editorJar.includedClasses)
+-        exclude (osgiJar.includedClasses )
++        exclude editorJarIncludes
++        exclude osgiJarIncludes
+     }
+     from (sourceSets.viewer.output)
+     from (files("${project.buildDir}/emoji/xml"))
+diff --git a/freeplane/emoji.gradle b/freeplane/emoji.gradle
+index 6a0f31b0f6..aaf253a4c2 100644
+--- a/freeplane/emoji.gradle
++++ b/freeplane/emoji.gradle
+@@ -87,7 +87,9 @@ class UiEntryCreator implements EmojiConstants {
+ 			}
+ 			def emojiEntriesFile = new File(emojiDirectory, 'xml/images/emoji/xml/emojientries.xml')
+ 			emojiEntriesFile.parentFile.mkdirs()
+-			emojiEntriesFile.withOutputStream {new XmlNodePrinter(new PrintWriter(new OutputStreamWriter(it, 'UTF-8'))).print(root)}
++			emojiEntriesFile.withWriter('UTF-8') { writer ->
++				writer.write(groovy.xml.XmlUtil.serialize(root))
++			}
+ 		}
+ 		
+ 		return this
+diff --git a/freeplane_debughelper/build.gradle b/freeplane_debughelper/build.gradle
+index 45a8885775..b47379e7a4 100644
+--- a/freeplane_debughelper/build.gradle
++++ b/freeplane_debughelper/build.gradle
+@@ -14,10 +14,10 @@ dependencies {
+ 		runtimeOnly it
+ 	}
+ 
+-	runtimeOnly project(':freeplane').sourceSets.viewer.resources.sourceDirectories
+-	runtimeOnly project(':freeplane').sourceSets.editor.resources.sourceDirectories
+-	runtimeOnly project(':freeplane').sourceSets.external.resources.sourceDirectories
+-	runtimeOnly files("${project(':freeplane').buildDir}/emoji/xml")
++	runtimeOnly project.project(':freeplane').sourceSets.viewer.resources.sourceDirectories
++	runtimeOnly project.project(':freeplane').sourceSets.editor.resources.sourceDirectories
++	runtimeOnly project.project(':freeplane').sourceSets.external.resources.sourceDirectories
++	runtimeOnly files("${project.project(':freeplane').buildDir}/emoji/xml")
+ }
+ 
+ java {
+diff --git a/freeplane_framework/build.gradle b/freeplane_framework/build.gradle
+index 6c1d42e046..1f64a86bde 100644
+--- a/freeplane_framework/build.gradle
++++ b/freeplane_framework/build.gradle
+@@ -39,7 +39,9 @@ freeplanelauncherJar.dependsOn (':freeplane_api:jar')
+ task copyFreeplaneShellScript(type: Copy) {
+      from('script/') {
+          include('freeplane.sh')
+-         fileMode = 0755
++        filePermissions {
++            unix(0755)
++        }
+      }
+ 	 into(globalBin)
+ 	 filter(FixCrLfFilter.class, eol:FixCrLfFilter.CrLf.newInstance("lf"))
+diff --git a/linux-packages.gradle b/linux-packages.gradle
+index 794ed3f6e3..f3d3787fdd 100644
+--- a/linux-packages.gradle
++++ b/linux-packages.gradle
+@@ -42,7 +42,9 @@ task freeplaneDeb(type: Deb) {
+ 
+     from(globalBin) {
+         include('freeplane.sh')
+-        fileMode = 0755
++        filePermissions {
++            unix(0755)
++        }
+      	into('/usr/share/freeplane')
+     }
+ 
+-- 
+2.54.0
+
