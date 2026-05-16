@@ -1,0 +1,319 @@
+From ed4bf9c993041b0cbb2ceb07049bb928469b66e8 Mon Sep 17 00:00:00 2001
+From: David Edmundson <davidedmundson@kde.org>
+Date: Wed, 13 Sep 2023 12:59:06 +0300
+Subject: [PATCH] wayland: Resize wl_egl_window from the correct thread with an
+ active context
+
+According to Nvidia documentation [1] wl_egl_window_resize should only
+be called when the context is current and from the correct thread.
+
+This refactors the code to cache a thread-safe buffer size when
+the geometry changes from the main thread but defer the actual resize
+call.
+
+On the next frame we:
+ - potentially create/delete an egl surface as needed
+ - call eglMakeCurrent
+ - resize the egl window
+
+This patch also re-enables threaded rendering for Nvidia now the root
+bug has been fixed.
+
+[1] https://github.com/NVIDIA/egl-wayland2
+
+Fixes: QTBUG-95817
+Change-Id: Ic987880c3d4a1220044fb4e8b3eeac0a4e8c06ea
+Reviewed-by: David Redondo <qt@david-redondo.de>
+Reviewed-by: Eskil Abrahamsen Blomfeldt <eskil.abrahamsen-blomfeldt@qt.io>
+---
+ .../qwaylandeglclientbufferintegration.cpp    |   7 -
+ .../wayland-egl/qwaylandeglwindow.cpp         | 122 ++++++++----------
+ .../wayland-egl/qwaylandeglwindow_p.h         |  13 +-
+ .../wayland-egl/qwaylandglcontext.cpp         |  38 +++---
+ 4 files changed, 86 insertions(+), 94 deletions(-)
+
+diff --git a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglclientbufferintegration.cpp b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglclientbufferintegration.cpp
+index c7e53751839..0f52e159aa3 100644
+--- a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglclientbufferintegration.cpp
++++ b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglclientbufferintegration.cpp
+@@ -94,13 +94,6 @@ void QWaylandEglClientBufferIntegration::initialize(QWaylandDisplay *display)
+             break;
+         }
+     }
+-
+-    // On desktop NVIDIA resizing QtQuick freezes them when using threaded rendering QTBUG-95817
+-    // In order to support threaded rendering on embedded platforms where resizing is not needed
+-    // we check if XDG_CURRENT_DESKTOP is set which desktop environments should set
+-    if (qstrcmp(vendor, "NVIDIA") == 0 && qEnvironmentVariableIsSet("XDG_CURRENT_DESKTOP")) {
+-        m_supportsThreading = false;
+-    }
+ }
+ 
+ bool QWaylandEglClientBufferIntegration::isValid() const
+diff --git a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow.cpp b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow.cpp
+index f0ed8a29abb..e1a09e566c0 100644
+--- a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow.cpp
++++ b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow.cpp
+@@ -56,82 +56,78 @@ void QWaylandEglWindow::ensureSize()
+     QMargins margins = clientSideMargins();
+     QSize sizeWithMargins = (rect.size() + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())) * scale();
+     {
++        // keep a cache of the size that is safely accessible from the render thread
+         QWriteLocker lock(&m_bufferSizeLock);
+         m_bufferSize = sizeWithMargins;
+     }
++}
+ 
+-    QMutexLocker lock (&m_eglSurfaceLock);
+-    updateSurface(false);
++QSize QWaylandEglWindow::bufferSize() const
++{
++    QReadLocker lock(&m_bufferSizeLock);
++    return m_bufferSize;
+ }
+ 
+-void QWaylandEglWindow::updateSurface(bool create)
++void QWaylandEglWindow::updateSurfaceSize(const QSize &initialSize)
+ {
++    // potentially called from a render thread
+     // eglSurfaceLock should be locked before calling this method
+ 
+-    QSize sizeWithMargins;
+-    {
+-        QReadLocker lock(&m_bufferSizeLock);
+-        sizeWithMargins = m_bufferSize;
++    if (!m_waylandEglWindow)
++        return;
++
++    int current_width = 0;
++    int current_height = 0;
++    static bool disableResizeCheck = qgetenv("QT_WAYLAND_DISABLE_RESIZECHECK").toInt();
++
++    if (!disableResizeCheck) {
++        wl_egl_window_get_attached_size(m_waylandEglWindow, &current_width, &current_height);
++    }
++    if (disableResizeCheck || (current_width != initialSize.width() || current_height != initialSize.height()) || m_appliedBufferSize != initialSize) {
++        wl_egl_window_resize(m_waylandEglWindow, initialSize.width(), initialSize.height(), mOffset.x(), mOffset.y());
++        m_appliedBufferSize = initialSize;
++        mOffset = QPoint();
++        m_resize = true;
+     }
++}
+ 
+-    // wl_egl_windows must have both width and height > 0
+-    // mesa's egl returns NULL if we try to create a, invalid wl_egl_window, however not all EGL
+-    // implementations may do that, so check the size ourself. Besides, we must deal with resizing
+-    // a valid window to 0x0, which would make it invalid. Hence, destroy it.
+-    if (sizeWithMargins.isEmpty()) {
+-        if (m_eglSurface) {
+-            eglDestroySurface(m_clientBufferIntegration->eglDisplay(), m_eglSurface);
+-            m_eglSurface = 0;
+-        }
+-        if (m_waylandEglWindow) {
+-            wl_egl_window_destroy(m_waylandEglWindow);
+-            m_waylandEglWindow = 0;
++void QWaylandEglWindow::createSurface(const QSize &initialSize)
++{
++    // potentially called from a render thread
++    // eglSurfaceLock should be locked before calling this method
++
++    QReadLocker locker(&mSurfaceLock);
++    if (mSurface) {
++        wl_egl_window *eglWindow = wl_egl_window_create(mSurface->object(), initialSize.width(), initialSize.height());
++        if (Q_UNLIKELY(!eglWindow)) {
++            qCWarning(lcQpaWayland, "Could not create wl_egl_window with size %dx%d\n", initialSize.width(), initialSize.height());
++            return;
+         }
+-        mOffset = QPoint();
+-    } else {
+-        QReadLocker locker(&mSurfaceLock);
+-        if (m_waylandEglWindow) {
+-            int current_width = 0;
+-            int current_height = 0;
+-            static bool disableResizeCheck = qgetenv("QT_WAYLAND_DISABLE_RESIZECHECK").toInt();
+-
+-            if (!disableResizeCheck) {
+-                wl_egl_window_get_attached_size(m_waylandEglWindow, &current_width, &current_height);
+-            }
+-            if (disableResizeCheck || (current_width != sizeWithMargins.width() || current_height != sizeWithMargins.height()) || m_requestedSize != sizeWithMargins) {
+-                wl_egl_window_resize(m_waylandEglWindow, sizeWithMargins.width(), sizeWithMargins.height(), mOffset.x(), mOffset.y());
+-                m_requestedSize = sizeWithMargins;
+-                mOffset = QPoint();
+-
+-                m_resize = true;
+-            }
+-        } else if (create && mSurface) {
+-            wl_egl_window *eglWindow = wl_egl_window_create(mSurface->object(), sizeWithMargins.width(), sizeWithMargins.height());
+-            if (Q_UNLIKELY(!eglWindow)) {
+-                qCWarning(lcQpaWayland, "Could not create wl_egl_window with size %dx%d\n", sizeWithMargins.width(), sizeWithMargins.height());
+-                return;
+-            }
+-
+-            QSurfaceFormat fmt = window()->requestedFormat();
+-            if (mDisplay->supportsWindowDecoration())
+-                fmt.setAlphaBufferSize(8);
+-            EGLConfig eglConfig = q_configFromGLFormat(m_clientBufferIntegration->eglDisplay(), fmt);
+-            setFormat(q_glFormatFromConfig(m_clientBufferIntegration->eglDisplay(), eglConfig, fmt));
+-
+-            EGLSurface eglSurface = eglCreateWindowSurface(m_clientBufferIntegration->eglDisplay(), eglConfig, (EGLNativeWindowType) eglWindow, 0);
+-            if (Q_UNLIKELY(eglSurface == EGL_NO_SURFACE)) {
+-                qCWarning(lcQpaWayland, "Could not create EGL surface (EGL error 0x%x)\n", eglGetError());
+-                wl_egl_window_destroy(eglWindow);
+-                return;
+-            }
+-
+-            m_waylandEglWindow = eglWindow;
+-            m_eglSurface = eglSurface;
+-            m_requestedSize = sizeWithMargins;
++
++        QSurfaceFormat fmt = window()->requestedFormat();
++        if (mDisplay->supportsWindowDecoration())
++            fmt.setAlphaBufferSize(8);
++        EGLConfig eglConfig = q_configFromGLFormat(m_clientBufferIntegration->eglDisplay(), fmt);
++        setFormat(q_glFormatFromConfig(m_clientBufferIntegration->eglDisplay(), eglConfig, fmt));
++
++        EGLSurface eglSurface = eglCreateWindowSurface(m_clientBufferIntegration->eglDisplay(), eglConfig, (EGLNativeWindowType) eglWindow, 0);
++        if (Q_UNLIKELY(eglSurface == EGL_NO_SURFACE)) {
++            qCWarning(lcQpaWayland, "Could not create EGL surface (EGL error 0x%x)\n", eglGetError());
++            wl_egl_window_destroy(eglWindow);
++            return;
+         }
++
++        m_waylandEglWindow = eglWindow;
++        m_eglSurface = eglSurface;
++        m_appliedBufferSize = initialSize;
+     }
+ }
+ 
++EGLSurface QWaylandEglWindow::eglSurface() const
++{
++    return m_eglSurface;
++}
++
+ QRect QWaylandEglWindow::contentsRect() const
+ {
+     QRect r = geometry();
+@@ -155,16 +151,10 @@ void QWaylandEglWindow::invalidateSurface()
+     m_contentFBO = nullptr;
+ }
+ 
+-EGLSurface QWaylandEglWindow::eglSurface() const
+-{
+-    return m_eglSurface;
+-}
+-
+ QMutex* QWaylandEglWindow::eglSurfaceLock()
+ {
+     return &m_eglSurfaceLock;
+ }
+-
+ GLuint QWaylandEglWindow::contentFBO() const
+ {
+     if (!decoration())
+diff --git a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow_p.h b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow_p.h
+index 2fbe11fb50e..38f4773d1cd 100644
+--- a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow_p.h
++++ b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandeglwindow_p.h
+@@ -5,7 +5,6 @@
+ #pragma once
+ 
+ #include <QtWaylandClient/private/qwaylandwindow_p.h>
+-#include "qwaylandeglinclude_p.h"
+ #include "qwaylandeglclientbufferintegration_p.h"
+ 
+ QT_BEGIN_NAMESPACE
+@@ -24,8 +23,10 @@ public:
+     ~QWaylandEglWindow();
+     WindowType windowType() const override;
+     void ensureSize() override;
++    QSize bufferSize() const;
+ 
+-    void updateSurface(bool create);
++    void createSurface(const QSize &initialSize);
++    void updateSurfaceSize(const QSize &bufferSize);
+     QRect contentsRect() const;
+ 
+     EGLSurface eglSurface() const;
+@@ -49,13 +50,13 @@ private:
+     mutable bool m_resize = false;
+     mutable QOpenGLFramebufferObject *m_contentFBO = nullptr;
+ 
+-    // Size used in the last call to wl_egl_window_resize
+-    QSize m_requestedSize;
+-
+     // Size of the buffer used by QWaylandWindow
+     // This is always written to from the main thread, potentially read from the rendering thread
+-    QReadWriteLock m_bufferSizeLock;
++    mutable QReadWriteLock m_bufferSizeLock;
+     QSize m_bufferSize;
++
++    // Size used in the last call to wl_egl_window_resize, only updated from the rendering thread
++    QSize m_appliedBufferSize;
+ };
+ 
+ }
+diff --git a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
+index 2d5a745bf0b..e8d3c2c2672 100644
+--- a/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
++++ b/src/plugins/platforms/wayland/plugins/hardwareintegration/wayland-egl/qwaylandglcontext.cpp
+@@ -428,22 +428,25 @@ bool QWaylandGLContext::makeCurrent(QPlatformSurface *surface)
+ 
+     m_currentWindow = static_cast<QWaylandEglWindow *>(surface);
+ 
+-    QMutexLocker lock(m_currentWindow->eglSurfaceLock());
+-    EGLSurface eglSurface = m_currentWindow->eglSurface();
+-
+     if (!checkGraphicsReset())
+         return false;
+ 
+-    if (!m_currentWindow->needToUpdateContentFBO() && (eglSurface != EGL_NO_SURFACE)) {
+-        if (!eglMakeCurrent(eglDisplay(), eglSurface, eglSurface, eglContext())) {
+-            qWarning("QWaylandGLContext::makeCurrent: eglError: %#x, this: %p \n", eglGetError(), this);
+-            return false;
+-        }
++    QMutexLocker lock(m_currentWindow->eglSurfaceLock());
++
++    EGLSurface eglSurface = m_currentWindow->eglSurface();
++    QSize size = m_currentWindow->bufferSize();
++
++    // wl_egl_windows must have both width and height > 0
++    // mesa's egl returns NULL if we try to create a, invalid wl_egl_window, however not all EGL
++    // implementations may do that, so check the size ourself. Besides, we must deal with resizing
++    // a valid window to 0x0, which would make it invalid. Hence, destroy it.
++    if (size.isEmpty()) {
++        lock.unlock();
++        m_currentWindow->invalidateSurface();
+         return true;
+     }
+-
+     if (eglSurface == EGL_NO_SURFACE) {
+-        m_currentWindow->updateSurface(true);
++        m_currentWindow->createSurface(size);
+         eglSurface = m_currentWindow->eglSurface();
+     }
+ 
+@@ -451,11 +454,16 @@ bool QWaylandGLContext::makeCurrent(QPlatformSurface *surface)
+         qWarning("QWaylandGLContext::makeCurrent: eglError: %#x, this: %p \n", eglGetError(), this);
+         return false;
+     }
+-
+-    //### setCurrentContext will be called in QOpenGLContext::makeCurrent after this function
+-    // returns, but that's too late, as we need a current context in order to bind the content FBO.
+-    QOpenGLContextPrivate::setCurrentContext(context());
+-    m_currentWindow->bindContentFBO();
++    // Nvidia requires that the surface is current and on the render thread at the time of doing the actual resizing
++    m_currentWindow->updateSurfaceSize(size);
++
++    if (m_currentWindow->needToUpdateContentFBO()) {
++        // ### setCurrentContext will be called in QOpenGLContext::makeCurrent after this function
++        //  returns, but that's too late, as we need a current context in order to bind the content
++        //  FBO.
++        QOpenGLContextPrivate::setCurrentContext(context());
++        m_currentWindow->bindContentFBO();
++    }
+ 
+     return true;
+ }
+-- 
+GitLab
+
