@@ -3,3 +3,6 @@ This file is used to indicate primary maintainership for this package. A package
 - Algent Albrahimi
   - Matrix: @algent:matrix.org
   - Email: algent@protonmail.com
+- Muhammad Alfi Syahrin
+  - Matrix: @alfisya:matrix.org
+  - Email: alfi@getsol.us
