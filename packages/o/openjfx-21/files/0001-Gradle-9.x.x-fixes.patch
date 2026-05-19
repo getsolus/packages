@@ -1,0 +1,965 @@
+From cf0158e29d46accbc684818dcfda200d5e8bc3b5 Mon Sep 17 00:00:00 2001
+From: Ivan Trepakov <liontiger23@gmail.com>
+Date: Sat, 16 May 2026 16:04:55 +0700
+Subject: [PATCH] Gradle 9.x.x fixes
+
+---
+ build.gradle                                  | 116 ++++++++++--------
+ buildSrc/linux.gradle                         |  16 ++-
+ .../com/sun/javafx/gradle/CCTask.groovy       |  34 +++--
+ .../sun/javafx/gradle/CompileHLSLTask.groovy  |  23 +++-
+ .../javafx/gradle/CompileResourceTask.groovy  |  20 ++-
+ .../javafx/gradle/ExportedSymbolsTask.groovy  |  19 ++-
+ .../sun/javafx/gradle/JavaHeaderTask.groovy   |  18 ++-
+ .../com/sun/javafx/gradle/LinkTask.groovy     |  40 +++---
+ .../com/sun/javafx/gradle/LipoTask.groovy     |  18 ++-
+ .../javafx/gradle/NativeCompileTask.groovy    |  17 +++
+ 10 files changed, 209 insertions(+), 112 deletions(-)
+
+diff --git a/build.gradle b/build.gradle
+index f9dbc530..6382715b 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -74,6 +74,10 @@ import java.util.zip.ZipEntry
+ import java.util.zip.ZipFile
+ import java.util.zip.ZipOutputStream
+ 
++import org.gradle.process.ExecOperations
++
++def execOps = project.services.get(ExecOperations)
++
+ /******************************************************************************
+  *                              Utility methods                               *
+  *****************************************************************************/
+@@ -820,7 +824,8 @@ void fetchExternalTools(String configName, List packages, File destdir, boolean
+                     if (IS_LINUX || IS_MAC) {
+                         // use native tar to support symlinks
+                         pkgdir.mkdirs()
+-                        exec {
++                        def execOps = project.services.get(ExecOperations)
++                        execOps.exec { spec ->
+                             workingDir pkgdir
+                             commandLine "tar", "zxf", "${srcball}"
+                          }
+@@ -902,7 +907,8 @@ void ant(String conf,   // platform configuration
+ 
+     cmdArgs += target
+ 
+-    exec {
++    def execOps = project.services.get(ExecOperations)
++    execOps.exec { spec ->
+         workingDir = dir
+         environment("JDK_HOME", JDK_HOME)
+         environment("JAVA_HOME", JDK_HOME)
+@@ -1728,7 +1734,7 @@ void addMavenPublication(Project project, List<String> projectDependencies) {
+                     afterEvaluate {
+                         artifact project.tasks."moduleEmptyPublicationJar$t.capital"
+                         artifact project.tasks."modularPublicationJar$t.capital" {
+-                            classifier "$t.name"
++                            archiveClassifier.set("$t.name")
+                         }
+                     }
+ 
+@@ -1949,7 +1955,7 @@ void addJCov(p, test) {
+     test.doLast {
+         def reportFile = p.file("build/reports/jcov/report.xml")
+         if (reportFile.exists()) {
+-            p.javaexec {
++            execOps.javaexec { spec ->
+                 workingDir = p.file("build/reports/jcov")
+                 classpath = p.files(p.configurations.testClasspath.files.find { it.name.startsWith('jcov') })
+                 mainClass = "com.sun.tdk.jcov.Helper"
+@@ -2063,7 +2069,9 @@ allprojects {
+     // Set sourceCompatibility to the target release of Java. Most modules
+     // set compiler.options.release (to the same target version), which will
+     // override this setting, but it is needed for those modules that can't.
+-    sourceCompatibility = JAVA_TARGET_VERSION
++    java {
++        sourceCompatibility = JAVA_TARGET_VERSION
++    }
+ 
+     // By default all of our projects require junit for testing so we can just
+     // setup this dependency here.
+@@ -2248,7 +2256,7 @@ project(":graphics") {
+ 
+     dependencies {
+         antlr group: "org.antlr", name: "antlr4", version: "4.7.2", classifier: "complete"
+-        testImplementation project(":base").sourceSets.test.output
++        testImplementation project.project(":base").sourceSets.test.output
+         implementation project(':base')
+     }
+ 
+@@ -2449,7 +2457,7 @@ project(":graphics") {
+                     futures.add(executor.submit(new Runnable() {
+                         @Override public void run() {
+                             try {
+-                                exec {
++                                execOps.exec { spec ->
+                                     commandLine cmd
+                                 }
+                             } finally {
+@@ -2497,7 +2505,7 @@ project(":graphics") {
+          [fileName: "PhongLighting", generator: "CompilePhong", outputs: "-all"],
+          [fileName: "LinearConvolve", generator: "CompileLinearConvolve", outputs: "-hw"],
+          [fileName: "LinearConvolveShadow", generator: "CompileLinearConvolve", outputs: "-hw"]].each { settings ->
+-            javaexec {
++            execOps.javaexec { spec ->
+                 executable = JAVA
+                 workingDir = project.projectDir
+                 mainClass = settings.generator
+@@ -2586,7 +2594,7 @@ project(":graphics") {
+         def inputFiles = fileTree(dir: sourceDir)
+         inputFiles.include "**/*.jsl"
+         inputFiles.each { file ->
+-            javaexec {
++            execOps.javaexec { spec ->
+                 executable = JAVA
+                 workingDir = project.projectDir
+                 mainClass = "CompileJSL"
+@@ -2700,8 +2708,8 @@ project(":controls") {
+     commonModuleSetup(project, [ 'base', 'graphics', 'controls' ])
+ 
+     dependencies {
+-        testImplementation project(":graphics").sourceSets.test.output
+-        testImplementation project(":base").sourceSets.test.output
++        testImplementation project.project(":graphics").sourceSets.test.output
++        testImplementation project.project(":base").sourceSets.test.output
+         implementation project(':base')
+         implementation project(':graphics')
+     }
+@@ -2722,7 +2730,7 @@ project(":controls") {
+         cssFiles.each { css ->
+             logger.info("converting CSS to BSS ${css}");
+ 
+-            javaexec {
++            execOps.javaexec { spec ->
+                 executable = JAVA
+                 workingDir = project.projectDir
+                 jvmArgs += patchModuleArgs
+@@ -2893,8 +2901,8 @@ project(":fxml") {
+ 
+ 
+     dependencies {
+-        testImplementation project(":graphics").sourceSets.test.output
+-        testImplementation project(":base").sourceSets.test.output
++        testImplementation project.project(":graphics").sourceSets.test.output
++        testImplementation project.project(":base").sourceSets.test.output
+         implementation project(":base")
+         implementation project(":graphics")
+     }
+@@ -2990,7 +2998,7 @@ project(":media") {
+             modulePath += File.pathSeparator + "${rootProject.projectDir}/modules/javafx.graphics/build/classes/java/main"
+             modulePath += File.pathSeparator + "${rootProject.projectDir}/modules/javafx.base/build/classes/java/main"
+ 
+-            exec {
++            execOps.exec { spec ->
+                 commandLine("$JAVA");
+                 args += patchModuleArgs
+                 args += [ "--module-path=$modulePath" ]
+@@ -3022,7 +3030,7 @@ project(":media") {
+             }
+ 
+             doLast {
+-                exec {
++                execOps.exec { spec ->
+                     commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/jfxmedia/projects/${projectDir}")
+                     args("JAVA_HOME=${JDK_HOME}", "GENERATED_HEADERS_DIR=${generatedHeadersDir}",
+                          "OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=jfxmedia",
+@@ -3051,7 +3059,7 @@ project(":media") {
+             def buildGStreamer = task("build${t.capital}GStreamer") {
+                 enabled = IS_COMPILE_MEDIA
+                 doLast {
+-                    exec {
++                    execOps.exec { spec ->
+                         commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/${projectDir}/gstreamer-lite")
+                         args("OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=gstreamer-lite",
+                              "ARCH=${ARCH_NAME}", "CC=${mediaProperties.compiler}",
+@@ -3069,7 +3077,7 @@ project(":media") {
+                 enabled = IS_COMPILE_MEDIA
+ 
+                 doLast {
+-                    exec {
++                    execOps.exec { spec ->
+                         commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/${projectDir}/fxplugins")
+                         args("OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=fxplugins",
+                              "ARCH=${ARCH_NAME}",
+@@ -3177,11 +3185,11 @@ project(":media") {
+                                 File cfgFile = file(configFile)
+                                 if (!cfgFile.exists()) {
+                                     // Add execute permissions to version.sh, otherwise build fails
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         workingDir("$libavDir")
+                                         commandLine("chmod", "+x", "version.sh")
+                                     }
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         workingDir("$libavDir")
+                                         if (IS_BUILD_WORKING_LIBAV) {
+                                             commandLine(cfgCMDArgs + commonCfgArgs + codecsCfgArgs)
+@@ -3190,7 +3198,7 @@ project(":media") {
+                                         }
+                                     }
+                                 }
+-                                exec {
++                                execOps.exec { spec ->
+                                     workingDir("$libavDir")
+                                     commandLine("make")
+                                 }
+@@ -3245,11 +3253,11 @@ project(":media") {
+                                         file.write(data, "UTF-8")
+                                     }
+                                     // Add execute permissions to version.sh, otherwise build fails
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         workingDir("$libavDir")
+                                         commandLine("chmod", "+x", "version.sh")
+                                     }
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         workingDir("$libavDir")
+                                         if (IS_BUILD_WORKING_LIBAV) {
+                                             commandLine(cfgCMDArgs + commonCfgArgs + codecsCfgArgs + extraCfgArgs)
+@@ -3258,7 +3266,7 @@ project(":media") {
+                                         }
+                                     }
+                                 }
+-                                exec {
++                                execOps.exec { spec ->
+                                     workingDir("$libavDir")
+                                     commandLine("make")
+                                 }
+@@ -3319,7 +3327,7 @@ project(":media") {
+                                     def versionFile = "${libavDir}/version.sh"
+                                     File verFile = file(versionFile)
+                                     if (verFile.exists()) {
+-                                        exec {
++                                        execOps.exec { spec ->
+                                             workingDir("$libavDir")
+                                             commandLine("chmod", "+x", "version.sh")
+                                         }
+@@ -3327,7 +3335,7 @@ project(":media") {
+                                         versionFile = "${libavDir}/ffbuild/version.sh"
+                                         verFile = file(versionFile)
+                                         if (verFile.exists()) {
+-                                            exec {
++                                            execOps.exec { spec ->
+                                                 workingDir("${libavDir}/ffbuild")
+                                                 commandLine("chmod")
+                                                 args += "+x"
+@@ -3335,7 +3343,7 @@ project(":media") {
+                                             }
+                                         }
+                                     }
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         workingDir("$libavDir")
+                                         if (IS_BUILD_WORKING_LIBAV) {
+                                             commandLine(cfgCMDArgs + commonCfgArgs + codecsCfgArgs)
+@@ -3344,7 +3352,7 @@ project(":media") {
+                                         }
+                                     }
+                                 }
+-                                exec {
++                                execOps.exec { spec ->
+                                     workingDir("$libavDir")
+                                     commandLine("make")
+                                 }
+@@ -3379,7 +3387,7 @@ project(":media") {
+                                 def libavDir = "${project.ext.libav.basedir}-${version}"
+                                 File dir = file(libavDir)
+                                 if (dir.exists()) {
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/linux/avplugin")
+                                         args("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}",
+                                              "OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}",
+@@ -3394,7 +3402,7 @@ project(":media") {
+                                 def libavDir = "${project.ext.libav.libavffmpeg.basedir}-${version}"
+                                 File dir = file(libavDir)
+                                 if (dir.exists()) {
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/linux/avplugin")
+                                         args("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}",
+                                              "OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}",
+@@ -3409,7 +3417,7 @@ project(":media") {
+                                 def libavDir = "${project.ext.libav.ffmpeg.basedir}-${version}"
+                                 File dir = file(libavDir)
+                                 if (dir.exists()) {
+-                                    exec {
++                                    execOps.exec { spec ->
+                                         commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/linux/avplugin")
+                                         args("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}",
+                                              "OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}",
+@@ -3421,7 +3429,7 @@ project(":media") {
+                             }
+                         } else {
+                             // Building fxavcodec plugin (libav plugin)
+-                            exec {
++                            execOps.exec { spec ->
+                                 commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/linux/avplugin")
+                                 args("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}",
+                                      "OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}",
+@@ -3438,28 +3446,28 @@ project(":media") {
+                     doLast {
+                         def rcOutputDir = "${nativeOutputDir}/${buildType}"
+                         mkdir rcOutputDir
+-                        exec {
++                        execOps.exec { spec ->
+                             environment(WINDOWS_NATIVE_COMPILE_ENVIRONMENT)
+                             commandLine (WIN.media.rcCompiler)
+                             args(WIN.media.glibRcFlags)
+                             args("/Fo${rcOutputDir}/${WIN.media.glibRcFile}", WIN.media.rcSource)
+                         }
+ 
+-                        exec {
++                        execOps.exec { spec ->
+                             environment(WINDOWS_NATIVE_COMPILE_ENVIRONMENT)
+                             commandLine (WIN.media.rcCompiler)
+                             args(WIN.media.gstreamerRcFlags)
+                             args("/Fo${rcOutputDir}/${WIN.media.gstreamerRcFile}", WIN.media.rcSource)
+                         }
+ 
+-                        exec {
++                        execOps.exec { spec ->
+                             environment(WINDOWS_NATIVE_COMPILE_ENVIRONMENT)
+                             commandLine (WIN.media.rcCompiler)
+                             args(WIN.media.fxpluginsRcFlags)
+                             args("/Fo${rcOutputDir}/${WIN.media.fxpluginsRcFile}", WIN.media.rcSource)
+                         }
+ 
+-                        exec {
++                        execOps.exec { spec ->
+                             environment(WINDOWS_NATIVE_COMPILE_ENVIRONMENT)
+                             commandLine (WIN.media.rcCompiler)
+                             args(WIN.media.jfxmediaRcFlags)
+@@ -3471,7 +3479,7 @@ project(":media") {
+                 def buildGlib = task("build${t.capital}Glib", dependsOn: [buildResources]) {
+                     enabled = IS_COMPILE_MEDIA
+                     doLast {
+-                        exec {
++                        execOps.exec { spec ->
+                             environment(WINDOWS_NATIVE_COMPILE_ENVIRONMENT)
+                             commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/${projectDir}/glib-lite")
+                             args("OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=glib-lite",
+@@ -3486,13 +3494,13 @@ project(":media") {
+                 def buildGlib = task("build${t.capital}Glib") {
+                     enabled = IS_COMPILE_MEDIA
+                     doLast {
+-                        exec {
++                        execOps.exec { spec ->
+                             commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/${projectDir}/libffi")
+                             args("OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=ffi", "ARCH=$TARGET_ARCH")
+                             args ("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}", "AR=${mediaProperties.ar}")
+                         }
+ 
+-                        exec {
++                        execOps.exec { spec ->
+                             commandLine ("make", "${makeJobsFlag}", "-C", "${nativeSrcDir}/gstreamer/projects/${projectDir}/glib-lite")
+                             args("OUTPUT_DIR=${nativeOutputDir}", "BUILD_TYPE=${buildType}", "BASE_NAME=glib-lite", "ARCH=$TARGET_ARCH")
+                             args ("CC=${mediaProperties.compiler}", "LINKER=${mediaProperties.linker}")
+@@ -3561,7 +3569,7 @@ project(":web") {
+         implementation project(":graphics")
+         implementation project(":controls")
+         implementation project(":media")
+-        testImplementation project(":base").sourceSets.test.output
++        testImplementation project.project(":base").sourceSets.test.output
+     }
+ 
+     compileJava.dependsOn updateCacheIfNeeded
+@@ -3650,13 +3658,13 @@ project(":web") {
+             enabled =  (IS_COMPILE_WEBKIT)
+ 
+             doLast {
+-                exec {
++                execOps.exec { spec ->
+                     workingDir("$webkitOutputDir")
+                     commandLine("perl", "$projectDir/src/main/native/Tools/Scripts/set-webkit-configuration", "--$webkitConfig")
+                     environment(["WEBKIT_OUTPUTDIR" : webkitOutputDir])
+                 }
+ 
+-                exec {
++                execOps.exec { spec ->
+                     workingDir("$webkitOutputDir")
+                     def cmakeArgs = "-DENABLE_TOOLS=1"
+                     if (IS_STATIC_BUILD) {
+@@ -3854,10 +3862,10 @@ project(":systemTests") {
+     project.ext.moduleName = "systemTests"
+ 
+     dependencies {
+-        testImplementation project(":graphics").sourceSets.test.output
+-        testImplementation project(":base").sourceSets.test.output
+-        testImplementation project(":controls").sourceSets.test.output
+-        testImplementation project(":swing").sourceSets.test.output
++        testImplementation project.project(":graphics").sourceSets.test.output
++        testImplementation project.project(":base").sourceSets.test.output
++        testImplementation project.project(":controls").sourceSets.test.output
++        testImplementation project.project(":swing").sourceSets.test.output
+     }
+ 
+     def dependentProjects = [ 'base', 'graphics', 'controls', 'media', 'web', 'swing', 'fxml' ]
+@@ -4564,7 +4572,7 @@ compileTargets { t ->
+         def chmodArtifactsSdkTask = task("chmodArtifactsSdk$t.capital", dependsOn: copyArtifactsSdkTask) {
+             if (IS_WINDOWS && IS_USE_CYGWIN) {
+                 doLast {
+-                    exec {
++                    execOps.exec { spec ->
+                         workingDir(sdkArtifactsDir)
+                         commandLine("chmod", "-R", "755", ".")
+                     }
+@@ -5279,7 +5287,7 @@ compileTargets { t ->
+                     // exclude the Microsoft DLLs (VS2017DLLNames and WinSDKDLLNames)
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ strip, stripArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5296,7 +5304,7 @@ compileTargets { t ->
+                     // exclude the Microsoft DLLs (VS2017DLLNames and WinSDKDLLNames)
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ signCmd, signArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5354,7 +5362,7 @@ compileTargets { t ->
+                     inputFiles.include("*.so")
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ strip, stripArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5371,7 +5379,7 @@ compileTargets { t ->
+                     // exclude the Microsoft DLLs (VS2017DLLNames and WinSDKDLLNames)
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ signCmd, signArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5407,7 +5415,7 @@ compileTargets { t ->
+                     inputFiles.include("*.so")
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ strip, stripArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5424,7 +5432,7 @@ compileTargets { t ->
+                     // exclude the Microsoft DLLs (VS2017DLLNames and WinSDKDLLNames)
+ 
+                     inputFiles.each { file ->
+-                        exec {
++                        execOps.exec { spec ->
+                             def cmd = [ signCmd, signArgs, file ].flatten()
+                             commandLine(cmd)
+                         }
+@@ -5651,7 +5659,7 @@ compileTargets { t ->
+                 doLast {
+                     mkdir jmodsDir
+                     delete(jmodFile);
+-                    exec {
++                    execOps.exec { spec ->
+                         commandLine(JMOD)
+                         args("create")
+                         args("--class-path")
+diff --git a/buildSrc/linux.gradle b/buildSrc/linux.gradle
+index c1003a51..7f8c9d35 100644
+--- a/buildSrc/linux.gradle
++++ b/buildSrc/linux.gradle
+@@ -23,6 +23,10 @@
+  * questions.
+  */
+ 
++import org.gradle.process.ExecOperations
++
++def execOps = project.services.get(ExecOperations)
++
+ ext.LINUX = [:]
+ 
+ // Declare whether this particular target file applies to the current system
+@@ -92,14 +96,14 @@ def gtk3LinkFlags = [ ];
+ setupTools("linux_gtk3",
+     { propFile ->
+         ByteArrayOutputStream results2 = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine("${toolchainDir}pkg-config", "--cflags", "gtk+-3.0", "gthread-2.0", "xtst")
+             setStandardOutput(results2);
+         }
+         propFile << "cflagsGTK3=" << results2.toString().trim() << "\n";
+ 
+         ByteArrayOutputStream results4 = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine("${toolchainDir}pkg-config", "--libs", "gtk+-3.0", "gthread-2.0", "xtst")
+             setStandardOutput(results4);
+         }
+@@ -123,14 +127,14 @@ def pangoLinkFlags = [];
+ setupTools("linux_pango_tools",
+     { propFile ->
+         ByteArrayOutputStream results = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine "${toolchainDir}pkg-config", "--cflags", "pangoft2"
+             standardOutput = results
+         }
+         propFile << "cflags=" << results.toString().trim() << "\n";
+ 
+         results = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine "${toolchainDir}pkg-config", "--libs", "pangoft2"
+             standardOutput = results
+         }
+@@ -154,14 +158,14 @@ def freetypeLinkFlags = []
+ setupTools("linux_freetype_tools",
+     { propFile ->
+         ByteArrayOutputStream results = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine "${toolchainDir}pkg-config", "--cflags", "freetype2"
+             standardOutput = results
+         }
+         propFile << "cflags=" << results.toString().trim() << "\n";
+ 
+         results = new ByteArrayOutputStream();
+-        exec {
++        execOps.exec { spec ->
+             commandLine "${toolchainDir}pkg-config", "--libs", "freetype2"
+             standardOutput = results
+         }
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CCTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CCTask.groovy
+index 56530b5f..ce7ad185 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CCTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CCTask.groovy
+@@ -26,6 +26,9 @@
+ import org.gradle.api.tasks.Input
+ import org.gradle.api.tasks.InputDirectory
+ import org.gradle.api.tasks.Optional
++import org.gradle.process.ExecOperations
++
++import javax.inject.Inject
+ 
+ class CCTask extends NativeCompileTask {
+     @Input String compiler;
+@@ -34,6 +37,11 @@ class CCTask extends NativeCompileTask {
+     @Optional @Input Closure eachOutputFile; // will be given a File and must return a File
+     @Input boolean exe = false;
+ 
++    @Inject
++    CCTask(ExecOperations execOperations) {
++        super(execOperations);
++    }
++
+     protected File outputFile(File sourceFile) {
+         final String outFileName = sourceFile.getName().substring(0, sourceFile.getName().lastIndexOf("."));
+         new File("$output/${outFileName}.obj");
+@@ -50,8 +58,8 @@ class CCTask extends NativeCompileTask {
+ 
+         // TODO the PDB file is never being built -- maybe because it is only built during
+         // debug builds, otherwise that flag is ignored "/Fd" or "-Fd"
+-        project.exec({
+-            commandLine(compiler);
++        execCompile { spec ->
++            spec.commandLine(compiler);
+ 
+             // Add in any additional compilation params
+             if (params != null) {
+@@ -59,42 +67,42 @@ class CCTask extends NativeCompileTask {
+                 if (sourceFile.name.endsWith(".cpp") || sourceFile.name.endsWith(".cc") || sourceFile.name.endsWith(".mm")) {
+                     def stripped = params;
+                     stripped.remove("-std=c99");
+-                    args(stripped)
++                    spec.args(stripped)
+                 } else {
+-                    args(params)
++                    spec.args(params)
+                 }
+-            };
++            }
+ 
+-            if (headers != null) args("-I$headers");
++            if (headers != null) spec.args("-I$headers");
+ 
+             // Add the source roots in as include directories
+             sourceRoots.each { root ->
+                 final File file = root instanceof File ? (File) root : project.file(root)
+-                if (file.isDirectory()) args("-I$file");
++                if (file.isDirectory()) spec.args("-I$file");
+             }
+ 
+             // Add the name of the source file to compile
+             if (project.IS_WINDOWS) {
+                 if (exe) {
+                     final File exeFile = new File("$output/${lastDot > 0 ? outputFile.name.substring(0, lastDot) + '.exe' : outputFile.name + '.exe'}");
+-                    args(/*"/Fd$pdbFile",*/ "/Fo$outputFile", "/Fe$exeFile", "$sourceFile")
++                    spec.args(/*"/Fd$pdbFile",*/ "/Fo$outputFile", "/Fe$exeFile", "$sourceFile")
+                 } else {
+-                    args(/*"/Fd$pdbFile",*/ "/Fo$outputFile", "$sourceFile");
++                    spec.args(/*"/Fd$pdbFile",*/ "/Fo$outputFile", "$sourceFile");
+                 }
+             } else {
+-                args(/*"-Fd$pdbFile",*/ "-o", "$outputFile", "$sourceFile");
++                spec.args(/*"-Fd$pdbFile",*/ "-o", "$outputFile", "$sourceFile");
+             }
+ 
+             // Add any optional linker options -- used now rarely but can be
+             // used for any cc task which isn't going to be followed by a
+             // link task
+             if (linkerOptions != null && !linkerOptions.isEmpty()) {
+-                args(linkerOptions);
++                spec.args(linkerOptions);
+             }
+ 
+             if (project.IS_WINDOWS){
+-                environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
++                spec.environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
+             }
+-        });
++        }
+     }
+ }
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileHLSLTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileHLSLTask.groovy
+index cb5ea703..961fa978 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileHLSLTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileHLSLTask.groovy
+@@ -23,15 +23,30 @@
+  * questions.
+  */
+ 
++import org.gradle.process.ExecOperations
++
++import javax.inject.Inject
++
+ class CompileHLSLTask extends NativeCompileTask {
++    @Inject
++    CompileHLSLTask(ExecOperations execOperations) {
++        super(execOperations);
++    }
++
+     protected File outputFile(File sourceFile) {
+         new File("$output/${sourceFile.name.replace('.hlsl', '.obj')}");
+     }
+ 
+     protected void doCompile(File sourceFile, File outputFile){
+-        project.exec({
+-            commandLine = ["$project.FXC", "/nologo", "/T", "ps_3_0", "/Fo", "$outputFile", "$sourceFile"]
+-            environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
+-        });
++        execCompile { spec ->
++            spec.commandLine = [
++                "$project.FXC",
++                "/nologo",
++                "/T", "ps_3_0",
++                "/Fo", "$outputFile",
++                "$sourceFile"
++            ]
++            spec.environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
++        }
+     }
+ }
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileResourceTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileResourceTask.groovy
+index 9941adca..25f619cd 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileResourceTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/CompileResourceTask.groovy
+@@ -24,22 +24,30 @@
+  */
+ 
+ import org.gradle.api.tasks.Input
++import org.gradle.process.ExecOperations
++
++import javax.inject.Inject
+ 
+ class CompileResourceTask extends NativeCompileTask {
+     @Input List<String> rcParams = new ArrayList<String>();
+     @Input String compiler;
+ 
++    @Inject
++    CompileResourceTask(ExecOperations execOperations) {
++        super(execOperations);
++    }
++
+     protected File outputFile(File sourceFile) {
+         final String outFileName = sourceFile.getName().substring(0, sourceFile.getName().lastIndexOf("."));
+         return new File("$output/${outFileName}.res");
+     }
+ 
+     protected void doCompile(File sourceFile, File outputFile){
+-        project.exec({
+-            commandLine(compiler);
+-            if (rcParams) args(rcParams);
+-            args("/Fo$outputFile", "$sourceFile");
+-            environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
+-        });
++        execCompile { spec ->
++            spec.commandLine(compiler);
++            if (rcParams) spec.args(rcParams);
++            spec.args("/Fo$outputFile", "$sourceFile");
++            spec.environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
++        }
+     }
+ }
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/ExportedSymbolsTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/ExportedSymbolsTask.groovy
+index 35422361..487efd0e 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/ExportedSymbolsTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/ExportedSymbolsTask.groovy
+@@ -29,12 +29,21 @@ import org.gradle.api.tasks.InputDirectory
+ import org.gradle.api.tasks.Optional
+ import org.gradle.api.tasks.OutputFile
+ import org.gradle.api.tasks.TaskAction
++import org.gradle.process.ExecOperations
++
++import javax.inject.Inject
+ 
+ class ExportedSymbolsTask extends DefaultTask {
+     @OutputFile File outputFile;
+     @InputDirectory File libDir;
+     @Optional @Input List<String> excludes;
+ 
++    private final ExecOperations execOperations;
++
++    @Inject
++    ExportedSymbolsTask(ExecOperations execOperations) {
++        this.execOperations = execOperations;
++    }
+ 
+     @TaskAction void generateExportedSymbols() {
+         // Get symbols only from .a libraries
+@@ -49,11 +58,11 @@ class ExportedSymbolsTask extends DefaultTask {
+         def baos = new ByteArrayOutputStream();
+ 
+         // Execute nm on .a libraries
+-        project.exec({
+-            commandLine("nm", "-jg");
+-            args(libNames);
+-            setStandardOutput(baos);
+-        });
++        execOperations.exec { spec ->
++            spec.commandLine("nm", "-jg");
++            spec.args(libNames);
++            spec.setStandardOutput(baos);
++        };
+ 
+         def bais = new ByteArrayInputStream(baos.toByteArray());
+ 
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/JavaHeaderTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/JavaHeaderTask.groovy
+index 22294704..4353c422 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/JavaHeaderTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/JavaHeaderTask.groovy
+@@ -31,6 +31,9 @@ import org.gradle.api.tasks.OutputDirectory
+ import org.gradle.api.tasks.TaskAction
+ import org.gradle.api.tasks.util.PatternFilterable
+ import org.gradle.api.tasks.util.PatternSet
++import org.gradle.process.ExecOperations
++
++import javax.inject.Inject
+ 
+ class JavaHeaderTask extends DefaultTask {
+     @OutputDirectory File output;
+@@ -38,6 +41,13 @@ class JavaHeaderTask extends DefaultTask {
+     @Input FileCollection classpath;
+     private final PatternFilterable patternSet = new PatternSet();
+ 
++    private final ExecOperations execOperations;
++
++    @Inject
++    JavaHeaderTask(ExecOperations execOperations) {
++        this.execOperations = execOperations;
++    }
++
+ //    @InputFiles public void setSource(Object source) {
+ //        sourceRoots.clear();
+ //        sourceRoots.add(source);
+@@ -89,10 +99,10 @@ class JavaHeaderTask extends DefaultTask {
+             })
+         }
+         // Execute javah
+-        project.exec({
+-            commandLine("$project.JAVAH", "-d", "$output", "-classpath", "${classpath.asPath}");
+-            args(classNames);
+-        });
++        execOperations.exec { spec ->
++            spec.commandLine("$project.JAVAH", "-d", "$output", "-classpath", "${classpath.asPath}");
++            spec.args(classNames);
++        }
+     }
+ }
+ 
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/LinkTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/LinkTask.groovy
+index c9572fb2..8e18c49e 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/LinkTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/LinkTask.groovy
+@@ -28,7 +28,9 @@ import org.gradle.api.tasks.Input
+ import org.gradle.api.tasks.InputDirectory
+ import org.gradle.api.tasks.OutputFile
+ import org.gradle.api.tasks.TaskAction
++import org.gradle.process.ExecOperations
+ 
++import javax.inject.Inject
+ 
+ class LinkTask extends DefaultTask {
+     @Input List<String> linkParams = new ArrayList<String>();
+@@ -36,39 +38,45 @@ class LinkTask extends DefaultTask {
+     @OutputFile File lib;
+     @Input String linker;
+ 
++    private final ExecOperations execOperations;
++
++    @Inject
++    LinkTask(ExecOperations execOperations) {
++        this.execOperations = execOperations;
++    }
++
+     @TaskAction void compile() {
+         // Link & generate the library (.dll, .so, .dylib)
+         lib.getParentFile().mkdirs();
+-        project.exec({
+-            commandLine(linker);
++        execOperations.exec { spec ->
++            spec.commandLine(linker);
+             if ((project.IS_LINUX) && (project.IS_STATIC_BUILD)) {
+                 if (linker.equals("ld")) {
+-                    args("-r");
+-                    args("-o");
++                    spec.args("-r");
++                    spec.args("-o");
+                 } else {
+-                    args("rcs");
++                    spec.args("rcs");
+                 }
+-                args("$lib");
++                spec.args("$lib");
+             }
+             // Exclude parfait files (.bc)
+-            args(objectDir.listFiles().sort().findAll{ !it.getAbsolutePath().endsWith(".bc") });
++            spec.args(objectDir.listFiles().sort().findAll{ !it.getAbsolutePath().endsWith(".bc") });
+             if (project.IS_WINDOWS) {
+-                args("/out:$lib");
++                spec.args("/out:$lib");
+             } else {
+                 if (! ((project.IS_LINUX) && (project.IS_STATIC_BUILD))) {
+-                    args("-o", "$lib");
++                    spec.args("-o", "$lib");
+                 }
+             }
+-            if (project.IS_DEBUG_NATIVE && !project.IS_WINDOWS) args("-g");
+-            if (linkParams != null) args(linkParams);
++            if (project.IS_DEBUG_NATIVE && !project.IS_WINDOWS) spec.args("-g");
++            if (linkParams != null) spec.args(linkParams);
+             if (project.IS_WINDOWS){
+                 final String libPath = lib.toString();
+                 final String libPrefix = libPath.substring(0, libPath.lastIndexOf("."))
+-                args("/pdb:${libPrefix}.pdb",
+-                    "/map:${libPrefix}.map");
+-                environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
++                spec.args("/pdb:${libPrefix}.pdb",
++                          "/map:${libPrefix}.map");
++                spec.environment(project.WINDOWS_NATIVE_COMPILE_ENVIRONMENT);
+             }
+-        });
++        }
+     }
+ }
+-
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/LipoTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/LipoTask.groovy
+index 2437cf78..f36205b8 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/LipoTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/LipoTask.groovy
+@@ -27,11 +27,21 @@ import org.gradle.api.DefaultTask
+ import org.gradle.api.tasks.InputDirectory
+ import org.gradle.api.tasks.OutputFile
+ import org.gradle.api.tasks.TaskAction
++import org.gradle.process.ExecOperations
+ 
++import javax.inject.Inject
+ 
+ class LipoTask extends DefaultTask {
+     @InputDirectory File libDir;
+     @OutputFile File lib;
++
++    private final ExecOperations execOperations;
++
++    @Inject
++    LipoTask(ExecOperations execOperations) {
++        this.execOperations = execOperations;
++    }
++
+     @TaskAction void compile() {
+         List<String> libNames = [];
+         List<File> files = libDir.listFiles();
+@@ -43,10 +53,10 @@ class LipoTask extends DefaultTask {
+             }
+         }
+         // Create a fat library (.a)
+-        project.exec({
+-            commandLine("lipo", "-create", "-output", "$lib");
+-            args(libNames);
+-        });
++        execOperations.exec { spec ->
++            spec.commandLine("lipo", "-create", "-output", "$lib");
++            spec.args(libNames);
++        }
+     }
+ }
+ 
+diff --git a/buildSrc/src/main/groovy/com/sun/javafx/gradle/NativeCompileTask.groovy b/buildSrc/src/main/groovy/com/sun/javafx/gradle/NativeCompileTask.groovy
+index b893914f..a6bd024b 100644
+--- a/buildSrc/src/main/groovy/com/sun/javafx/gradle/NativeCompileTask.groovy
++++ b/buildSrc/src/main/groovy/com/sun/javafx/gradle/NativeCompileTask.groovy
+@@ -23,6 +23,7 @@
+  * questions.
+  */
+ 
++import org.gradle.api.Action
+ import org.gradle.api.DefaultTask
+ import org.gradle.api.tasks.Input
+ import org.gradle.api.tasks.InputFiles
+@@ -31,6 +32,10 @@ import org.gradle.api.tasks.OutputDirectory
+ import org.gradle.api.tasks.TaskAction
+ import org.gradle.api.tasks.util.PatternFilterable
+ import org.gradle.api.tasks.util.PatternSet
++import org.gradle.process.ExecOperations
++import org.gradle.process.ExecSpec
++
++import javax.inject.Inject
+ 
+ import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.CountDownLatch
+@@ -46,6 +51,13 @@ class NativeCompileTask extends DefaultTask {
+     @InputFiles List<File> allFiles = [];
+     private final PatternFilterable patternSet = new PatternSet();
+ 
++    private final ExecOperations execOperations;
++
++    @Inject
++    NativeCompileTask(ExecOperations execOperations) {
++        this.execOperations = execOperations;
++    }
++
+     public NativeCompileTask source(Object... sources) {
+         for (Object source : sources) {
+             if (source instanceof Collection) {
+@@ -79,6 +91,11 @@ class NativeCompileTask extends DefaultTask {
+         }
+     }
+ 
++    // Replacement for project.exec, subclasses call this.
++    protected void execCompile(Action<ExecSpec> action) {
++        execOperations.exec(action);
++    }
++
+     @TaskAction void compile() {
+         // Get the existing native-dependencies file from build/dependency-cache and load its contents into
+         // memory. If the file doesn't exist, then we will just have an empty dependency map.
+-- 
+2.54.0
+
