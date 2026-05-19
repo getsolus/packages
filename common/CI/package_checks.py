@@ -266,6 +266,7 @@ class Result:
 
 class PullRequestCheck:
     _package_files = ['package.yml']
+    _pspec_files = ['pspec_x86_64.xml']
     _two_letter_dirs = ['py']
     _config: Optional[Config] = None
 
@@ -289,6 +290,10 @@ class PullRequestCheck:
     @property
     def package_files(self) -> List[str]:
         return self.filter_files(*self._package_files)
+
+    @property
+    def pspec_files(self) -> List[str]:
+        return self.filter_files(*self._pspec_files)
 
     def filter_files(self, *allowed: str) -> List[str]:
         return [f for f in self.files
@@ -456,6 +461,26 @@ class Monitoring(PullRequestCheck):
 
     def _has_monitoring_yml(self, file: str) -> bool:
         return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yaml'))
+
+
+class License(PullRequestCheck):
+    _error = 'Package is missing license files'
+    _level = Level.WARNING
+    _globs = [
+        '**/licenses/**',
+        '/usr/lib/python*/site-packages/*.dist-info/LICENSE',
+    ]
+
+    def run(self) -> List[Result]:
+        return [Result(message=self._error, file=f, level=self._level)
+                for f in self.pspec_files
+                if not self._has_license(f)]
+
+    def _has_license(self, file: str) -> bool:
+        return any(self._match_globs(f) for f in PspecXML(self._read(file)).files)
+
+    def _match_globs(self, path: str) -> bool:
+        return any(fnmatch.fnmatch(path, pattern) for pattern in self._globs)
 
 
 class PackageBumped(PullRequestCheck):
@@ -847,6 +872,7 @@ class Checker:
         FrozenPackage,
         Homepage,
         Monitoring,
+        License,
         PackageBumped,
         PackageDependenciesOrder,
         PackageDirectory,
