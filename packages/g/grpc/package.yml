@@ -1,33 +1,73 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : grpc
-version    : 1.78.1
-release    : 13
+version    : 1.81.0
+release    : 16
 source     :
-    - https://github.com/grpc/grpc/archive/refs/tags/v1.78.1.tar.gz : 961a44a2a5a50670e58f5e887c17fe70529253da23802245326d681f6d8d1ba6
+    - https://github.com/grpc/grpc/archive/refs/tags/v1.81.0.tar.gz : 41b695614b26652ff9e97ce50cfd4a6c7a3d45a9fe598d1454407746499bbf2c
 homepage   : https://grpc.io/
 license    : Apache-2.0
-component  : programming.library
-summary    : An RPC library and framework
+component  :
+    - ^python-grpcio : programming.python
+    - ^python-grpcio-tools : programming.python
+    - programming.library
+summary    :
+    - ^python-grpcio : Python bindings for grpcio
+    - ^python-grpcio-tools : Python tools for grpcio
+    - An RPC library and framework
 description: |
     gRPC is a modern, open source, high-performance remote procedure call (RPC) framework that can run anywhere. gRPC enables client and server applications to communicate transparently, and simplifies the building of connected systems.
-networking : true
 builddeps  :
     - pkgconfig(absl_hash)
     - pkgconfig(benchmark)
     - pkgconfig(libcares)
+    - pkgconfig(openssl)
     - pkgconfig(protobuf)
+    - pkgconfig(python3)
     - pkgconfig(re2)
+    - cython
+    - python-build
+    - python-installer
+    - python-setuptools
+    - python-wheel
     - re2c
 rundeps    :
+    - ^python-grpcio :
+        - grpcio
+        - python-grpcio-tools
+        - python-typing-extensions
+    - ^python-grpcio-tools :
+        - python-protobuf
     - devel :
         - c-ares-devel
         - protobuf-devel
         - re2-devel
 clang      : true
 optimize   : thin-lto
+networking : true
 environment: |
-    export CXXFLAGS="$CXXFLAGS -DNDEBUG"
+    _protobuf_ver=34.0
+
+    export CXXFLAGS="$CXXFLAGS -DNDEBUG -isystem${workdir}/protobuf-${_protobuf_ver}/src"
 setup      : |
+    %patch -p1 -i ${pkgfiles}/grpc-1.81.0-fix-python-system-abseil.patch
+    %patch -p1 -i ${pkgfiles}/grpc-1.81.0-protobuf-34-build-fix.patch
+
+    # CMake only downloads third party depends when folder does not exist
+    rmdir third_party/{cel-spec,envoy-api,xds,googleapis,protoc-gen-validate}
+
+    # use system protobuf for grpcio_tools
+    sed -r -i \
+        -e '/^CC_FILES=\[/,/\]/{/^CC_FILES=\[/n;/\]/!d;}' \
+        -e '/^CC_INCLUDES=\[/,/\]/{/^CC_INCLUDES=\[/n;/\]/!d;}' \
+        -e "s@^(PROTO_INCLUDE=')[^']+'@\1/usr/include'@" \
+        -e "s@^(\s*').*/(google/protobuf/.*\.proto',?)\$@\1\2@" \
+        -e '/^PROTOBUF_SUBMODULE_VERSION=/d' \
+        tools/distrib/python/grpcio_tools/protoc_lib_deps.py
+    ln -s ../../../.. tools/distrib/python/grpcio_tools/grpc_root
+
+    # relax cython version requirement
+    sed 's/[Cc]ython==/cython>=/' -i pyproject.toml tools/distrib/python/grpcio_tools/pyproject.toml
+
     %cmake_ninja \
         -DCMAKE_CXX_STANDARD=17 \
         -DCMAKE_SKIP_INSTALL_RPATH=ON \
@@ -37,6 +77,7 @@ setup      : |
         -DgRPC_BUILD_TESTS=OFF \
         -DgRPC_BACKWARDS_COMPATIBILITY_MODE=OFF \
         -DgRPC_USE_PROTO_LITE=OFF \
+        -DgRPC_USE_SYSTEMD=ON \
         -DgRPC_BUILD_GRPC_CPP_PLUGIN=ON \
         -DgRPC_BUILD_GRPC_CSHARP_PLUGIN=OFF \
         -DgRPC_BUILD_GRPC_NODE_PLUGIN=OFF \
@@ -54,6 +95,44 @@ setup      : |
         -DgRPC_ZLIB_PROVIDER=package
 build      : |
     %ninja_build
+
+    # Python
+    export GRPC_PYTHON_LDFLAGS="$(pkg-config --libs protobuf)"
+    export GRPC_PYTHON_BUILD_WITH_CYTHON=1
+    export GRPC_PYTHON_BUILD_SYSTEM_OPENSSL=1
+    export GRPC_PYTHON_BUILD_SYSTEM_ZLIB=1
+    export GRPC_PYTHON_BUILD_SYSTEM_CARES=1
+    export GRPC_PYTHON_BUILD_SYSTEM_RE2=1
+    export GRPC_PYTHON_BUILD_SYSTEM_ABSL=1
+    export GRPC_PYTHON_BUILD_WITH_SYSTEMD=1
+    export GRPC_BUILD_WITH_BORING_SSL_ASM=0
+
+    export GRPC_PYTHON_CFLAGS="-fvisibility=hidden -fno-wrapv -fno-exceptions $(pkg-config --cflags protobuf) -std=c++17"
+    %python3_setup
+
+    # Python tools
+
+    pushd tools/distrib/python/grpcio_tools
+    export GRPC_PYTHON_CFLAGS="-fno-wrapv -frtti $(pkg-config --cflags protobuf)"
+    export GRPC_PYTHON_LDFLAGS="$(pkg-config --libs protobuf) -lprotoc"
+    %python3_setup
 install    : |
     %ninja_install
+
+    # Python
+    %python3_install
+
+    # Python tools
+    pushd cd tools/distrib/python/grpcio_tools
+    %python3_install
+    popd
+
+    # License
     %install_license LICENSE
+patterns   :
+    - ^python-grpcio :
+        - /usr/lib/python3.*/site-packages/grpc
+        - /usr/lib/python3.*/site-packages/grpcio-*.dist-info
+    - ^python-grpcio-tools :
+        - /usr/lib/python3.*/site-packages/grpc_tools
+        - /usr/lib/python3.*/site-packages/grpc_tools-*.dist-info
