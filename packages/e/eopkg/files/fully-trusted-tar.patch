@@ -1,0 +1,69 @@
+From 0c077d88f2a9ba4fced501a339fc7c48b90d3af7 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sat, 30 May 2026 15:53:13 +0100
+Subject: [PATCH] Set default extraction filter to fully trusted for tar
+ archives
+
+Python 3.12 added support for extraction filters
+
+Python 3.14 changed the default from None (equivalent to fully_trusted)
+to 'data'. This errors for example, on links to absolute paths, as well
+as removes group info from files (gid, uid, etc.)
+
+Since we're a package manager we need full rights to the system,
+therefore, set the extraction filter to fully trusted.
+---
+ pisi/archive.py | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/pisi/archive.py b/pisi/archive.py
+index 207eb73..0c77030 100644
+--- a/pisi/archive.py
++++ b/pisi/archive.py
+@@ -66,6 +66,8 @@ def lzmaopen(
+             t = cls.taropen(name, mode, fileobj, **kwargs)
+         except IOError:
+             raise tarfile.ReadError("not a lzma file")
++        if hasattr(t, "extraction_filter"):
++            t.extraction_filter = staticmethod(tarfile.fully_trusted_filter)
+         t._extfileobj = False
+         return t
+ 
+@@ -431,6 +433,10 @@ def add_to_archive(self, file_name, arc_name=None):
+     def close(self):
+         self.tar.close()
+ 
++    def _set_trust(self, tar):
++        if hasattr(tar, "extraction_filter"):
++            tar.extraction_filter = staticmethod(tarfile.fully_trusted_filter)
++
+     def _open_tar(self):
+         if self.type == "tar":
+             rmode = "r:"
+@@ -443,7 +449,9 @@ def _open_tar(self):
+         else:
+             raise UnknownArchiveType
+ 
+-        return tarfile.open(self.file_path, rmode, fileobj=self.fileobj)
++        tar = tarfile.open(self.file_path, rmode, fileobj=self.fileobj)
++        self._set_trust(tar)
++        return tar
+ 
+     def _tar_file_list(self):
+         with self._open_tar() as tar:
+@@ -486,6 +494,7 @@ def unpack_dir(self, target_dir):
+ 
+         files = self._tar_file_list()
+         self.tar = tarfile.open(self.file_path)
++        self._set_trust(self.tar)
+ 
+         oldwd = None
+         try:
+@@ -533,6 +542,7 @@ def unpack_dir(self, target_dir):
+ 
+     def _tar_file_list(self):
+         with tarfile.open(self.file_path) as tar:
++            self._set_trust(tar)
+             paths = [tarinfo.path for tarinfo in tar]
+ 
+         return paths
