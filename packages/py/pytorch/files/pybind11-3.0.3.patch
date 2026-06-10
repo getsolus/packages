@@ -1,0 +1,75 @@
+From b248ebc17075c0c3ad2b2532970d2ada32b2cf94 Mon Sep 17 00:00:00 2001
+From: Itamar Oren <itamaro@meta.com>
+Date: Sun, 5 Apr 2026 17:39:43 +0000
+Subject: [PATCH] [caffe2] Fix pybind11 3.0.3 ambiguous return type deduction
+ (#179277)
+
+Summary:
+Add explicit return type annotations to resolve ambiguous type
+deduction in ternary/multi-branch expressions with py::make_tuple.
+
+Differential Revision: D99391633
+
+Pull Request resolved: https://github.com/pytorch/pytorch/pull/179277
+Approved by: https://github.com/Skylion007
+---
+ torch/csrc/distributed/c10d/init.cpp   | 2 +-
+ torch/csrc/jit/python/init.cpp         | 4 ++--
+ torch/csrc/utils/python_arg_parser.cpp | 9 ++++++---
+ 3 files changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/torch/csrc/distributed/c10d/init.cpp b/torch/csrc/distributed/c10d/init.cpp
+index 0f43c5f543bc4..194fe80683796 100644
+--- a/torch/csrc/distributed/c10d/init.cpp
++++ b/torch/csrc/distributed/c10d/init.cpp
+@@ -890,7 +890,7 @@ This class does not support ``__members__`` property.)");
+             return ::c10d::ReduceOp(self);
+           })
+       .def(py::pickle(
+-          [](const ::c10d::ReduceOp& r) {
++          [](const ::c10d::ReduceOp& r) -> py::tuple {
+             // __getstate__
+             if (r.op_ != ::c10d::ReduceOp::RedOpType::PREMUL_SUM) {
+               return py::make_tuple(r.op_, py::none());
+diff --git a/torch/csrc/jit/python/init.cpp b/torch/csrc/jit/python/init.cpp
+index 931d80ffd6a68..4587d70b1e0ac 100644
+--- a/torch/csrc/jit/python/init.cpp
++++ b/torch/csrc/jit/python/init.cpp
+@@ -1796,7 +1796,7 @@ void initJITBindings(PyObject* module) {
+ 
+   m.def(
+       "_jit_get_operation",
+-      [](const std::string& op_name) {
++      [](const std::string& op_name) -> py::tuple {
+         try {
+           auto symbol = Symbol::fromQualString(op_name);
+           const auto sortedOps = getAllSortedOperatorsFor(symbol);
+@@ -1843,7 +1843,7 @@ void initJITBindings(PyObject* module) {
+       "_maybe_call_torch_function_for_op_packet",
+       [](py::handle op_overload_packet,
+          const py::args& args,
+-         const py::kwargs& kwargs) {
++         const py::kwargs& kwargs) -> py::tuple {
+         py::list ns_method =
+             op_overload_packet.attr("_qualified_op_name").attr("split")("::");
+         auto res = _maybe_handle_torch_function(
+diff --git a/torch/csrc/utils/python_arg_parser.cpp b/torch/csrc/utils/python_arg_parser.cpp
+index c512a91833aa0..928309c93b56a 100644
+--- a/torch/csrc/utils/python_arg_parser.cpp
++++ b/torch/csrc/utils/python_arg_parser.cpp
+@@ -769,9 +769,12 @@ auto handle_torch_function_indexing(
+   }
+   py::object func =
+       PyObject_FastGetAttrString(THPVariableClass, (char*)func_name);
+-  py::object args = (val == nullptr)
+-      ? py::make_tuple(py::handle(self), py::handle(index))
+-      : py::make_tuple(py::handle(self), py::handle(index), py::handle(val));
++  py::tuple args;
++  if (val == nullptr) {
++    args = py::make_tuple(py::handle(self), py::handle(index));
++  } else {
++    args = py::make_tuple(py::handle(self), py::handle(index), py::handle(val));
++  }
+   return handle_torch_function_no_python_arg_parser(
+       overridable_args,
+       args.ptr(),
