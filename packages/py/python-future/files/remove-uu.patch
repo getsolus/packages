@@ -1,0 +1,404 @@
+From 6cbd87780d4af20a5b6cf88bfc5ba5b1038eb79f Mon Sep 17 00:00:00 2001
+From: Nicola Soranzo <nicola.soranzo@earlham.ac.uk>
+Date: Thu, 19 Sep 2024 16:36:38 +0100
+Subject: [PATCH] Remove use of the uu standard library module
+
+Backport from https://github.com/PythonCharmers/python-future/pull/644
+Partial fix for https://github.com/PythonCharmers/python-future/issues/640
+---
+--- a/src/future/backports/email/message.py
++++ b/src/future/backports/email/message.py
+@@ -5,28 +5,27 @@
+ 
+ """Basic message object for the email package object model."""
+ from __future__ import absolute_import, division, unicode_literals
++
++__all__ = ['Message']
++
++import binascii
++import quopri
++import re
++from io import StringIO
++
++# Intrapackage imports
+ from future.builtins import list, range, str, zip
+-
+-__all__ = ['Message']
+-
+-import re
+-import uu
+-import base64
+-import binascii
+-from io import BytesIO, StringIO
+-
+-# Intrapackage imports
+-from future.utils import as_native_str
+ from future.backports.email import utils
+ from future.backports.email import errors
+-from future.backports.email._policybase import compat32
+ from future.backports.email import charset as _charset
+ from future.backports.email._encoded_words import decode_b
++from future.backports.email._policybase import compat32
++from future.utils import as_native_str
++
+ Charset = _charset.Charset
+-
+ SEMISPACE = '; '
+ 
+-# Regular expression that matches `special' characters in parameters, the
++# Regular expression that matches 'special' characters in parameters, the
+ # existence of which force quoting of the parameter value.
+ tspecials = re.compile(r'[ \(\)<>@,;:\\"/\[\]\?=]')
+ 
+@@ -40,6 +39,7 @@
+     if not sep:
+         return a.strip(), None
+     return a.strip(), b.strip()
++
+ 
+ def _formatparam(param, value=None, quote=True):
+     """Convenience function to format and return a key=value pair.
+@@ -75,6 +75,7 @@
+     else:
+         return param
+ 
++
+ def _parseparam(s):
+     # RDM This might be a Header, so for now stringify it.
+     s = ';' + str(s)
+@@ -106,6 +107,37 @@
+         return utils.unquote(value)
+ 
+ 
++def _decode_uu(encoded):
++    """Decode uuencoded data."""
++    decoded_lines = []
++    encoded_lines_iter = iter(encoded.splitlines())
++    for line in encoded_lines_iter:
++        if line.startswith(b"begin "):
++            mode, _, path = line.removeprefix(b"begin ").partition(b" ")
++            try:
++                int(mode, base=8)
++            except ValueError:
++                continue
++            else:
++                break
++    else:
++        raise ValueError("`begin` line not found")
++    for line in encoded_lines_iter:
++        if not line:
++            raise ValueError("Truncated input")
++        elif line.strip(b' \t\r\n\f') == b'end':
++            break
++        try:
++            decoded_line = binascii.a2b_uu(line)
++        except binascii.Error:
++            # Workaround for broken uuencoders by /Fredrik Lundh
++            nbytes = (((line[0]-32) & 63) * 4 + 5) // 3
++            decoded_line = binascii.a2b_uu(line[:nbytes])
++        decoded_lines.append(decoded_line)
++
++    return b''.join(decoded_lines)
++
++
+ class Message(object):
+     """Basic message object.
+ 
+@@ -115,7 +147,7 @@
+     multipart or a message/rfc822), then the payload is a list of Message
+     objects, otherwise it is a string.
+ 
+-    Message objects implement part of the `mapping' interface, which assumes
++    Message objects implement part of the 'mapping' interface, which assumes
+     there is exactly one occurrence of the header per message.  Some headers
+     do in fact appear multiple times (e.g. Received) and for those headers,
+     you must use the explicit API to set or get all the headers.  Not all of
+@@ -181,7 +213,11 @@
+         if self._payload is None:
+             self._payload = [payload]
+         else:
+-            self._payload.append(payload)
++            try:
++                self._payload.append(payload)
++            except AttributeError:
++                raise TypeError("Attach is not valid on a message with a"
++                                " non-multipart payload")
+ 
+     def get_payload(self, i=None, decode=False):
+         """Return a reference to the payload.
+@@ -238,7 +274,7 @@
+                 bpayload = payload.encode('ascii', 'surrogateescape')
+                 if not decode:
+                     try:
+-                        payload = bpayload.decode(self.get_param('charset', 'ascii'), 'replace')
++                        payload = bpayload.decode(self.get_content_charset('ascii'), 'replace')
+                     except LookupError:
+                         payload = bpayload.decode('ascii', 'replace')
+             elif decode:
+@@ -246,14 +282,14 @@
+                     bpayload = payload.encode('ascii')
+                 except UnicodeError:
+                     # This won't happen for RFC compliant messages (messages
+-                    # containing only ASCII codepoints in the unicode input).
++                    # containing only ASCII code points in the unicode input).
+                     # If it does happen, turn the string into bytes in a way
+                     # guaranteed not to fail.
+                     bpayload = payload.encode('raw-unicode-escape')
+         if not decode:
+             return payload
+         if cte == 'quoted-printable':
+-            return utils._qdecode(bpayload)
++            return quopri.decodestring(bpayload)
+         elif cte == 'base64':
+             # XXX: this is a bit of a hack; decode_b should probably be factored
+             # out somewhere, but I haven't figured out where yet.
+@@ -262,13 +298,10 @@
+                 self.policy.handle_defect(self, defect)
+             return value
+         elif cte in ('x-uuencode', 'uuencode', 'uue', 'x-uue'):
+-            in_file = BytesIO(bpayload)
+-            out_file = BytesIO()
+             try:
+-                uu.decode(in_file, out_file, quiet=True)
+-                return out_file.getvalue()
+-            except uu.Error:
+-                # Some decoding problem
++                return _decode_uu(bpayload)
++            except ValueError:
++                # Some decoding problem.
+                 return bpayload
+         if isinstance(payload, str):
+             return bpayload
+@@ -355,7 +388,7 @@
+         if max_count:
+             lname = name.lower()
+             found = 0
+-            for k, v in self._headers:
++            for k, _ in self._headers:
+                 if k.lower() == lname:
+                     found += 1
+                     if found >= max_count:
+@@ -376,10 +409,14 @@
+         self._headers = newheaders
+ 
+     def __contains__(self, name):
+-        return name.lower() in [k.lower() for k, v in self._headers]
++        name_lower = name.lower()
++        for k, _ in self._headers:
++            if name_lower == k.lower():
++                return True
++        return False
+ 
+     def __iter__(self):
+-        for field, value in self._headers:
++        for field, _ in self._headers:
+             yield field
+ 
+     def keys(self):
+@@ -505,7 +542,7 @@
+         raised.
+         """
+         _name = _name.lower()
+-        for i, (k, v) in zip(range(len(self._headers)), self._headers):
++        for i, (k, _) in zip(range(len(self._headers)), self._headers):
+             if k.lower() == _name:
+                 self._headers[i] = self.policy.header_store_parse(k, _value)
+                 break
+@@ -520,7 +557,7 @@
+         """Return the message's content type.
+ 
+         The returned string is coerced to lower case of the form
+-        `maintype/subtype'.  If there was no Content-Type header in the
++        'maintype/subtype'.  If there was no Content-Type header in the
+         message, the default type as given by get_default_type() will be
+         returned.  Since according to RFC 2045, messages always have a default
+         type this will always return a value.
+@@ -543,7 +580,7 @@
+     def get_content_maintype(self):
+         """Return the message's main content type.
+ 
+-        This is the `maintype' part of the string returned by
++        This is the 'maintype' part of the string returned by
+         get_content_type().
+         """
+         ctype = self.get_content_type()
+@@ -552,14 +589,14 @@
+     def get_content_subtype(self):
+         """Returns the message's sub-content type.
+ 
+-        This is the `subtype' part of the string returned by
++        This is the 'subtype' part of the string returned by
+         get_content_type().
+         """
+         ctype = self.get_content_type()
+         return ctype.split('/')[1]
+ 
+     def get_default_type(self):
+-        """Return the `default' content type.
++        """Return the 'default' content type.
+ 
+         Most messages have a default content type of text/plain, except for
+         messages that are subparts of multipart/digest containers.  Such
+@@ -568,7 +605,7 @@
+         return self._default_type
+ 
+     def set_default_type(self, ctype):
+-        """Set the `default' content type.
++        """Set the 'default' content type.
+ 
+         ctype should be either "text/plain" or "message/rfc822", although this
+         is not enforced.  The default content type is not stored in the
+@@ -601,8 +638,8 @@
+         """Return the message's Content-Type parameters, as a list.
+ 
+         The elements of the returned list are 2-tuples of key/value pairs, as
+-        split on the `=' sign.  The left hand side of the `=' is the key,
+-        while the right hand side is the value.  If there is no `=' sign in
++        split on the '=' sign.  The left hand side of the '=' is the key,
++        while the right hand side is the value.  If there is no '=' sign in
+         the parameter the value is the empty string.  The value is as
+         described in the get_param() method.
+ 
+@@ -664,7 +701,7 @@
+         message, it will be set to "text/plain" and the new parameter and
+         value will be appended as per RFC 2045.
+ 
+-        An alternate header can specified in the header argument, and all
++        An alternate header can be specified in the header argument, and all
+         parameters will be quoted as necessary unless requote is False.
+ 
+         If charset is specified, the parameter will be encoded according to RFC
+@@ -759,9 +796,9 @@
+         """Return the filename associated with the payload if present.
+ 
+         The filename is extracted from the Content-Disposition header's
+-        `filename' parameter, and it is unquoted.  If that header is missing
+-        the `filename' parameter, this method falls back to looking for the
+-        `name' parameter.
++        'filename' parameter, and it is unquoted.  If that header is missing
++        the 'filename' parameter, this method falls back to looking for the
++        'name' parameter.
+         """
+         missing = object()
+         filename = self.get_param('filename', missing, 'content-disposition')
+@@ -774,7 +811,7 @@
+     def get_boundary(self, failobj=None):
+         """Return the boundary associated with the payload if present.
+ 
+-        The boundary is extracted from the Content-Type header's `boundary'
++        The boundary is extracted from the Content-Type header's 'boundary'
+         parameter, and it is unquoted.
+         """
+         missing = object()
+--- a/src/future/backports/email/utils.py
++++ b/src/future/backports/email/utils.py
+@@ -33,13 +33,10 @@
+ if utils.PY2:
+     re.ASCII = 0
+ import time
+-import base64
+ import random
+ import socket
+ from future.backports import datetime
+ from future.backports.urllib.parse import quote as url_quote, unquote as url_unquote
+-import warnings
+-from io import StringIO
+ 
+ from future.backports.email._parseaddr import quote
+ from future.backports.email._parseaddr import AddressList as _AddressList
+@@ -47,10 +44,7 @@
+ 
+ from future.backports.email._parseaddr import parsedate, parsedate_tz, _parsedate_tz
+ 
+-from quopri import decodestring as _qdecode
+-
+ # Intrapackage imports
+-from future.backports.email.encoders import _bencode, _qencode
+ from future.backports.email.charset import Charset
+ 
+ COMMASPACE = ', '
+@@ -66,6 +60,7 @@
+ # source with undecodable characters.
+ _has_surrogates = re.compile(
+     '([^\ud800-\udbff]|\A)[\udc00-\udfff]([^\udc00-\udfff]|\Z)').search
++
+ 
+ # How to deal with a string containing bytes before handing it to the
+ # application through the 'normal' interface.
+@@ -85,13 +80,13 @@
+     If the first element of pair is false, then the second element is
+     returned unmodified.
+ 
+-    Optional charset if given is the character set that is used to encode
++    The optional charset is the character set that is used to encode
+     realname in case realname is not ASCII safe.  Can be an instance of str or
+     a Charset-like object which has a header_encode method.  Default is
+     'utf-8'.
+     """
+     name, address = pair
+-    # The address MUST (per RFC) be ascii, so raise an UnicodeError if it isn't.
++    # The address MUST (per RFC) be ascii, so raise a UnicodeError if it isn't.
+     address.encode('ascii')
+     if name:
+         try:
+@@ -110,13 +105,11 @@
+     return address
+ 
+ 
+-
+ def getaddresses(fieldvalues):
+     """Return a list of (REALNAME, EMAIL) for each fieldvalue."""
+     all = COMMASPACE.join(fieldvalues)
+     a = _AddressList(all)
+     return a.addresslist
+-
+ 
+ 
+ ecre = re.compile(r'''
+@@ -139,12 +132,13 @@
+         timetuple[0], timetuple[3], timetuple[4], timetuple[5],
+         zone)
+ 
++
+ def formatdate(timeval=None, localtime=False, usegmt=False):
+     """Returns a date string as specified by RFC 2822, e.g.:
+ 
+     Fri, 09 Nov 2001 01:08:47 -0000
+ 
+-    Optional timeval if given is a floating point time value as accepted by
++    Optional timeval if given is a floating-point time value as accepted by
+     gmtime() and localtime(), otherwise the current time is used.
+ 
+     Optional localtime is a flag that when True, interprets timeval, and
+@@ -183,6 +177,7 @@
+         else:
+             zone = '-0000'
+     return _format_timetuple_and_zone(now, zone)
++
+ 
+ def format_datetime(dt, usegmt=False):
+     """Turn a datetime into a date string as specified in RFC 2822.
+@@ -254,7 +249,6 @@
+     return str
+ 
+ 
+-
+ # RFC2231-related functions - parameter encoding and decoding
+ def decode_rfc2231(s):
+     """Decode string according to RFC 2231"""
+@@ -281,6 +275,7 @@
+ 
+ rfc2231_continuation = re.compile(r'^(?P<name>\w+)\*((?P<num>[0-9]+)\*?)?$',
+     re.ASCII)
++
+ 
+ def decode_params(params):
+     """Decode parameters list according to RFC 2231.
+@@ -338,6 +333,7 @@
+                 new_params.append((name, '"%s"' % value))
+     return new_params
+ 
++
+ def collapse_rfc2231_value(value, errors='replace',
+                            fallback_charset='us-ascii'):
+     if not isinstance(value, tuple) or len(value) != 3:
