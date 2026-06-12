@@ -1,0 +1,117 @@
+From 2c1afe48744b27773621e2b8b78b62f7dfecb437 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Fri, 12 Jun 2026 10:46:53 +0100
+Subject: [PATCH 1/1] db/filesdb: Default to gbm.gnu shelve if available
+
+Writing to a sqlite DB is significantly slower than gdbm, as we
+literally just use the shelve as a fast filepath lookup for file
+conflicts handling we don't need the full power of a sqlite DB.
+---
+ pisi/db/filesdb.py | 54 ++++++++++++++++++++++++----------------------
+ 1 file changed, 28 insertions(+), 26 deletions(-)
+
+diff --git a/pisi/db/filesdb.py b/pisi/db/filesdb.py
+index 47f0b1a..12ca9d4 100644
+--- a/pisi/db/filesdb.py
++++ b/pisi/db/filesdb.py
+@@ -21,21 +21,16 @@ from pisi.db import lazydb
+ # file conflict mechanism of pisi prevents this and needs a fast has_file function.
+ # So currently filesdb is the only db and we cant still get rid of rebuild-db :/
+ 
+-# This MUST match the version used in eopkg.py2 (2) as long as that is in use.
+-# Now that eopkg.py2 is no longer in use, just use the current default version.
+-FILESDB_PICKLE_PROTOCOL_VERSION = pickle.DEFAULT_PROTOCOL
+-
+-# We suspect that there will be an advantage in versioning this separately.
+-# As long as a gdbm-backed shelve is used, no need to bump this beyond 4.
+-# For py3.13 and up, bump this to 5 and use sqlite3 instead (the default in py3.13).
+-# Context: dbm shelves are preferentially opened in a specific order, if the
+-#          relevant db module is available on the system, and CPython was compiled
+-#          with it:
+-#          - dbm.sqlite3 (only py3.13 and up)
+-#          - dbm.gnu (gdbm in py2)
+-#          - dbm.ndbm
+-#          - dbm.dumbdb
+-if sys.version_info >= (3, 13):
++# dbm.sqlite3 (default in py3.13+) is significantly slower for many small writes.
++# We literally just use the shelve as a fast file lookup
++try:
++    import dbm.gnu as gdbm
++except ImportError:
++    gdbm = None
++
++if gdbm:
++    FILESDB_FORMAT_VERSION = 4
++elif sys.version_info >= (3, 13):
+     FILESDB_FORMAT_VERSION = 5
+ else:
+     FILESDB_FORMAT_VERSION = 4
+@@ -108,15 +103,26 @@ class FilesDB(lazydb.LazyDB):
+             os.unlink(files_db)
+ 
+     def close(self):
+-        if isinstance(self.filesdb, shelve.DbfilenameShelf):
++        if isinstance(self.filesdb, shelve.Shelf):
+             self.filesdb.sync()
+             self.filesdb.close()
+ 
++    def __open_shelve(self, path, flag):
++        """Helper to open shelve with preferred backend."""
++        if gdbm:
++            try:
++                # Explicitly use gdbm if available for write performance
++                return shelve.Shelf(gdbm.open(path, flag))
++            except dbm.error:
++                # If it's not a gdbm file (e.g. it's sqlite), fall back to default
++                pass
++        return shelve.open(path, flag)
++
+     def __check_filesdb(self, force_rebuild=False):
+         """Sets valid self.files_db reference and automatically rebuilds the underlying db if necessary."""
+ 
+         # already initialized
+-        if isinstance(self.filesdb, shelve.DbfilenameShelf):
++        if isinstance(self.filesdb, shelve.Shelf):
+             return
+ 
+         files_db = os.path.join(ctx.config.info_dir(), ctx.const.files_db)
+@@ -128,14 +134,10 @@ class FilesDB(lazydb.LazyDB):
+                 try:
+                     # Try opening read-write first
+                     try:
+-                        self.filesdb = shelve.open(
+-                            files_db, "w", protocol=FILESDB_PICKLE_PROTOCOL_VERSION
+-                        )
++                        self.filesdb = self.__open_shelve(files_db, "w")
+                     except (dbm.error, PermissionError):
+                         # Fallback to read-only
+-                        self.filesdb = shelve.open(
+-                            files_db, "r", protocol=FILESDB_PICKLE_PROTOCOL_VERSION
+-                        )
++                        self.filesdb = self.__open_shelve(files_db, "r")
+                         if verbose:
+                             ctx.ui.info(_("Opened FilesDB %s read-only.") % files_db)
+ 
+@@ -160,6 +162,8 @@ class FilesDB(lazydb.LazyDB):
+             if os.access(os.path.dirname(files_db) or ".", os.W_OK):
+                 self.__rebuild()
+             else:
++                self.close()
++                self.filesdb = {}
+                 ctx.ui.warning(
+                     _("FilesDB is invalid and cannot be rebuilt (no write access).")
+                 )
+@@ -176,9 +180,7 @@ class FilesDB(lazydb.LazyDB):
+ 
+         try:
+             # "n" means we're opening a new shelve, overwriting the old one
+-            self.filesdb = shelve.open(
+-                files_db, "n", protocol=FILESDB_PICKLE_PROTOCOL_VERSION
+-            )
++            self.filesdb = self.__open_shelve(files_db, "n")
+         except Exception as err:
+             ctx.ui.error(_("FilesDB rebuild failed: %s") % err)
+             raise err
+-- 
+2.54.0
+
