@@ -1,4 +1,4 @@
-From 2c1afe48744b27773621e2b8b78b62f7dfecb437 Mon Sep 17 00:00:00 2001
+From 5d4d9ab093cef58c3b64e8c1d87a22089cebb143 Mon Sep 17 00:00:00 2001
 From: Joey Riches <josephriches@gmail.com>
 Date: Fri, 12 Jun 2026 10:46:53 +0100
 Subject: [PATCH 1/1] db/filesdb: Default to gbm.gnu shelve if available
@@ -7,11 +7,11 @@ Writing to a sqlite DB is significantly slower than gdbm, as we
 literally just use the shelve as a fast filepath lookup for file
 conflicts handling we don't need the full power of a sqlite DB.
 ---
- pisi/db/filesdb.py | 54 ++++++++++++++++++++++++----------------------
- 1 file changed, 28 insertions(+), 26 deletions(-)
+ pisi/db/filesdb.py | 70 ++++++++++++++++++++++------------------------
+ 1 file changed, 34 insertions(+), 36 deletions(-)
 
 diff --git a/pisi/db/filesdb.py b/pisi/db/filesdb.py
-index 47f0b1a..12ca9d4 100644
+index 47f0b1a..330a6db 100644
 --- a/pisi/db/filesdb.py
 +++ b/pisi/db/filesdb.py
 @@ -21,21 +21,16 @@ from pisi.db import lazydb
@@ -46,7 +46,7 @@ index 47f0b1a..12ca9d4 100644
      FILESDB_FORMAT_VERSION = 5
  else:
      FILESDB_FORMAT_VERSION = 4
-@@ -108,15 +103,26 @@ class FilesDB(lazydb.LazyDB):
+@@ -108,48 +103,51 @@ class FilesDB(lazydb.LazyDB):
              os.unlink(files_db)
  
      def close(self):
@@ -75,24 +75,48 @@ index 47f0b1a..12ca9d4 100644
              return
  
          files_db = os.path.join(ctx.config.info_dir(), ctx.const.files_db)
-@@ -128,14 +134,10 @@ class FilesDB(lazydb.LazyDB):
+         needs_rebuild = force_rebuild
+-        verbose = ctx.config.options.verbose
+ 
+         if not force_rebuild:
+             if os.path.exists(files_db):
                  try:
                      # Try opening read-write first
                      try:
 -                        self.filesdb = shelve.open(
 -                            files_db, "w", protocol=FILESDB_PICKLE_PROTOCOL_VERSION
 -                        )
+-                    except (dbm.error, PermissionError):
 +                        self.filesdb = self.__open_shelve(files_db, "w")
-                     except (dbm.error, PermissionError):
++                    except dbm.error:
                          # Fallback to read-only
 -                        self.filesdb = shelve.open(
 -                            files_db, "r", protocol=FILESDB_PICKLE_PROTOCOL_VERSION
 -                        )
+-                        if verbose:
+-                            ctx.ui.info(_("Opened FilesDB %s read-only.") % files_db)
 +                        self.filesdb = self.__open_shelve(files_db, "r")
-                         if verbose:
-                             ctx.ui.info(_("Opened FilesDB %s read-only.") % files_db)
++                        ctx.ui.debug(_("Opened FilesDB %s read-only.") % files_db)
  
-@@ -160,6 +162,8 @@ class FilesDB(lazydb.LazyDB):
+                     # Check version
+                     if self.filesdb.get("version") != FILESDB_FORMAT_VERSION:
+-                        if verbose:
+-                            ctx.ui.info(
+-                                _("FilesDB version mismatch or missing version.")
+-                            )
++                        ctx.ui.warning(
++                            _("FilesDB version mismatch or missing version.")
++                        )
+                         needs_rebuild = True
+ 
+                 except Exception as e:
+-                    if verbose:
+-                        ctx.ui.debug(f"Failed to open FilesDB {files_db}: {e}")
++                    ctx.ui.debug(f"Failed to open FilesDB {files_db}: {e}")
+                     needs_rebuild = True
+             else:
+                 # File missing
+@@ -160,6 +158,8 @@ class FilesDB(lazydb.LazyDB):
              if os.access(os.path.dirname(files_db) or ".", os.W_OK):
                  self.__rebuild()
              else:
@@ -101,7 +125,7 @@ index 47f0b1a..12ca9d4 100644
                  ctx.ui.warning(
                      _("FilesDB is invalid and cannot be rebuilt (no write access).")
                  )
-@@ -176,9 +180,7 @@ class FilesDB(lazydb.LazyDB):
+@@ -176,9 +176,7 @@ class FilesDB(lazydb.LazyDB):
  
          try:
              # "n" means we're opening a new shelve, overwriting the old one
