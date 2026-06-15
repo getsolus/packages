@@ -1,0 +1,135 @@
+From 71c4d1750463c99ab9cbff7e1d7162210506f225 Mon Sep 17 00:00:00 2001
+From: Shyamnath Premnadh <Shyamnath.Premnadh@qt.io>
+Date: Tue, 28 Apr 2026 13:16:05 +0200
+Subject: [PATCH] Fix header packaging and include-path regressions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Amends 8e74e054f (previous commit)
+
+- Per-module headers (pyside6_qt*_python.h) were absent from wheels
+  - wheel_files.py globs still used the old layout: Qt{module}/*.h
+  - This patch uses the new layout
+- Also fix flat libpyside and qml extra header globs (pyside6 → PySide6)
+- pyside_config.py: return both include/PySide6 and include so cmake
+  callers that append /Qt{module} find headers regardless of old/new
+  wheel layout
+- libpyside CMakeLists: Fix pyside6 → PySide6
+- Shiboken6ToolsMacros: fall back to Release when Debug location absent
+  and vice versa
+
+Fixes: PYSIDE-3306
+Change-Id: I79bcf2d9549a0c38a8a702e0409feee63207b8d4
+Reviewed-by: Friedemann Kleint <Friedemann.Kleint@qt.io>
+---
+ build_scripts/wheel_files.py                         | 12 ++++++------
+ examples/utils/pyside_config.py                      |  8 ++++++--
+ sources/pyside6/libpyside/CMakeLists.txt             |  2 +-
+ .../data/Shiboken6ToolsMacros.cmake                  |  9 ++++++++-
+ 4 files changed, 21 insertions(+), 10 deletions(-)
+
+diff --git a/build_scripts/wheel_files.py b/build_scripts/wheel_files.py
+index db59a9f81..103bd3481 100644
+--- a/build_scripts/wheel_files.py
++++ b/build_scripts/wheel_files.py
+@@ -87,7 +87,7 @@ class ModuleData:
+             self.qml.append(f"Qt{self.name}")
+         self.pyi.append(f"Qt{self.name}.pyi")
+         self.typesystems.append(f"typesystem_{_lo}.xml")
+-        self.include.append(f"Qt{self.name}/*.h")
++        self.include.append(f"PySide6/Qt{self.name}/*.h")
+         self.glue.append(f"qt{_lo}.cpp")
+         self.doc_glue.append(f"qt{_lo}.rst")
+         if not len(self.metatypes):
+@@ -250,7 +250,7 @@ def module_QtCore() -> ModuleData:
+     ]
+ 
+     data.typesystems.extend(_typesystems)
+-    data.include.append("*.h")
++    data.include.append("PySide6/*.h")
+     if sys.platform == "win32":
+         data.qtlib.append("pyside6.*")
+         data.extra_files.append("qt.conf")
+@@ -319,7 +319,7 @@ def module_QtCore() -> ModuleData:
+ 
+     # add the include folders for libpyside binaries
+     # this is useful for downstream cmake projects like QtBridges
+-    data.include.append("pyside6/*.h")
++    data.include.append("PySide6/*.h")
+ 
+     return data
+ 
+@@ -485,9 +485,9 @@ def module_QtQml() -> ModuleData:
+     ]
+ 
+     _include = [
+-        "pysideqml.h",
+-        "pysideqmlmacros.h",
+-        "pysideqmlregistertype.h",
++        "PySide6/pysideqml.h",
++        "PySide6/pysideqmlmacros.h",
++        "PySide6/pysideqmlregistertype.h",
+     ]
+ 
+     _metatypes = [
+diff --git a/examples/utils/pyside_config.py b/examples/utils/pyside_config.py
+index 536162fc9..c8c37039f 100644
+--- a/examples/utils/pyside_config.py
++++ b/examples/utils/pyside_config.py
+@@ -276,9 +276,13 @@ def get_package_include_path(which_package):
+     # TODO: Switch to pathlib. Using this for consistency
+     pkg_name = os.path.basename(package_path)
+     subdir_path = f"{package_path}/include/{pkg_name}"
++    base_path = f"{package_path}/include"
+     if os.path.isdir(subdir_path):
+-        return subdir_path
+-    return f"{package_path}/include"
++        # Return both the sub-package dir and the base include dir so
++        # that both new and old wheel layout works (also system installation
++        # paths)
++        return f"{subdir_path} {base_path}"
++    return base_path
+ 
+ 
+ def get_package_qmake_lflags(which_package):
+diff --git a/sources/pyside6/libpyside/CMakeLists.txt b/sources/pyside6/libpyside/CMakeLists.txt
+index 56b1bfe6d..2e578a84a 100644
+--- a/sources/pyside6/libpyside/CMakeLists.txt
++++ b/sources/pyside6/libpyside/CMakeLists.txt
+@@ -208,7 +208,7 @@ if(NOT is_pyside6_superproject_build)
+                             LIBRARY DESTINATION "PySide6"
+                             ARCHIVE DESTINATION "PySide6"
+                             RUNTIME DESTINATION "PySide6"
+-                            INCLUDES DESTINATION "pyside6/include/PySide6")
++                            INCLUDES DESTINATION "PySide6/include/PySide6")
+ 
+     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/wheel/PySide6Config${SHIBOKEN_PYTHON_CONFIG_SUFFIX}.cmake"
+             DESTINATION "${LIB_INSTALL_DIR}/wheels/cmake/PySide6")
+diff --git a/sources/shiboken6_generator/data/Shiboken6ToolsMacros.cmake b/sources/shiboken6_generator/data/Shiboken6ToolsMacros.cmake
+index 27a2ec533..5b1590790 100644
+--- a/sources/shiboken6_generator/data/Shiboken6ToolsMacros.cmake
++++ b/sources/shiboken6_generator/data/Shiboken6ToolsMacros.cmake
+@@ -25,11 +25,18 @@ function(shiboken_generator_create_binding)
+ 
+     get_target_property(shiboken_include_dirs Shiboken6::libshiboken INTERFACE_INCLUDE_DIRECTORIES)
+ 
+-    # Get Shiboken path based on build type
++    # Get Shiboken path, falling back to the other config if the requested one is absent
++    # (e.g. consumer project is Release but wheel was built as Debug, or vice versa).
+     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+         get_target_property(shiboken_path Shiboken6::shiboken6 IMPORTED_LOCATION_DEBUG)
++        if(NOT shiboken_path)
++            get_target_property(shiboken_path Shiboken6::shiboken6 IMPORTED_LOCATION_RELEASE)
++        endif()
+     else()
+         get_target_property(shiboken_path Shiboken6::shiboken6 IMPORTED_LOCATION_RELEASE)
++        if(NOT shiboken_path)
++            get_target_property(shiboken_path Shiboken6::shiboken6 IMPORTED_LOCATION_DEBUG)
++        endif()
+     endif()
+ 
+     # Basic shiboken options
+-- 
+2.54.0
+
