@@ -2,3 +2,6 @@ This file is used to indicate primary maintainership for this package. A package
 
 - Julien Guillot
   - Email: julienguillot@protonmail.com
+- Ivan Trepakov
+  - Matrix: @liontiger23:matrix.org
+  - Email: liontiger23@gmail.com

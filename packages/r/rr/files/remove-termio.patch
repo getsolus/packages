@@ -1,0 +1,189 @@
+From 77d1ba4d96bb00378a73452988291a2c8de83a2d Mon Sep 17 00:00:00 2001
+From: Kyle Huey <khuey@kylehuey.com>
+Date: Thu, 27 Mar 2025 13:41:51 -0700
+Subject: [PATCH] 4 squashed commits removing use of deprecated termio.h
+
+commit 0a53fb90868c58d7479ac061117d74e81d3ac377
+Author: Robert O'Callahan <robert@ocallahan.org>
+Date:   Sat Aug 2 10:16:42 2025 +1200
+
+    Provide our own definition of `struct termio` for testing.
+
+    Resolves #3998
+
+commit 76d010c29c402d9600af04b096dcda0f2e3df5a6
+Author: Robert O'Callahan <robert@ocallahan.org>
+Date:   Tue Jul 29 23:05:21 2025 +1200
+
+    Stop checking struct sizes against glibc `termio` since that has been removed.
+
+    Resolves #3995.
+
+commit 63a63e804990b4c19ea42c98b447d72584292422
+Author: Kyle Huey <khuey@kylehuey.com>
+Date:   Thu Mar 27 13:53:50 2025 -0700
+
+    Fix build on Android where bionic does have termios2.
+
+commit 69ed35d11b2d7fae349d76e81753266c3c359c6d
+Author: Kyle Huey <khuey@kylehuey.com>
+Date:   Thu Mar 27 13:41:51 2025 -0700
+
+    Support TCGETS2 and TCSETS2.
+
+    Fixes #2430
+---
+ CMakeLists.txt        |  9 +++++++++
+ src/kernel_abi.h      |  1 -
+ src/record_syscall.cc | 21 ++++++++++++++++++++
+ src/test/ioctl_tty.c  | 45 ++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 74 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8e3f055d..6e24c526 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -396,6 +396,15 @@ else()
+   message(AUTHOR_WARNING "backtrace(3) not present in execinfo.h. Automatic backtraces for failures in rr are disabled.")
+ endif()
+ 
++include(CheckTypeSize)
++set(SAVE_CMAKE_EXTRA_INCLUDE_FILES "${CMAKE_EXTRA_INCLUDE_FILES}")
++list(APPEND CMAKE_EXTRA_INCLUDE_FILES "termios.h")
++check_type_size("struct termios2" SIZEOF_TERMIOS2)
++if(HAVE_SIZEOF_TERMIOS2)
++  add_definitions(-DHAVE_TERMIOS2)
++endif()
++set(CMAKE_EXTRA_INCLUDE_FILES "${SAVE_CMAKE_EXTRA_INCLUDE_FILES}")
++
+ # Test only symbols
+ check_symbol_exists(pthread_mutexattr_setrobust "pthread.h" HAVE_ROBUST_MUTEX)
+ 
+diff --git a/src/kernel_abi.h b/src/kernel_abi.h
+index 41deda4a..eb59fcac 100644
+--- a/src/kernel_abi.h
++++ b/src/kernel_abi.h
+@@ -748,7 +748,6 @@ struct BaseArch : public wordsize,
+     unsigned char c_line;
+     unsigned char c_cc[8];
+   };
+-  RR_VERIFY_TYPE(termio);
+ 
+   struct seccomp_notif_sizes {
+     uint16_t seccomp_notif;
+diff --git a/src/record_syscall.cc b/src/record_syscall.cc
+index de4cf222..8eefa411 100644
+--- a/src/record_syscall.cc
++++ b/src/record_syscall.cc
+@@ -103,6 +103,25 @@
+ 
+ using namespace std;
+ 
++#ifndef HAVE_TERMIOS2
++// The kernel header that defines this conflicts badly with glibc headers
++// (but not bionic, which does define this) so we define it ourselves.
++// NB: We need this struct defined so that the preprocessor macro for
++// TCGETS2 will evaluate. But we use IOCTL_MASK_SIZE on it and we use
++// the size from the tracee to determine how many bytes to record, so
++// we don't actually depend on this being *accurate*.
++struct termios2 {
++  tcflag_t c_iflag;
++  tcflag_t c_oflag;
++  tcflag_t c_cflag;
++  tcflag_t c_lflag;
++  cc_t c_line;
++  cc_t c_cc[19];
++  speed_t c_ispeed;
++  speed_t c_ospeed;
++};
++#endif
++
+ namespace rr {
+ 
+ union _semun {
+@@ -1943,6 +1962,7 @@ static Switchable prepare_ioctl(RecordTask* t,
+       case IOCTL_MASK_SIZE(TUNSETIFINDEX):
+       case IOCTL_MASK_SIZE(TUNSETVNETLE):
+       case IOCTL_MASK_SIZE(TUNSETVNETBE):
++      case IOCTL_MASK_SIZE(TCSETS2):
+         return PREVENT_SWITCH;
+       case IOCTL_MASK_SIZE(USBDEVFS_GETDRIVER):
+         // Reads and writes its parameter despite not having the _IOC_READ bit.
+@@ -2078,6 +2098,7 @@ static Switchable prepare_ioctl(RecordTask* t,
+     case IOCTL_MASK_SIZE(OTPGETREGIONINFO):
+     case IOCTL_MASK_SIZE(ECCGETLAYOUT):
+     case IOCTL_MASK_SIZE(ECCGETSTATS):
++    case IOCTL_MASK_SIZE(TCGETS2):
+       syscall_state.reg_parameter(3, size);
+       return PREVENT_SWITCH;
+ 
+diff --git a/src/test/ioctl_tty.c b/src/test/ioctl_tty.c
+index 98ee07d8..ade21bfa 100644
+--- a/src/test/ioctl_tty.c
++++ b/src/test/ioctl_tty.c
+@@ -2,11 +2,41 @@
+ 
+ #include "util.h"
+ 
++#ifndef HAVE_TERMIOS2
++/* We have to define termios2 ourselves with glibc. See
++ * https://github.com/npat-efault/picocom/blob/1acf1ddabaf3576b4023c4f6f09c5a3e4b086fb8/termios2.txt
++ * for the long explanation.
++ */
++struct termios2 {
++  tcflag_t c_iflag;
++  tcflag_t c_oflag;
++  tcflag_t c_cflag;
++  tcflag_t c_lflag;
++  cc_t c_line;
++  cc_t c_cc[19];
++  speed_t c_ispeed;
++  speed_t c_ospeed;
++};
++#endif
++
++/* glibc 2.42 removed termio:
++   https://sourceware.org/git/?p=glibc.git;a=commit;h=e04afb71771710cdc6025fe95908f5f17de7b72d
++*/
++struct rr_termio {
++  unsigned short c_iflag;
++  unsigned short c_oflag;
++  unsigned short c_cflag;
++  unsigned short c_lflag;
++  unsigned char c_line;
++  unsigned char c_cc[8];
++};
++
+ int main(void) {
+   int fd;
+   int ret;
+   struct termios* tc;
+-  struct termio* tio;
++  struct termios2* tc2;
++  struct rr_termio* tio;
+   pid_t* pgrp;
+   int* navail;
+   int* outq;
+@@ -94,6 +124,19 @@ int main(void) {
+   VERIFY_GUARD(nread);
+   atomic_printf("FIONREAD returned nread=%d\n", *nread);
+ 
++  ALLOCATE_GUARD(tc2, 'i');
++  test_assert(0 == ioctl(fd, TCGETS2, tc));
++  VERIFY_GUARD(tc2);
++  atomic_printf("TCGETS2 returned { iflag=0x%x, oflag=0x%x, cflag=0x%x, "
++                "lflag=0x%x, ispeed=%d, ospeed=%d }\n",
++                tc2->c_iflag, tc2->c_oflag, tc2->c_cflag, tc2->c_lflag,
++                tc2->c_ispeed, tc2->c_ospeed);
++  test_assert(0 == ioctl(fd, TCSETS2, tc2));
++
++  // NB: leaving the TCSETS2 as the last word seems to mess up the terminal,
++  // so fix it.
++  test_assert(0 == ioctl(fd, TCSETS, tc));
++
+   atomic_puts("EXIT-SUCCESS");
+   return 0;
+ }
+-- 
+2.50.1
+
