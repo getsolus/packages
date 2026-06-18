@@ -1,0 +1,333 @@
+From 66e844303c0213e6a06d081fd24589286f1c38f2 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Wed, 17 Jun 2026 15:43:58 +0100
+Subject: [PATCH 1/3] sax: Use LUTs for character classification
+
+Previously, the parser consisted of a big ol' while loop that was
+iterated on byte by byte, where each byte had to be matched against several
+if/switch cases.
+
+By introducing LUTs, we can continually iterate over chucks until we do
+find a special character, then handle it explicitly, instead of
+checking byte by byte.
+
+In practice, this provided a 1.44x speedup parsing and building a
+real-world ~70MiB XML file.
+
+A python script is also provided for LUT generation and validation.
+
+This will help enable more optimization oppotunities such as SWAR/SIMD
+whilst we are processing CDATA for example.
+---
+ src/sax.c              | 157 ++++++++++++++++++++++++++++++++++-------
+ tools/generate-luts.py |  76 ++++++++++++++++++++
+ 2 files changed, 209 insertions(+), 24 deletions(-)
+ create mode 100644 tools/generate-luts.py
+
+diff --git a/src/sax.c b/src/sax.c
+index 7d55042..5623e2c 100644
+--- a/src/sax.c
++++ b/src/sax.c
+@@ -127,8 +127,95 @@ iks_nr_lines (iksparser *prs)
+ 	return prs->nr_lines;
+ }
+ 
+-#define IS_WHITESPACE(x) ' ' == (x) || '\t' == (x) || '\r' == (x) || '\n' == (x)
+-#define NOT_WHITESPACE(x) ' ' != (x) && '\t' != (x) && '\r' != (x) && '\n' != (x)
++#define B_INVALID 1
++#define B_NEWLINE 2
++#define B_UTF8    4
++#define B_WS      8
++#define B_CDATA   16
++#define B_TAG     32
++#define B_APOS    64
++#define B_QUOT    128
++
++static const unsigned char utf8_len[256] = {
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
++	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
++	3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
++	4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 0, 0
++};
++
++/*
++ * RFC 3629
++ * 110xxxxx (0xC0) -> 2 bytes, mask 0x1F
++ * 1110xxxx (0xE0) -> 3 bytes, mask 0x0F
++ * 11110xxx (0xF0) -> 4 bytes, mask 0x07
++ * 111110xx (0xF8) -> 5 bytes (legacy), mask 0x03
++ * 1111110x (0xFC) -> 6 bytes (legacy), mask 0x01
++ */
++static const unsigned char utf8_mask[256] = {
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F,
++	0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F,
++	0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F,
++	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x03, 0x03, 0x03, 0x03, 0x01, 0x01, 0, 0
++};
++
++/*
++ * char_class bitmask mapping:
++ * 0x00: B_INVALID
++ * 0x09 (\t): B_WS
++ * 0x0A (\n): B_NEWLINE | B_WS
++ * 0x0D (\r): B_WS
++ * 0x20 (space): B_WS
++ * 0x26 (&): B_CDATA (event trigger)
++ * 0x3C (<): B_CDATA (event trigger)
++ * 0x3D (=): B_TAG (delimiter)
++ * 0x3E (>): B_TAG (delimiter)
++ * 0x2F (/): B_TAG (delimiter)
++ */
++static const unsigned char char_class[256] = {
++	1, 0, 0, 0, 0, 0, 0, 0, 0, 8, 2, 0, 0, 8, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	8, 0, 128, 0, 0, 0, 16, 64, 0, 0, 0, 0, 0, 0, 0, 32,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 16, 32, 32, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
++	4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 1
++};
++
++#define IS_WHITESPACE(x) (char_class[(unsigned char)(x)] & (B_WS | B_NEWLINE))
++#define NOT_WHITESPACE(x) (!(char_class[(unsigned char)(x)] & (B_WS | B_NEWLINE)))
+ 
+ static int
+ stack_init (iksparser *prs)
+@@ -206,7 +293,7 @@ sax_core (iksparser *prs, char *buf, int len)
+ 	while (pos < len) {
+ 		re = 0;
+ 		c = buf[pos];
+-		if (0 == c || 0xFE == c || 0xFF == c) return IKS_BADXML;
++
+ 		if (prs->uni_max) {
+ 			if ((c & 0xC0) != 0x80) return IKS_BADXML;
+ 			prs->uni_char <<= 6;
+@@ -229,27 +316,11 @@ sax_core (iksparser *prs, char *buf, int len)
+ 			}
+ 			goto cont;
+ 		} else {
+-			if (c & 0x80) {
+-				unsigned char mask;
+-				if ((c & 0x60) == 0x40) {
+-					prs->uni_max = 2;
+-					mask = 0x1F;
+-				} else if ((c & 0x70) == 0x60) {
+-					prs->uni_max = 3;
+-					mask = 0x0F;
+-				} else if ((c & 0x78) == 0x70) {
+-					prs->uni_max = 4;
+-					mask = 0x07;
+-				} else if ((c & 0x7C) == 0x78) {
+-					prs->uni_max = 5;
+-					mask = 0x03;
+-				} else if ((c & 0x7E) == 0x7C) {
+-					prs->uni_max = 6;
+-					mask = 0x01;
+-				} else {
+-					return IKS_BADXML;
+-				}
+-				prs->uni_char = c & mask;
++			unsigned char cl = char_class[c];
++			if (cl & B_UTF8) {
++				prs->uni_max = utf8_len[c];
++				if (0 == prs->uni_max) return IKS_BADXML;
++				prs->uni_char = c & utf8_mask[c];
+ 				prs->uni_len = 1;
+ 				if (stack_old == -1
+ 					&& (prs->context == C_TAG
+@@ -257,11 +328,21 @@ sax_core (iksparser *prs, char *buf, int len)
+ 						|| prs->context == C_VALUE_APOS
+ 						|| prs->context == C_VALUE_QUOT)) stack_old = pos;
+ 				goto cont;
++			} else if (cl & B_INVALID) {
++				return IKS_BADXML;
+ 			}
+ 		}
+ 
+ 		switch (prs->context) {
+ 			case C_CDATA:
++				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_CDATA))) {
++					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_CDATA))) {
++						pos++;
++						prs->nr_bytes++;
++					}
++					re = 1;
++					break;
++				}
+ 				if ('&' == c) {
+ 					if (old < pos && prs->cdataHook) {
+ 						err = prs->cdataHook (prs->user_data, &buf[old], pos - old);
+@@ -331,6 +412,13 @@ sax_core (iksparser *prs, char *buf, int len)
+ 					break;
+ 				}
+ 				if (stack_old == -1) stack_old = pos;
++				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
++					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
++						pos++;
++						prs->nr_bytes++;
++					}
++					re = 1;
++				}
+ 				break;
+ 
+ 			case C_TAG_END:
+@@ -404,6 +492,13 @@ sax_core (iksparser *prs, char *buf, int len)
+ 					break;
+ 				}
+ 				if (stack_old == -1) stack_old = pos;
++				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
++					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
++						pos++;
++						prs->nr_bytes++;
++					}
++					re = 1;
++				}
+ 				break;
+ 
+ 			case C_ATTRIBUTE_2:
+@@ -446,6 +541,13 @@ sax_core (iksparser *prs, char *buf, int len)
+ 					prs->attcur += 2;
+ 				}
+ 				if (stack_old == -1) stack_old = pos;
++				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_APOS))) {
++					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_APOS))) {
++						pos++;
++						prs->nr_bytes++;
++					}
++					re = 1;
++				}
+ 				break;
+ 
+ 			case C_VALUE_QUOT:
+@@ -458,6 +560,13 @@ sax_core (iksparser *prs, char *buf, int len)
+ 					prs->attcur += 2;
+ 				}
+ 				if (stack_old == -1) stack_old = pos;
++				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_QUOT))) {
++					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_QUOT))) {
++						pos++;
++						prs->nr_bytes++;
++					}
++					re = 1;
++				}
+ 				break;
+ 
+ 			case C_WHITESPACE:
+diff --git a/tools/generate-luts.py b/tools/generate-luts.py
+new file mode 100644
+index 0000000..8934089
+--- /dev/null
++++ b/tools/generate-luts.py
+@@ -0,0 +1,76 @@
++def build_utf8_len_and_mask():
++    utf8_len = [0] * 256
++    utf8_mask = [0] * 256
++
++    for b in range(256):
++        if b < 0x80:
++            continue
++        elif (b & 0xE0) == 0xC0:
++            utf8_len[b], utf8_mask[b] = 2, 0x1F
++        elif (b & 0xF0) == 0xE0:
++            utf8_len[b], utf8_mask[b] = 3, 0x0F
++        elif (b & 0xF8) == 0xF0:
++            utf8_len[b], utf8_mask[b] = 4, 0x07
++        elif (b & 0xFC) == 0xF8:
++            utf8_len[b], utf8_mask[b] = 5, 0x03
++        elif (b & 0xFE) == 0xFC:
++            utf8_len[b], utf8_mask[b] = 6, 0x01
++
++    return utf8_len, utf8_mask
++
++
++def build_char_class():
++    B_INVALID   = 0x01
++    B_NEWLINE   = 0x02
++    B_WS        = 0x08
++    B_TAG       = 0x20
++    B_CDATA     = 0x40
++    B_UTF8_CONT = 0x04
++
++    table = [B_UTF8_CONT] * 256
++
++    for i in range(0x00, 0x80):
++        table[i] = 0
++
++    table[0x00] = B_INVALID
++    table[0x09] = B_WS
++    table[0x0A] = B_NEWLINE | B_WS
++    table[0x0D] = B_WS
++    table[0x20] = B_WS
++
++    table[0x26] = B_CDATA
++    table[0x3C] = B_CDATA
++
++    table[0x3D] = B_TAG
++    table[0x3E] = B_TAG
++    table[0x2F] = B_TAG
++
++    table[0xFE] = B_INVALID
++    table[0xFF] = B_INVALID
++
++    return table
++
++
++def format_array(name, arr):
++    lines = []
++    lines.append(f"{name}[256]")
++    for i in range(0, 256, 16):
++        chunk = ", ".join(str(x) for x in arr[i:i+16])
++        lines.append("    " + chunk + ",")
++    lines[-1] = lines[-1].rstrip(",")
++    return "\n".join(lines)
++
++
++def main():
++    chars = build_char_class()
++    utf8_len, utf8_mask = build_utf8_len_and_mask()
++
++    print(format_array("utf8_len", utf8_len))
++    print()
++    print(format_array("utf8_mask", utf8_mask))
++    print()
++    print(format_array("char_class", chars))
++
++
++if __name__ == "__main__":
++    main()
+-- 
+2.54.0
+
