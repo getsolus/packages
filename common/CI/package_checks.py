@@ -11,49 +11,58 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from ruamel.yaml import YAML
-from ruamel.yaml.compat import StringIO
-from typing import Any, Callable, Dict, List, Optional, TextIO, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    TextIO,
+    final,
+    override,
+)
 from urllib import request
 from xml.etree import ElementTree
 
+from ruamel.yaml import YAML
+from ruamel.yaml.compat import StringIO
+
 """Package is either a Package YML file or Pspec XML file."""
-Package = Union['PackageYML', 'PspecXML']
+type Package = "PackageYML | PspecXML"
 
 
 def in_ci() -> bool:
     """Returns true if running in GitHub Actions or GitLab CI."""
-    return os.environ.get('CI') == 'true'
+    return os.environ.get("CI") == "true"
 
 
+@final
 class PackageYML:
     """Represents a Package YML file."""
 
     def __init__(self, stream: Any):
-        yaml = YAML(typ='safe', pure=True)
+        yaml = YAML(typ="safe", pure=True)
         yaml.default_flow_style = False
         self._data = dict(yaml.load(stream))
 
     @property
     def name(self) -> str:
-        return str(self._data['name'])
+        return str(self._data["name"])
 
     @property
     def version(self) -> str:
-        return str(self._data['version'])
+        return str(self._data["version"])
 
     @property
     def release(self) -> int:
-        return int(self._data['release'])
+        return int(self._data["release"])
 
     @property
-    def homepage(self) -> Optional[str]:
-        return self._data.get('homepage')
+    def homepage(self) -> str | None:
+        return self._data.get("homepage")
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)
 
 
+@final
 class PspecXML:
     """Represents a Pspec XML file."""
 
@@ -62,42 +71,50 @@ class PspecXML:
 
     @property
     def release(self) -> int:
-        return int(self._xml.findall('.//Update')[0].attrib['release'])
+        return int(self._xml.findall(".//Update")[0].attrib["release"])
 
     @property
-    def homepage(self) -> Optional[str]:
-        xml_homepage_element = self._xml.find('.//Homepage')
+    def homepage(self) -> str | None:
+        xml_homepage_element = self._xml.find(".//Homepage")
         if xml_homepage_element is not None:
             return xml_homepage_element.text
 
         return None
 
     @property
-    def files(self) -> List[str]:
-        return [str(element.text) for element in self._xml.findall('.//Path')]
+    def files(self) -> list[str]:
+        return [str(element.text) for element in self._xml.findall(".//Path")]
 
 
 @dataclass
 class FreezeConfig:
-    start: Optional[datetime]
-    end: Optional[datetime]
+    start: datetime | None
+    end: datetime | None
 
-    def __init__(self, start: Optional[Union[str | datetime]], end: Optional[Union[str | datetime]]):
+    def __init__(
+        self,
+        start: str | datetime | None,
+        end: str | datetime | None,
+    ):
         self.start = datetime.fromisoformat(start) if isinstance(start, str) else start
         self.end = datetime.fromisoformat(end) if isinstance(end, str) else end
 
     def active(self) -> bool:
         now = datetime.now(tz=timezone.utc)
 
-        return (self.start is not None and now > self.start and
-                (self.end is None or now < self.end))
+        return (
+            self.start is not None
+            and now > self.start
+            and (self.end is None or now < self.end)
+        )
 
 
 @dataclass
 class StaticLibsConfig:
     """Configuration for the 'StaticLibs' check."""
-    allowed_packages: List[str]
-    allowed_files: List[str]
+
+    allowed_packages: list[str]
+    allowed_files: list[str]
 
 
 @dataclass
@@ -106,8 +123,8 @@ class Config:
     static_libs: StaticLibsConfig
 
     @staticmethod
-    def load(stream: Any) -> 'Config':
-        yaml = YAML(typ='safe', pure=True)
+    def load(stream: Any) -> "Config":
+        yaml = YAML(typ="safe", pure=True)
         return Config(**yaml.load(stream))
 
     def __post_init__(self) -> None:
@@ -117,12 +134,12 @@ class Config:
 
 class Git:
     def __init__(self, path: str):
-        self.path = path
-        self.root = self._run(path, ['rev-parse', '--show-toplevel'])
+        self.path: str = path
+        self.root: str = self._run(path, ["rev-parse", "--show-toplevel"])
 
     @staticmethod
-    def _run(path: str, args: List[str]) -> str:
-        res = subprocess.run(['git', '-C', path] + args, capture_output=True, text=True)
+    def _run(path: str, args: list[str]) -> str:
+        res = subprocess.run(["git", "-C", path] + args, capture_output=True, text=True)
         if res.returncode != 0:
             raise Exception("git error: " + res.stderr)
 
@@ -131,53 +148,54 @@ class Git:
     def run(self, *args: str) -> str:
         return self._run(self.root, list(args))
 
-    def run_lines(self, *args: str) -> List[str]:
+    def run_lines(self, *args: str) -> list[str]:
         return self.run(*args).splitlines()
 
-    def changed_files(self, base: str, head: str) -> List[str]:
-        return self.run_lines('diff', '--name-only', '--diff-filter=AM', base, head)
+    def changed_files(self, base: str, head: str) -> list[str]:
+        return self.run_lines("diff", "--name-only", "--diff-filter=AM", base, head)
 
     def commit_message(self, ref: str) -> str:
-        return self.run('log', '-1', '--format=%B', ref)
+        return self.run("log", "-1", "--format=%B", ref)
 
-    def commit_refs(self, base: str, head: str) -> List[str]:
-        return self.run_lines('log', '--no-merges', '--pretty=%H', base + '..' + head)
+    def commit_refs(self, base: str, head: str) -> list[str]:
+        return self.run_lines("log", "--no-merges", "--pretty=%H", base + ".." + head)
 
     def commit_summary(self, ref: str) -> str:
-        return self.run('log', '-1', '--format=%s', ref)
+        return self.run("log", "-1", "--format=%s", ref)
 
-    def fetch(self, remote: List[str]) -> None:
-        self.run('fetch', *remote)
+    def fetch(self, remote: list[str]) -> None:
+        self.run("fetch", *remote)
 
     def file_from_commit(self, ref: str, file: str) -> str:
-        return self.run('show', f'{ref}:{file}')
+        return self.run("show", f"{ref}:{file}")
 
-    def files_in_commit(self, ref: str) -> List[str]:
-        return self.changed_files(ref + '~', ref)
+    def files_in_commit(self, ref: str) -> list[str]:
+        return self.changed_files(ref + "~", ref)
 
     def merge_base(self, head: str, base: str) -> str:
-        return self.run('merge-base', head, base)
+        return self.run("merge-base", head, base)
 
-    def modified_files(self) -> List[str]:
-        return self.run_lines('ls-files', '--others', '--exclude-standard', self.root)
+    def modified_files(self) -> list[str]:
+        return self.run_lines("ls-files", "--others", "--exclude-standard", self.root)
 
-    def relpaths(self, files: List[str]) -> List[str]:
+    def relpaths(self, files: list[str]) -> list[str]:
         return [os.path.relpath(os.path.realpath(f), self.root) for f in files]
 
-    def untracked_files(self) -> List[str]:
-        return self.run_lines('diff', '--name-only', '--diff-filter=AM')
+    def untracked_files(self) -> list[str]:
+        return self.run_lines("diff", "--name-only", "--diff-filter=AM")
 
 
 class LogFormatter(logging.Formatter):
-    fmt = '\033[0m \033[94m%(pathname)s:%(lineno)d:\033[0m %(message)s'
-    formatters = {
-        logging.DEBUG: logging.Formatter('\033[1;30mDBG' + fmt),
-        logging.INFO: logging.Formatter('\033[34mINF' + fmt),
-        logging.WARNING: logging.Formatter('\033[33mWRN' + fmt),
-        logging.ERROR: logging.Formatter('\033[31mERR' + fmt),
-        logging.CRITICAL: logging.Formatter('\033[31mCRI' + fmt),
+    fmt: str = "\033[0m \033[94m%(pathname)s:%(lineno)d:\033[0m %(message)s"
+    formatters: dict[int, logging.Formatter] = {
+        logging.DEBUG: logging.Formatter("\033[1;30mDBG" + fmt),
+        logging.INFO: logging.Formatter("\033[34mINF" + fmt),
+        logging.WARNING: logging.Formatter("\033[33mWRN" + fmt),
+        logging.ERROR: logging.Formatter("\033[31mERR" + fmt),
+        logging.CRITICAL: logging.Formatter("\033[31mCRI" + fmt),
     }
 
+    @override
     def format(self, record: logging.LogRecord) -> str:
         return self.formatters[record.levelno].format(record)
 
@@ -192,10 +210,10 @@ class LogFormatter(logging.Formatter):
 
 class Level(str, Enum):
     __str__ = Enum.__str__
-    DEBUG = 'debug'
-    NOTICE = 'notice'
-    ERROR = 'error'
-    WARNING = 'warning'
+    DEBUG = "debug"
+    NOTICE = "notice"
+    ERROR = "error"
+    WARNING = "warning"
 
     @property
     def log_level(self) -> int:
@@ -208,23 +226,22 @@ class Level(str, Enum):
                 return logging.WARNING
             case Level.ERROR:
                 return logging.ERROR
-            case _:
-                return 0
 
 
 @dataclass
 class Result:
     level: Level
     message: str
-    title: Optional[str] = None
-    file: Optional[str] = None
-    col: Optional[int] = None
-    endColumn: Optional[int] = None
-    line: Optional[int] = None
-    endLine: Optional[int] = None
+    title: str | None = None
+    file: str | None = None
+    col: int | None = None
+    endColumn: int | None = None
+    line: int | None = None
+    endLine: int | None = None
 
+    @override
     def __str__(self) -> str:
-        return f'::{self.level.value}{self._meta}::{self._message}'
+        return f"::{self.level.value}{self._meta}::{self._message}"
 
     def log(self) -> None:
         if in_ci():
@@ -235,75 +252,78 @@ class Result:
 
     @property
     def _message(self) -> str:
-        return self.message.replace('%', '%25').replace('\n', '%0A')
+        return self.message.replace("%", "%25").replace("\n", "%0A")
 
     @property
     def _meta(self) -> str:
-        attrs = ['title', 'file', 'col', 'endColumn', 'line', 'endLine']
-        meta = [self._property(key) for key in attrs
-                if self._property(key) != '']
+        attrs = ["title", "file", "col", "endColumn", "line", "endLine"]
+        meta = [self._property(key) for key in attrs if self._property(key) != ""]
         if len(meta) == 0:
-            return ''
+            return ""
 
-        return ' ' + ",".join(meta)
+        return " " + ",".join(meta)
 
     def _property(self, key: str) -> str:
         value = getattr(self, key)
         if value is None:
-            return ''
+            return ""
 
-        return f'{key}={value}'
+        return f"{key}={value}"
 
     @property
     def _record(self) -> logging.LogRecord:
-        return logging.LogRecord('',
-                                 self.level.log_level,
-                                 self.file or '',
-                                 self.line or 1,
-                                 self.message,
-                                 None, None)
+        return logging.LogRecord(
+            "",
+            self.level.log_level,
+            self.file or "",
+            self.line or 1,
+            self.message,
+            None,
+            None,
+        )
 
 
 class PullRequestCheck:
-    _package_files = ['package.yml']
-    _pspec_files = ['pspec_x86_64.xml']
-    _two_letter_dirs = ['py']
-    _config: Optional[Config] = None
+    _package_files: list[str] = ["package.yml"]
+    _pspec_files: list[str] = ["pspec_x86_64.xml"]
+    _two_letter_dirs: list[str] = ["py"]
+    _config: Config | None = None
 
-    def __init__(self, git: Git, files: List[str], commits: List[str], base: Optional[str]):
-        self.git = git
-        self.files = files
-        self.commits = commits
-        self.base = base
+    def __init__(
+        self, git: Git, files: list[str], commits: list[str], base: str | None
+    ):
+        self.git: Git = git
+        self.files: list[str] = files
+        self.commits: list[str] = commits
+        self.base: str | None = base
 
-    def run(self) -> List[Result]:
+    def run(self) -> list[Result]:
         raise NotImplementedError
 
     @property
     def config(self) -> Config:
         if self._config is None:
-            with self._open(os.path.join('common', 'CI', 'config.yaml')) as f:
+            with self._open(os.path.join("common", "CI", "config.yaml")) as f:
                 self._config = Config.load(f)
 
         return self._config
 
     @property
-    def package_files(self) -> List[str]:
+    def package_files(self) -> list[str]:
         return self.filter_files(*self._package_files)
 
     @property
-    def pspec_files(self) -> List[str]:
+    def pspec_files(self) -> list[str]:
         return self.filter_files(*self._pspec_files)
 
-    def filter_files(self, *allowed: str) -> List[str]:
-        return [f for f in self.files
-                if os.path.basename(f) in allowed]
+    def filter_files(self, *allowed: str) -> list[str]:
+        return [f for f in self.files if os.path.basename(f) in allowed]
 
     def _path(self, path: str) -> str:
         return os.path.join(self.git.root, path)
 
     def _open(self, path: str) -> TextIO:
-        return open(self._path(path), 'r')
+        return open(self._path(path), "r")
 
     def _read(self, path: str) -> str:
         with self._open(path) as f:
@@ -325,7 +345,7 @@ class PullRequestCheck:
     def load_pspec_xml_from_commit(self, ref: str, file: str) -> PspecXML:
         return PspecXML(self.git.file_from_commit(ref, file))
 
-    def file_line(self, file: str, expr: str) -> Optional[int]:
+    def file_line(self, file: str, expr: str) -> int | None:
         with self._open(file) as f:
             for i, line in enumerate(f.read().splitlines()):
                 if re.match(expr, line):
@@ -333,17 +353,17 @@ class PullRequestCheck:
 
         return None
 
-    def package_file_line(self, package: str, file: str, expr: str) -> Optional[int]:
+    def package_file_line(self, package: str, file: str, expr: str) -> int | None:
         return self.file_line(self.package_file(package, file), expr)
 
     def package_yml_path(self, package: str) -> str:
-        return self.package_file(package, 'package.yml')
+        return self.package_file(package, "package.yml")
 
     def package_file(self, package: str, file: str) -> str:
         return os.path.join(self.package_dir(package), file)
 
     def package_dir(self, package: str) -> str:
-        return os.path.join('packages', self._package_subdir(package), package)
+        return os.path.join("packages", self._package_subdir(package), package)
 
     @staticmethod
     def package_for(path: str) -> str:
@@ -364,36 +384,42 @@ class PullRequestCheck:
 
 
 class CommitMessage(PullRequestCheck):
-    def run(self) -> List[Result]:
-        return [result
-                for commit in self.commits
-                for result in self._check_commit(commit)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            result for commit in self.commits for result in self._check_commit(commit)
+        ]
 
-    def _check_commit(self, commit: str) -> List[Result]:
+    def _check_commit(self, commit: str) -> list[Result]:
         msg = self.git.commit_message(commit)
         files = self.git.files_in_commit(commit)
-        file = files[0] if files else ''
+        file = files[0] if files else ""
 
-        results: List[Result] = []
+        results: list[Result] = []
 
-        if msg.strip().endswith(']'):
-            results.append(Result(message='commit ends with ]', level=Level.ERROR, file=file))
+        if msg.strip().endswith("]"):
+            results.append(
+                Result(message="commit ends with ]", level=Level.ERROR, file=file)
+            )
 
         return results
 
 
 class FrozenPackage(PullRequestCheck):
-    __packages: Optional[List[str]] = None
-    __message_normal = ('This package is included in the ISO. '
-                        'Consider validating the functionality in a newly built ISO.')
-    __message_freeze = ('This package is included in the ISO and is currently frozen. '
-                        'It can only be updated to fix critical bugs, '
-                        'in consultation with multiple Solus staff members.')
+    __packages: list[str] | None = None
+    __message_normal = (
+        "This package is included in the ISO. "
+        "Consider validating the functionality in a newly built ISO."
+    )
+    __message_freeze = (
+        "This package is included in the ISO and is currently frozen. "
+        "It can only be updated to fix critical bugs, "
+        "in consultation with multiple Solus staff members."
+    )
 
-    def run(self) -> List[Result]:
-        return [self._make_result(f)
-                for f in self.package_files
-                if self._is_frozen(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [self._make_result(f) for f in self.package_files if self._is_frozen(f)]
 
     def _make_result(self, file: str) -> Result:
         if self.config.freeze.active():
@@ -404,77 +430,86 @@ class FrozenPackage(PullRequestCheck):
     def _is_frozen(self, file: str) -> bool:
         return self.package_for(file) in self._packages()
 
-    def _packages(self) -> List[str]:
+    def _packages(self) -> list[str]:
         if self.__packages is None:
-            with self._open(os.path.join('common', 'iso_packages.txt')) as file:
+            with self._open(os.path.join("common", "iso_packages.txt")) as file:
                 self.__packages = [line.strip() for line in file]
 
         return self.__packages
 
 
 class Homepage(PullRequestCheck):
-    _error = '`homepage` is not set'
-    _level = Level.ERROR
+    _error: str = "`homepage` is not set"
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
-        return [Result(message=self._error, file=f, level=self._level)
-                for f in self.package_files
-                if not self._includes_homepage(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            Result(message=self._error, file=f, level=self._level)
+            for f in self.package_files
+            if not self._includes_homepage(f)
+        ]
 
     def _includes_homepage(self, file: str) -> bool:
         with self._open(file) as f:
-            yaml = YAML(typ='safe', pure=True)
+            yaml = YAML(typ="safe", pure=True)
             yaml.default_flow_style = False
-            return 'homepage' in yaml.load(f)
+            return "homepage" in yaml.load(f)
 
 
 class BooleanStyle(PullRequestCheck):
-    _error = 'Invalid boolean style. Use true/false instead.'
-    _level = Level.ERROR
-    _pattern = re.compile(r':\s*(yes|no)\s*$', re.IGNORECASE)
+    _error: str = "Invalid boolean style. Use true/false instead."
+    _level: Level = Level.ERROR
+    _pattern: re.Pattern[str] = re.compile(r":\s*(yes|no)\s*$", re.IGNORECASE)
 
-    def run(self) -> List[Result]:
-        results: List[Result] = []
+    @override
+    def run(self) -> list[Result]:
+        results: list[Result] = []
 
         for f in self.package_files:
             with self._open(f) as stream:
                 for i, line in enumerate(stream.readlines(), start=1):
                     if self._pattern.search(line):
-                        results.append(Result(
-                            message=self._error,
-                            file=f,
-                            line=i,
-                            level=self._level
-                          ))
+                        results.append(
+                            Result(
+                                message=self._error, file=f, line=i, level=self._level
+                            )
+                        )
 
         return results
 
 
 class Monitoring(PullRequestCheck):
-    _error = '`monitoring.yaml` is missing'
-    _level = Level.WARNING
+    _error: str = "`monitoring.yaml` is missing"
+    _level: Level = Level.WARNING
 
-    def run(self) -> List[Result]:
-        return [Result(message=self._error, file=f, level=self._level)
-                for f in self.package_files
-                if not self._has_monitoring_yml(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            Result(message=self._error, file=f, level=self._level)
+            for f in self.package_files
+            if not self._has_monitoring_yml(f)
+        ]
 
     def _has_monitoring_yml(self, file: str) -> bool:
-        return self._exists(os.path.join(os.path.dirname(file), 'monitoring.yaml'))
+        return self._exists(os.path.join(os.path.dirname(file), "monitoring.yaml"))
 
 
 class License(PullRequestCheck):
-    _error = 'Package is missing license files'
-    _level = Level.WARNING
-    _globs = [
-        '**/licenses/**',
-        '/usr/lib/python*/site-packages/*.dist-info/LICENSE',
+    _error: str = "Package is missing license files"
+    _level: Level = Level.WARNING
+    _globs: list[str] = [
+        "**/licenses/**",
+        "/usr/lib/python*/site-packages/*.dist-info/LICENSE",
     ]
 
-    def run(self) -> List[Result]:
-        return [Result(message=self._error, file=f, level=self._level)
-                for f in self.pspec_files
-                if not self._has_license(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            Result(message=self._error, file=f, level=self._level)
+            for f in self.pspec_files
+            if not self._has_license(f)
+        ]
 
     def _has_license(self, file: str) -> bool:
         return any(self._match_globs(f) for f in PspecXML(self._read(file)).files)
@@ -484,36 +519,46 @@ class License(PullRequestCheck):
 
 
 class PackageBumped(PullRequestCheck):
-    _msg = 'Package release is not incremented by 1'
-    _msg_new = 'Package release is not 1'
+    _msg: str = "Package release is not incremented by 1"
+    _msg_new: str = "Package release is not 1"
 
-    def run(self) -> List[Result]:
-        commits = self.commits or ['HEAD']
-        files = set(self.files) & set(self.git.untracked_files() + self.git.modified_files())
-        results = [self._check_commit(commit, file)
-                   for commit in commits
-                   for file in self.git.files_in_commit(commit)]
-        results += [self._check_commit(None, file)
-                    for file in files]
+    @override
+    def run(self) -> list[Result]:
+        commits = self.commits or ["HEAD"]
+        files = set(self.files) & set(
+            self.git.untracked_files() + self.git.modified_files()
+        )
+        results = [
+            self._check_commit(commit, file)
+            for commit in commits
+            for file in self.git.files_in_commit(commit)
+        ]
+        results += [self._check_commit(None, file) for file in files]
 
         return [result for result in results if result is not None]
 
-    def _check_commit(self, ref: Optional[str], file: str) -> Optional[Result]:
+    def _check_commit(self, ref: str | None, file: str) -> Result | None:
         match os.path.basename(file):
-            case 'package.yml':
+            case "package.yml":
                 return self._check(ref, file, PackageYML, Level.WARNING)
-            case 'pspec_x86_64.xml':
+            case "pspec_x86_64.xml":
                 return self._check(ref, file, PspecXML, Level.ERROR)
             case _:
                 return None
 
     def _is_fixup_commit(self, commit_msg: str) -> bool:
-        return commit_msg.startswith('fixup! ')
+        return commit_msg.startswith("fixup! ")
 
-    def _check(self, ref: Optional[str], file: str, loader: Callable[[str], Package], level: Level) -> Optional[Result]:
+    def _check(
+        self,
+        ref: str | None,
+        file: str,
+        loader: Callable[[str], Package],
+        level: Level,
+    ) -> Result | None:
         if ref is not None:
             new = loader(self.git.file_from_commit(ref, file))
-            prev = f'{ref}~1'
+            prev = f"{ref}~1"
 
             commit_msg = self.git.commit_message(ref)
             # Skip fixup commits entirely
@@ -521,22 +566,28 @@ class PackageBumped(PullRequestCheck):
                 return None
         else:
             new = loader(self._read(file))
-            prev = 'HEAD'
+            prev = "HEAD"
 
         try:
             old = loader(self.git.file_from_commit(prev, file))
             # Skip if this is effectively an amended commit with no release change
-            if ref is not None and self.git.commit_message(ref) == self.git.commit_message(prev):
+            if ref is not None and self.git.commit_message(
+                ref
+            ) == self.git.commit_message(prev):
                 return None
 
             if old.release + 1 != new.release:
-                return Result(level=level, file=file, message=f'{self._msg} (ref: {ref})')
+                return Result(
+                    level=level, file=file, message=f"{self._msg} (ref: {ref})"
+                )
 
             return None
         except Exception as e:
-            if 'exists on disk, but not in' in str(e):
+            if "exists on disk, but not in" in str(e):
                 if new.release != 1:
-                    return Result(level=level, file=file, message=f'{self._msg_new} (ref: {ref})')
+                    return Result(
+                        level=level, file=file, message=f"{self._msg_new} (ref: {ref})"
+                    )
 
                 return None
 
@@ -544,39 +595,52 @@ class PackageBumped(PullRequestCheck):
 
 
 class PackageDependenciesOrder(PullRequestCheck):
-    _deps_keys = ['builddeps', 'checkdeps', 'rundeps']
-    _error = '`` are not in order'
-    _level = Level.WARNING
+    _deps_keys: list[str] = ["builddeps", "checkdeps", "rundeps"]
+    _error: str = "`` are not in order"
+    _level: Level = Level.WARNING
 
-    def run(self) -> List[Result]:
-        results = [self._check_deps(deps, file)
-                   for deps in self._deps_keys
-                   for file in self.package_files]
+    @override
+    def run(self) -> list[Result]:
+        results = [
+            self._check_deps(deps, file)
+            for deps in self._deps_keys
+            for file in self.package_files
+        ]
 
         return [result for result in results if result is not None]
 
-    def _check_deps(self, deps: str, file: str) -> Optional[Result]:
-        cur = self.load_package_yml(file).get(deps, [])
+    def _check_deps(self, deps: str, file: str) -> Result | None:
+        cur: Any = self.load_package_yml(file).get(deps, [])
         exp = self._sorted(cur)
 
         if cur != exp:
+
             class Dumper(YAML):
-                def dump(self, data: Any, stream: Optional[StringIO] = None, **kw: int) -> Any:
+                @override
+                def dump(
+                    self, data: Any, stream: StringIO | None = None, **kw: int
+                ) -> Any:
                     self.default_flow_style = False
                     self.indent(offset=4, sequence=4)
-                    self.prefix_colon = ' '  # type: ignore[assignment]
+                    self.prefix_colon = " "  # type: ignore[assignment]
                     stream = StringIO()
                     YAML.dump(self, data, stream, **kw)
                     return stream.getvalue()
 
-            yaml = Dumper(typ='safe', pure=True)
-            return Result(file=file, level=self._level, line=self.file_line(file, '^' + deps + r'\s*:'),
-                          message=f'{deps} are not in order, expected: \n' + yaml.dump(exp))
+            yaml = Dumper(typ="safe", pure=True)
+            return Result(
+                file=file,
+                level=self._level,
+                line=self.file_line(file, "^" + deps + r"\s*:"),
+                message=f"{deps} are not in order, expected: \n" + yaml.dump(exp),
+            )
 
         return None
 
     @staticmethod
-    def _sorted(deps: List[Union[str, Dict[str, List[str]]]]) -> List[Union[str, Dict[str, List[str]]]]:
+    def _sorted(
+        deps: list[str | dict[str, list[str]]],
+    ) -> list[str | dict[str, list[str]]]:
         for dep in deps:
             if isinstance(dep, dict):
                 for k, v in dep.items():
@@ -588,152 +652,195 @@ class PackageDependenciesOrder(PullRequestCheck):
         return sorted(deps, key=PackageDependenciesOrder._sort)
 
     @staticmethod
-    def _sort(pkg: Union[str, Dict[str, List[str]]]) -> Tuple[int, str]:
+    def _sort(pkg: str | dict[str, list[str]]) -> tuple[int, str]:
         if isinstance(pkg, dict):
             pkg = list(pkg.keys())[0]
 
-        if pkg.startswith('pkgconfig32('):
-            return 0, pkg.removeprefix('pkgconfig32(')
+        if pkg.startswith("pkgconfig32("):
+            return 0, pkg.removeprefix("pkgconfig32(")
 
-        if pkg.startswith('pkgconfig('):
-            return 1, pkg.removeprefix('pkgconfig(')
+        if pkg.startswith("pkgconfig("):
+            return 1, pkg.removeprefix("pkgconfig(")
 
         return 2, pkg
 
 
 class PackageDirectory(PullRequestCheck):
-    _error = 'Package not in correct directory'
-    _level = Level.ERROR
+    _error: str = "Package not in correct directory"
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
+    @override
+    def run(self) -> list[Result]:
         paths = [os.path.dirname(f) for f in self.package_files]
 
-        return [Result(message=self._error, file=path, level=self._level) for path in paths
-                if not self._check_path(path)]
+        return [
+            Result(message=self._error, file=path, level=self._level)
+            for path in paths
+            if not self._check_path(path)
+        ]
 
     def _check_path(self, path: str) -> bool:
         pkg = os.path.basename(os.path.realpath(path))
-        exp = ['packages', self._package_subdir(pkg), pkg]
+        exp = ["packages", self._package_subdir(pkg), pkg]
 
-        return path.split('/') == exp
+        return path.split("/") == exp
 
 
 class PackageVersion(PullRequestCheck):
-    _error = 'Package version is not a string'
-    _level = Level.ERROR
+    _error: str = "Package version is not a string"
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
-        return [Result(message=self._error, level=self._level,
-                       file=path, line=self.file_line(path, r'^version\s*:'), )
-                for path in self.package_files
-                if not self._check_version(path)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            Result(
+                message=self._error,
+                level=self._level,
+                file=path,
+                line=self.file_line(path, r"^version\s*:"),
+            )
+            for path in self.package_files
+            if not self._check_version(path)
+        ]
 
     def _check_version(self, path: str) -> bool:
         return isinstance(self.load_package_yml(path).version, str)
 
 
 class Patch(PullRequestCheck):
-    _regex = r'patch -p1 <'
-    _error = 'Uses `patch <`, use `patch -i` instead'
-    _level = Level.ERROR
+    _regex: str = r"patch -p1 <"
+    _error: str = "Uses `patch <`, use `patch -i` instead"
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
-        return [r for f in self.package_files
-                for r in self._wrong_patch(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [r for f in self.package_files for r in self._wrong_patch(f)]
 
-    def _wrong_patch(self, file: str) -> List[Result]:
-        results: List[Result] = []
+    def _wrong_patch(self, file: str) -> list[Result]:
+        results: list[Result] = []
 
         with self._open(file) as f:
             for i, line in enumerate(f.readlines()):
                 if re.search(self._regex, line):
-                    results.append(Result(message=self._error, file=file, line=i + 1, level=self._level))
+                    results.append(
+                        Result(
+                            message=self._error,
+                            file=file,
+                            line=i + 1,
+                            level=self._level,
+                        )
+                    )
 
         return results
 
 
 class SPDXLicense(PullRequestCheck):
-    _licenses_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json'
-    _exceptions_url = 'https://raw.githubusercontent.com/spdx/license-list-data/main/json/exceptions.json'
-    _licenses: Optional[List[str]] = None
-    _exceptions: Optional[List[str]] = None
-    _extra_licenses = ['Distributable', 'EULA', 'Public-Domain']
-    _error = 'Invalid license identifier: '
-    _level = Level.WARNING
+    _licenses_url: str = "https://raw.githubusercontent.com/spdx/license-list-data/main/json/licenses.json"
+    _exceptions_url: str = "https://raw.githubusercontent.com/spdx/license-list-data/main/json/exceptions.json"
+    _licenses: list[str] | None = None
+    _exceptions: list[str] | None = None
+    _extra_licenses: list[str] = ["Distributable", "EULA", "Public-Domain"]
+    _error: str = "Invalid license identifier: "
+    _level: Level = Level.WARNING
 
-    def run(self) -> List[Result]:
-        return [r for f in self.package_files
-                for r in self._validate_spdx(f) if r]
+    @override
+    def run(self) -> list[Result]:
+        return [r for f in self.package_files for r in self._validate_spdx(f) if r]
 
-    def _validate_spdx(self, file: str) -> List[Optional[Result]]:
-        license = self.load_package_yml(file).get('license')
+    def _validate_spdx(self, file: str) -> list[Result | None]:
+        license = self.load_package_yml(file).get("license")
         if isinstance(license, list):
             return [self._validate_license(file, id) for id in license]
 
         return [self._validate_license(file, license)]
 
-    def _validate_license(self, file: str, identifier: str) -> Optional[Result]:
+    def _validate_license(self, file: str, identifier: str) -> Result | None:
         if self._valid_license(identifier):
             return None
 
-        return Result(file=file, level=self._level,
-                      message=f'invalid license identifier: {repr(identifier)}',
-                      line=self.file_line(file, r'^license\s*:'))
+        return Result(
+            file=file,
+            level=self._level,
+            message=f"invalid license identifier: {repr(identifier)}",
+            line=self.file_line(file, r"^license\s*:"),
+        )
 
     def _valid_license(self, identifier: str) -> bool:
         identifier = identifier.strip(" ()+")
-        identifiers = [id_o
-                       for id_a in identifier.split(' AND ')
-                       for id_o in id_a.split(' OR ')]
+        identifiers = [
+            id_o for id_a in identifier.split(" AND ") for id_o in id_a.split(" OR ")
+        ]
 
         if len(identifiers) > 1:
             return all([self._valid_license(id) for id in identifiers])
 
-        if ' WITH ' in identifier:
-            identifier, exception = identifier.split(' WITH ', 1)
+        if " WITH " in identifier:
+            identifier, exception = identifier.split(" WITH ", 1)
 
             if exception not in self._exception_ids():
                 return False
 
         return identifier in self._license_ids()
 
-    def _license_ids(self) -> List[str]:
+    def _license_ids(self) -> list[str]:
         if self._licenses is None:
             with request.urlopen(self._licenses_url) as f:
-                self._licenses = [license['licenseId'] for license in json.load(f)['licenses']]
+                self._licenses = [
+                    license["licenseId"] for license in json.load(f)["licenses"]
+                ]
 
         return self._licenses + self._extra_licenses
 
-    def _exception_ids(self) -> List[str]:
+    def _exception_ids(self) -> list[str]:
         if self._exceptions is None:
             with request.urlopen(self._exceptions_url) as f:
-                self._exceptions = [exception['licenseExceptionId'] for exception in json.load(f)['exceptions']]
+                self._exceptions = [
+                    exception["licenseExceptionId"]
+                    for exception in json.load(f)["exceptions"]
+                ]
 
         return self._exceptions
 
 
 class UnwantedFiles(PullRequestCheck):
-    _patterns = ['Makefile^', r'.*\.eopkg^', r'.*\.tar\..*', r'^packages/[^/]+(/[^/]+)?$']
-    _error = 'This file should not be included'
-    _level = Level.ERROR
+    _patterns: list[str] = [
+        "Makefile^",
+        r".*\.eopkg^",
+        r".*\.tar\..*",
+        r"^packages/[^/]+(/[^/]+)?$",
+    ]
+    _error: str = "This file should not be included"
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
-        return [Result(message=self._error, file=f, level=self._level)
-                for f in self.files
-                for p in self._patterns
-                if not os.path.isdir(f) and re.match(p, f)]
+    @override
+    def run(self) -> list[Result]:
+        return [
+            Result(message=self._error, file=f, level=self._level)
+            for f in self.files
+            for p in self._patterns
+            if not os.path.isdir(f) and re.match(p, f)
+        ]
 
 
 class Pspec(PullRequestCheck):
-    _error = '`package.yml` and `pspec_x86_64.xml` are not consistent, please rebuild.'
-    _level = Level.ERROR
+    _error: str = (
+        "`package.yml` and `pspec_x86_64.xml` are not consistent, please rebuild."
+    )
+    _level: Level = Level.ERROR
 
-    def run(self) -> List[Result]:
+    @override
+    def run(self) -> list[Result]:
         paths = [os.path.dirname(f) for f in self.package_files]
 
-        return [Result(message=self._error, file=os.path.join(path, 'pspec_x86_64.xml'), level=self._level)
-                for path in paths
-                if not self._check_consistent(path)]
+        return [
+            Result(
+                message=self._error,
+                file=os.path.join(path, "pspec_x86_64.xml"),
+                level=self._level,
+            )
+            for path in paths
+            if not self._check_consistent(path)
+        ]
 
     def _check_consistent(self, package_dir: str) -> bool:
         xml = self._xml_file(package_dir)
@@ -742,10 +849,10 @@ class Pspec(PullRequestCheck):
         return bool(yml.release == xml.release and yml.homepage == xml.homepage)
 
     def _yml_file(self, package_dir: str) -> PackageYML:
-        return self.load_package_yml(os.path.join(package_dir, 'package.yml'))
+        return self.load_package_yml(os.path.join(package_dir, "package.yml"))
 
     def _xml_file(self, package_dir: str) -> PspecXML:
-        return self.load_pspec_xml(os.path.join(package_dir, 'pspec_x86_64.xml'))
+        return self.load_pspec_xml(os.path.join(package_dir, "pspec_x86_64.xml"))
 
 
 class StaticLibs(PullRequestCheck):
@@ -754,52 +861,69 @@ class StaticLibs(PullRequestCheck):
 
     Static libraries can be allowed by adding them to the allow list.
     """
-    _error = 'A static library has been included in the package.'
-    _level = Level.ERROR
 
-    def run(self) -> List[Result]:
-        return [self._result(pspec, file)
-                for pspec in self.filter_files('pspec_x86_64.xml')
-                if not self._allowed_package(pspec)
-                for file in self.load_pspec_xml(pspec).files
-                if self._check(file)]
+    _error: str = "A static library has been included in the package."
+    _level: Level = Level.ERROR
+
+    @override
+    def run(self) -> list[Result]:
+        return [
+            self._result(pspec, file)
+            for pspec in self.filter_files("pspec_x86_64.xml")
+            if not self._allowed_package(pspec)
+            for file in self.load_pspec_xml(pspec).files
+            if self._check(file)
+        ]
 
     def _result(self, pspec: str, file: str) -> Result:
-        return Result(message=f'A static library has been included in the package: `{file}`. '
-                              'Whitelist the package or file in `common/CI/config.yaml` if this is desired.',
-                      file=pspec, line=self.file_line(pspec, f'.*{file}.*'), level=self._level)
+        return Result(
+            message=f"A static library has been included in the package: `{file}`. "
+            "Whitelist the package or file in `common/CI/config.yaml` if this is desired.",
+            file=pspec,
+            line=self.file_line(pspec, f".*{file}.*"),
+            level=self._level,
+        )
 
     def _check(self, file: str) -> bool:
-        return (file.startswith('/usr/lib') and
-                file.endswith('.a') and
-                not self._allowed_path(file))
+        return (
+            file.startswith("/usr/lib")
+            and file.endswith(".a")
+            and not self._allowed_path(file)
+        )
 
     def _allowed_package(self, file: str) -> bool:
         return self.package_for(file) in self.config.static_libs.allowed_packages
 
     def _allowed_path(self, file: str) -> bool:
-        return any([fnmatch.filter([file], pattern)
-                    for pattern in self.config.static_libs.allowed_files])
+        return any(
+            [
+                fnmatch.filter([file], pattern)
+                for pattern in self.config.static_libs.allowed_files
+            ]
+        )
 
 
 class SystemDependencies(PullRequestCheck):
-    _components = ['system.base', 'system.devel']
+    _components: list[str] = ["system.base", "system.devel"]
 
-    def run(self) -> List[Result]:
-        return [result
-                for f in self.package_files
-                for result in self._check_deps(f)]
+    @override
+    def run(self) -> list[Result]:
+        return [result for f in self.package_files for result in self._check_deps(f)]
 
-    def _check_deps(self, pkg_file: str) -> List[Result]:
+    def _check_deps(self, pkg_file: str) -> list[Result]:
         pkg = os.path.basename(os.path.dirname(pkg_file))
         pkg_components = self._package_components(pkg)
 
-        return self._validate_deps(pkg) if self._components_match(pkg_components) else []
+        return (
+            self._validate_deps(pkg) if self._components_match(pkg_components) else []
+        )
 
-    def _package_components(self, pkg: str) -> List[str]:
-        return self._unwrap_component(self.load_package_yml(self.package_yml_path(pkg)).get('component'))
+    def _package_components(self, pkg: str) -> list[str]:
+        return self._unwrap_component(
+            self.load_package_yml(self.package_yml_path(pkg)).get("component")
+        )
 
-    def _unwrap_component(self, component: Any) -> List[str]:
+    def _unwrap_component(self, component: Any) -> list[str]:
         if isinstance(component, dict):
             return [c for v in component.values() for c in self._unwrap_component(v)]
 
@@ -808,27 +932,38 @@ class SystemDependencies(PullRequestCheck):
 
         return [component]
 
-    def _validate_deps(self, pkg: str) -> List[Result]:
-        libs_file = self.package_file(pkg, 'abi_used_libs')
+    def _validate_deps(self, pkg: str) -> list[Result]:
+        libs_file = self.package_file(pkg, "abi_used_libs")
         if not os.path.exists(libs_file):
             return []
 
         with self._open(libs_file) as f:
-            results = {package: (lib, self._components_match(self._package_components(package)))
-                       for lib, package in set([self._search_lib(lib.strip()) for lib in f])
-                       if package is not None}
+            results = {
+                package: (
+                    lib,
+                    self._components_match(self._package_components(package)),
+                )
+                for lib, package in set([self._search_lib(lib.strip()) for lib in f])
+                if package is not None
+            }
 
-            return [Result(message=f'Dependency not in system.base/devel: {dep}',
-                           level=Level.WARNING, file=libs_file,
-                           line=self.package_file_line(pkg, 'abi_used_libs', f'^{lib}$'))
-                    for dep, (lib, check) in results.items() if not check]
+            return [
+                Result(
+                    message=f"Dependency not in system.base/devel: {dep}",
+                    level=Level.WARNING,
+                    file=libs_file,
+                    line=self.package_file_line(pkg, "abi_used_libs", f"^{lib}$"),
+                )
+                for dep, (lib, check) in results.items()
+                if not check
+            ]
 
-    def _components_match(self, components: List[str]) -> bool:
+    def _components_match(self, components: list[str]) -> bool:
         return len(set(components) & set(self._components)) > 0
 
-    def _search_lib(self, name: str) -> Tuple[str, Optional[str]]:
-        for f in glob.glob(self._path(os.path.join('packages', '*', '*', 'abi_libs'))):
-            with open(f, 'r') as libs:
+    def _search_lib(self, name: str) -> tuple[str, str | None]:
+        for f in glob.glob(self._path(os.path.join("packages", "*", "*", "abi_libs"))):
+            with open(f, "r") as libs:
                 for lib in libs:
                     if lib.strip() == name:
                         return name, os.path.basename(os.path.dirname(f))
@@ -850,21 +985,26 @@ class SummaryGenerator(PullRequestCheck):
 
         return s
 
-    def _commit_package_tag(self, ref: str) -> Optional[str]:
+    def _commit_package_tag(self, ref: str) -> str | None:
         package = self._commit_package_yaml(ref)
         if package is None:
             return None
 
         return f"{package.name}-{package.version}-{package.release}"
 
-    def _commit_package_yaml(self, ref: str) -> Optional[PackageYML]:
-        files = [f for f in self.git.files_in_commit(ref) if os.path.basename(f) == 'package.yml']
+    def _commit_package_yaml(self, ref: str) -> PackageYML | None:
+        files = [
+            f
+            for f in self.git.files_in_commit(ref)
+            if os.path.basename(f) == "package.yml"
+        ]
         if len(files) == 0:
             return None
 
         return self.load_package_yml_from_commit(ref, files[0])
 
 
+@final
 class Checker:
     checks = [
         BooleanStyle,
@@ -885,8 +1025,17 @@ class Checker:
         UnwantedFiles,
     ]
 
-    def __init__(self, base: Optional[str], head: str, path: str, files: List[str],
-                 modified: bool, untracked: bool, results_only: bool, exit_warn: bool):
+    def __init__(
+        self,
+        base: str | None,
+        head: str,
+        path: str,
+        files: list[str],
+        modified: bool,
+        untracked: bool,
+        results_only: bool,
+        exit_warn: bool,
+    ):
         self.results_only = results_only
         self.exit_warn = exit_warn
         self.base = base
@@ -894,7 +1043,7 @@ class Checker:
         self.git = Git(path)
         self.files = self.git.relpaths(files)
         self.commits = []
-        self.summary_file = os.environ.get('GITHUB_STEP_SUMMARY', None)
+        self.summary_file = os.environ.get("GITHUB_STEP_SUMMARY", None)
 
         if base is not None:
             self.git.fetch(self._base_to_remote(base))
@@ -909,17 +1058,22 @@ class Checker:
 
     def run(self) -> bool:
         if not self.results_only:
-            print(f'Checking files: {", ".join(self.files)}')
+            print(f"Checking files: {', '.join(self.files)}")
             if self.commits:
-                print(f'Checking commits: {", ".join(self.commits)}')
+                print(f"Checking commits: {', '.join(self.commits)}")
 
-        results = [result for check in self.checks
-                   for result in check(self.git, self.files, self.commits, self.base).run()]
+        results = [
+            result
+            for check in self.checks
+            for result in check(self.git, self.files, self.commits, self.base).run()
+        ]
         errors = [r for r in results if r.level == Level.ERROR]
         warnings = [r for r in results if r.level == Level.WARNING]
 
         if not self.results_only:
-            print(f"Found {len(results)} result(s), {len(warnings)} warnings and {len(errors)} error(s)")
+            print(
+                f"Found {len(results)} result(s), {len(warnings)} warnings and {len(errors)} error(s)"
+            )
 
         for result in results:
             result.log()
@@ -928,46 +1082,65 @@ class Checker:
 
         return len(errors) > 0 or self.exit_warn and len(warnings) > 0
 
-    def write_summary(self) -> None:
+    def write_summary(self) -> int:
         if self.summary_file is None:
-            return
+            return 0
 
-        with open(self.summary_file, 'w') as f:
-            f.write(SummaryGenerator(self.git, self.files, self.commits, self.base).generate())
+        with open(self.summary_file, "w") as f:
+            return f.write(
+                SummaryGenerator(
+                    self.git, self.files, self.commits, self.base
+                ).generate()
+            )
 
     @staticmethod
-    def _base_to_remote(base: str) -> List[str]:
-        return base.split('~')[0].split('/')
+    def _base_to_remote(base: str) -> list[str]:
+        return base.split("~")[0].split("/")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, handlers=[LogFormatter.handler()])
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--base', type=str,
-                        help='Optional reference to the base branch')
-    parser.add_argument('--head', type=str, default='HEAD',
-                        help='Optional reference to the current branch head')
-    parser.add_argument('--root', type=str, default='.',
-                        help='Repository root directory')
-    parser.add_argument('--modified', action='store_true',
-                        help='Include modified files')
-    parser.add_argument('--untracked', action='store_true',
-                        help='Include untracked files')
-    parser.add_argument('--fail-on-warnings', action='store_true',
-                        help='Exit with an error if warnings are encountered')
-    parser.add_argument('--results-only', action='store_true',
-                        help='Only show results, nothing else')
-    parser.add_argument('filename', type=str, nargs="*",
-                        help='Additional files to check')
+    parser.add_argument(
+        "--base", type=str, help="Optional reference to the base branch"
+    )
+    parser.add_argument(
+        "--head",
+        type=str,
+        default="HEAD",
+        help="Optional reference to the current branch head",
+    )
+    parser.add_argument(
+        "--root", type=str, default=".", help="Repository root directory"
+    )
+    parser.add_argument(
+        "--modified", action="store_true", help="Include modified files"
+    )
+    parser.add_argument(
+        "--untracked", action="store_true", help="Include untracked files"
+    )
+    parser.add_argument(
+        "--fail-on-warnings",
+        action="store_true",
+        help="Exit with an error if warnings are encountered",
+    )
+    parser.add_argument(
+        "--results-only", action="store_true", help="Only show results, nothing else"
+    )
+    parser.add_argument(
+        "filename", type=str, nargs="*", help="Additional files to check"
+    )
 
     cli_args = parser.parse_args()
-    checker = Checker(base=cli_args.base,
-                      head=cli_args.head,
-                      path=cli_args.root,
-                      modified=cli_args.modified,
-                      untracked=cli_args.untracked,
-                      files=cli_args.filename,
-                      results_only=cli_args.results_only,
-                      exit_warn=cli_args.fail_on_warnings)
+    checker = Checker(
+        base=cli_args.base,
+        head=cli_args.head,
+        path=cli_args.root,
+        modified=cli_args.modified,
+        untracked=cli_args.untracked,
+        files=cli_args.filename,
+        results_only=cli_args.results_only,
+        exit_warn=cli_args.fail_on_warnings,
+    )
     exit(checker.run())
