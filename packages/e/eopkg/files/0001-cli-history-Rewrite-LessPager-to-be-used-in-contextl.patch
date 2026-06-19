@@ -1,0 +1,149 @@
+From b5da50b2b42fb4fa831d9ebb20b2a8dda3a64393 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Tue, 16 Jun 2026 10:37:58 +0100
+Subject: [PATCH 1/1] cli/history: Rewrite LessPager to be used in contextlib
+ manager
+
+Helps against shutdown races seen in python 3.14
+---
+ pisi/cli/history.py | 103 ++++++++++++++++++++++++++++----------------
+ 1 file changed, 65 insertions(+), 38 deletions(-)
+
+diff --git a/pisi/cli/history.py b/pisi/cli/history.py
+index 3954999..202eee5 100644
+--- a/pisi/cli/history.py
++++ b/pisi/cli/history.py
+@@ -1,19 +1,21 @@
+ # SPDX-FileCopyrightText: 2005-2011 TUBITAK/UEKAE, 2013-2017 Ikey Doherty, Solus Project
+ # SPDX-License-Identifier: GPL-2.0-or-later
+ 
++import io
++import optparse
+ import os
+ import signal
++import subprocess
+ import sys
+-import optparse
+-
+-from pisi import translate as _
++from contextlib import contextmanager, redirect_stderr, redirect_stdout
+ 
+ import pisi
+ import pisi.api
+-import pisi.db
+-import pisi.context as ctx
+ import pisi.cli.command as command
++import pisi.context as ctx
++import pisi.db
+ import pisi.signalhandler as signalhandler
++from pisi import translate as _
+ 
+ # Operation names for translation
+ opttrans = {
+@@ -100,41 +102,12 @@ Lists previous operations."""
+ 
+     def redirect_output(self, func):
+         if os.isatty(sys.stdout.fileno()):
+-
+-            class LessException(Exception):
+-                pass
+-
+-            class LessPipe:
+-                def __init__(self):
+-                    import subprocess
+-
+-                    self.less = subprocess.Popen(
+-                        ["less", "-K", "-"], stdin=subprocess.PIPE
+-                    )
+-
+-                def __del__(self):
+-                    if self.less.poll() is None:
+-                        self.less.stdin.close()
+-                    self.less.wait()
+-
+-                def flush(self):
+-                    self.less.stdin.flush()
+-
+-                def write(self, s):
+-                    try:
+-                        self.less.stdin.write(s.encode())
+-                    except IOError:
+-                        raise LessException
+-
+-            stdout, stderr = sys.stdout, sys.stderr
+-            sys.stdout = sys.stderr = LessPipe()
+             try:
+-                func()
+-            except LessException:
++                with less_pager():
++                    func()
++            except BrokenPipeError:
++                # user quit less or pipe closed
+                 pass
+-            finally:
+-                sys.stdout, sys.stderr = stdout, stderr
+-
+         else:
+             func()
+ 
+@@ -151,3 +124,57 @@ Lists previous operations."""
+ 
+         self.signal_handler.disable_signal(signal.SIGINT)
+         self.redirect_output(self.print_history)
++
++
++class LessPipe(io.TextIOBase):
++    def __init__(self):
++        self.proc = subprocess.Popen(
++            ["less", "-K", "-R", "-"],
++            stdin=subprocess.PIPE,
++            text=True,
++        )
++
++    def write(self, s: str, /) -> int:
++        try:
++            stdin = self.proc.stdin
++            assert stdin is not None
++            stdin.write(s)
++            return len(s)
++        except (BrokenPipeError, OSError):
++            return 0
++
++    def flush(self) -> None:
++        try:
++            stdin = self.proc.stdin
++            assert stdin is not None
++            stdin.flush()
++        except Exception:
++            pass
++
++    def close(self):
++        try:
++            if self.proc.stdin:
++                self.proc.stdin.close()
++        except Exception:
++            pass
++
++        try:
++            self.proc.wait(timeout=0.2)
++        except Exception:
++            try:
++                self.proc.kill()
++            except Exception:
++                pass
++
++
++@contextmanager
++def less_pager():
++    """
++    Context-managed stdout/stderr pager.
++    """
++    pager = LessPipe()
++    try:
++        with redirect_stdout(pager), redirect_stderr(pager):
++            yield pager
++    finally:
++        pager.close()
+-- 
+2.54.0
+
