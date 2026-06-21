@@ -27,13 +27,14 @@ declare -A DESKTOP_SOFTWARE_CENTRE=(
     ["kde"]="discover"
     ["xfce"]="discover"
     ["mate"]="discover"
+    ["other"]=""
 )
 declare -A SC_DESKTOP_FILES=(
     ["discover"]="/usr/share/applications/org.kde.discover.desktop"
     ["gnome-software"]="/usr/share/applications/org.gnome.Software.desktop"
 )
 
-desktop=""
+desktop="other"
 replaced_sc=false
 switched_repo=false
 
@@ -228,15 +229,18 @@ done
 sc_package="${DESKTOP_SOFTWARE_CENTRE[$desktop]}"
 echo "Detected desktop: ${desktop}"
 
-if ! is_installed "${sc_package}"
+if [[ "${sc_package}" != "" ]]
 then
-    echo "Installing new SC: ${sc_package}"
-    while ! eopkg install --yes-all "${DESKTOP_SOFTWARE_CENTRE[$desktop]}"
-    do
-        echo "Install failed, will retry."
-        sleep 10
-    done
-    replaced_sc=true
+    if ! is_installed "${sc_package}"
+    then
+        echo "Installing new SC: ${sc_package}"
+        while ! eopkg install --yes-all "${DESKTOP_SOFTWARE_CENTRE[$desktop]}"
+        do
+            echo "Install failed, will retry."
+            sleep 10
+        done
+        replaced_sc=true
+    fi
 fi
 
 if is_installed solus-sc
