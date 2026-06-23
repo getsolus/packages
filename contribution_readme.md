@@ -172,7 +172,7 @@ Using UMPIRE framework (adapted):
 
 1. ~~Run the `find` command to confirm the current list of remaining packages~~ ✓ Confirmed: 14 actionable packages (`python2-cairo` and `sqlheavy` are gone from the repo)
 
-**Implement:** Batch 1 (7 `hunspell-*`/`hyphen-*` packages) committed on `add-monitoring-yml-batch1`; Batch 2 (7 Python/proprietary packages) authored and pending commit. See **Code Changes** for branch and per-package commit links.
+**Implement:** Batch 1 (7 `hunspell-*`/`hyphen-*` packages) committed on `add-monitoring-yml-batch1` and submitted as PR [#9381](https://github.com/getsolus/packages/pull/9381); Batch 2 (7 Python/proprietary packages) authored and pending commit. See **Code Changes** for branch and per-package commit links.
 
 **Review:** Each file was checked against the schema at the [Solus monitoring docs](https://help.getsol.us/docs/packaging/monitoring.yml/), validated as YAML, and its Anitya ID resolved at `https://release-monitoring.org/project/<id>/`. See **Testing Strategy**.
 
@@ -279,7 +279,7 @@ All 14 actionable packages from the remaining list have now had a `monitoring.ya
 
 Work was split into two batches per maintainer guidance (5–10 packages per PR):
 
-- **Batch 1 — committed on the active branch (7 packages):** the dictionary/hyphenation set `hunspell-fr`, `hunspell-it`, `hunspell-pt-br`, `hunspell-ru`, `hunspell-sl`, `hyphen-de`, `hyphen-fr`. Each was scaffolded, given its looked-up Anitya `id`, set to `rss: ~` where no feed exists, and marked `cpe: ~` with a dated `# No known CPE` comment. One commit per package (see Code Changes).
+- **Batch 1 — committed and submitted as PR [#9381](https://github.com/getsolus/packages/pull/9381) (7 packages):** the dictionary/hyphenation set `hunspell-fr` (Anitya 130209), `hunspell-it` (390712), `hunspell-pt-br` (390759), `hunspell-ru` (390761), `hunspell-sl` (390767), `hyphen-de` (390754), `hyphen-fr` (390769). Each was scaffolded, given its looked-up Anitya `id`, set to `rss: ~` where no feed exists, and marked `cpe: ~` with a dated `# No known CPE` comment. One commit per package (see Code Changes).
 - **Batch 2 — authored, pending commit (7 packages):** `iscan`, `iscan-data`, `msodbcsql`, `python-sip-4`, `python-sphinx-lv2-theme`, `python-sphinx-rtd-theme`, `python2-setuptools`. New `monitoring.yaml` files exist in the working tree (currently untracked) with Anitya IDs filled in (e.g. `iscan` → id `390774`, `python-sip-4` → id `13626`), `cpe: ~`, and a `# No known CPE, checked 2026-06-19` note. These will be committed and opened as a second PR once Batch 1 is reviewed.
 
 A secondary audit checked every `monitoring.yaml` in the repository for a numerical Anitya ID. 112 packages were found with `id: ~` (YAML null) — this is intentional: each contains a comment (e.g. referencing issue #4533) confirming the package will never benefit from automated monitoring. No corrective action was needed.
@@ -296,16 +296,34 @@ A secondary audit checked every `monitoring.yaml` in the repository for a numeri
   - [`6f99157`](https://github.com/Abdifatah2023/packages/commit/6f99157ad1) — `hyphen-de: Add monitoring.yaml`
   - [`bc1505f`](https://github.com/Abdifatah2023/packages/commit/bc1505ffbb) — `hyphen-fr: Add monitoring.yaml`
 - **Pending (Batch 2, not yet committed):** `iscan`, `iscan-data`, `msodbcsql`, `python-sip-4`, `python-sphinx-lv2-theme`, `python-sphinx-rtd-theme`, `python2-setuptools` — new `monitoring.yaml` files authored in the working tree (untracked), ready to commit one-per-package once Batch 1 is reviewed.
-- **Draft PR:** _to be opened against `getsolus/packages` once Batch 1 is pushed; will reference #4121._
+- **Pull request (Batch 1):** [getsolus/packages #9381](https://github.com/getsolus/packages/pull/9381) — opened against upstream, references #4121.
 - **Approach decisions:** Following maintainer guidance — one PR at a time, 5–10 packages per PR, each package as its own commit. The `hunspell-*` / `hyphen-*` dictionary packages formed the first batch; the Python and proprietary packages form the second.
 
 ---
 
 ## Pull Request
 
-**PR Link:** [To be added when submitted]
+**PR Link (Batch 1):** [getsolus/packages #9381](https://github.com/getsolus/packages/pull/9381)
 
-**PR Description:** Adds `monitoring.yml` to [N] packages that were missing it, enabling automatic release and CVE monitoring. Each file includes a verified Anitya ID and either a CPE name or a dated note confirming no CPE was found. Closes part of #4121.
+**Summary:** Adds `monitoring.yaml` to 7 spell-checker and hyphenation dictionary packages that were missing it, enabling automated release and CVE monitoring. Part of #4121.
+
+| Package | Anitya ID | CPE |
+| --- | --- | --- |
+| `hunspell-fr` | 130209 (grammalecte) | none |
+| `hunspell-it` | 390712 | none |
+| `hunspell-pt-br` | 390759 | none |
+| `hunspell-ru` | 390761 | none |
+| `hunspell-sl` | 390767 | none |
+| `hyphen-de` | 390754 | none |
+| `hyphen-fr` | 390769 | none |
+
+**Test plan (as posted on the PR):**
+
+- Verified each `monitoring.yaml` is valid YAML
+- Confirmed all Anitya IDs resolve at [release-monitoring.org](https://release-monitoring.org)
+- Checked the NVD CPE database for each package; none have CVE entries
+
+**Batch 2** (`iscan`, `iscan-data`, `msodbcsql`, and the four Python packages) will follow as a second PR once #9381 is reviewed.
 
 **My Comment on the Issue (2026-06-11):**
 
@@ -327,7 +345,7 @@ A secondary audit checked every `monitoring.yaml` in the repository for a numeri
 - Submit one PR at a time, 5–10 packages per PR
 - Every contribution must be personally understood by the author, regardless of tooling used
 
-**Status:** Batch 1 committed (7 packages); Batch 2 authored and pending commit. First PR ready to open.
+**Status:** Batch 1 PR [#9381](https://github.com/getsolus/packages/pull/9381) opened (7 packages, awaiting review); Batch 2 authored and pending commit.
 
 ---
 
