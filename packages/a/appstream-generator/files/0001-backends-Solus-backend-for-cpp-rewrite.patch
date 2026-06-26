@@ -1,19 +1,19 @@
-From 4576aeec0972f053833dba48b19288e3e4eaee8c Mon Sep 17 00:00:00 2001
+From e734a3160c4234c3aa47c48819f7face47561140 Mon Sep 17 00:00:00 2001
 From: Joey Riches <josephriches@gmail.com>
 Date: Wed, 17 Sep 2025 13:47:40 +0100
 Subject: [PATCH 1/1] backends: WIP Solus backend for cpp rewrite
 
 ---
  src/backends/meson.build             |   1 +
- src/backends/solus/eopkgpkg.cpp      | 504 +++++++++++++++++++++++++++
- src/backends/solus/eopkgpkg.h        | 108 ++++++
- src/backends/solus/eopkgpkgindex.cpp | 423 ++++++++++++++++++++++
+ src/backends/solus/eopkgpkg.cpp      | 503 +++++++++++++++++++++++++++
+ src/backends/solus/eopkgpkg.h        | 110 ++++++
+ src/backends/solus/eopkgpkgindex.cpp | 424 ++++++++++++++++++++++
  src/backends/solus/eopkgpkgindex.h   |  99 ++++++
  src/backends/solus/meson.build       |   6 +
  src/config.cpp                       |   4 +
  src/config.h                         |   3 +-
  src/engine.cpp                       |   4 +
- 9 files changed, 1151 insertions(+), 1 deletion(-)
+ 9 files changed, 1153 insertions(+), 1 deletion(-)
  create mode 100644 src/backends/solus/eopkgpkg.cpp
  create mode 100644 src/backends/solus/eopkgpkg.h
  create mode 100644 src/backends/solus/eopkgpkgindex.cpp
@@ -31,10 +31,10 @@ index a412424..1cce1ac 100644
 +subdir('solus')
 diff --git a/src/backends/solus/eopkgpkg.cpp b/src/backends/solus/eopkgpkg.cpp
 new file mode 100644
-index 0000000..1d0f1c1
+index 0000000..2b82119
 --- /dev/null
 +++ b/src/backends/solus/eopkgpkg.cpp
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,503 @@
 +/*
 + * Copyright (C) 2025 Solus Developers <copyright@getsol.us>
 + *
@@ -56,7 +56,6 @@ index 0000000..1d0f1c1
 +
 +#include "eopkgpkg.h"
 +
-+#include <random>
 +#include <filesystem>
 +#include <cstring>
 +
@@ -66,7 +65,6 @@ index 0000000..1d0f1c1
 +#include "../../logging.h"
 +#include "../../zarchive.h"
 +#include "../../downloader.h"
-+#include "../../utils.h"
 +#include "../../utils.h"
 +
 +namespace ASGenerator
@@ -431,70 +429,57 @@ index 0000000..1d0f1c1
 +
 +std::vector<std::uint8_t> EopkgPackage::getFileData(const std::string &fname)
 +{
-+    if (!m_archive) {
-+        m_archive = std::make_unique<ArchiveDecompressor>();
-+        m_archive->open(getFilename());
++    // Ensure the package file is available locally before taking the lock
++    const auto localFname = getFilename();
++
++    std::lock_guard<std::mutex> lock(m_mutex);
++
++    // Ensure metadata is extracted first (reads metadata.xml/files.xml from the zip)
++    if (!m_metadataExtracted) {
++        // Open the eopkg zip to extract metadata
++        if (!m_archive) {
++            m_archive = std::make_unique<ArchiveDecompressor>();
++            m_archive->open(localFname);
++        }
++        extractMetadata();
 +    }
 +
-+    try {
-+        // All other files are in install.tar.xz
-+        // We need to extract install.tar.xz and then read files from it
-+        const auto &conf = Config::get();
-+
-+        // Generate a random number for unique temp directory
-+        std::random_device rd;
-+        std::mt19937 gen(rd());
-+        std::uniform_int_distribution<int> dis(0, INT32_MAX);
-+
-+        fs::path tempDir = fs::path(conf.getTmpDir()) / ("eopkg-" + m_pkgname + "-" + m_pkgver + "-" + std::to_string(dis(gen)));
-+
-+        // Ensure temp dir exists
-+        if (!fs::exists(tempDir)) {
-+            fs::create_directories(tempDir);
++    if (!m_installTarArchive || !m_installTarArchive->isOpen()) {
++        // Re-open the eopkg zip if it was previously cleaned up
++        if (!m_archive) {
++            m_archive = std::make_unique<ArchiveDecompressor>();
++            m_archive->open(localFname);
 +        }
 +
-+        // Use RAII for cleanup
-+        struct TempDirCleanup {
-+            fs::path path;
-+            ~TempDirCleanup() {
-+                try {
-+                    if (fs::exists(path)) {
-+                        fs::remove_all(path);
-+                    }
-+                } catch (...) {
-+                    // Ignore cleanup errors
-+                }
-+            }
-+        } cleanup{tempDir};
++        const auto &conf = Config::get();
++        m_tmpDir = fs::path(conf.getTmpDir()) / ("eopkg-" + m_pkgname + "-" + m_pkgver);
++        if (!fs::exists(m_tmpDir)) {
++            fs::create_directories(m_tmpDir);
++        }
 +
 +        // Extract install.tar.xz to the temp directory
-+        fs::path tarPath = tempDir / "install.tar.xz";
++        fs::path tarPath = m_tmpDir / "install.tar.xz";
 +        bool extracted = m_archive->extractFileTo("install.tar.xz", tarPath.string());
 +        if (!extracted) {
-+            logError("Failed to extract install.tar.xz from package");
-+            return {};
++            throw std::runtime_error("Failed to extract install.tar.xz from package");
 +        }
 +
 +        // Open the extracted tarball
-+        auto tarArchive = std::make_unique<ArchiveDecompressor>();
-+        tarArchive->open(tarPath.string());
++        m_installTarArchive = std::make_unique<ArchiveDecompressor>();
++        m_installTarArchive->open(tarPath.string(), m_tmpDir / "data");
++        m_installTarArchive->setOptimizeRepeatedReads(true);
++    }
 +
-+        // Remove any leading slash in the file path
-+        std::string actualPath = fname;
-+        if (!actualPath.empty() && actualPath[0] == '/') {
-+            actualPath = actualPath.substr(1);
-+        }
++    // Remove any leading slash in the file path
++    std::string actualPath = fname;
++    if (!actualPath.empty() && actualPath[0] == '/') {
++        actualPath = actualPath.substr(1);
++    }
 +
-+        // Try to read the file from the tarball
-+        try {
-+            return tarArchive->readData(actualPath);
-+        } catch (const std::exception &e) {
-+            logWarning("File '{}' not found in install.tar.xz: {}", actualPath, e.what());
-+            return {};
-+        }
-+
++    try {
++        return m_installTarArchive->readData(actualPath);
 +    } catch (const std::exception &e) {
-+        logError("Failed to extract file '{}' from package: {}", fname, e.what());
++        logWarning("File '{}' not found in install.tar.xz: {}", actualPath, e.what());
 +        return {};
 +    }
 +}
@@ -502,8 +487,15 @@ index 0000000..1d0f1c1
 +void EopkgPackage::cleanupTemp()
 +{
 +    std::lock_guard<std::mutex> lock(m_mutex);
++    if (m_installTarArchive) {
++        m_installTarArchive.reset();
++    }
 +    if (m_archive) {
 +        m_archive.reset();
++    }
++    if (!m_tmpDir.empty()) {
++        cleanupTempDir(m_tmpDir);
++        m_tmpDir.clear();
 +    }
 +}
 +
@@ -522,8 +514,15 @@ index 0000000..1d0f1c1
 +void EopkgPackage::finish()
 +{
 +    std::lock_guard<std::mutex> lock(m_mutex);
++    if (m_installTarArchive) {
++        m_installTarArchive.reset();
++    }
 +    if (m_archive) {
 +        m_archive.reset();
++    }
++    if (!m_tmpDir.empty()) {
++        cleanupTempDir(m_tmpDir);
++        m_tmpDir.clear();
 +    }
 +
 +    try {
@@ -541,10 +540,10 @@ index 0000000..1d0f1c1
 +} // namespace ASGenerator
 diff --git a/src/backends/solus/eopkgpkg.h b/src/backends/solus/eopkgpkg.h
 new file mode 100644
-index 0000000..268a735
+index 0000000..9927ca1
 --- /dev/null
 +++ b/src/backends/solus/eopkgpkg.h
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,110 @@
 +/*
 + * Copyright (C) 2025 Solus Developers <copyright@getsol.us>
 + *
@@ -635,8 +634,10 @@ index 0000000..268a735
 +    std::string m_pkgFname;
 +    std::string m_localPkgFname;
 +    std::vector<std::string> m_contentsL;
++    fs::path m_tmpDir;
 +
 +    std::unique_ptr<ArchiveDecompressor> m_archive;
++    std::unique_ptr<ArchiveDecompressor> m_installTarArchive;
 +    bool m_metadataExtracted;
 +
 +    mutable std::mutex m_mutex;
@@ -655,10 +656,10 @@ index 0000000..268a735
 +} // namespace ASGenerator
 diff --git a/src/backends/solus/eopkgpkgindex.cpp b/src/backends/solus/eopkgpkgindex.cpp
 new file mode 100644
-index 0000000..7711a0e
+index 0000000..5e39ef1
 --- /dev/null
 +++ b/src/backends/solus/eopkgpkgindex.cpp
-@@ -0,0 +1,423 @@
+@@ -0,0 +1,424 @@
 +/*
 + * Copyright (C) 2025 Solus Developers <copyright@getsol.us>
 + *
@@ -975,24 +976,25 @@ index 0000000..7711a0e
 +    const std::string &arch,
 +    bool withLongDescs)
 +{
-+    std::string id = suite + "-" + section + "-" + arch;
++    const std::string id = std::format("{}-{}-{}", suite, section, arch);
 +
-+    {
-+        std::lock_guard<std::mutex> lock(m_mutex);
-+        if (m_pkgCache.find(id) == m_pkgCache.end()) {
-+            auto pkgs = loadPackages(suite, section, arch);
-+            std::vector<std::shared_ptr<Package>> genericPkgs;
-+            genericPkgs.reserve(pkgs.size());
++    // Thread-safe cache access
++    std::lock_guard<std::mutex> lock(m_mutex);
 +
-+            for (auto &pkg : pkgs) {
-+                genericPkgs.push_back(std::static_pointer_cast<Package>(pkg));
-+            }
++    auto it = m_pkgCache.find(id);
++    if (it == m_pkgCache.end()) {
++        auto pkgs = loadPackages(suite, section, arch);
 +
-+            m_pkgCache[id] = std::move(genericPkgs);
-+        }
++        std::vector<std::shared_ptr<Package>> packagePtrs;
++        packagePtrs.reserve(pkgs.size());
++        for (const auto &pkg : pkgs)
++            packagePtrs.push_back(std::static_pointer_cast<Package>(pkg));
++        m_pkgCache[id] = packagePtrs;
++
++        return packagePtrs;
 +    }
 +
-+    return m_pkgCache[id];
++    return it->second;
 +}
 +
 +std::shared_ptr<Package> EopkgPackageIndex::packageForFile(
@@ -1201,7 +1203,7 @@ index 0000000..7f0be18
 +
 +backends_src += backend_solus_src
 diff --git a/src/config.cpp b/src/config.cpp
-index 1ee92d8..5e4223a 100644
+index 8adbe4d..97987b9 100644
 --- a/src/config.cpp
 +++ b/src/config.cpp
 @@ -300,6 +300,10 @@ void Config::loadFromFile(
@@ -1230,7 +1232,7 @@ index ec5d5fe..d5ef183 100644
  
  /**
 diff --git a/src/engine.cpp b/src/engine.cpp
-index 1722449..9974621 100644
+index 16bb6aa..19cbb98 100644
 --- a/src/engine.cpp
 +++ b/src/engine.cpp
 @@ -58,6 +58,7 @@
@@ -1252,5 +1254,5 @@ index 1722449..9974621 100644
          throw std::runtime_error("No backend specified, can not continue!");
      }
 -- 
-2.52.0
+2.54.0
 
