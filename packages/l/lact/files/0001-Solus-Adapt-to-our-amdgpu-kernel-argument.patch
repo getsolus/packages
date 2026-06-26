@@ -1,9 +1,23 @@
-Adapt to our amdgpu kernel argument
+From bbb1dce3abc39f1ee09c821b0c8d7692afb46fec Mon Sep 17 00:00:00 2001
+From: uni-dos <uni.dos12@outlook.com>
+Date: Fri, 26 Jun 2026 09:59:09 -0700
+Subject: [PATCH] Adapt to Solus amdgpu kernel argument
+
+---
+ lact-client/src/lib.rs                 |   2 -
+ lact-daemon/src/server.rs              |   2 -
+ lact-daemon/src/system.rs              | 139 ++++---------------------
+ lact-gui/src/app.rs                    |  32 ------
+ lact-gui/src/app/msg.rs                |   3 -
+ lact-gui/src/app/preferences_dialog.rs |  15 ---
+ lact-schema/src/request.rs             |   2 -
+ 7 files changed, 19 insertions(+), 176 deletions(-)
+
 diff --git a/lact-client/src/lib.rs b/lact-client/src/lib.rs
-index 3132190..dc45a0a 100644
+index 08a16c1..f7e32ab 100644
 --- a/lact-client/src/lib.rs
 +++ b/lact-client/src/lib.rs
-@@ -127,8 +127,6 @@ impl DaemonClient {
+@@ -139,8 +139,6 @@ impl DaemonClient {
      }
  
      request_plain!(get_system_info, SystemInfo, SystemInfo);
@@ -11,12 +25,12 @@ index 3132190..dc45a0a 100644
 -    request_plain!(disable_overdrive, DisableOverdrive, String);
      request_plain!(generate_debug_snapshot, GenerateSnapshot, String);
      request_plain!(reset_config, RestConfig, ());
-     request_with_id!(get_device_info, DeviceInfo, DeviceInfo);
+     request_with_id!(get_device_api_info, DeviceApiInfo, DeviceApiInfo);
 diff --git a/lact-daemon/src/server.rs b/lact-daemon/src/server.rs
-index 8f2a80d..ce44a0f 100644
+index 9ec8ffd..62fe03b 100644
 --- a/lact-daemon/src/server.rs
 +++ b/lact-daemon/src/server.rs
-@@ -208,8 +208,6 @@ async fn handle_request<'a>(request: Request<'a>, handler: &'a Handler) -> anyho
+@@ -230,8 +230,6 @@ async fn handle_request<'a>(
              ok_response(handler.set_gpu_config(id, *config).await?)
          }
          Request::ProcessList { id } => ok_response(handler.process_list(id).await?),
@@ -26,7 +40,7 @@ index 8f2a80d..ce44a0f 100644
          Request::ConfirmPendingConfig(command) => {
              ok_response(handler.confirm_pending_config(command)?)
 diff --git a/lact-daemon/src/system.rs b/lact-daemon/src/system.rs
-index 8645795..8d0a2b5 100644
+index 0c9a7e6..36a1d0d 100644
 --- a/lact-daemon/src/system.rs
 +++ b/lact-daemon/src/system.rs
 @@ -1,6 +1,6 @@
@@ -81,21 +95,19 @@ index 8645795..8d0a2b5 100644
  
  pub async fn info() -> anyhow::Result<SystemInfo> {
      let version = DAEMON_VERSION.to_owned();
-@@ -61,10 +52,12 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
+@@ -61,8 +52,10 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
          |info| info.release().to_string_lossy().into_owned(),
      );
  
 -    let amdgpu_overdrive_enabled = if let Ok(mask) = read_current_mask() {
+-        Some((mask & PP_OVERDRIVE_MASK) > 0)
 +    let amdgpu_overdrive_enabled = if let Ok(true) = is_overdrive_enabled_flag() {
 +        Some(true)
 +    } else if let Ok(mask) = read_current_mask() {
-         Some((mask & PP_OVERDRIVE_MASK) > 0)
++    	Some((mask & PP_OVERDRIVE_MASK) > 0)
      } else {
--        None
-+    	None
+         None
      };
- 
-     let os_release = get_os_release().inspect_err(|err| error!("Could not detect distro: {err}"));
 @@ -83,109 +76,15 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
      })
  }
@@ -191,8 +203,15 @@ index 8645795..8d0a2b5 100644
 -
 -    // Returning a string only to maintain API compat
 -    Ok(String::new())
--}
--
++fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
++	let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
++	if overdrive_enabled.trim() != "0" {
++		Ok(true)
++	} else {
++		Ok(false)
++	}
+ }
+ 
 -async fn regenerate_initramfs(initramfs_type: InitramfsType) -> anyhow::Result<()> {
 -    info!("detected initramfs type {initramfs_type:?}, regenerating");
 -    let result = match initramfs_type {
@@ -202,61 +221,42 @@ index 8645795..8d0a2b5 100644
 -    };
 -    result.context("Initramfs generation command failed")?;
 -    Ok(())
-+fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
-+	let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
-+	if overdrive_enabled.trim() != "0" {
-+		Ok(true)
-+	} else {
-+		Ok(false)
-+	}
- }
-+ 
+-}
  
  fn read_current_mask() -> anyhow::Result<u64> {
      let ppfeaturemask = fs::read_to_string(PP_FEATURE_MASK_PATH)?;
 diff --git a/lact-gui/src/app.rs b/lact-gui/src/app.rs
-index 46ba0d4..df01f21 100644
+index 8c74244..73caf20 100644
 --- a/lact-gui/src/app.rs
 +++ b/lact-gui/src/app.rs
-@@ -7,7 +7,6 @@ pub mod graphs_window;
- mod info_row;
- mod info_row_level;
+@@ -4,7 +4,6 @@ mod gpu_selector;
+ pub mod graphs_window;
+ mod info_dialog;
  pub(crate) mod msg;
 -mod overdrive_dialog;
- mod page_section;
- mod page_section_expander;
  pub(crate) mod pages;
-@@ -21,7 +20,6 @@ use crate::{
-     app::{
-         about_dialog::{AboutDialog, AboutDialogMsg},
-         gpu_selector::GpuSelector,
+ mod preferences_dialog;
+ mod process_monitor;
+@@ -20,7 +19,6 @@ use crate::{
+         info_dialog::{
+             InfoDialog, InfoDialogConfirmation, InfoDialogData, InfoDialogId, InfoDialogMsg,
+         },
 -        overdrive_dialog::{OverdriveDialog, OverdriveDialogMsg},
+         pages::displays_page::DisplaysPage,
          preferences_dialog::{PreferencesDialog, PreferencesDialogMsg},
          process_monitor::{ProcessMonitorWindow, ProcessMonitorWindowMsg},
-         profiles::{
-@@ -102,7 +100,6 @@ pub struct AppModel {
+@@ -101,7 +99,6 @@ pub struct AppModel {
      daemon_client: DaemonClient,
      graphs_window: relm4::Controller<GraphsWindow>,
      process_monitor_window: relm4::Controller<ProcessMonitorWindow>,
 -    overdrive_dialog: relm4::Controller<OverdriveDialog>,
      preferences_dialog: relm4::Controller<PreferencesDialog>,
      about_dialog: relm4::Controller<AboutDialog>,
- 
-@@ -121,7 +118,7 @@ pub struct AppModel {
- 
-     settings_changed: BoolBinding,
- 
--    system_info: SystemInfo,
-+	system_info: SystemInfo,
-     device_flags: Vec<DeviceFlag>,
-     device_driver: String,
- }
-@@ -292,17 +289,7 @@ impl AsyncComponent for AppModel {
-                                         set_label: &fl!(I18N, "show-historical-charts"),
-                                         connect_clicked => move |_| APP_BROKER.send(AppMsg::ShowGraphsWindow),
+     info_dialog: relm4::Controller<InfoDialog>,
+@@ -261,16 +258,6 @@ impl AsyncComponent for AppModel {
                                      },
--                                },
--
+                                 },
+ 
 -                                add_top_bar = &adw::Banner {
 -                                    #[watch]
 -                                    set_revealed: model.system_info.amdgpu_overdrive_enabled == Some(false) && model.device_driver == "amdgpu",
@@ -266,30 +266,29 @@ index 46ba0d4..df01f21 100644
 -
 -                                    connect_button_clicked => AppMsg::ShowOverdriveDialog,
 -                                },
-+                                },                             
- 
-                                 #[wrap(Some)]
-                                 set_content = &gtk::ScrolledWindow {
-@@ -445,10 +432,6 @@ impl AsyncComponent for AppModel {
-             .launch(String::new())
-             .forward(sender.input_sender(), |msg| msg);
- 
--        let overdrive_dialog = OverdriveDialog::builder()
--            .launch((system_info.clone(), root.clone().upcast()))
--            .detach();
 -
-         let preferences_dialog = PreferencesDialog::builder()
-             .launch((system_info.clone(), root.clone()))
-             .detach();
-@@ -472,7 +455,6 @@ impl AsyncComponent for AppModel {
+                                 add_top_bar = &adw::Banner {
+                                     set_title: &fl!(I18N, "reconnecting-to-daemon"),
+                                     add_binding: (&model.is_reconnecting, "revealed"),
+@@ -440,9 +427,6 @@ impl AsyncComponent for AppModel {
+ 
+         let crash_page = CrashPage::launch_default().forward(sender.input_sender(), |msg| msg);
+ 
+-        let overdrive_dialog =
+-            OverdriveDialog::detach((system_info.clone(), root.clone().upcast()));
+-
+         let preferences_dialog = PreferencesDialog::detach((system_info.clone(), root.clone()));
+ 
+         let about_dialog = AboutDialog::detach(root.clone());
+@@ -492,7 +476,6 @@ impl AsyncComponent for AppModel {
              daemon_client,
              graphs_window,
              process_monitor_window,
 -            overdrive_dialog,
              preferences_dialog,
              about_dialog,
-             info_page,
-@@ -586,9 +568,6 @@ impl AppModel {
+             info_dialog,
+@@ -684,9 +667,6 @@ impl AppModel {
              AppMsg::ShowAboutDialog => {
                  self.about_dialog.emit(AboutDialogMsg::Show);
              }
@@ -299,9 +298,9 @@ index 46ba0d4..df01f21 100644
              AppMsg::SelectProfile {
                  profile,
                  auto_switch,
-@@ -742,18 +721,6 @@ impl AppModel {
-             AppMsg::DebugSnapshot => {
-                 self.generate_debug_snapshot(root).await;
+@@ -843,18 +823,6 @@ impl AppModel {
+                     .await
+                     .context("Could not generate snapshot")?;
              }
 -            AppMsg::EnableOverdrive => {
 -                self.overdrive_dialog.emit(OverdriveDialogMsg::Loading);
@@ -316,13 +315,13 @@ index 46ba0d4..df01f21 100644
 -                result?;
 -            }
              AppMsg::ResetConfig => {
-                 self.daemon_client.reset_config().await?;
-                 sender.input(AppMsg::ReloadData { full: true });
+                 self.info_dialog
+                     .emit(InfoDialogMsg::Show(Box::new(InfoDialogData {
 diff --git a/lact-gui/src/app/msg.rs b/lact-gui/src/app/msg.rs
-index 8db14d0..552a0cc 100644
+index 3cdc179..cef9455 100644
 --- a/lact-gui/src/app/msg.rs
 +++ b/lact-gui/src/app/msg.rs
-@@ -25,9 +25,6 @@ pub enum AppMsg {
+@@ -28,9 +28,6 @@ pub enum AppMsg {
      DebugSnapshot,
      ShowPreferencesDialog,
      ShowAboutDialog,
@@ -330,13 +329,13 @@ index 8db14d0..552a0cc 100644
 -    EnableOverdrive,
 -    DisableOverdrive,
      ResetConfig,
+     ResetConfigConfirmed,
      FetchProcessList,
-     ReloadProfiles {
 diff --git a/lact-gui/src/app/preferences_dialog.rs b/lact-gui/src/app/preferences_dialog.rs
-index 6050795..77f26e8 100644
+index fff2302..1bdac6b 100644
 --- a/lact-gui/src/app/preferences_dialog.rs
 +++ b/lact-gui/src/app/preferences_dialog.rs
-@@ -108,21 +108,6 @@ impl relm4::Component for PreferencesDialog {
+@@ -112,21 +112,6 @@ impl relm4::Component for PreferencesDialog {
                  add = &adw::PreferencesGroup {
                      set_title: &fl!(I18N, "daemon"),
  
@@ -359,10 +358,10 @@ index 6050795..77f26e8 100644
                          set_title: &fl!(I18N, "reset-all-config"),
                          set_activatable: true,
 diff --git a/lact-schema/src/request.rs b/lact-schema/src/request.rs
-index 7c7c0c7..6fb7ccc 100644
+index b91d553..10704a1 100644
 --- a/lact-schema/src/request.rs
 +++ b/lact-schema/src/request.rs
-@@ -104,8 +104,6 @@ pub enum Request<'a> {
+@@ -118,8 +118,6 @@ pub enum Request<'a> {
      ProcessList {
          id: &'a str,
      },
@@ -371,3 +370,6 @@ index 7c7c0c7..6fb7ccc 100644
      GenerateSnapshot,
      ConfirmPendingConfig(ConfirmCommand),
      RestConfig,
+-- 
+2.54.0
+
