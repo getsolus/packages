@@ -14,7 +14,7 @@ pref("browser.newtabpage.pinned",           '[{"url":"https://getsol.us/blog/","
 // Default browser check
 pref("browser.shell.checkDefaultBrowser",   false);
 // Set default homepage
-pref("browser.startup.homepage",            "data:text/plain,browser.startup.homepage=https://getsol.us/blog/");
+pref("browser.startup.homepage",            "https://getsol.us/blog/");
 // Needed for loading langpacks
 pref("extensions.autoDisableScopes",        0);
 // Do not recommend extensions
