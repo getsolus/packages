@@ -1,0 +1,76 @@
+From 8efc67baeee79b836747ebb54dd82c6830eb5fc3 Mon Sep 17 00:00:00 2001
+From: Thomas Waldmann <tw@waldmann-edv.de>
+Date: Thu, 18 Jun 2026 20:47:16 +0200
+Subject: [PATCH] tests: reset borg.output.progress logger between tests to fix
+ flakiness
+
+ProgressIndicatorBase installs a handler on the process-global
+'borg.output.progress' logger and only removes it in __del__. In-process
+(fork=False) command execution leaves this logger at level INFO /
+propagate=False with lingering handlers, and that state leaks across tests.
+
+When a later progress test runs, the "if not self.logger.handlers" guard
+skips the stderr handler setup, so progress output goes to the logging
+system instead of the stderr captured by capfd. Under xdist this surfaces
+as order/distribution-dependent failures of the progress tests
+(test_progress_percentage_*, test_extract_progress, test_progress_on,
+test_check_usage, ...).
+
+Add an autouse fixture that removes handlers and resets level/propagate on
+the progress logger after each test. This also makes the intra-test
+workaround in test_check_usage unnecessary (the progress logger level is
+set per command run by _setup_implied_logging), so remove it.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+---
+ src/borg/testsuite/archiver.py |  2 --
+ src/borg/testsuite/conftest.py | 18 ++++++++++++++++++
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/borg/testsuite/archiver.py b/src/borg/testsuite/archiver.py
+index c2ee228001..dc07367fdc 100644
+--- a/src/borg/testsuite/archiver.py
++++ b/src/borg/testsuite/archiver.py
+@@ -4411,8 +4411,6 @@ def test_check_usage(self):
+         self.assert_in('Starting repository check', output)
+         self.assert_in('Starting archive consistency check', output)
+         self.assert_in('Checking segments', output)
+-        # reset logging to new process default to avoid need for fork=True on next check
+-        logging.getLogger('borg.output.progress').setLevel(logging.NOTSET)
+         output = self.cmd('check', '-v', '--repository-only', self.repository_location, exit_code=0)
+         self.assert_in('Starting repository check', output)
+         self.assert_not_in('Starting archive consistency check', output)
+diff --git a/src/borg/testsuite/conftest.py b/src/borg/testsuite/conftest.py
+index bc40f33b7e..12070964ca 100644
+--- a/src/borg/testsuite/conftest.py
++++ b/src/borg/testsuite/conftest.py
+@@ -1,3 +1,4 @@
++import logging
+ import os
+ 
+ import pytest
+@@ -26,6 +27,23 @@
+ from borg.testsuite.platform import fakeroot_detected  # noqa: E402
+ 
+ 
++@pytest.fixture(autouse=True)
++def reset_progress_logger():
++    # ProgressIndicatorBase installs a handler on the process-global
++    # 'borg.output.progress' logger and only removes it in __del__, and in-process
++    # (fork=False) command execution leaves this logger at level INFO / propagate=False.
++    # This state leaks across tests and makes the progress tests flaky (the progress
++    # output ends up in the logging system instead of on the stderr captured by capfd).
++    # Reset it after each test to keep tests isolated.
++    yield
++    logger = logging.getLogger('borg.output.progress')
++    for handler in logger.handlers[:]:
++        logger.removeHandler(handler)
++        handler.close()
++    logger.setLevel(logging.NOTSET)
++    logger.propagate = True
++
++
+ @pytest.fixture(autouse=True)
+ def clean_env(tmpdir_factory, monkeypatch):
+     # avoid that we access / modify the user's normal .config / .cache directory:
+
