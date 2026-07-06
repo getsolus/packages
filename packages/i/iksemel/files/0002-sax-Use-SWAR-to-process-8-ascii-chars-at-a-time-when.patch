@@ -1,0 +1,91 @@
+From ad272bdcb38c2eee7e6adabea4b90ca4dafc308e Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Thu, 18 Jun 2026 22:43:33 +0100
+Subject: [PATCH 2/4] sax: Use SWAR to process 8 ascii chars at a time when
+ processing cdata
+
+Previously, we iterated one byte at a time using a LUT to check if we
+reached a special delimiter to break out of processing cdata.
+
+Now, whilst we are processing cdata, we iterate on 8 bytes at a time
+using SIMD within a register bitwise tricks to check if we reach a
+delimiter within the chunk.
+
+If we do hit a delimiter, then run count trailing zeros against
+the masked chunk to find the exact byte offset and return.
+
+Note this works on 64bit little endian machines only.
+---
+ src/sax.c | 42 ++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 38 insertions(+), 4 deletions(-)
+
+diff --git a/src/sax.c b/src/sax.c
+index 5623e2c..be8385d 100644
+--- a/src/sax.c
++++ b/src/sax.c
+@@ -6,6 +6,7 @@
+ 
+ #include "common.h"
+ #include "iksemel.h"
++#include <stdint.h>
+ 
+ enum cons_e {
+ 	C_CDATA = 0,
+@@ -283,6 +284,42 @@ stack_expand (iksparser *prs, int len)
+ 	prs->stack_pos++; \
+ }
+ 
++static void
++skip_cdata (iksparser *prs, char *buf, int *pos, int len)
++{
++        int p = *pos;
++
++        while (p + 8 <= len) {
++                uint64_t chunk;
++                memcpy (&chunk, buf + p, 8);
++                uint64_t has_zero = (chunk - 0x0101010101010101ULL) & ~chunk & 0x8080808080808080ULL;
++                uint64_t n = chunk ^ 0x0A0A0A0A0A0A0A0AULL;
++                uint64_t has_n = (n - 0x0101010101010101ULL) & ~n & 0x8080808080808080ULL;
++                uint64_t amp = chunk ^ 0x2626262626262626ULL;
++                uint64_t has_amp = (amp - 0x0101010101010101ULL) & ~amp & 0x8080808080808080ULL;
++                uint64_t lt = chunk ^ 0x3C3C3C3C3C3C3C3CULL;
++                uint64_t has_lt = (lt - 0x0101010101010101ULL) & ~lt & 0x8080808080808080ULL;
++                uint64_t is_utf8_start = (chunk & (chunk << 1)) & 0x8080808080808080ULL;
++
++                uint64_t mask = has_zero | has_n | has_amp | has_lt | is_utf8_start;
++                if (mask) {
++                        int skip = __builtin_ctzll (mask) / 8;
++                        p += skip;
++                        prs->nr_bytes += skip;
++                        *pos = p;
++                        return;
++                }
++                p += 8;
++                prs->nr_bytes += 8;
++        }
++
++        while (p < len && !(char_class[(unsigned char)buf[p]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_CDATA))) {
++                p++;
++                prs->nr_bytes++;
++        }
++        *pos = p;
++}
++
+ static enum ikserror
+ sax_core (iksparser *prs, char *buf, int len)
+ {
+@@ -336,10 +373,7 @@ sax_core (iksparser *prs, char *buf, int len)
+ 		switch (prs->context) {
+ 			case C_CDATA:
+ 				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_CDATA))) {
+-					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_CDATA))) {
+-						pos++;
+-						prs->nr_bytes++;
+-					}
++					skip_cdata (prs, buf, &pos, len);
+ 					re = 1;
+ 					break;
+ 				}
+-- 
+2.54.0
+

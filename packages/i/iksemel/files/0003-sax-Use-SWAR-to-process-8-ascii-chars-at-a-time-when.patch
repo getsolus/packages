@@ -1,0 +1,81 @@
+From 1db9b0c30b339902e0996be4e86e1991e49ceda9 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Thu, 18 Jun 2026 22:59:23 +0100
+Subject: [PATCH 3/4] sax: Use SWAR to process 8 ascii chars at a time when
+ processing tags
+
+Fast processing of TAGS, similar to CDATA, as it does show an additional
+small benefit in performance.
+---
+ src/sax.c | 48 ++++++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 44 insertions(+), 4 deletions(-)
+
+diff --git a/src/sax.c b/src/sax.c
+index be8385d..efd55f4 100644
+--- a/src/sax.c
++++ b/src/sax.c
+@@ -320,6 +320,49 @@ skip_cdata (iksparser *prs, char *buf, int *pos, int len)
+         *pos = p;
+ }
+ 
++static void
++skip_tag (iksparser *prs, char *buf, int *pos, int len)
++{
++        int p = *pos;
++
++        while (p + 8 <= len) {
++                uint64_t chunk;
++                memcpy (&chunk, buf + p, 8);
++                uint64_t m = (chunk - 0x0101010101010101ULL) & ~chunk & 0x8080808080808080ULL;
++                uint64_t n = chunk ^ 0x0A0A0A0A0A0A0A0AULL;
++                m |= (n - 0x0101010101010101ULL) & ~n & 0x8080808080808080ULL;
++                uint64_t t = chunk ^ 0x0909090909090909ULL;
++                m |= (t - 0x0101010101010101ULL) & ~t & 0x8080808080808080ULL;
++                uint64_t r = chunk ^ 0x0D0D0D0D0D0D0D0DULL;
++                m |= (r - 0x0101010101010101ULL) & ~r & 0x8080808080808080ULL;
++                uint64_t s = chunk ^ 0x2020202020202020ULL;
++                m |= (s - 0x0101010101010101ULL) & ~s & 0x8080808080808080ULL;
++                uint64_t sl = chunk ^ 0x2F2F2F2F2F2F2F2FULL;
++                m |= (sl - 0x0101010101010101ULL) & ~sl & 0x8080808080808080ULL;
++                uint64_t eq = chunk ^ 0x3D3D3D3D3D3D3D3DULL;
++                m |= (eq - 0x0101010101010101ULL) & ~eq & 0x8080808080808080ULL;
++                uint64_t gt = chunk ^ 0x3E3E3E3E3E3E3E3EULL;
++                m |= (gt - 0x0101010101010101ULL) & ~gt & 0x8080808080808080ULL;
++                m |= (chunk & (chunk << 1)) & 0x8080808080808080ULL;
++
++                if (m) {
++                        int skip = __builtin_ctzll (m) / 8;
++                        p += skip;
++                        prs->nr_bytes += skip;
++                        *pos = p;
++                        return;
++                }
++                p += 8;
++                prs->nr_bytes += 8;
++        }
++
++        while (p < len && !(char_class[(unsigned char)buf[p]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
++                p++;
++                prs->nr_bytes++;
++        }
++        *pos = p;
++}
++
+ static enum ikserror
+ sax_core (iksparser *prs, char *buf, int len)
+ {
+@@ -447,10 +490,7 @@ sax_core (iksparser *prs, char *buf, int len)
+ 				}
+ 				if (stack_old == -1) stack_old = pos;
+ 				if (!(char_class[c] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
+-					while (pos < len && !(char_class[(unsigned char)buf[pos]] & (B_INVALID | B_NEWLINE | B_UTF8 | B_WS | B_TAG))) {
+-						pos++;
+-						prs->nr_bytes++;
+-					}
++					skip_tag (prs, buf, &pos, len);
+ 					re = 1;
+ 				}
+ 				break;
+-- 
+2.54.0
+

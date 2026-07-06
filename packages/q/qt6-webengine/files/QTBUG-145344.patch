@@ -1,0 +1,117 @@
+From ae6991d950bb343accad96b96047fe605c17bcc3 Mon Sep 17 00:00:00 2001
+From: Peter Varga <pvarga@inf.u-szeged.hu>
+Date: Wed, 29 Apr 2026 14:52:12 +0200
+Subject: [PATCH] Fix AMD VA-API flickering on Wayland by allowing multi-planar
+ NativePixmap import
+
+Hardware-accelerated video decoding on Wayland uses the YUV420 format,
+which is multi-planar. We previously disabled multi-planar support
+globally because we cannot allocate or import these formats via dma-buf.
+
+However, the video decoder only needs to create a NativePixmap from an
+existing handle. It does not rely on our implementation for direct
+allocation nor does it require direct dma-buf import for presenting.
+
+Report multi-planar buffer support to Chromium so it can correctly
+handle VA-API YUV frames. Add guards against using multi-planar formats
+in unimplemented code paths instead of disabling support globally.
+
+X11/GLX is unaffected, as it only supports the BGRA8888 format.
+
+Fixes: QTBUG-145344
+Change-Id: Ibc08d438dcf7598438ae016cdb5fa646d9ab12f3
+Reviewed-by: Moss Heim <moss.heim@qt.io>
+(cherry picked from commit 5210a30b0a1042e60f2ee2a7b74fa9c48d9be098)
+Reviewed-by: Allan Sandfeld Jensen <allan.jensen@qt.io>
+---
+ .../native_skia_output_device_opengl.cpp          | 10 ++++++++++
+ .../native_skia_output_device_vulkan.cpp          |  8 +++++---
+ src/core/ozone/surface_factory_qt.cpp             | 15 ++++++++++-----
+ 3 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/src/core/compositor/native_skia_output_device_opengl.cpp b/src/core/compositor/native_skia_output_device_opengl.cpp
+index 226aaab0f..ea8878d8a 100644
+--- a/src/core/compositor/native_skia_output_device_opengl.cpp
++++ b/src/core/compositor/native_skia_output_device_opengl.cpp
+@@ -238,6 +238,11 @@ QSGTexture *NativeSkiaOutputDeviceOpenGL::texture(QQuickWindow *win, uint32_t te
+             GLXHelper *glxHelper = GLXHelper::instance();
+             auto *glxFun = glxHelper->functions();
+ 
++            if (nativePixmap->GetNumberOfPlanes() != 1) {
++                qFatal("GLX: Importing multiple planes is not supported: %zu",
++                       nativePixmap->GetNumberOfPlanes());
++            }
++
+             const auto dmaBufFd = HANDLE_EINTR(dup(nativePixmap->GetDmaBufFd(0)));
+             if (dmaBufFd < 0) {
+                 qFatal("GLX: Could not import the dma-buf as an XPixmap because the FD couldn't be "
+@@ -299,6 +304,11 @@ QSGTexture *NativeSkiaOutputDeviceOpenGL::texture(QQuickWindow *win, uint32_t te
+             auto *eglFun = eglHelper->functions();
+             auto *glExtFun = GLHelper::instance()->functions();
+ 
++            if (nativePixmap->GetNumberOfPlanes() != 1) {
++                qFatal("EGL: Importing multiple planes is not supported: %zu",
++                       nativePixmap->GetNumberOfPlanes());
++            }
++
+             const auto dmaBufFd = HANDLE_EINTR(dup(nativePixmap->GetDmaBufFd(0)));
+             if (dmaBufFd < 0) {
+                 qFatal("EGL: Could not import the dma-buf as an EGLImage because the FD couldn't "
+diff --git a/src/core/compositor/native_skia_output_device_vulkan.cpp b/src/core/compositor/native_skia_output_device_vulkan.cpp
+index 503f607f2..7309943a1 100644
+--- a/src/core/compositor/native_skia_output_device_vulkan.cpp
++++ b/src/core/compositor/native_skia_output_device_vulkan.cpp
+@@ -145,11 +145,13 @@ QSGTexture *NativeSkiaOutputDeviceVulkan::texture(QQuickWindow *win, uint32_t te
+         gfx::NativePixmapHandle nativePixmapHandle = nativePixmap->ExportHandle();
+         qCDebug(lcWebEngineCompositor, "  DRM Format Modifier: 0x%lx", nativePixmapHandle.modifier);
+ 
++        if (nativePixmapHandle.planes.size() != 1) {
++            qFatal("VULKAN: Importing multiple planes is not supported: %zu",
++                   nativePixmapHandle.planes.size());
++        }
++
+         if (nativePixmapHandle.modifier != gfx::NativePixmapHandle::kNoModifier) {
+             usingDrmModifier = true;
+-            if (nativePixmapHandle.planes.size() != 1)
+-                qFatal("VULKAN: Multiple planes are not supported.");
+-
+             planeLayout.offset = nativePixmapHandle.planes[0].offset;
+             planeLayout.rowPitch = nativePixmapHandle.planes[0].stride;
+             modifierInfo.drmFormatModifier = nativePixmapHandle.modifier;
+diff --git a/src/core/ozone/surface_factory_qt.cpp b/src/core/ozone/surface_factory_qt.cpp
+index cd96e634a..6afb7d3e0 100644
+--- a/src/core/ozone/surface_factory_qt.cpp
++++ b/src/core/ozone/surface_factory_qt.cpp
+@@ -87,12 +87,8 @@ bool SurfaceFactoryQt::CanCreateNativePixmapForFormat(gfx::BufferFormat format)
+ #endif
+ 
+ #if QT_CONFIG(egl)
+-    if (OzoneUtilQt::usingEGL()) {
+-        // Multiplanar format support is not yet implemented. See EGLHelper::queryDmaBuf().
+-        if (gfx::BufferFormatIsMultiplanar(format))
+-            return false;
++    if (OzoneUtilQt::usingEGL())
+         return ui::SurfaceFactoryOzone::CanCreateNativePixmapForFormat(format);
+-    }
+ #endif
+ #endif // QT_CONFIG(opengl)
+ 
+@@ -133,6 +129,15 @@ scoped_refptr<gfx::NativePixmap> SurfaceFactoryQt::CreateNativePixmap(
+ 
+ #if QT_CONFIG(egl)
+     if (OzoneUtilQt::usingEGL()) {
++        // Multi-planar formats are only supported when creating NativePixmap from an existing
++        // handle (eg. for hardware video decoding), which is handled by
++        // CreateNativePixmapFromHandle().
++        if (gfx::BufferFormatIsMultiplanar(format)) {
++            qFatal("Direct allocation of multi-planar GBM buffer (format: %s) via EGL is "
++                   "currently unsupported.",
++                   gfx::BufferFormatToString(format));
++        }
++
+         auto gbmBuffer = EGLHelper::instance()->createBuffer(format, size, usage);
+         if (gbmBuffer)
+             bufferHandle = gbmBuffer->ExportHandle();
+-- 
+GitLab
+

@@ -1,0 +1,209 @@
+# yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
+name       : edk2
+version    : 202605
+release    : 14
+source     :
+    - git|https://github.com/tianocore/edk2.git : edk2-stable202605
+    # Reference aarch64 compiler provided by ARM (Solus does not have a usable ARM stack that works with this package)
+    # https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+    - https://developer.arm.com/-/media/Files/downloads/gnu/15.2.rel1/binrel/arm-gnu-toolchain-15.2.rel1-x86_64-aarch64-none-linux-gnu.tar.xz#arm-gnu-toolchain.tar.xz : 9a685b335bd709d683a8c782253c37e8c36c10e6924e59e39d4769b02132eb43
+    # Same for risc-v
+    - https://github.com/riscv-collab/riscv-gnu-toolchain/releases/download/2026.05.19/riscv64-glibc-ubuntu-24.04-gcc.tar.xz#riscv-gnu-toolchain.tar.xz : d742c54e6ed7d42a88565e44820c305984c3965010d412d239c458117e7d2dc7
+homepage   : https://github.com/tianocore/tianocore.github.io/wiki/EDK-II
+license    :
+    - BSD-2-Clause
+    - BSD-3-Clause
+    - MIT
+    - Python-2.0
+    - Zlib
+component  :
+    - virt
+    - aarch64 : virt
+    - riscv64 : virt
+summary    :
+    - UEFI support for Virtual Machines
+    - aarch64 : UEFI support for Virtual Machines - aarch64 firmware
+    - riscv64 : UEFI support for Virtual Machines - riscv64 firmware
+description: |
+    OVMF is an EDK II based project to enable UEFI support for Virtual Machines. OVMF contains UEFI firmware for QEMU and KVM.
+builddeps  :
+    - pkgconfig(python3)
+    - pkgconfig(uuid)
+    - acpica-unix
+environment: |
+    _BUILD_ARCHS=(AARCH64 RISCV64 X64)
+    export GCC_AARCH64_PREFIX="${workdir}/gcc-aarch64/bin/aarch64-none-linux-gnu-"
+    export GCC_RISCV64_PREFIX="${workdir}/gcc-riscv64/bin/riscv64-unknown-linux-gnu-"
+
+    # Options that should be used by every build, including the shells
+    _CC_OPTS=(
+        -b RELEASE
+        -n %YJOBS%
+        -t GCC
+    )
+
+    # Options that should be used for all EFI binaries
+    _EFI_OPTS=(
+        -D FD_SIZE_4MB
+        -D NETWORK_HTTP_BOOT_ENABLE
+        -D NETWORK_IP6_ENABLE
+        -D TPM1_ENABLE
+        -D TPM2_ENABLE
+        -D TPM_CONFIG_ENABLE
+    )
+
+    # Options that should only be used by secure boot builds - excluding AARCH64
+    _SB_OPTS=(
+        -D SECURE_BOOT_ENABLE
+        -D SMM_REQUIRE
+        -D BUILD_SHELL=FALSE
+        -D EXCLUDE_SHELL_FROM_FD
+    )
+
+    # network TLS for some targets (all but )
+    _NETWORK_TLS=(
+        -D NETWORK_TLS_ENABLE
+    )
+
+    # Sanitize build environment
+    unset CFLAGS CXXFLAGS LDFLAGS
+setup      : |
+    mkdir gcc-aarch64 gcc-riscv64
+    tar --strip-components=1 -xf ${sources}/arm-gnu-toolchain.tar.xz -C gcc-aarch64
+    tar --strip-components=1 -xf ${sources}/riscv-gnu-toolchain.tar.xz -C gcc-riscv64
+build      : |
+    make %JOBS% -C BaseTools
+    . edksetup.sh
+
+    # Shell
+    for _ARCH in "${_BUILD_ARCHS[@]}"; do
+        case "${_ARCH}" in
+            AARCH64)
+                echo "Building ArmVirtPkg ($_ARCH) with secure boot support"
+                _build_options=(
+                    -p ArmVirtPkg/ArmVirtQemu.dsc
+                    -a "$_ARCH"
+                    "${_CC_OPTS[@]}"
+                    "${_EFI_OPTS[@]}"
+                    "${_NETWORK_TLS[@]}"
+                    "${_SB_OPTS[@]}"
+                )
+                BaseTools/BinWrappers/PosixLike/build "${_build_options[@]}"
+                dd if=/dev/zero of=Build/ArmVirtQemu-AArch64/RELEASE_GCC/FV/QEMU_CODE.fd bs=1M count=64
+                dd if=Build/ArmVirtQemu-AArch64/RELEASE_GCC/FV/QEMU_EFI.fd of=Build/ArmVirtQemu-AArch64/RELEASE_GCC/FV/QEMU_CODE.fd conv=notrunc
+                dd if=/dev/zero of=Build/ArmVirtQemu-AArch64/RELEASE_GCC/FV/QEMU_VARS.fd bs=1M count=64
+                ;;
+
+            RISCV64)
+                # Does not yet appear to support secure boot
+                echo "Building RiscVVirtPkg ($_ARCH)"
+                _build_options=(
+                    -p OvmfPkg/RiscVVirt/RiscVVirtQemu.dsc
+                    -a "$_ARCH"
+                    "${_CC_OPTS[@]}"
+                    "${_EFI_OPTS[@]}"
+                    "${_NETWORK_TLS[@]}"
+                )
+                BaseTools/BinWrappers/PosixLike/build "${_build_options[@]}"
+                # Create tmp files so we don't overwrite things
+                dd if=/dev/zero bs=1M count=32 | tee Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_CODE.fd.tmp Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_VARS.fd.tmp
+                dd if=Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_CODE.fd of=Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_CODE.fd.tmp conv=notrunc
+                dd if=Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_VARS.fd of=Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_VARS.fd.tmp conv=notrunc
+                mv -v Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_CODE.fd{.tmp,}
+                mv -v Build/RiscVVirtQemu/RELEASE_GCC/FV/RISCV_VIRT_VARS.fd{.tmp,}
+            ;;
+
+            X64)
+                echo "Building ovmf ($_ARCH) with microvm support (4MB FD)"
+                _build_options=(
+                    -p OvmfPkg/Microvm/Microvm$_ARCH.dsc
+                    -a "$_ARCH"
+                    "${_CC_OPTS[@]}"
+                    "${_EFI_OPTS[@]}"
+                    "${_NETWORK_TLS[@]}"
+                )
+                BaseTools/BinWrappers/PosixLike/build "${_build_options[@]}"
+                mv -v Build/MicrovmX64{,-4mb}
+
+                echo "Building ovmf ($_ARCH) with secure boot support (4MB FD)"
+                _build_options=(
+                    -p OvmfPkg/OvmfPkgIa32X64.dsc
+                    -a IA32
+                    -a "${_ARCH}"
+                    "${_CC_OPTS[@]}"
+                    "${_EFI_OPTS[@]}"
+                    "${_NETWORK_TLS[@]}"
+                    "${_SB_OPTS[@]}"
+                )
+                BaseTools/BinWrappers/PosixLike/build "${_build_options[@]}"
+                mv -v Build/Ovmf3264{,-secure-4mb}
+
+                echo "Building ovmf (${_ARCH}) without secure boot (4MB FD)"
+                _build_options=(
+                    -p OvmfPkg/OvmfPkg$_ARCH.dsc
+                    -a "$_ARCH"
+                    "${_CC_OPTS[@]}"
+                    "${_EFI_OPTS[@]}"
+                    "${_NETWORK_TLS[@]}"
+                )
+                BaseTools/BinWrappers/PosixLike/build "${_build_options[@]}"
+                mv -v Build/OvmfX64{,-4mb}
+            ;;
+        esac
+    done
+install    : |
+    # QEMU descriptors
+    install -Dm 00644 ${pkgfiles}/*.json -t ${installdir}/usr/share/qemu/firmware/
+
+    # AARCH64
+    install -Dm 00644 Build/ArmVirtQemu-AArch64/RELEASE_GCC/FV/*.fd -t ${installdir}/usr/share/${package}/aarch64/
+
+    # RISCV64
+    install -Dm 00644 Build/RiscVVirtQemu/RELEASE_GCC/FV/*.fd -t ${installdir}/usr/share/${package}/riscv64/
+
+    # X64
+    install -Dm 00644 Build/OvmfX64-4mb/RELEASE_GCC/FV/OVMF_CODE.fd ${installdir}/usr/share/${package}/x64/OVMF_CODE.4m.fd
+    install -Dm 00644 Build/OvmfX64-4mb/RELEASE_GCC/FV/OVMF_VARS.fd ${installdir}/usr/share/${package}/x64/OVMF_VARS.4m.fd
+
+    # Secure boot/microvm
+    install -Dm 00644 Build/Ovmf3264-secure-4mb/RELEASE_GCC/FV/OVMF_CODE.fd ${installdir}/usr/share/${package}/x64/OVMF_CODE.secboot.4m.fd
+    install -Dm 00644 Build/MicrovmX64-4mb/RELEASE_GCC/FV/MICROVM.fd ${installdir}/usr/share/${package}/x64/MICROVM.4m.fd
+
+    # Compatibility symlinks
+    install -dm 00755 ${installdir}/usr/share/${package}-ovmf/aarch64
+    install -dm 00755 ${installdir}/usr/share/${package}-ovmf/x64
+
+    ln -srv ${installdir}/usr/share/${package}/aarch64/QEMU_CODE.fd ${installdir}/usr/share/${package}-ovmf/aarch64/QEMU_CODE.fd
+    ln -srv ${installdir}/usr/share/${package}/aarch64/QEMU_EFI.fd ${installdir}/usr/share/${package}-ovmf/aarch64/QEMU_EFI.fd
+    ln -srv ${installdir}/usr/share/${package}/aarch64/QEMU_VARS.fd ${installdir}/usr/share/${package}-ovmf/aarch64/QEMU_VARS.fd
+
+    ln -srv ${installdir}/usr/share/${package}/x64/OVMF_CODE.secboot.4m.fd ${installdir}/usr/share/${package}-ovmf/x64/OVMF_CODE.secboot.fd
+    ln -srv ${installdir}/usr/share/${package}/x64/OVMF_CODE.4m.fd ${installdir}/usr/share/${package}-ovmf/x64/OVMF_CODE.fd
+    ln -srv ${installdir}/usr/share/${package}/x64/OVMF_VARS.4m.fd ${installdir}/usr/share/${package}-ovmf/x64/OVMF_VARS.fd
+
+    # Licenses
+    for subpackage in aarch64 riscv64 ovmf; do
+        install -Dm 00644 License.txt -t ${installdir}/usr/share/licenses/${package}-${subpackage}/
+    done
+    install -Dm 00644 ${workdir}/OvmfPkg/License.txt ${installdir}/usr/share/licenses/${package}-ovmf/OvmfPkg_License.txt
+patterns   :
+    - aarch64 :
+        - /usr/share/edk2/aarch64/
+        - /usr/share/edk2-ovmf/aarch64/
+        - /usr/share/licenses/edk2-aarch64/
+        - /usr/share/qemu/firmware/*aarch64*.json
+    - riscv64 :
+        - /usr/share/edk2/riscv64/
+        - /usr/share/licenses/edk2-riscv64/
+        - /usr/share/qemu/firmware/*riscv64*.json
+    - ovmf :
+        - /usr/share/edk2/x64/
+        - /usr/share/edk2-ovmf/x64/
+        - /usr/share/licenses/edk2-ovmf/
+        - /usr/share/qemu/firmware/*x86_64*.json
+        - /usr/share/qemu/firmware/*microvm*.json
+replaces   :
+    - aarch64 :
+        - edk2-ovmf-aarch64
+    - ovmf :
+        - ovmf

@@ -1,0 +1,46 @@
+From 0e338941fc730c1e7080ca04fc1ee18b9ae2854b Mon Sep 17 00:00:00 2001
+From: Pablo Galindo <pablogsal@gmail.com>
+Date: Thu, 5 Sep 2024 18:37:30 +0100
+Subject: [PATCH] Fix alignment problem when rewriting sections
+
+After commit ac212d0e6fb8b741e5a5e9ea61091149103f401c the code to
+rewrite alignment section has been changed to use the largest alignment
+in the list of segments instead of the alignment that it's retrieved
+using getPageSize().
+
+Unfortunately the code didn't update the offset as well to keep the
+invariant p_vaddr % alignment == p_offset % alignment.
+---
+ src/patchelf.cc | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/src/patchelf.cc b/src/patchelf.cc
+index 49e693ad..acc1e0e8 100644
+--- a/src/patchelf.cc
++++ b/src/patchelf.cc
+@@ -847,7 +847,7 @@ void ElfFile<ElfFileParamNames>::rewriteSectionsLibrary()
+         neededSpace += headerTableSpace;
+     debug("needed space is %d\n", neededSpace);
+ 
+-    Elf_Off startOffset = roundUp(fileContents->size(), getPageSize());
++    Elf_Off startOffset = roundUp(fileContents->size(), alignStartPage);
+ 
+     // In older version of binutils (2.30), readelf would check if the dynamic
+     // section segment is strictly smaller than the file (and not same size).
+@@ -883,7 +883,7 @@ void ElfFile<ElfFileParamNames>::rewriteSectionsLibrary()
+         rdi(lastSeg.p_type) == PT_LOAD &&
+         rdi(lastSeg.p_flags) == (PF_R | PF_W) &&
+         rdi(lastSeg.p_align) == alignStartPage) {
+-        auto segEnd = roundUp(rdi(lastSeg.p_offset) + rdi(lastSeg.p_memsz), getPageSize());
++        auto segEnd = roundUp(rdi(lastSeg.p_offset) + rdi(lastSeg.p_memsz), alignStartPage);
+         if (segEnd == startOffset) {
+             auto newSz = startOffset + neededSpace - rdi(lastSeg.p_offset);
+             wri(lastSeg.p_filesz, wri(lastSeg.p_memsz, newSz));
+@@ -902,6 +902,7 @@ void ElfFile<ElfFileParamNames>::rewriteSectionsLibrary()
+         wri(phdr.p_filesz, wri(phdr.p_memsz, neededSpace));
+         wri(phdr.p_flags, PF_R | PF_W);
+         wri(phdr.p_align, alignStartPage);
++        assert(startPage % alignStartPage == startOffset % alignStartPage);
+     }
+ 
+     normalizeNoteSegments();

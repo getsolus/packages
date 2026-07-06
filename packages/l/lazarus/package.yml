@@ -1,82 +1,98 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : lazarus
-version    : '4.4'
-release    : 22
+version    : '4.6'
+release    : 24
 source     :
-    - https://sourceforge.net/projects/lazarus/files/Lazarus%20Zip%20_%20GZip/Lazarus%204.4/lazarus-4.4-0.tar.gz/download : 190edc7b7a7b18430502c964a45dfdf5418ff16bbcad5c04423b33a09d22cc06
+    - https://gitlab.com/freepascal.org/lazarus/lazarus/-/archive/lazarus_4_6/lazarus-lazarus_4_6.tar.gz : e13c74f87329467113f4ebdf7b9e7bf3b7eb4b76c94305372fb3cf99739ea886
 homepage   : https://www.lazarus-ide.org
 license    :
     - GPL-2.0-or-later
     - LGPL-2.1-or-later
     - MPL-1.1
-summary    : Lazarus is a Rapid Application Development Tool for Free Pascal
+component  :
+    - qt6 : programming.ide
+    - programming.tools
+summary    :
+    - qt6 : Delphi-like IDE for FreePascal Qt6 version
+    - Lazarus is a Rapid Application Development Tool for Free Pascal
 description: |
     Lazarus is a Rapid Application Development Tool for Free Pascal.
-component  : programming.tools
 builddeps  :
     - pkgconfig(Qt6Core)
-    - pkgconfig(gtk+-2.0)
-    - pkgconfig(gtk+-3.0)
+    - pkgconfig(x11)
     - fpc-src
     - qt6pas-devel
+    - rsync
 rundeps    :
+    - qt6 :
+        - lazarus
+    - binutils
+    - fpc
     - fpc-src
     - gdb
     - make
+    - qt6pas-devel # To compile qt6 apps
 clang      : true
 setup      : |
-    %patch -p1 -i $pkgfiles/0000-Makefile_patch.diff
-    %patch -p1 -i $pkgfiles/0001-Support-Wayland-appId.patch
+    %patch -p1 -i ${pkgfiles}/0000-Makefile_patch.diff
+    %patch -p1 -i ${pkgfiles}/0001-Support-Wayland-appId.patch
 
     # Remove non-Linux and distro-specific files.
     rm -rf debian
     find tools/install -mindepth 1 -maxdepth 1 -type d -not -name linux -exec rm -rf {} +
 build      : |
-    export FPCDIR=/usr/share/fpc/src
-    export fpmakeopt="FPMAKEOPT=-T %YJOBS%"
-    export fpcopt="-g -gl -gw -O3"
-
-    fpcmake -Tall
-    pushd components
-        fpcmake -Tall
-    popd
-    # Compile some basic targets required by everything else
-    make registration "$fpmakeopt" OPT="$fpcopt"
-
-    # Compile lazbuild - required to build other targets
-    make lazbuild "$fpmakeopt" OPT="$fpcopt"
-
-    # Compile LCL base (Lazarus Component Library) for the "nogui" widgetset
-    make lcl "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM=nogui
-
-    # Compile extra tools
-    make tools "$fpmakeopt" OPT="$fpcopt"
-
-    # Compile the LCL base + extra components for GUI widgetsets
-    for WIDGETSET in gtk2 gtk3 qt6; do
-        make lcl basecomponents bigidecomponents starter "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM="${WIDGETSET}"
-    done
-
-    # Compile the IDE itself
-    make bigide "$fpmakeopt" OPT="$fpcopt" LCL_PLATFORM=gtk2
+    # Build Qt6 IDE
+    make FPC=/usr/bin/fpc OPT="-gl -gw -Crtoi" LCL_PLATFORM=qt6 bigide
 install    : |
-    %make_install INSTALL_PREFIX=$installdir/usr _LIB=lib64
+    # Skip the 'make install' mess completely and do everything manually
 
-    # Replace the duplicate bindings with symlinks to the libdir ones
-    pushd $installdir/usr/lib64/lazarus/lcl/interfaces/qt6/cbindings
-        for f in /usr/lib64/libQt6Pas.so*; do
-            t=$(basename $f)
-            ln -sfv ../../../../../$t $t
-        done
-        rm -rfv tmp
-    popd
+    install -dm 00755 ${installdir}/usr/bin
+    install -dm 00755 ${installdir}/usr/lib64/lazarus
+    install -dm 00755 ${installdir}/usr/share/doc
+    install -dm 00755 ${installdir}/usr/share/man/man1
 
-    # Cleanup.
-    rm $installdir/usr/share/man/man1/svn2revisioninc.1.gz
-    find $installdir -type d -empty -delete -print
-    find $installdir -depth -type d -name '*.app' -prune -print -exec rm -rf {} +
-    rm -rfv $installdir/usr/lib64/lazarus/tools/install
+    # Common files
 
-    # Fix permissions and respect SOURCE_DATE_EPOCH
-    chown root:root -R $installdir
-    find $installdir -exec touch --date="@$SOURCE_DATE_EPOCH" --no-dereference {} \;
+    rsync -a \
+        --exclude="CVS"     --exclude=".cvsignore" \
+        --exclude="*.ppw"   --exclude="*.ppl" \
+        --exclude="*.ow"    --exclude="*.a"\
+        --exclude="*.rst"   --exclude=".#*" \
+        --exclude="*.~*"    --exclude="*.bak" \
+        --exclude="*.orig"  --exclude="*.rej" \
+        --exclude=".xvpics" \
+        --exclude="killme*" --exclude=".gdb_hist*" \
+        --exclude="debian"  --exclude="COPYING*" \
+        --exclude="*.app"   --exclude="tools/install" \
+        . "${installdir}"/usr/lib64/lazarus
+
+    ln -s /usr/lib64/lazarus/lazbuild "${installdir}"/usr/bin/lazbuild
+    cp -R install/man/man1/* "${installdir}"/usr/share/man/man1/
+    mv "${installdir}"/usr/lib64/lazarus/docs "${installdir}"/usr/share/doc/lazarus
+    install -dm 00755 "${installdir}"/usr/lib64/lazarus/docs
+    ln -s /usr/share/doc/lazarus/chm "${installdir}"/usr/lib64/lazarus/docs/html
+    ln -s /usr/share/doc/lazarus/lazdoc.css "${installdir}"/usr/lib64/lazarus/docs/lazdoc.css
+
+    rm -r "${installdir}"/usr/lib64/lazarus/install
+
+    # Qt6 editor
+
+    # Install Qt6 binaries
+    install -Dm 00755 lazarus -t "${installdir}"/usr/bin/
+    install -Dm 00755 startlazarus -t "${installdir}"/usr/bin/
+
+    # Fix missing .png icon
+    sed -e 's|\(Categories\).*|\1=IDE;Development;|' \
+        -e 's|\.png|\.xpm|' -i install/lazarus.desktop
+
+    install -Dm 00644 install/lazarus.desktop -t "${installdir}"/usr/share/applications/
+    install -Dm 00644 images/ide_icon48x48.png "${installdir}"/usr/share/icons/hicolor/48x48/apps/lazarus.png
+
+    # Licenses
+    %install_license COPYING.*
+patterns    :
+    - qt6 :
+        - /usr/bin/lazarus
+        - /usr/bin/startlazarus
+        - /usr/share/applications/lazarus.desktop
+        - /usr/share/icons/hicolor/48x48/apps/lazarus.png
