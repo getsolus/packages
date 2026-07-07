@@ -1,12 +1,12 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : shadow
-version    : 4.18.0
-release    : 41
+version    : 4.19.4
+release    : 42
 source     :
-    - https://github.com/shadow-maint/shadow/releases/download/4.18.0/shadow-4.18.0.tar.xz : add4604d3bc410344433122a819ee4154b79dd8316a56298c60417e637c07608
+    - https://github.com/shadow-maint/shadow/releases/download/4.19.4/shadow-4.19.4.tar.gz : ba7e9aed1c5420203ac549583d6e6f485a819ac7505af9c7cd8c13b2013210b8
+homepage   : https://github.com/shadow-maint/shadow
 license    : BSD-3-Clause
 component  : system.base
-homepage   : https://github.com/shadow-maint/shadow
 summary    : login and password tools
 description: |
     Utilities for managing shadow password files and user/group accounts
@@ -16,98 +16,71 @@ builddeps  :
     - pkgconfig(libeconf)
     - pkgconfig(libxcrypt)
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-Adapt-login.defs-for-PAM-and-util-linux.patch
-    %patch -p1 -i $pkgfiles/0002-Solus-login.defs-changes.patch
-    %patch -p1 -i $pkgfiles/0001-Always-initialize-econf_file.patch
+    %patch -p1 -i ${pkgfiles}/0002-Solus-login.defs-changes.patch
+    %patch -p1 -i ${pkgfiles}/0001-Always-initialize-econf_file.patch
 
     # add extra check, preventing accidental deletion of other user's home dirs when using `userdel -r <user with home in />`
-    export CFLAGS="$CFLAGS -DEXTRA_CHECK_HOME_DIR"
+    export CFLAGS="${CFLAGS} -DEXTRA_CHECK_HOME_DIR"
 
     %configure \
-               --disable-account-tools-setuid \
-               --enable-man \
-               --enable-vendordir=/usr/share/defaults/etc/ \
-               --with-fcaps \
-               --with-libpam \
-               --with-yescrypt \
-               --without-libbsd \
-               --without-nscd \
-               --without-su
+        --disable-account-tools-setuid \
+        --disable-static \
+        --enable-man \
+        --enable-vendordir=/usr/share/defaults/etc \
+        --with-fcaps \
+        --with-libpam \
+        --with-yescrypt \
+        --without-libbsd \
+        --without-nscd \
+        --without-su
 build      : |
     %make
 install    : |
     %make_install
-    make DESTDIR="$installdir" -C man install
+    make DESTDIR="${installdir}" -C man install
 
-    # Get rid of groups
-    find $installdir/usr/share/man -type f -name "groups.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/groups
+    # Stateless
+    install -dm 00755 ${installdir}/usr/share/defaults/etc
+    mv ${installdir}/etc/login.defs ${installdir}/usr/share/defaults/etc/login.defs
 
-    # Get rid of faillog (Not used)
-    find $installdir/usr/share/man -type f -name "faillog.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/faillog
+    # Stateless PAM
+    mv ${installdir}/etc/pam.d ${installdir}/usr/share/defaults/etc/
 
-    # Get rid of logoutd (Not used)
-    find $installdir/usr/share/man -type f -name "logoutd.*" | xargs rm -frv
-    rm -fv $installdir/usr/sbin/logoutd
+    # Tempfiles
+    install -Dm 00644 ${pkgfiles}/subid-files.tmpfiles ${installdir}/%libdir%/tmpfiles.d/shadow-subids.conf
 
-    # Get rid of chfn (util-linux)
-    find $installdir/usr/share/man -type f -name "chfn.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/chfn
+    # Remove unused files
+    for file in faillog logoutd; do
+        find ${installdir}/usr -wholename "*bin/${file}*" -type f -exec rm {} \; # Binaries
+        find ${installdir}/usr/share/man -name "*${file}*" -type f -exec rm {} \; # man pages
+    done
+    
+    # Remove files that conflict with coreutils
+    for file in groups; do
+        find ${installdir}/usr -wholename "*bin/${file}*" -type f -exec rm {} \; # Binaries
+        find ${installdir}/usr/share/man -name "*${file}*" -type f -exec rm {} \; # man pages
+    done
 
-    # Get rid of chsh (util-linux)
-    find $installdir/usr/share/man -type f -name "chsh.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/chsh
+    # Remove files that conflict with util-linux
+    # Expect logoutd, vipr, sg to conflict also at a later point
+    for file in chfn chsh login newgrp nologin vigr vipw; do
+        find ${installdir}/usr -wholename "*bin/${file}*" -type f -exec rm {} \; # Binaries
+        find ${installdir}/usr -wholename "*bin/${file}*" -type l -exec rm {} \; # Links
+        find ${installdir}/usr/share/defaults -name "${file}" -type f -exec rm {} \; # PAM files
+        find ${installdir}/usr/share/man -name "*${file}*" -type f -exec rm {} \; # man pages
+    done
+    
+    find ${installdir}/usr/share/man -name "*su.1*" -type f -exec rm {} \;
 
-    # Get rid of login (util-linux)
-    find $installdir/usr/share/man -type f -name "login.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/login
-
-    # Get rid of newgrp (util-linux)
-    find $installdir/usr/share/man -type f -name "newgrp.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/newgrp
-
-    # Get rid of nologin (util-linux)
-    find $installdir/usr/share/man -type f -name "nologin.*" | xargs rm -frv
-    rm -fv $installdir/usr/sbin/nologin
-
-    # Get rid of vigr (util-linux)
-    find $installdir/usr/share/man -type f -name "vigr.*" | xargs rm -frv
-    rm -fv $installdir/usr/sbin/vigr
-
-    # Get rid of vipr (util-linux)
-    find $installdir/usr/share/man -type f -name "vipr.*" | xargs rm -frv
-    rm -fv $installdir/usr/bin/vipr
-
-    # Get rid of vipw (util-linux)
-    find $installdir/usr/share/man -type f -name "vipw.*" | xargs rm -frv
-    rm -fv $installdir/usr/sbin/vipw
-
-    # Get rid of man pages (util-linux)
-    rm -fv $installdir/usr/share/man/de/man1/su.1*
-    rm -fv $installdir/usr/share/man/uk/man1/su.1*
-
-    # Set up stateless support for pam.d
-    rm -rfv $installdir/etc/pam.d
-    install -dm00755 $installdir/usr/share/defaults/etc/pam.d
-    install -m00644 $pkgfiles/pam.d/* -t $installdir/usr/share/defaults/etc/pam.d
-
-    install -Dm00644 $pkgfiles/subid-files.tmpfiles $installdir/usr/lib64/tmpfiles.d/shadow-subids.conf
-
-    # Login.defs
-    install -Dm00644 $installdir/etc/login.defs $installdir/usr/share/defaults/etc/login.defs
-    rm -v $installdir/etc/login.defs
-    rmdir $installdir/etc
-
-    # Ensure subid files exist so they are populated with new users
-    install -Dm00644 $pkgfiles/subid-files.tmpfiles $installdir/usr/lib64/tmpfiles.d/shadow-subids.conf
+    # License
+    %install_license COPYING
 
     # Cleanup
-    find $installdir -type d -empty -print -delete
+    find ${installdir} -type d -empty -print -delete
 
     # Without setuid on /usr/bin/new{u,g}idmap, user namespaces do not work
     # (this breaks e.g. boulder)
-    chmod -c u+s $installdir/usr/bin/new{u,g}idmap
+    chmod -c u+s ${installdir}/usr/bin/new{u,g}idmap
 
 ## TODO:
 # - Stateless /etc/skel
