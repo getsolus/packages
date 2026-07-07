@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Imre=20P=C3=A9ntek?= <pentek.imre@gmail.com>
+Date: Sat, 4 Jul 2026 20:13:18 +0200
+Subject: [PATCH] Fix crash when fontconfig fallback pattern has no charset
+
+QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter() passed
+the address of an uninitialized FcCharSet* to FcPatternGetCharSet()
+and then called FcCharSetHasChar() on it without checking the result.
+A pattern returned by FcFontMatch() is not guaranteed to carry an
+FC_CHARSET element: fontconfig treats the charset as optional, and
+caches produced by other fontconfig builds (e.g. a bundled snapshot
+that indexed .woff/.woff2 files it could not parse as empty patterns)
+can legally serve charset-less patterns. In that case the uninitialized
+pointer is dereferenced inside FcCharSetHasChar() and the process
+crashes with SIGSEGV; builds hardened with
+-ftrivial-auto-var-init=pattern crash deterministically at 0xfefe...
+
+Observed in the wild on Arch/Manjaro after the fontconfig 2.18.1
+upgrade: every Qt application (Qt Creator, CopyQ, KeePassXC, ...)
+crashed in FcCharSetHasChar via QFontEngineMulti::glyphIndex() as soon
+as any glyph fallback lookup ran, because stale fontconfig caches
+served a charset-less pattern for every FcFontMatch() call.
+
+Initialize the pointer and check the FcPatternGetCharSet() result.
+When no charset can be obtained, keep the optimistic default (load the
+engine) exactly as we already do when no match pattern is available,
+so glyph coverage is decided by the font engine itself.
+
+Pick-to: 6.12 6.11 6.8
+Change-Id: I18687e0a7b7a0019a459155395636768ad9ea964
+---
+ src/gui/text/unix/qfontenginemultifontconfig.cpp | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
+
+diff --git a/src/gui/text/unix/qfontenginemultifontconfig.cpp b/src/gui/text/unix/qfontenginemultifontconfig.cpp
+index 6419a764f79..f13943ff583 100644
+--- a/src/gui/text/unix/qfontenginemultifontconfig.cpp
++++ b/src/gui/text/unix/qfontenginemultifontconfig.cpp
+@@ -25,9 +25,11 @@ bool QFontEngineMultiFontConfig::shouldLoadFontEngineForCharacter(int at, uint u
+     bool charSetHasChar = true;
+     FcPattern *matchPattern = getMatchPatternForFallback(at - 1);
+     if (matchPattern != nullptr) {
+-        FcCharSet *charSet;
+-        FcPatternGetCharSet(matchPattern, FC_CHARSET, 0, &charSet);
+-        charSetHasChar = FcCharSetHasChar(charSet, ucs4);
++        FcCharSet *charSet = nullptr;
++        if (FcPatternGetCharSet(matchPattern, FC_CHARSET, 0, &charSet) == FcResultMatch
++            && charSet != nullptr) {
++            charSetHasChar = FcCharSetHasChar(charSet, ucs4);
++        }
+     }
+ 
+     return charSetHasChar;
