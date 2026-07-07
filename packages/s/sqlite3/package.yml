@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : sqlite3
-version    : 3.53.2
-release    : 67
+version    : 3.53.3
+release    : 68
 source     :
-    - https://www.sqlite.org/2026/sqlite-src-3530200.zip : cafff764c03f6d720968f746e2f47a986bbf12bf4c18904f1eb131c0b0b592d3
+    - https://sqlite.org/2026/sqlite-src-3530300.zip : bb80bf8a3bffc19241ce8aba5a4bc74e9c3980013cb0b5f0f0976a99516942af
 homepage   : https://www.sqlite.org
 license    : Public-Domain
 component  :
@@ -20,47 +20,79 @@ emul32     : true
 optimize   :
     - speed
     - thin-lto
-setup      : |
+environment: |
     ex_opts=""
     if [[ -z "${EMUL32BUILD}" ]]; then
         ex_opts="--enable-readline"
     fi
-    %patch -p1 -i $pkgfiles/sqlite-lemon-system-template.patch
+setup      : |
+    %patch -p1 -i ${pkgfiles}/sqlite-lemon-system-template.patch
 
-    %configure --disable-static \
+    # When this C-preprocessor macro is defined, SQLite includes some additional APIs that provide convenient access to meta-data about tables and queries
+    export CPPFLAGS+=" -DSQLITE_ENABLE_COLUMN_METADATA=1"
+
+    # This option enables the SQLITE_DBPAGE virtual table.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_DBPAGE_VTAB=1"
+
+    # This option enables the dbstat virtual table.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_DBSTAT_VTAB=1"
+
+    # This option enables enhanced query syntax for FTS3.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_FTS3_PARENTHESIS=1"
+
+    # This compile-time option enables the SQLITE_STMT virtual table logic.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_STMTVTAB=1"
+
+    # This option enables the sqlite3_unlock_notify() interface and its associated functionality
+    export CPPFLAGS+=" -DSQLITE_ENABLE_UNLOCK_NOTIFY=1"
+
+    # When this option is present, secure_delete defaults to on
+    # https://www.sqlite.org/pragma.html#pragma_secure_delete
+    export CPPFLAGS+=" -DSQLITE_SECURE_DELETE=1"
+
+    # This option enables the session extension.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_SESSION=1"
+
+    # This option several new APIs that provide callbacks prior to any change to a rowid table.
+    export CPPFLAGS+=" -DSQLITE_ENABLE_PREUPDATE_HOOK=1"
+
+    # This option adds additional logic to the ANALYZE command and to the query planner that can help SQLite to chose a better query plan under certain situations
+    export CPPFLAGS+=" -DSQLITE_ENABLE_STAT4=1"
+
+    # Autotools fix for CC detection
+    export CC_FOR_BUILD="$CC"
+
+    # --enable-session is required for nodejs to use the system sqlite3
+    # --soname=legacy ensures that the soname is set to the legacy libsqlite3.so.0 value (https://sqlite.org/src/forumpost/5a3b44f510df8ded)
+    %configure \
+        --disable-static \
         --enable-fts3 \
         --enable-fts4 \
         --enable-fts5 \
         --enable-geopoly \
         --enable-rtree \
+        --enable-session \
         --enable-threadsafe \
-        $ex_opts \
         --disable-tcl \
         --soname=legacy \
-        CPPFLAGS="$CPPFLAGS \
-        -DSQLITE_ENABLE_COLUMN_METADATA=1 \
-        -DSQLITE_ENABLE_DBPAGE_VTAB=1 \
-        -DSQLITE_ENABLE_DBSTAT_VTAB=1 \
-        -DSQLITE_ENABLE_FTS3_PARENTHESIS=1 \
-        -DSQLITE_ENABLE_STMTVTAB=1 \
-        -DSQLITE_ENABLE_UNLOCK_NOTIFY=1 \
-        -DSQLITE_SECURE_DELETE=1 \
-        -DSQLITE_ENABLE_SESSION=1 \
-        -DSQLITE_ENABLE_PREUPDATE_HOOK=1 \
-        -DSQLITE_ENABLE_STAT4=1"
+        ${ex_opts}
 build      : |
     %make
-    pushd tool
-    clang lemon.c -o lemon
-    popd
+
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        ${CC} ${CFLAGS} tool/lemon.c -o tool/lemon
+    fi
 install    : |
     %make_install
-    install -Dm00644 sqlite3.1 $installdir/usr/share/man/man1/sqlite3.1
-    pushd tool
-    install -Dm00644 lempar.c -t $installdir/usr/share/lemon/
-    install -Dm00755 lemon $installdir/usr/bin
-    popd
     %install_license LICENSE.md
+
+    install -Dm00644 sqlite3.1 ${installdir}/usr/share/man/man1/sqlite3.1
+
+    # Install lemon
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        install -Dm00644 tool/lempar.c -t ${installdir}/usr/share/lemon/
+        install -Dm00755 tool/lemon ${installdir}/usr/bin
+    fi
 patterns   :
     - lemon :
         - /usr/bin/lemon
