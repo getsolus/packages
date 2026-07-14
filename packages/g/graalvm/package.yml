@@ -1,11 +1,11 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : graalvm
-version    : 22.3.3
-release    : 7
+version    : 23.1.2
+release    : 8
 source     :
-    - git|https://github.com/oracle/graal.git : vm-ce-22.3.3
-    - git|https://github.com/graalvm/mx.git : 6.23.3
-    - https://github.com/graalvm/labs-openjdk-17/releases/download/jvmci-23.0-b15/labsjdk-ce-17.0.8+7-jvmci-23.0-b15-linux-amd64.tar.gz : 89fc839d961e2113c248c342e681b4ef4ef5f5d1f9634a36d5923c8ed56a7a73
+    - git|https://github.com/oracle/graal.git : vm-ce-24.0.2
+    - git|https://github.com/graalvm/mx.git : 7.83.1
+    - https://github.com/graalvm/labs-openjdk-22/releases/download/22.0.2%2B9-jvmci-b01/labsjdk-ce-22.0.2+9-jvmci-b01-linux-amd64.tar.gz#labsjdk.tar.gz : 8913752c0be2248b0624eaaf58a4c3e094c28f1be39493620be4b314cff6b1de
 homepage   : https://www.graalvm.org/
 license    : GPL-2.0-or-later
 component  : programming.tools
@@ -23,18 +23,40 @@ build      : |
 
     # Setup the custom jdk required to build graal
     # we need a special version of java to build which includes some needed headers
-    cp $sources/labsjdk-ce-17.0.8+7-jvmci-23.0-b15-linux-amd64.tar.gz $workdir
-    tar xvf labsjdk-ce-17.0.8+7-jvmci-23.0-b15-linux-amd64.tar.gz
-    export JAVA_HOME=$workdir/labsjdk-ce-17.0.8-jvmci-23.0-b15/
+    mkdir labsjdk
+    tar -xf ${sources}/labsjdk.tar.gz --strip-components=1 -C labsjdk
+
+    # GraalVM trys to use it own compiler but we get into a world of pain finding various headers in solus,
+    # So we use the native compiler and have to override a few paths and settings to get it to build correctly.
+    export SOLUS_GCC_PATH="$(dirname $(gcc -print-libgcc-file-name))/"
+    export GCC_MAJOR_VERSION=$(gcc -dumpversion | cut -d. -f1)
+
+    export LIBRARY_PATH="${SOLUS_GCC_PATH}:$LIBRARY_PATH"
+
+    export CCC_OVERRIDE_OPTIONS="+-B${SOLUS_GCC_PATH} +-Wno-error=implicit-function-declaration +-fuse-ld=bfd +-isystem/usr/include/c++/${GCC_MAJOR_VERSION} +-isystem/usr/include/c++/${GCC_MAJOR_VERSION}/x86_64-solus-linux +-Wno-unused-command-line-argument"
+
+    export JAVA_HOME=${workdir}/labsjdk/
+    export JVMCI_VERSION_CHECK=ignore
+    export EXTRA_JAVA_HOMES="${JAVA_HOME}"
+    export MX_ALT_OUTPUTDIR="${JAVA_HOME}"
+
+    export PATH=$workdir/mx.git:$PATH
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+    export MX_BUILD_BOOTSTRAP=true
+    export FORCE_JDK_VERSION="22"
 
     # Setup MX build tool
     mkdir -p $workdir/mx-build-tool
     cp -r $sources/mx.git $workdir
-    export PATH=$workdir/mx.git:$PATH
+
 
     # Finally Build Graal
+    # MX uses python pipes which was deprecated, so lets adjust the imports temporarily until mx is updated
+    %patch -p1 -i $pkgfiles/pipes_to_shutil.patch
+
     cd $workdir/vm
-    mx --env ce build
+
+    mx --java-home="${JAVA_HOME}" --env ce build --no-daemon 
 
     cd $workdir/substratevm
     mx graalvm-show
