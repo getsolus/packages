@@ -1,8 +1,9 @@
 name       : nvidia-open
-version    : 580.173.02    # This has to be kept at the same version as nvidia-glx-driver
-release    : 34
+version    : 610.43.03    # This has to be kept at the same version as nvidia-glx-driver
+release    : 35
 source     :
-    - https://download.nvidia.com/XFree86/NVIDIA-kernel-module-source/NVIDIA-kernel-module-source-580.173.02.tar.xz : 44dc467cf7878c51aee571fae90eaabf1906a011521d92cb2133d491de142fc7
+    - https://download.nvidia.com/XFree86/NVIDIA-kernel-module-source/NVIDIA-kernel-module-source-610.43.03.tar.xz#nvidia.tar.xz : 7e118923c7a23edc36114d63273a46e3e04e9af98695a42203e7ac2dfe9fc1dc
+extract    : false
 homepage   : https://github.com/NVIDIA/open-gpu-kernel-modules
 license    :
     - GPL-2.0-only
@@ -10,147 +11,171 @@ license    :
 component  :
     - kernel.drivers
     - current : kernel.drivers
-    - modaliases : kernel.drivers
+    - lts : kernel.drivers
+    - shared: kernel.drivers
 summary    :
-    - NVIDIA open GPU kernel modules (LTS Kernel)
+    - NVIDIA open GPU kernel modules
     - current : NVIDIA open GPU kernel modules (Current Kernel)
-    - modaliases : These files are used by software centers for hardware detection
+    - lts : NVIDIA open GPU kernel modules (LTS Kernel)
+    - shared : Shared components for nvidia-open
 description:
-    - NVIDIA open GPU kernel modules (LTS Kernel)
+    - NVIDIA open GPU kernel modules
     - current : NVIDIA open GPU kernel modules (Current Kernel)
-    - modaliases : These files are used by the software centers for hardware detection
-rundeps    :
-    - current : nvidia-glx-driver-common
-    - main : nvidia-glx-driver-common
-conflicts  :
-    - nvidia-470-glx-driver
-    - nvidia-beta-driver
-    - nvidia-developer-driver
-    - nvidia-glx-driver
-    - current :
-        - nvidia-470-glx-driver-current
-        - nvidia-beta-driver-current
-        - nvidia-developer-driver-current
-        - nvidia-glx-driver-current
+    - lts : NVIDIA open GPU kernel modules (LTS Kernel)
+    - shared : Shared components for nvidia-open
 builddeps  :
     - cpio
     - linux-current
     - linux-current-headers
     - linux-lts
     - linux-lts-headers
-optimize   :
-    - no-bind-now
-extract    : false
+    - llvm-devel # Build *really* wants to use llvm-objcopy
+    - nvidia-glx-driver-firmware
+rundeps    :
+    - current :
+        - linux-current
+        - nvidia-glx-driver-firmware
+        - nvidia-open-shared
+    - lts :
+        - linux-lts
+        - nvidia-glx-driver-firmware
+        - nvidia-open-shared
+    - nvidia-open-lts # For backwards compat
+# optimize   :
+#     - no-bind-now
 environment: |
+    # Create a list of kernels to build for
+    declare -a kernels=()
+    # for dir in %libdir%/kernel/*/; do
+    #     dir=${dir%*/}
+    #     tmp=${dir##*/}
+
+    #     if [ "${tmp}" != "initrd.d" ]; then
+    #         kernels+=(${tmp})
+    #     fi
+    # done
+    kernels+=("%kernel_version_current%")
+    kernels+=("%kernel_version_lts%")
+
+    # This solves a build failure from pahole generating BTF
+    # https://codeberg.org/gentoo/gentoo/src/commit/f2c6ed05e6123477cb505eeb7cbbd00b7d347971/x11-drivers/nvidia-drivers/nvidia-drivers-610.43.03-r1.ebuild#L211
+    # │B│ Unsupported DW_TAG_atomic_type(0x47): type: 0x39dcb
+    # │B│ Error while encoding BTF.
+    export CFLAGS+=" -g0"
+
     unset LDFLAGS
 setup      : |
-    mkdir current lts
-    tar --strip-components=1 -xf $sources/NVIDIA-kernel-module-source-%version%.tar.xz -C current
-    tar --strip-components=1 -xf $sources/NVIDIA-kernel-module-source-%version%.tar.xz -C lts
+    for _kernel in ${kernels[@]}; do
+        mkdir ${_kernel}
+        tar -xf ${sources}/nvidia.tar.xz --strip-components=1 -C ${_kernel}
 
-    pushd current/kernel-open
-    %patch -p1 -i $pkgfiles/fix-hw-cursor-kde.patch
-    popd
-    pushd lts/kernel-open
-    %patch -p1 -i $pkgfiles/fix-hw-cursor-kde.patch
-    popd
+        pushd ${_kernel}
+        # Apply patches here
+        #patch -p1 -i ${pkgfiles}/fix-hw-cursor-kde.patch
+        %patch -p1 -i ${pkgfiles}/ibt-support.patch
+        popd
+    done
 build      : |
-    pushd current
-    %make KERNEL_UNAME=%kernel_version_current% NV_VERBOSE=1 modules
-    popd
-
-    pushd lts
-    %make KERNEL_UNAME=%kernel_version_lts% NV_VERBOSE=1 modules
-    popd
+    for _kernel in ${kernels[@]}; do
+        pushd ${_kernel}
+        export CCACHE_BASEDIR="${PWD}"
+        %make CC=${CC} OBJCOPY="/usr/bin/objcopy" KERNEL_UNAME=${_kernel} NV_VERBOSE=1 modules
+        popd
+    done
 install    : |
-    pushd current
-    %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_current%
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_current%/extra/drivers/video
-    # zstd compress all .ko and install them to the video driver directory
-    for module in $(find . -name '*.ko'); do
-        # llvm-strip --strip-unneeded $module
-        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_current%/extra/drivers/video/$(basename $module).zst
-    done
-    popd
+    install -Dm 00644 ${pkgfiles}/nvidia-blacklist.modprobe ${installdir}/%libdir%/modprobe.d/nvidia-blacklist.conf
+    install -Dm 00644 ${pkgfiles}/nvidia-uvm.conf ${installdir}/%libdir%/modules-load.d/nvidia-uvm.conf
 
-    pushd lts
-    %make modules_install PREFIX="%PREFIX%" DESTDIR="%installroot%" KERNEL_UNAME=%kernel_version_lts%
-    install -D -d -m 00755 $installdir/usr/lib64/modules/%kernel_version_lts%/extra/drivers/video
-    for module in $(find . -name '*.ko'); do
-        # llvm-strip --strip-unneeded $module
-        zstd -19 -T0 -c $module -o $installdir/%libdir%/modules/%kernel_version_lts%/extra/drivers/video/$(basename $module).zst
-    done
-    # Prepare modaliases from the LTS kernel
-    sh -e $pkgfiles/nvidia_supported nvidia ${package} README.md kernel-open/nvidia/nv-kernel.o_binary > modalias
-    install -D -m 00644 modalias $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
-    popd
+    # Various Nvidia modprobe settings (taken from CachyOS)
+    # https://github.com/CachyOS/CachyOS-Settings/blob/master/usr/lib/modprobe.d/nvidia.conf
+    install -Dm 00644 ${pkgfiles}/nvidia.modprobe ${installdir}/%libdir%/modprobe.d/nvidia.conf
+    # Sleep settings
+    # https://github.com/CachyOS/CachyOS-PKGBUILDS/blob/master/nvidia/nvidia-utils/nvidia-sleep.conf
+    install -Dm 00644 ${pkgfiles}/nvidia-sleep.modprobe ${installdir}/%libdir%/modprobe.d/nvidia-sleep.conf
 
-    # Set required kernel in appstream files
-    curmajkernelv=$(echo %kernel_version_current% | cut -d '.' -f 1,2)
-    ltsmajkernelv=$(echo %kernel_version_lts% | cut -d '.' -f 1,2)
-    # FIXME: use xmllint
-    sed -i "s/9.99/${curmajkernelv}/" $pkgfiles/nvidia-open-current.metainfo.xml
-    sed -i "s/9.99/${ltsmajkernelv}/" $pkgfiles/nvidia-open-lts.metainfo.xml
-    # Appstream metainfo
-    install -Dm00644 $pkgfiles/nvidia-open-current.metainfo.xml $installdir/usr/share/metainfo/nvidia-open-current.metainfo.xml
-    install -Dm00644 $pkgfiles/nvidia-open-lts.metainfo.xml $installdir/usr/share/metainfo/nvidia-open-lts.metainfo.xml
-    # Add modalias provides to appstream metainfo
-    cat lts/modalias | cut -d" " -f2 | $pkgfiles/modalias-util.py $installdir/usr/share/metainfo/nvidia-open-current.metainfo.xml
-    cat lts/modalias | cut -d" " -f2 | $pkgfiles/modalias-util.py $installdir/usr/share/metainfo/nvidia-open-lts.metainfo.xml
+    install -dm 00755 ${installdir}/usr/share/doc/${package}/
+    echo "VIRTUAL" > ${installdir}/usr/share/doc/${package}/README
 
-    # Generate per-kernel initrd with embedded nvidia kernel drivers
-    for i in current lts; do
-        if [[ ${i} == "current" ]]; then
-            _kernel=%kernel_version_current%
-        else
-            _kernel=%kernel_version_lts%
-        fi
+    # TODO: Eventually we want the modprobe configs in a separate initrd for deduplication
 
-        mkdir -p init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video
+    for _kernel in ${kernels[@]}; do
+        pushd ${_kernel}
+        install -Dm 00644 kernel-open/*.ko -t ${installdir}/%libdir%/modules/${_kernel}/extra/drivers/video
 
-        # This file triggers a dracut service that regenerates the depmod index files
-        touch init-$i/.dracut-depmod-invalidate
+        # Manually construct the debug info from the kernel modules
+        install -dm 00755 ${installdir}/%libdir%/debug/.build-id
+        pushd ${installdir}/%libdir%/modules/${_kernel}
+        module_list=()
+        while IFS=  read -r -d $'\0'; do
+            module_list+=("$REPLY")
+        done < <(find . -type f -name "*.ko" -print0)
+        for module in "${module_list[@]}"; do
+            build_id=$(eu-readelf -n ${module} | awk '/Bui/ {print $3}')
+            debug_path="%libdir%/debug/.build-id/${build_id:0:2}/${build_id: 2}.debug"
 
-        # Blacklist nouveau/nova
-        install -D -m 00644 $pkgfiles/nvidia-blacklist.conf init-$i/usr/lib64/modprobe.d/nvidia-blacklist.conf
+            pushd $(dirname ${module})
+            file=$(basename ${module})
 
-        # Nvidia module parameters
-        install -D -m 00644 $pkgfiles/nvidia.conf init-$i/usr/lib64/modprobe.d/nvidia.conf
+            llvm-objcopy --only-keep-debug "${file}" "${file}.debug"
+            llvm-objcopy --add-gnu-debuglink "${file}.debug" "${file}"
+            llvm-strip -g --strip-unneeded "${file}"
+            install -Dm 00644 "${file}.debug" "${installdir}/${debug_path}"
+            rm -v "${file}.debug"
 
-        pushd $installdir/usr/lib64/modules/*.$i
-        find . -name "*.ko" -print -exec cp -v "{}" "${workdir}/init-$i/usr/lib64/modules/${_kernel}/extra/drivers/video" \;
+            popd
+        done
         popd
 
-        # Strip the debug symobls (we can get them from the normal kernel modules).
-        # Don't compress the kernel modules here so that the final archive is slightly smaller
-        find init-$i -name '*.ko' -exec strip --verbose --strip-unneeded {} \;
-
-        # Create the initrd
-        pushd init-$i
-        find . | cpio --create --format='newc' | zstd -19 > $workdir/initrd-$i
-
-        # TODO Sign it
+        # Create an initrd for .ko files
+        mkdir -p initrd/%libdir%/modules/${_kernel}/extra/drivers/video
+        install -Dm 00644 ${pkgfiles}/nvidia.modprobe initrd/%libdir%/modprobe.d/nvidia.conf
+        install -Dm 00644 ${pkgfiles}/nvidia-blacklist.modprobe initrd/%libdir%/modprobe.d/nvidia-blacklist.conf
+        install -Dm 00644 ${pkgfiles}/nvidia-sleep.modprobe initrd/%libdir%/modprobe.d/nvidia-sleep.conf
+        find ${installdir}/%libdir%/modules -name '*.ko' -exec cp -v {} initrd/%libdir%/modules/${_kernel}/extra/drivers/video \;
+        touch initrd/.dracut-depmod-invalidate
+        pushd initrd
+        install -dm 00755 ${installdir}/%libdir%/kernel/${_kernel}
+        find . | cpio -o -H newc | zstd -19 -T0 -c > ${installdir}/%libdir%/kernel/${_kernel}/60-nvidia.initrd
         popd
+
+        # Compress modules with zstd
+        find "${installdir}/%libdir%/modules/${_kernel}/" -name '*.ko' -print -exec zstd {} \; -exec rm -v {} \;
+
+        # This is a stupid hack because blsforme doesn't seem to support version-independent initrds yet
+        cp -a --no-preserve=ownership /usr/lib/kernel/initrd.d/55-nvidia-firmware.initrd ${installdir}/%libdir%/kernel/${_kernel}/55-nvidia-firmware.initrd
+
+        popd
+
+        # Install metainfo file
+        _kernel_short=$(echo "${_kernel}" | cut -d '.' -f4)
+        install -Dm 00644 ${pkgfiles}/nvidia-open-${_kernel_short}.metainfo.xml -t ${installdir}/usr/share/metainfo
     done
-
-    # Install it (do it here so that we don't copy this again during the second loop of the above for)
-    kernel_current=%kernel_version_current%
-    current_string="${kernel_current/.current}"
-    install -D -m 00644 $workdir/initrd-current $installdir/usr/lib64/kernel/initrd-com.solus-project.current.$current_string.nvidia
-    kernel_lts=%kernel_version_lts%
-    lts_string="${kernel_lts/.lts}"
-    install -D -m 00644 $workdir/initrd-lts $installdir/usr/lib64/kernel/initrd-com.solus-project.lts.$lts_string.nvidia
-
-    # Install license file
-    %install_license current/COPYING
-patterns   :
-    - modaliases :
-        - /usr/share/linux-driver-management/modaliases
-    - main :
-        - /usr/lib64/kernel/initrd-com.solus-project.lts.*
-        - /usr/share/metainfo/nvidia-lts-current.metainfo.xml
-        - /usr/lib64/modules/*.lts
+conflicts  :
+    - nvidia-470-glx-driver
+    - nvidia-beta-driver
+    - nvidia-developer-driver
     - current :
-        - /usr/lib64/kernel/initrd-com.solus-project.current.*
-        - /usr/share/metainfo/nvidia-open-current.metainfo.xml
+        - nvidia-470-glx-driver-current
+        - nvidia-beta-driver-current
+        - nvidia-developer-driver-current
+    - lts :
+        - nvidia-470-glx-driver
+        - nvidia-beta-driver-lts
+        - nvidia-developer-driver-lts
+patterns   :
+    - current :
+        - /usr/lib64/kernel/*.current
         - /usr/lib64/modules/*.current
+        - /usr/share/metainfo/nvidia-open-current.metainfo.xml
+    - lts :
+        - /usr/lib64/kernel/*.lts
+        - /usr/lib64/modules/*.lts
+        - /usr/share/metainfo/nvidia-open-lts.metainfo.xml
+    - shared :
+        - /usr/lib64/modprobe.d
+        - /usr/lib64/modules-load.d
+replaces   :
+    - current :
+        - nvidia-glx-driver-current
+    - lts :
+        - nvidia-open
