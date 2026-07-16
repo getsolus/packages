@@ -1,0 +1,183 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Lumir Balhar <lbalhar@redhat.com>
+Date: Thu, 9 Feb 2023 15:13:36 +0100
+Subject: [PATCH] moss wheels
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Co-Authored-By: Miro Hrončok <miro@hroncok.cz>
+---
+ src/virtualenv/run/__init__.py                |  5 +++--
+ src/virtualenv/seed/embed/base_embed.py       | 17 +++++++++++++-
+ src/virtualenv/seed/embed/pip_invoke.py       |  1 +
+ .../seed/embed/via_app_data/via_app_data.py   |  1 +
+ src/virtualenv/seed/wheels/acquire.py         |  3 ++-
+ src/virtualenv/seed/wheels/embed/__init__.py  |  3 +++
+ src/virtualenv/util/path/_system_wheels.py    | 22 +++++++++++++++++++
+ 7 files changed, 48 insertions(+), 4 deletions(-)
+ create mode 100644 src/virtualenv/util/path/_system_wheels.py
+
+diff --git a/src/virtualenv/run/__init__.py b/src/virtualenv/run/__init__.py
+index 79ebc426..81e6e4f6 100644
+--- a/src/virtualenv/run/__init__.py
++++ b/src/virtualenv/run/__init__.py
+@@ -125,8 +125,9 @@ def build_parser_only(args: list[str] | None = None) -> VirtualEnvConfigParser:
+ 
+ def handle_extra_commands(options: VirtualEnvOptions) -> None:
+     if options.upgrade_embed_wheels:
+-        result = manual_upgrade(options.app_data, options.env)
+-        raise SystemExit(result)
++        # result = manual_upgrade(options.app_data, options.env)
++        logging.warning("virtualenv installed from the eopkg package uses wheels from eopkg packages as well. Updating them via virtualenv is not possible. The eopkg packaged wheels are updated together with other eopkg packages of the system.")
++        raise SystemExit(1)
+ 
+ 
+ def load_app_data(
+diff --git a/src/virtualenv/seed/embed/base_embed.py b/src/virtualenv/seed/embed/base_embed.py
+index 07f15d32..6b2af78d 100644
+--- a/src/virtualenv/seed/embed/base_embed.py
++++ b/src/virtualenv/seed/embed/base_embed.py
+@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
+ from virtualenv.seed.seeder import Seeder
+ from virtualenv.seed.wheels import Version
+ from virtualenv.seed.wheels.embed import MIN, OLDEST_SUPPORTED
++from virtualenv.util.path._system_wheels import get_system_wheels_paths
+ 
+ if TYPE_CHECKING:
+     from argparse import ArgumentParser
+@@ -19,7 +20,7 @@ if TYPE_CHECKING:
+     from virtualenv.config.cli.parser import VirtualEnvOptions
+ 
+ LOGGER = logging.getLogger(__name__)
+-PERIODIC_UPDATE_ON_BY_DEFAULT = True
++PERIODIC_UPDATE_ON_BY_DEFAULT = False
+ 
+ 
+ class BaseEmbed(Seeder, ABC):
+@@ -50,6 +51,15 @@ class BaseEmbed(Seeder, ABC):
+ 
+         if not self.distribution_to_versions():
+             self.enabled = False
++ 
++        if "embed" in (self.pip_version, self.setuptools_version, getattr(self, "wheel_version", None)):
++            raise RuntimeError(
++                "Embedded wheels are not available if virtualenv "
++                "is installed from the eopkg package.\nEither install "
++                "virtualenv from PyPI (via pip) or use 'bundle' "
++                "version which uses the system-wide pip, setuptools "
++                "and wheel wheels provided also by eopkg packages."
++            )
+ 
+     @classmethod
+     def distributions(cls) -> dict[str, str]:
+@@ -79,6 +89,7 @@ class BaseEmbed(Seeder, ABC):
+             the remedies
+ 
+         """
++        return None  # eopkg-provided wheels support any Python version
+         if interpreter.version_info[:2] >= OLDEST_SUPPORTED:
+             return None
+         target = f"{interpreter.version_info.major}.{interpreter.version_info.minor}"
+@@ -163,6 +174,10 @@ class BaseEmbed(Seeder, ABC):
+             result += f" {distribution}{ver},"
+         return result[:-1] + ")"
+ 
++    def insert_system_wheels_paths(self, creator):
++        system_wheels_paths = get_system_wheels_paths(creator.interpreter)
++        self.extra_search_dir = list(system_wheels_paths) + self.extra_search_dir
++
+ 
+ __all__ = [
+     "BaseEmbed",
+diff --git a/src/virtualenv/seed/embed/pip_invoke.py b/src/virtualenv/seed/embed/pip_invoke.py
+index fb442291..d5166973 100644
+--- a/src/virtualenv/seed/embed/pip_invoke.py
++++ b/src/virtualenv/seed/embed/pip_invoke.py
+@@ -26,6 +26,7 @@ class PipInvoke(BaseEmbed):
+     def run(self, creator: Creator) -> None:
+         if not self.enabled:
+             return
++        self.insert_system_wheels_paths(creator)
+         for_py_version = creator.interpreter.version_release_str
+         with self.get_pip_install_cmd(creator.exe, for_py_version) as cmd:
+             env = pip_wheel_env_run(self.extra_search_dir, self.app_data, self.env)
+diff --git a/src/virtualenv/seed/embed/via_app_data/via_app_data.py b/src/virtualenv/seed/embed/via_app_data/via_app_data.py
+index c60f35e4..ac36433c 100644
+--- a/src/virtualenv/seed/embed/via_app_data/via_app_data.py
++++ b/src/virtualenv/seed/embed/via_app_data/via_app_data.py
+@@ -56,6 +56,7 @@ class FromAppData(BaseEmbed):
+     def run(self, creator: Creator) -> None:
+         if not self.enabled:
+             return
++        self.insert_system_wheels_paths(creator)
+         with self._get_seed_wheels(creator) as name_to_whl:
+             pip_version = name_to_whl["pip"].version_tuple if "pip" in name_to_whl else None
+             installer_class = self.installer_class(pip_version)
+diff --git a/src/virtualenv/seed/wheels/acquire.py b/src/virtualenv/seed/wheels/acquire.py
+index 63f5376d..7a1a244d 100644
+--- a/src/virtualenv/seed/wheels/acquire.py
++++ b/src/virtualenv/seed/wheels/acquire.py
+@@ -68,11 +68,12 @@ def get_wheel(  # noqa: PLR0913
+ 
+     if download and wheel is None and version != Version.embed:
+         # 2. download from the internet
++        from virtualenv.util.path._system_wheels import get_system_wheels_paths
+         wheel = download_wheel(
+             distribution=distribution,
+             version_spec=Version.as_version_spec(version),
+             for_py_version=for_py_version,
+-            search_dirs=search_dirs,
++            search_dirs=get_system_wheels_paths(sys),
+             app_data=app_data,
+             to_folder=app_data.house,
+             env=env,
+diff --git a/src/virtualenv/seed/wheels/embed/__init__.py b/src/virtualenv/seed/wheels/embed/__init__.py
+index e2887bd5..94f4a96d 100644
+--- a/src/virtualenv/seed/wheels/embed/__init__.py
++++ b/src/virtualenv/seed/wheels/embed/__init__.py
+@@ -64,6 +64,8 @@ BUNDLE_SHA256 = {
+ 
+ _VERIFIED_WHEELS: set[str] = set()
+ 
++# Redefined here because bundled wheels are removed in eopkg build
++BUNDLE_SUPPORT = None
+ 
+ def get_embed_wheel(distribution: str, for_py_version: str | None) -> Wheel | None:
+     """Return the bundled wheel that ships with virtualenv for a given distribution and Python version.
+@@ -78,6 +80,7 @@ def get_embed_wheel(distribution: str, for_py_version: str | None) -> Wheel | No
+     :raises RuntimeError: if the bundled wheel on disk fails SHA-256 verification.
+ 
+     """
++    return None  # BUNDLE_SUPPORT == None anyway
+     if for_py_version is None or _release_tuple(for_py_version) > _release_tuple(MAX):
+         # no specific target, or a Python newer than anything bundled: reuse the newest bundle
+         mapping = BUNDLE_SUPPORT[MAX]
+diff --git a/src/virtualenv/util/path/_system_wheels.py b/src/virtualenv/util/path/_system_wheels.py
+new file mode 100644
+index 00000000..f3fd9b18
+--- /dev/null
++++ b/src/virtualenv/util/path/_system_wheels.py
+@@ -0,0 +1,22 @@
++from pathlib import Path
++from subprocess import check_output, CalledProcessError
++
++
++def get_system_wheels_paths(interpreter):
++    # ensurepip wheels
++    # We need subprocess here to check ensurepip with the Python we are creating
++    # a new virtual environment for
++    executable = interpreter.executable
++    try:
++        ensurepip_path = check_output((executable, "-u", "-c", 'import ensurepip; print(ensurepip.__path__[0])'), universal_newlines=True)
++        ensurepip_path = Path(ensurepip_path.strip()) / "_bundled"
++    except CalledProcessError:
++        pass
++    else:
++        if ensurepip_path.is_dir():
++            yield ensurepip_path
++
++    # Standard wheels path
++    wheels_dir = Path("/usr/share/python-wheels")
++    if wheels_dir.exists():
++        yield wheels_dir
