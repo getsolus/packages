@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
+name       : weasis
+version    : 4.7.1
+release    : 1
+source     :
+    - git|https://github.com/nroduit/Weasis.git : 0437762f85742722c311f327dc36d6eb2e9d09df
+homepage   : https://weasis.org/
+license    :
+    - Apache-2.0
+    - EPL-2.0
+component  : multimedia.graphics
+summary    : DICOM viewer for medical imaging
+description: |
+    Weasis is a cross-platform DICOM viewer for medical imaging. It supports
+    local DICOM files as well as integration with PACS, DICOMweb, and other
+    clinical imaging workflows.
+networking : true
+builddeps  :
+    - apache-maven
+    - openjdk-25-devel
+    - unzip
+    - xz
+environment: |
+    export JAVA_HOME=/usr/lib64/openjdk-25
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+build      : |
+    export MAVEN_OPTS="-Dmaven.repo.local=${workdir}/m2 -Xmx4g"
+
+    # Build all plugins and place them in the isolated Maven repository.
+    mvn --batch-mode --no-transfer-progress -DskipTests clean install
+
+    # Assemble the native distribution consumed by upstream's jpackage script.
+    mvn --batch-mode --no-transfer-progress -DskipTests \
+        -P compressXZ,-purgeI18nPackage \
+        -f weasis-distributions clean package
+
+    # Maven creates weasis-native.zip. Upstream unpacks it before jpackage.
+    rm -rf "${workdir}/weasis-distributions/target/native-dist/weasis-native"
+    unzip -q "${workdir}/weasis-distributions/target/native-dist/weasis-native.zip" -d "${workdir}/weasis-distributions/target/native-dist/weasis-native"
+
+    # Build an application image only. Solus packages the resulting tree itself,
+    # rather than repacking upstream's Debian or RPM installer.
+    ./weasis-distributions/script/package-weasis.sh \
+        --jdk "${JAVA_HOME}" \
+        --input "${workdir}/weasis-distributions/target/native-dist/weasis-native/bin-dist" \
+        --output "${workdir}/weasis-app" \
+        --temp "${workdir}/jpackage-tmp" \
+        --no-installer
+install    : |
+    install -dm00755 ${installdir}/usr/share/weasis
+    cp -a --no-preserve=ownership ${workdir}/weasis-app/Weasis/. ${installdir}/usr/share/weasis/
+
+    install -dm00755 ${installdir}/usr/bin
+    ln -srv ${installdir}/usr/share/weasis/bin/Weasis ${installdir}/usr/bin/weasis
+    ln -srv ${installdir}/usr/share/weasis/bin/Dicomizer ${installdir}/usr/bin/dicomizer
+
+    install -Dm00644 \
+        weasis-distributions/script/resources/linux/Weasis.png \
+        ${installdir}/usr/share/icons/hicolor/64x64/apps/org.weasis.launcher.png
+    install -Dm00644 \
+        weasis-distributions/script/resources/linux/Dicomizer.png \
+        ${installdir}/usr/share/icons/hicolor/64x64/apps/org.weasis.launcher.Dicomizer.png
+
+    install -Dm00644 ${pkgfiles}/org.weasis.launcher.desktop \
+        ${installdir}/usr/share/applications/org.weasis.launcher.desktop
+    install -Dm00644 ${pkgfiles}/org.weasis.launcher.Dicomizer.desktop \
+        ${installdir}/usr/share/applications/org.weasis.launcher.Dicomizer.desktop
+    install -Dm00644 ${pkgfiles}/org.weasis.launcher.metainfo.xml \
+        ${installdir}/usr/share/metainfo/org.weasis.launcher.metainfo.xml
+
+    %install_license LICENSE
