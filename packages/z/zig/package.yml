@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : zig
 version    : 0.16.0
-release    : 18
+release    : 19
 source     :
     - https://ziglang.org/download/0.16.0/zig-0.16.0.tar.xz : 43186959edc87d5c7a1be7b7d2a25efffd22ce5807c7af99067f86f99641bfdf
 homepage   : https://ziglang.org
@@ -15,28 +15,40 @@ builddeps  :
     - clang-devel
     - lld-devel
     - llvm-devel
-environment: |
-    export CC=/usr/bin/clang
-    export CXX=/usr/bin/clang++
-    if [ -e /usr/bin/ccache ]; then
-        export CMAKE_C_COMPILER_LAUNCHER=ccache
-        export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-    fi
 setup      : |
+    %patch -p1 -i ${pkgfiles}/0001-Try-versioned-zig-libdir.patch
+
     # Note: Check the kernel minimum in glibc for the kernel version to use below
     %cmake_ninja \
+        -DZIG_PIE=ON \
         -DZIG_SHARED_LLVM=ON \
         -DZIG_TARGET_TRIPLE=x86_64-linux.6.18-gnu.2.42 \
         -DZIG_TARGET_MCPU=baseline \
         -DZIG_USE_LLVM_CONFIG=ON
 build      : |
     %ninja_build
-    %install_license LICENSE
 install    : |
-    %ninja_install
+    _MAJOR_MIN_VERSION=$(echo ${version} | cut -d. -f1-2)
+    _ZIG_LIBDIR=${installdir}/usr/lib/zig-${_MAJOR_MIN_VERSION}
+
+    DESTDIR="${PWD}/tmp" cmake --install "solusBuildDir" --verbose
+
+    install -dm 00755 ${installdir}/usr/bin ${_ZIG_LIBDIR}
+    pushd tmp/usr
+    cp -va --no-preserve=ownership bin ${_ZIG_LIBDIR}
+    cp -va --no-preserve=ownership lib/zig/* ${_ZIG_LIBDIR}
+    popd
+    
+    %install_license LICENSE
+
+    # Add versioned command
+    ln -srv ${_ZIG_LIBDIR}/bin/zig ${installdir}/usr/bin/zig-${_MAJOR_MIN_VERSION}
+
+    # Add unversioned since this is the default
+    ln -srv ${_ZIG_LIBDIR}/bin/zig ${installdir}/usr/bin/zig
 check      : |
-    pushd `mktemp -d`
-        $installdir/usr/bin/zig init
-        $installdir/usr/bin/zig build run
-        $installdir/usr/bin/zig build test
+    pushd $(mktemp -d)
+    ${installdir}/usr/bin/zig init
+    ${installdir}/usr/bin/zig build run
+    ${installdir}/usr/bin/zig build test
     popd
