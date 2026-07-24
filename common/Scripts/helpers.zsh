@@ -8,9 +8,11 @@ function cpesearch() {
     if [[ -z $1 || $1 == "--help" || $1 == "-h" ]]; then
         echo "usage: cpesearch <package-name>"
     else
-        curl -s -X POST https://cpe-guesser.cve-search.org/search -d "{\"query\": [\"$1\"]}" | jq .
+        curl -s "https://services.nvd.nist.gov/rest/json/cpes/2.0?cpeMatchString=cpe:2.3:*:*:$1*" |\
+        jq 'del(.products.[] | select(.cpe.deprecated == true))' | jq -r '.products.[].cpe.cpeName' |\
+        cut -d":" -f1-5 | sort -u
         
-        echo "Verify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
+        echo -e "\nVerify successful hits by visiting https://cve.circl.lu/search/\$VENDOR/\$PRODUCT"
         echo "- CPE entries for software applications have the form 'cpe:2.3:a:\$VENDOR:\$PRODUCT'"
     fi
 }
