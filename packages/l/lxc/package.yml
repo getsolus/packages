@@ -1,13 +1,19 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : lxc
-version    : 6.0.3
-release    : 24
+version    : 7.0.0
+release    : 25
 source     :
-    - https://linuxcontainers.org/downloads/lxc/lxc-6.0.3.tar.gz : adac0837d2abfd2903916eaf56f60756f131327311f4f25ad917f6a71f73f98c
-license    : LGPL-2.1-or-later
-component  : virt
+    - https://linuxcontainers.org/downloads/lxc/lxc-7.0.0.tar.gz : ba0c860626efbac6683f351dd718edb062065e919716d787b89e3d547c5d9493
 homepage   : https://linuxcontainers.org/lxc
-summary    : Linux Containers
+license    : LGPL-2.1-or-later
+summary    :
+    - devel : Linux Containers development files
+    - libs : Linux Containers shared library
+    - Linux Containers
+component  :
+    - devel : programming.devel
+    - libs : programming.library
+    - virt
 description: |
     LXC is the well known set of tools, templates, library and language bindings. It's pretty low level, very flexible and covers just about every containment feature supported by the upstream kernel.
 builddeps  :
@@ -15,29 +21,49 @@ builddeps  :
     - pkgconfig(libapparmor)
     - pkgconfig(libcap)
     - pkgconfig(libseccomp)
+    - pkgconfig(openssl)
+    - pkgconfig(pam)
     - pkgconfig(python3)
     - docbook2x
 rundeps    :
+    - devel :
+        - lxc-libs
     - dnsmasq
-clang      : true
 setup      : |
-    sed -i "s|if sanitize == 'none'|if false|g" src/lxc/cmd/meson.build
-
-    %meson_configure -Ddistrosysconfdir=/etc/default
+    %meson_configure \
+        -Dapparmor=false \
+        -Ddistrosysconfdir=/usr/share/defaults/lxc \
+        -Dlandlock-monitor=true \
+        -Dman=true \
+        -Dpam-cgroup=true \
+        -Dselinux=false \
+        -Dsystemd-unitdir=%libdir%/systemd/system \
+        -Dtests=true
 build      : |
     %ninja_build
 install    : |
     %ninja_install
+    %install_license COPYING LICENSE*
+
+    # Upstream unit-style tests (built with -Dtests=true); do not ship in /usr/bin
+    rm -fv ${installdir}/usr/bin/lxc-test-*
 
     # No static libs
-    rm -v $installdir/%libdir%/lib*.a
+    rm -v ${installdir}/%libdir%/lib*.a
 
-    # Stateless
-    install -Dm00644 $pkgfiles/lxc.tmpfiles $installdir/usr/lib/tmpfiles.d/lxc.conf
-    # rm -v $installdir/etc/default/lxc \
-    #       $installdir/etc/lxc/default.conf
-    rmdir -v $installdir/var/cache/lxc \
-             $installdir/var/cache \
-             $installdir/var/lib/lxc \
-             $installdir/var/lib \
-             $installdir/var
+    # Stateless: relocate upstream defaults out of /etc
+    install -dm00755 ${installdir}/usr/share/defaults/lxc
+    mv -v ${installdir}/etc/lxc/* ${installdir}/usr/share/defaults/lxc/
+    rm -rfv ${installdir}/etc
+
+    install -Dm00644 ${pkgfiles}/lxc.tmpfiles ${installdir}/usr/lib/tmpfiles.d/lxc.conf
+    install -Dm00644 ${pkgfiles}/lxc-net ${installdir}/usr/share/defaults/lxc/lxc-net
+
+    install -Dm00644 ${pkgfiles}/60-lxc.preset ${installdir}/%libdir%/systemd/system-preset/60-lxc.preset
+patterns   :
+    - devel:
+        - /usr/include/lxc/
+        - /usr/lib64/liblxc.so
+        - /usr/lib64/pkgconfig/lxc.pc
+    - libs:
+        - /usr/lib64/liblxc.so.*
