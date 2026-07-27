@@ -1,0 +1,143 @@
+diff -ru claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_folder.c claws-mail-4.4.0/src/plugins/vcalendar/vcal_folder.c
+--- claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_folder.c	2026-05-08 21:01:03.714575934 +0200
++++ claws-mail-4.4.0/src/plugins/vcalendar/vcal_folder.c	2026-05-08 21:26:48.591913969 +0200
+@@ -536,7 +536,7 @@
+ 	while (evt) {
+ 		icalproperty *prop;
+ 		icalproperty *rprop = icalcomponent_get_first_property(evt, ICAL_RRULE_PROPERTY);
+-		struct icalrecurrencetype recur;
++		struct icalrecurrencetype* recur;
+         	struct icaltimetype next;
+         	icalrecur_iterator* ritr = NULL;
+ 		EventTime days;
+@@ -559,7 +559,7 @@
+ 			gchar *orig_uid = NULL;
+ 			gchar *uid = g_strdup(icalproperty_get_uid(prop));
+ 			IcalFeedData *data = icalfeeddata_new(
+-						icalcomponent_new_clone(evt), NULL);
++						icalcomponent_clone(evt), NULL);
+ 			int i = 0;
+ 			orig_uid = g_strdup(uid);
+ 
+@@ -610,7 +610,7 @@
+ 				struct icaldurationtype ical_dur;
+ 				struct icaltimetype dtstart = icaltime_null_time();
+ 				struct icaltimetype dtend = icaltime_null_time();
+-				evt = icalcomponent_new_clone(evt);
++				evt = icalcomponent_clone(evt);
+ 				prop = icalcomponent_get_first_property(evt, ICAL_RRULE_PROPERTY);
+ 				if (prop) {
+ 					icalcomponent_remove_property(evt, prop);
+@@ -626,7 +626,7 @@
+ 					dtend = icalproperty_get_dtend(prop);
+ 				else
+ 					debug_print("event has no DTEND!\n");
+-				ical_dur = icaltime_subtract(dtend, dtstart);
++				ical_dur = icalduration_from_times(dtend, dtstart);
+ 				next = icalrecur_iterator_next(ritr);
+ 				if (!icaltime_is_null_time(next) &&
+ 				    !icaltime_is_null_time(dtstart) && i < 100) {
+@@ -635,7 +635,7 @@
+ 
+ 					prop = icalcomponent_get_first_property(evt, ICAL_DTEND_PROPERTY);
+ 					if (prop)
+-						icalproperty_set_dtend(prop, icaltime_add(next, ical_dur));
++						icalproperty_set_dtend(prop, icalduration_extend(next, ical_dur));
+ 
+ 					prop = icalcomponent_get_first_property(evt, ICAL_UID_PROPERTY);
+ 					uid = g_strdup_printf("%s-%d", orig_uid, i);
+@@ -770,7 +770,7 @@
+ 			if ((status == ICAL_PARTSTAT_ACCEPTED
+ 			     || status == ICAL_PARTSTAT_TENTATIVE) 
+ 			    && event->recur && *(event->recur)) {
+-        			struct icalrecurrencetype recur;
++        			struct icalrecurrencetype* recur;
+         			struct icaltimetype dtstart;
+         			struct icaltimetype next;
+         			icalrecur_iterator* ritr;
+@@ -779,13 +779,13 @@
+ 				int i = 0;
+ 
+ 				debug_print("dumping recurring events from main event %s\n", d);
+-        			recur = icalrecurrencetype_from_string(event->recur);
++        			recur = icalrecurrencetype_new_from_string(event->recur);
+ 				dtstart = icaltime_from_string(event->dtstart);
+ 
+ 				duration = icaltime_as_timet(icaltime_from_string(event->dtend))
+ 							    - icaltime_as_timet(icaltime_from_string(event->dtstart));
+ 
+-				ical_dur = icaldurationtype_from_int(duration);
++				ical_dur = icaldurationtype_from_seconds(duration);
+ 
+         			ritr = icalrecur_iterator_new(recur, dtstart);
+ 
+@@ -799,7 +799,7 @@
+ 					gchar *uid = g_strdup_printf("%s-%d", event->uid, i);
+ 					new_start = icaltime_as_ical_string(next);
+ 					new_end = icaltime_as_ical_string(
+-							icaltime_add(next, ical_dur));
++							icalduration_extend(next, ical_dur));
+ 					debug_print("adding with start/end %s:%s\n", new_start, new_end);
+ 					nevent = vcal_manager_new_event(uid, event->organizer, event->orgname, 
+ 								event->location, event->summary, event->description, 
+@@ -825,6 +825,7 @@
+ 					i++;
+ 				}
+ 				icalrecur_iterator_free(ritr);
++				icalrecurrencetype_unref(recur);
+ 			}
+ 		} else {
+ 			vcal_manager_free_event(event);
+@@ -2379,7 +2380,7 @@
+ 			if (prop) {
+ 				itt = icalproperty_get_dtstart(prop);
+ 				icalproperty_free(prop);
+-				dtend = g_strdup(icaltime_as_ical_string(icaltime_add(itt,duration)));
++				dtend = g_strdup(icaltime_as_ical_string(icalduration_extend(itt,duration)));
+ 				TO_UTF8(dtend);
+ 			}
+ 		}
+@@ -2434,8 +2435,8 @@
+ 	}
+ 	GET_PROP(comp, prop, ICAL_RRULE_PROPERTY);
+ 	if (prop) {
+-		struct icalrecurrencetype rrule = icalproperty_get_rrule(prop);
+-		recur = g_strdup(icalrecurrencetype_as_string(&rrule));
++		struct icalrecurrencetype* rrule = icalproperty_get_rrule(prop);
++		recur = g_strdup(icalrecurrencetype_as_string(rrule));
+ 		TO_UTF8(recur);
+ 		icalproperty_free(prop);
+ 	}
+diff -ru claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_manager.c claws-mail-4.4.0/src/plugins/vcalendar/vcal_manager.c
+--- claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_manager.c	2026-05-08 21:01:03.714575934 +0200
++++ claws-mail-4.4.0/src/plugins/vcalendar/vcal_manager.c	2026-05-08 21:36:21.567027509 +0200
+@@ -402,7 +402,7 @@
+ 		icalproperty_vanew_dtend((icaltime_from_string(event->dtend)), (void*)0));
+ 	if (event->recur && *(event->recur)) {
+ 		icalcomponent_add_property(ievent,
+-			icalproperty_vanew_rrule((icalrecurrencetype_from_string(event->recur)), (void*)0));
++			icalproperty_vanew_rrule((icalrecurrencetype_new_from_string(event->recur)), (void*)0));
+ 	}
+ 	icalcomponent_add_property(ievent,
+ 		icalproperty_new_description(event->description));
+@@ -690,7 +690,7 @@
+ 	icalcomponent *ievent = NULL;
+ 	int i = 0;
+ 
+-	ievent = icalcomponent_new_clone(event);
++	ievent = icalcomponent_clone(event);
+ 
+ 	prop = icalcomponent_get_first_property(ievent, ICAL_UID_PROPERTY);
+ 	if (prop) {
+diff -ru claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_meeting_gtk.c claws-mail-4.4.0/src/plugins/vcalendar/vcal_meeting_gtk.c
+--- claws-mail-4.4.0.orig/src/plugins/vcalendar/vcal_meeting_gtk.c	2026-05-08 21:01:03.714575934 +0200
++++ claws-mail-4.4.0/src/plugins/vcalendar/vcal_meeting_gtk.c	2026-05-08 21:30:08.065351282 +0200
+@@ -2110,7 +2110,7 @@
+ 	
+ 		ipt.start = icaltime_from_string(event->dtstart);
+ 		ipt.end = icaltime_from_string(event->dtend);
+-		ipt.duration = icaltime_subtract(ipt.end, ipt.start);
++		ipt.duration = icalduration_from_times(ipt.end, ipt.start);
+ 		if (icaltime_as_timet(ipt.start) <= icaltime_as_timet(itt_end) 
+ 		 && icaltime_as_timet(ipt.end) >= icaltime_as_timet(itt_start)) {
+ 			prop = icalproperty_new_freebusy(ipt);
