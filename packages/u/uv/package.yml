@@ -2,16 +2,22 @@
 #
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : uv
-version    : 0.11.28
-release    : 18
+version    : 0.11.32
+release    : 19
 source     :
-    - https://github.com/astral-sh/uv/archive/refs/tags/0.11.28.tar.gz : 556c6cb42a2101c690704b08d0d3c5d596ea94e69353a820664568f0fcd62fd4
+    - https://github.com/astral-sh/uv/archive/refs/tags/0.11.32.tar.gz : 62799114a5914728b0de55e65ae856e599fe3103eef9997b479cfc7acdd6ae67
 homepage   : https://docs.astral.sh/uv
 license    :
     - Apache-2.0
     - MIT
-component  : programming.tools
-summary    : An extremely fast Python package and project manager, written in Rust.
+component  :
+    - ^python-uv : programming.python
+    - ^python-uv-build : programming.python
+    - programming.tools
+summary    :
+    - ^python-uv : An extremely fast Python package and project manager, written in Rust
+    - ^python-uv-build : PEP517 build backend for uv
+    - An extremely fast Python package and project manager, written in Rust
 description: |
     An extremely fast Python package and project manager, written in Rust.
 networking : true
@@ -21,6 +27,9 @@ builddeps  :
     - python-maturin
     - python-packaging
     - python-wheel
+rundeps    :
+    - ^python-uv :
+        - uv
 checkdeps  :
     - numpy
 environment: |
@@ -33,28 +42,50 @@ environment: |
     CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO="off"; export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO;
     CARGO_PROFILE_RELEASE_LTO="off"; export CARGO_PROFILE_RELEASE_LTO;
     CARGO_PROFILE_RELEASE_STRIP="none"; export CARGO_PROFILE_RELEASE_STRIP;
+    
+    tripple="$(rustc --print host-tuple)"
+setup      : |
+    %patch -p1 -i ${pkgfiles}/downstream-bin.patch
+
+    %cargo_fetch
+
+    mkdir completions
 build      : |
-    %python3_setup
+    # Note: do not use --all-features as in enables a self-updater
+    maturin build --locked --release --target "${tripple}" --compatibility linux
+    maturin build --locked --release --target "${tripple}" --compatibility linux -m crates/uv-build/Cargo.toml
 
     # Build completions
-    mkdir completions
-    COMPGEN="target/release/uv --generate-shell-completion"
-    $COMPGEN bash > "completions/$package.bash"
-    $COMPGEN fish > "completions/$package.fish"
-    $COMPGEN zsh > "completions/_$package"
+    _uv="target/${tripple}/release/uv"
+    ${_uv} --generate-shell-completion bash > "completions/${package}.bash"
+    ${_uv} --generate-shell-completion fish > "completions/${package}.fish"
+    ${_uv} --generate-shell-completion zsh > "completions/_${package}"
 install    : |
-    %python3_install
+    python3 -m installer --destdir=%installroot% target/wheels/uv-${version}-*.whl
+    python3 -m installer --destdir=%installroot% target/wheels/uv_build-${version}-*.whl
 
     # Add readme
-    install -Dm00644 -t "$installdir/usr/share/doc/$package/" README.md
+    %install_file -t "${installdir}/usr/share/doc/${package}/" README.md
 
     # Install completions
-    install -Dm00644 "completions/$package.bash" -t "$installdir/usr/share/bash-completion/completions/"
-    install -Dm00644 "completions/$package.fish" -t "$installdir/usr/share/fish/vendor_completions.d/"
-    install -Dm00644 "completions/_$package" -t "$installdir/usr/share/zsh/site-functions/"
+    %install_file "completions/${package}.bash" -t "${installdir}/usr/share/bash-completion/completions/"
+    %install_file "completions/${package}.fish" -t "${installdir}/usr/share/fish/vendor_completions.d/"
+    %install_file "completions/_${package}" -t "${installdir}/usr/share/zsh/site-functions/"
 
     %install_license LICENSE*
+
+    # Ensure the correct binaries are installed
+    %install_bin target/${tripple}/release/uv
+    %install_bin target/${tripple}/release/uvx
 check      : |
     # Run smoke tests
     cd /tmp
-    "$installdir/usr/bin/uv" run "$workdir/scripts/smoke-test"
+    "${installdir}/usr/bin/uv" run "${workdir}/scripts/smoke-test"
+patterns   :
+    - ^python-uv :
+        - /usr/lib/python3.*/site-packages/uv-*
+        - /usr/lib/python3.*/site-packages/uv
+    - ^python-uv-build :
+        - /usr/bin/uv-build
+        - /usr/lib/python3.*/site-packages/uv_build
+        - /usr/lib/python3.*/site-packages/uv_build-*
