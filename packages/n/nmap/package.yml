@@ -1,24 +1,56 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : nmap
 version    : '7.99'
-release    : 26
+release    : 27
 source     :
     - https://nmap.org/dist/nmap-7.99.tar.bz2 : df512492ffd108e53a27a06f26d8635bbe89e0e569455dc8ffef058c035d51b2
 homepage   : https://nmap.org
 license    : Nmap Public Source License Version 0.95
-component  : network.utils
-summary    : Utility for network discovery and security auditing
-description: |
-    Nmap (Network Mapper) is an utility for network discovery and security auditing. Many systems and network administrators also find it useful for tasks such as network inventory, managing service upgrade schedules, and monitoring host or service uptime. Nmap uses raw IP packets in novel ways to determine what hosts are available on the network, what services (application name and version) those hosts are offering, what operating systems (and OS versions) they are running, what type of packet filters/firewalls are in use, and dozens of other characteristics. It was designed to rapidly scan large networks, but works fine against single hosts. In addition to the classic command-line Nmap executable, the Nmap suite includes an advanced GUI and results viewer (Zenmap), a flexible data transfer, redirection, and debugging tool (Ncat), a utility for comparing scan results (Ndiff), and a packet generation and response analysis tool (Nping).
+component  :
+    - ^ndiff : programming.tools
+    - ^zenmap : network.utils
+    - network.utils
+summary    :
+    - ^ndiff : Compare two Nmap XML files and display a list of their differences
+    - ^zenmap : GUI for Nmap
+    - Utility for network discovery and security auditing
+description:
+    - ^ndiff : Compare two Nmap XML files and display a list of their differences
+    - |
+      Nmap (Network Mapper) is an utility for network discovery and security auditing. Many systems and network administrators also find it useful for tasks such as network inventory, managing service upgrade schedules, and monitoring host or service uptime. Nmap uses raw IP packets in novel ways to determine what hosts are available on the network, what services (application name and version) those hosts are offering, what operating systems (and OS versions) they are running, what type of packet filters/firewalls are in use, and dozens of other characteristics. It was designed to rapidly scan large networks, but works fine against single hosts. In addition to the classic command-line Nmap executable, the Nmap suite includes an advanced GUI and results viewer (Zenmap), a flexible data transfer, redirection, and debugging tool (Ncat), a utility for comparing scan results (Ndiff), and a packet generation and response analysis tool (Nping).
 builddeps  :
+    - pkgconfig(gtk+-3.0)
     - pkgconfig(libpcap)
     - pkgconfig(libpcre)
     - pkgconfig(libssh2)
     - pkgconfig(lua) # needs lua 5.4
+    - python-build
+    - python-installer
     - python-setuptools
+    - python-setuptools-gettext
+    - python-wheel
+checkdeps  :
+    - python-cairo
+    - python-gobject
+rundeps    :
+    - ^zenmap :
+        - ndiff
+        - nmap
+        - python-cairo
+        - python-gobject
+networking : true # Check
 setup      : |
+    %patch -p1 -i ${pkgfiles}/nmap-ndiff-fix-tests.patch
+    %patch -p1 -i ${pkgfiles}/NotCVE-2026-0011.patch
+
+    # Make sure we don't build vendered deps
+    rm -r liblua libpcap libpcre macosx mswin32 libssh2 libz
+
     # fix build, stolen from arch
     sed -e '/strlcat/d' -i libdnet-stripped/acconfig.h
+
+    # Keep zenmap from installing ndiff
+    sed -e '/^ndiff = "ndiff:run_main"$/d' -e '/^py-modules = \["ndiff"\]$/d' -i zenmap/pyproject.toml
 
     # FIXME: reconfigure macro doesn't pick up -I
     autoreconf -vfi -I /usr/share/gettext/m4
@@ -28,8 +60,57 @@ setup      : |
         --with-zlib=/usr \
         --with-libssh2=/usr \
         --with-liblua=/usr \
+        --without-ndiff \
+        --without-zenmap
 build      : |
     %make
+    %pyproject_build ndiff
+    %pyproject_build zenmap
 install    : |
     %make_install
     %install_license LICENSE
+    %install_file -t ${installdir}/usr/share/licenses/${package} docs/3rd-party-licenses.txt
+
+    pushd ndiff
+    %pyproject_install
+    popd
+
+    pushd zenmap
+    %pyproject_install
+    popd
+
+    %install_file -t ${installdir}/usr/share/man/man1 ndiff/docs/ndiff.1
+    %install_file -t ${installdir}/usr/share/man/man1 docs/zenmap.1
+
+    ln -srv ${installdir}/usr/bin/zenmap ${installdir}/usr/bin/nmapfe
+    ln -srv ${installdir}/usr/bin/zenmap ${installdir}/usr/bin/xnmap
+
+    %install_file -t ${installdir}/usr/share/applications zenmap/install_scripts/unix/zenmap-root.desktop
+    %install_file -t ${installdir}/usr/share/applications zenmap/install_scripts/unix/zenmap.desktop
+    %install_file -t ${installdir}/usr/share/icons/hicolor/256x256/apps zenmap/zenmapCore/data/pixmaps/zenmap.png
+check      : |
+    %make check
+
+    pushd ndiff
+    python -m unittest discover -p "*.py"
+    popd
+
+    pushd zenmap
+    python -m unittest discover -p "*.py"
+    popd
+patterns   :
+    - ^ndiff :
+        - /usr/bin/ndiff
+        - /usr/lib/python3.*/site-packages/ndiff*
+        - /usr/lib/python3.*/site-packages/__pycache__/ndiff*
+        - /usr/share/man/man1/ndiff.1*
+    - ^zenmap :
+        - /usr/bin/zenmap
+        - /usr/bin/nmapfe
+        - /usr/bin/xnmap
+        - /usr/lib/python3.*/site-packages/radialnet*
+        - /usr/lib/python3.*/site-packages/zenmap*
+        - /usr/share/man/man1/zenmap.1*
+        - /usr/share/applications
+        - /usr/share/icons
+        - /usr/share/locale
