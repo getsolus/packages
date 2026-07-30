@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : virtualbox
-version    : 7.2.12
-release    : 394
+version    : 7.2.14
+release    : 395
 source     :
-    - https://download.virtualbox.org/virtualbox/7.2.12/VirtualBox-7.2.12.tar.bz2 : 64a4843677e42010e7799e951883fbbefc56bf2bc162e4970edea04f142f8b25
-    - https://download.virtualbox.org/virtualbox/7.2.12/VBoxGuestAdditions_7.2.12.iso : ae55a8a3b3934785a3a622f63483806e3228112eba57f86ca932958199b8f61b
+    - https://download.virtualbox.org/virtualbox/7.2.14/VirtualBox-7.2.14.tar.bz2 : 384f293184c52fd51bc941c17d753b4019446f53a6b07c828adfb3e61fe0a500
+    - https://download.virtualbox.org/virtualbox/7.2.14/VBoxGuestAdditions_7.2.14.iso : 4f51a073296de31cce53924860549149be5dc339f65dcd1dbf34fd7accefe8fb
 homepage   : https://www.virtualbox.org
 license    : GPL-2.0-only
 component  :
@@ -60,8 +60,6 @@ builddeps  :
     - python-setuptools
     - yasm
 permanent  :
-    - /lib/modules
-    - /lib64/modules
     - /usr/lib64/modules
 autodep    : false
 rundeps    :
@@ -95,13 +93,10 @@ patterns   :
         - /usr/lib/python*
         - /usr/lib64/virtualbox/sdk
     - current :
-        - /lib64/modules/*.current/extra/vbox
         - /usr/lib64/modules/*.current/extra/vbox
     - guest :
-        - /lib64/modules/*.lts/extra/vbox-guest
         - /usr/lib64/modules/*.lts/extra/vbox-guest
     - guest-current :
-        - /lib64/modules/*.current/extra/vbox-guest
         - /usr/lib64/modules/*.current/extra/vbox-guest
     - guest-common :
         - /usr/sbin
@@ -114,12 +109,11 @@ patterns   :
         - /usr/lib64/modules-load.d/vboxguest.conf
         - /usr/lib64/sysusers.d/vboxguest.conf
         - /usr/lib64/systemd/system/vboxservice.service
-        - /usr/lib64/systemd/system-preset/20-virtualbox-guest.preset
+        - /usr/lib64/systemd/system-preset/60-virtualbox-guest.preset
         - /usr/share/xdg
     - guest-additions-iso :
         - /usr/share/virtualbox/VBoxGuestAdditions.iso
     - main :
-        - /lib64/modules/*.lts/extra/vbox
         - /usr/lib64/modules/*.lts/extra/vbox
 setup      : |
     # Apply patches before we go off changing the tree
@@ -129,8 +123,8 @@ setup      : |
     # Note that VBox uses private libslirp headers, so that can't be debundled
     rm -rvf src/libs/{curl-*,liblzma-*,libpng-*,libtpms-*,libxml2-*,openssl-*,zlib-*}
 
-    cp $pkgfiles/LocalConfig.kmk .
-    echo "VBOX_GCC_OPT=$CXXFLAGS" >> LocalConfig.kmk
+    cp ${pkgfiles}/LocalConfig.kmk .
+    echo "VBOX_GCC_OPT=${CXXFLAGS}" >> LocalConfig.kmk
 
     # It actually wants SDL2
     sed -i 's/sdl-config/sdl2-config/' configure
@@ -146,7 +140,7 @@ build      : |
     ##### hosts modules #####
     cd out/linux.amd64/release/bin
     for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
-        cp -a src ${kern}
+        cp -arv --no-preserve=ownership src ${kern}
         pushd ${kern}
             %make KERN_VER=${kern}
         popd
@@ -155,8 +149,8 @@ build      : |
     ##### guest modules #####
     cd additions
     for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
-        cp -a src ${kern}
-        pushd  ${kern}
+        cp -arv --no-preserve=ownership src ${kern}
+        pushd ${kern}
             %make all KERN_VER=${kern}
         popd
     done
@@ -165,125 +159,110 @@ install    : |
     cd out/linux.amd64/release/bin
 
     # binaries
-    install -dm00755 $installdir/usr/bin
-    install -m00755 VBox.sh $installdir/usr/bin/VBox.sh
+    %install_bin VBox.sh
 
     for i in VirtualBox VBoxManage VBoxSDL VBoxHeadless VBoxAutostart VBoxBalloonCtrl VBoxBugReport VBoxDTrace VBoxVRDP; do
-        ln -s VBox.sh $installdir/usr/bin/$i
+        ln -s VBox.sh ${installdir}/usr/bin/${i}
     done
 
     # libraries
-    install -dm00755 $installdir/%libdir%/virtualbox
-    install -m00755 *.so -t $installdir/%libdir%/virtualbox
-    install -m00644 *.r0 VBoxEFI*.fd -t $installdir/%libdir%/virtualbox
+    %install_dir ${installdir}/%libdir%/virtualbox
+    %install_exe *.so -t ${installdir}/%libdir%/virtualbox
+    %install_file *.r0 VBoxEFI*.fd -t ${installdir}/%libdir%/virtualbox
 
     # binaries & scripts
-    install -m00755 VirtualBox VBoxManage VBoxSVC VBoxExtPackHelperApp VBoxBalloonCtrl -t $installdir/%libdir%/virtualbox
-    install -m00755 VBoxAutostart VBoxCpuReport VBoxBugReport VBoxVMMPreload -t $installdir/%libdir%/virtualbox
-    install -m00755 VBoxCreateUSBNode.sh VBoxSysInfo.sh -t $installdir/%libdir%/virtualbox
+    %install_exe VirtualBox VBoxManage VBoxSVC VBoxExtPackHelperApp VBoxBalloonCtrl -t ${installdir}/%libdir%/virtualbox
+    %install_exe VBoxAutostart VBoxCpuReport VBoxBugReport VBoxVMMPreload -t ${installdir}/%libdir%/virtualbox
+    %install_exe VBoxCreateUSBNode.sh VBoxSysInfo.sh -t ${installdir}/%libdir%/virtualbox
 
     # setuid root binaries
-    install -m04755 VBoxSDL VBoxVolInfo VirtualBoxVM VBoxHeadless VBoxNetDHCP VBoxNetAdpCtl VBoxNetNAT -t $installdir/%libdir%/virtualbox
+    install -m04755 VBoxSDL VBoxVolInfo VirtualBoxVM VBoxHeadless VBoxNetDHCP VBoxNetAdpCtl VBoxNetNAT -t ${installdir}/%libdir%/virtualbox
 
     # components
-    install -dm00755 $installdir/%libdir%/virtualbox/components
-    install -m00755 components/* -t $installdir/%libdir%/virtualbox/components
+    %install_dir ${installdir}/%libdir%/virtualbox/components
+    %install_exe components/* -t ${installdir}/%libdir%/virtualbox/components
 
     # languages
-    install -dm00755 $installdir/usr/share/virtualbox/nls
-    install -m00755 nls/*.qm -t $installdir/usr/share/virtualbox/nls
+    %install_dir ${installdir}/usr/share/virtualbox/nls
+    %install_file nls/*.qm -t ${installdir}/usr/share/virtualbox/nls
 
     # icons
-    install -Dm00644 VBox.png $installdir/usr/share/pixmaps/VBox.png
     pushd icons
         for i in *; do
-            install -d $installdir/usr/share/icons/hicolor/$i/mimetypes
-            cp $i/* $installdir/usr/share/icons/hicolor/$i/mimetypes
+            %install_dir ${installdir}/usr/share/icons/hicolor/${i}/mimetypes
+            cp -arv --no-preserve=ownership ${i}/* ${installdir}/usr/share/icons/hicolor/${i}/mimetypes
         done
     popd
+    # desktop Icon=virtualbox
+    %install_file icons/scalable/virtualbox.svg ${installdir}/usr/share/icons/hicolor/scalable/apps/virtualbox.svg
+    rm -f ${installdir}/usr/share/icons/hicolor/scalable/mimetypes/virtualbox.svg
 
     # .desktop
-    install -Dm00644 virtualbox.desktop $installdir/usr/share/applications/virtualbox.desktop
-    install -Dm00644 virtualbox.xml $installdir/usr/share/mime/packages/virtualbox.xml
+    %install_file virtualbox.desktop ${installdir}/usr/share/applications/virtualbox.desktop
+    %install_file virtualbox.xml ${installdir}/usr/share/mime/packages/virtualbox.xml
 
     # appstream metainfo
-    install -Dm00644 $pkgfiles/org.virtualbox.virtualbox.metainfo.xml -t $installdir/usr/share/metainfo
+    %install_file ${pkgfiles}/org.virtualbox.virtualbox.metainfo.xml -t ${installdir}/usr/share/metainfo
 
     # kernel modules
     for kern in "%kernel_version_lts%" "%kernel_version_current%"; do
         pushd ${kern}
-            install -dm00755 $installdir/usr/lib64/modules/${kern}/extra/vbox/
-            install -m00644 *.ko $installdir/usr/lib64/modules/${kern}/extra/vbox/
+            %install_dir ${installdir}/usr/lib64/modules/${kern}/extra/vbox/
+            %install_file *.ko -t ${installdir}/usr/lib64/modules/${kern}/extra/vbox/
         popd
     done
 
     # devel
-    install -Dm00755 vboxshell.py $installdir/%libdir%/virtualbox/vboxshell.py
+    %install_exe vboxshell.py ${installdir}/%libdir%/virtualbox/vboxshell.py
     pushd sdk/installer/python
-        VBOX_INSTALL_PATH="%libdir%/virtualbox" python3 vboxapisetup.py install --root=$installdir
+        VBOX_INSTALL_PATH="%libdir%/virtualbox" python3 vboxapisetup.py install --root=${installdir}
     popd
-    install -dm00755 $installdir/%libdir%/virtualbox/sdk/bindings
-    cp -r sdk/bindings/{VirtualBox.xidl,auth,xpcom} $installdir/%libdir%/virtualbox/sdk/bindings
+    %install_dir ${installdir}/%libdir%/virtualbox/sdk/bindings
+    cp -arv --no-preserve=ownership sdk/bindings/{VirtualBox.xidl,auth,xpcom} ${installdir}/%libdir%/virtualbox/sdk/bindings
 
     # systemd stuffs
-    install -Dm00644 $pkgfiles/virtualbox.sysusers $installdir/%libdir%/sysusers.d/virtualbox.conf
-    install -Dm00644 $pkgfiles/60-vboxdrv.rules $installdir/%libdir%/udev/rules.d/60-vboxdrv.rules
-    install -Dm00755 $pkgfiles/vboxdrv.sh $installdir/%libdir%/virtualbox/vboxdrv.sh
-    install -Dm00644 $pkgfiles/vboxdrv.service $installdir/%libdir%/systemd/system/vboxdrv.service
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/20-virtualbox.preset
+    %install_file ${pkgfiles}/virtualbox.sysusers ${installdir}/%libdir%/sysusers.d/virtualbox.conf
+    %install_file ${pkgfiles}/60-vboxdrv.rules ${installdir}/%libdir%/udev/rules.d/60-vboxdrv.rules
+    %install_exe ${pkgfiles}/vboxdrv.sh ${installdir}/%libdir%/virtualbox/vboxdrv.sh
+    %install_file ${pkgfiles}/vboxdrv.service ${installdir}/%libdir%/systemd/system/vboxdrv.service
+    %install_file -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/60-virtualbox.preset
 
     ##### Guest #####
     cd additions
-    install -Dm00755 mount.vboxsf -t $installdir/usr/sbin
-    install -Dm00755 VBoxService -t $installdir/usr/sbin
-    install -m00755 VBoxClient VBoxControl -t $installdir/usr/bin
-    install -Dm00755 $workdir/src/VBox/Additions/x11/Installer/98vboxadd-xclient $installdir/usr/bin/VBoxClient-all
+    %install_exe mount.vboxsf -t ${installdir}/usr/sbin
+    %install_exe VBoxService -t ${installdir}/usr/sbin
+    %install_bin VBoxClient VBoxControl
+    %install_exe ${workdir}/src/VBox/Additions/x11/Installer/98vboxadd-xclient ${installdir}/usr/bin/VBoxClient-all
 
-    install -Dm00644 $workdir/src/VBox/Additions/x11/Installer/vboxclient.desktop $installdir/usr/share/xdg/autostart/vboxclient.desktop
+    %install_file ${workdir}/src/VBox/Additions/x11/Installer/vboxclient.desktop ${installdir}/usr/share/xdg/autostart/vboxclient.desktop
 
-    install -Dm00755 pam_vbox.so -t $installdir/%libdir%/security
+    %install_exe pam_vbox.so -t ${installdir}/%libdir%/security
 
     # current kernel modules
     pushd %kernel_version_current%
-        install -dm00755 $installdir/usr/lib64/modules/%kernel_version_current%/extra/vbox-guest/
-        install -m00644 *.ko $installdir/usr/lib64/modules/%kernel_version_current%/extra/vbox-guest/
+        %install_file *.ko -t ${installdir}/usr/lib64/modules/%kernel_version_current%/extra/vbox-guest/
     popd
 
     # lts kernel modules
     pushd %kernel_version_lts%
-        install -dm00755 $installdir/usr/lib64/modules/%kernel_version_lts%/extra/vbox-guest/
-        install -m00644 *.ko $installdir/usr/lib64/modules/%kernel_version_lts%/extra/vbox-guest/
+        %install_file *.ko -t ${installdir}/usr/lib64/modules/%kernel_version_lts%/extra/vbox-guest/
     popd
 
     # systemd configuration
-    install -Dm00644 $pkgfiles/vboxguest.modules $installdir/%libdir%/modules-load.d/vboxguest.conf
-    install -Dm00644 $pkgfiles/vboxguest.sysusers $installdir/%libdir%/sysusers.d/vboxguest.conf
-    install -Dm00644 $pkgfiles/60-vboxguest.rules $installdir/%libdir%/udev/rules.d/60-vboxguest.rules
-    install -Dm00644 $pkgfiles/vboxservice.service $installdir/%libdir%/systemd/system/vboxservice.service
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/20-virtualbox-guest.preset
+    %install_file ${pkgfiles}/vboxguest.modules ${installdir}/%libdir%/modules-load.d/vboxguest.conf
+    %install_file ${pkgfiles}/vboxguest.sysusers ${installdir}/%libdir%/sysusers.d/vboxguest.conf
+    %install_file ${pkgfiles}/60-vboxguest.rules ${installdir}/%libdir%/udev/rules.d/60-vboxguest.rules
+    %install_file ${pkgfiles}/vboxservice.service ${installdir}/%libdir%/systemd/system/vboxservice.service
+    %install_file -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/60-virtualbox-guest.preset
 
     # Compress modules with zstd
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+    find "${installdir}" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
 
     # Install Guest Additons ISO
-    install -Dm00644 $sources/VBoxGuestAdditions_*.iso $installdir/usr/share/virtualbox/VBoxGuestAdditions.iso
+    %install_file ${sources}/VBoxGuestAdditions_*.iso ${installdir}/usr/share/virtualbox/VBoxGuestAdditions.iso
 
     # Disable KVM
-    install -Dm00644 $pkgfiles/virtualbox.conf $installdir/usr/lib/modprobe.d/virtualbox.conf
-
-    # Usr-merge
-    install -dm00755 $installdir/lib64
-    pushd $installdir/usr
-    file_list=()
-    while IFS=  read -r -d $'\0'; do
-        file_list+=("$REPLY")
-    done < <(find lib64/modules -type f -print0)
-    for file in "${file_list[@]}"; do
-        parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
-    done
-    popd
+    %install_file ${pkgfiles}/virtualbox.conf ${installdir}/usr/lib/modprobe.d/virtualbox.conf
 
     # Install licenses
     cd ${workdir}
