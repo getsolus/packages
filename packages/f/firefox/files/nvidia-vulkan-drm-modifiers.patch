@@ -1,0 +1,137 @@
+
+# HG changeset patch
+# User Tymur Boiko <tboiko@nvidia.com>
+# Date 1785329733 0
+# Node ID 70a587779c076a1b1d2a405e9e6210c676ebfe2e
+# Parent  bd86aeb7ccd988652c7619f1e1f383e08ae59ba8
+Bug 2056939 - Restore the NVIDIA block-linear modifier with a reduced block height. r=alwu
+
+Older NVIDIA drivers may not expose tiled modifiers for multiplanar YCbCr
+images (ImageFormatProperties2 fails), so negotiation collapses to LINEAR.
+Restore a same-device arch-specific BL fallback for the copy-path export
+buffers, and disable direct decode export in that case so we do not put
+DRM-modifier tiling on decode images the query already rejected.
+
+Differential Revision: https://phabricator.services.mozilla.com/D314220
+
+
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp b/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
+--- a/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
++++ b/dom/media/platforms/ffmpeg/FFmpegVideoDecoder.cpp
+@@ -429,17 +429,28 @@ int FFmpegVideoDecoder<LIBAV_VER>::Choos
+     }
+     PrepareVulkanDrmModifiersForSwFormat(frames_ctx->sw_format, imageUsages);
+     bool drmModsAreLinearOrEmpty = true;
+     if (!mVulkanDecoder.mDrmModifiers.empty()) {
+       drmModsAreLinearOrEmpty =
+           (mVulkanDecoder.mDrmModifiers[0] == DRM_FORMAT_MOD_LINEAR) &&
+           (mVulkanDecoder.mDrmModifiers.size() == 1);
+     }
+-    if (VulkanDirectDecodeExportEnabled() && !drmModsAreLinearOrEmpty) {
++    // Forced BL means ImageFormatProperties2 rejected YCbCr tiled modifiers, so
++    // the decode image cannot reliably use DRM-modifier tiling. Keep BL only
++    // for the copy-path export buffers; skip direct export (avoids GL import
++    // hangs and a useless LINEAR decode path that would double-copy).
++    if (VulkanDirectDecodeExportEnabled() &&
++        mVulkanDecoder.mForcedNvidiaBlockLinear) {
++      FFMPEGV_LOG(
++          "[VULKAN] Direct export disabled: forced NVIDIA BL after "
++          "ImageFormatProperties2 left only LINEAR");
++    }
++    if (VulkanDirectDecodeExportEnabled() &&
++        !mVulkanDecoder.mForcedNvidiaBlockLinear && !drmModsAreLinearOrEmpty) {
+       AVVulkanFramesContext* hwfc = (AVVulkanFramesContext*)frames_ctx->hwctx;
+       void* const originalCreatePnext = hwfc->create_pnext;
+       int formatCount = 0;
+       while (formatCount < AV_NUM_DATA_POINTERS &&
+              hwfc->format[formatCount] != VK_FORMAT_UNDEFINED) {
+         formatCount++;
+       }
+       mVulkanImageFormatList.sType =
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.cpp b/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.cpp
+--- a/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.cpp
++++ b/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.cpp
+@@ -284,16 +284,17 @@ bool FFmpegVideoDecoder<LIBAV_VER>::FFmp
+   return allValid(mInstanceFunctions) && allValid(mDeviceFunctions);
+ }
+ 
+ void FFmpegVideoDecoder<LIBAV_VER>::FFmpegVulkanVideoDecoder::InitDrmModifiers(
+     VkPhysicalDevice aPhysDev, VkFormat aFormatForModifiers,
+     const nsTArray<uint64_t>* aCompositorMods, VkImageUsageFlags aImageUsages) {
+   mDrmModifiers.clear();
+   mExportRequiresDedicatedByModifier.Clear();
++  mForcedNvidiaBlockLinear = false;
+ 
+   FFMPEGV_LOG("[VULKAN] Compositor {} modifier(s) for intersection",
+               aCompositorMods ? aCompositorMods->Length() : 0);
+   const bool isCompositorSupportsOnlyLinear =
+       !aCompositorMods || aCompositorMods->IsEmpty() ||
+       (aCompositorMods->Length() == 1 &&
+        aCompositorMods->ElementAt(0) == DRM_FORMAT_MOD_LINEAR);
+   if (isCompositorSupportsOnlyLinear) {
+@@ -427,16 +428,42 @@ void FFmpegVideoDecoder<LIBAV_VER>::FFmp
+     }
+   }
+ 
+   if (mDrmModifiers.empty()) {
+     mDrmModifiers.push_back(DRM_FORMAT_MOD_LINEAR);
+     FFMPEGV_LOG("[VULKAN] No suitable modifiers found, using LINEAR");
+   }
+ 
++  // NVIDIA: Vulkan may under-report / fail validation for tiled modifiers on
++  // older drivers. If negotiation left only LINEAR, force a known-working one
++  // when the compositor already advertises it
++  if (aCompositorMods && mNegotiatedCompositorDecoderVendorID == 0x10de &&
++      mDecoderMatchesCompositor && mDrmModifiers.size() == 1 &&
++      mDrmModifiers[0] == DRM_FORMAT_MOD_LINEAR) {
++    // TU102 (Turing) starts at deviceID 0x1E00; everything below is Fermi-Volta
++    // (including GV100). 0xfe is not a valid kind on Turing+.
++    const uint64_t nvidiaMod =
++        mNegotiatedCompositorDecoderDeviceID < 0x1E00
++            ? DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 0, 0xfe, 1)
++            : DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0, 1, 2, 6, 1);
++    FFMPEGV_LOG(
++        "[VULKAN] ImageFormatProperties2 left only LINEAR; considering NVIDIA "
++        "BL override 0x{:x} (deviceID=0x{:x})",
++        (unsigned long long)nvidiaMod, mNegotiatedCompositorDecoderDeviceID);
++    if (aCompositorMods->Contains(nvidiaMod)) {
++      mDrmModifiers[0] = nvidiaMod;
++      // ImageFormatProperties2 failed for YCbCr tiled mods; keep BL for the
++      // copy path but do not attempt direct decode export.
++      mForcedNvidiaBlockLinear = true;
++      FFMPEGV_LOG("[VULKAN] Using forced NVIDIA BL modifier 0x{:x}",
++                  (unsigned long long)nvidiaMod);
++    }
++  }
++
+   FFMPEGV_LOG("[VULKAN] Using {} modifiers, first=0x{:x}", mDrmModifiers.size(),
+               (unsigned long long)mDrmModifiers[0]);
+ }
+ 
+ static void* sVulkanLib = nullptr;
+ static bool sVulkanEnumerated = false;
+ 
+ static bool PhysicalDeviceHasVulkanVideoDecodeStack(
+diff --git a/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.h b/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.h
+--- a/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.h
++++ b/dom/media/platforms/ffmpeg/FFmpegVulkanVideoDecoder.h
+@@ -115,16 +115,18 @@ struct FFmpegVulkanVideoDecoder {
+   bool SelectVulkanDecoderPhysicalDevice(
+       const StaticMutexAutoLock& aProofOfLock, const nsCString& aRendererNode);
+   uint32_t mNegotiatedCompositorDecoderVendorID = 0;
+   uint32_t mNegotiatedCompositorDecoderDeviceID = 0;
+   char mNegotiatedVulkanDeviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE] = {
+       '\0',
+   };
+   bool mDecoderMatchesCompositor = false;
++  // Set when ImageFormatProperties2 left only LINEAR and we forced NVIDIA BL.
++  bool mForcedNvidiaBlockLinear = false;
+   ~FFmpegVulkanVideoDecoder();
+   void Cleanup();
+ 
+   // Per-frame Vulkan operations: these methods access the outer decoder's
+   // AVBufferRef* and VideoFramePool via explicit parameters to avoid
+   // a back-pointer into the enclosing FFmpegVideoDecoder object.
+   bool InitCtx(VkDevice aDevice, VkPhysicalDevice aPhysDev,
+                PFN_vkGetInstanceProcAddr aGetProcAddr, VkInstance aInstance,
+
