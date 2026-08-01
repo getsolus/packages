@@ -1,0 +1,153 @@
+Fix size_t vs int length mismatches (segfaults / GCC 14+ errors).
+
+https://github.com/eserte/perl-tk/pull/48
+https://github.com/eserte/perl-tk/pull/89
+
+
+See: https://rt.cpan.org/Ticket/Display.html?id=128955
+As also done upstream: https://core.tcl-lang.org/tk/info/0d9c0d50f9
+--- a/pTk/mTk/generic/tkCanvText.c
++++ b/pTk/mTk/generic/tkCanvText.c
+@@ -1234,8 +1234,7 @@ GetTextIndex(interp, canvas, itemPtr, obj, indexPtr)
+ 				 * index. */
+ {
+     TextItem *textPtr = (TextItem *) itemPtr;
+-    size_t length;
+-    int c;
++    int c, length;
+     TkCanvas *canvasPtr = (TkCanvas *) canvas;
+     Tk_CanvasTextInfo *textInfoPtr = textPtr->textInfoPtr;
+     char *string;
+--- a/pTk/mTk/generic/tkFrame.c
++++ b/pTk/mTk/generic/tkFrame.c
+@@ -493,8 +493,7 @@ CreateFrame(clientData, interp, objc, objv, type, appName)
+     CONST char *className, *screenName, *colormapName, *arg;
+     Tcl_Obj *visualName;
+     Tcl_Obj *useOption;
+-    int i, c, depth;
+-    size_t length;
++    int i, c, depth, length;
+     unsigned int mask;
+     Colormap colormap;
+     Visual *visual;
+@@ -749,8 +748,7 @@ FrameWidgetObjCmd(clientData, interp, objc, objv)
+     };
+     register Frame *framePtr = (Frame *) clientData;
+     int result = TCL_OK, index;
+-    size_t length;
+-    int c, i;
++    int c, i, length;
+     Tcl_Obj *objPtr;
+ 
+     if (objc < 2) {
+
+
+--- a/pTk/mTk/generic/tkFrame.c
++++ b/pTk/mTk/generic/tkFrame.c
+@@ -522,7 +522,7 @@ CreateFrame(clientData, interp, objc, objv, type, appName)
+     visualName = NULL;
+     colormap = None;
+     for (i = 2; i < objc; i += 2) {
+-	arg = Tcl_GetStringFromObj(objv[i], (int *) &length);
++	arg = Tcl_GetStringFromObj(objv[i], &length);
+ 	if (length < 2) {
+ 	    continue;
+ 	}
+@@ -796,7 +796,7 @@ FrameWidgetObjCmd(clientData, interp, objc, objv)
+ 	     */
+ 
+ 	    for (i = 2; i < objc; i++) {
+-		char *arg = Tcl_GetStringFromObj(objv[i], (int *) &length);
++		char *arg = Tcl_GetStringFromObj(objv[i], &length);
+ 		if (length < 2) {
+ 		    continue;
+ 		}
+
+
+Remove unnecessary casts to (int *)
+As done upstream: https://core.tcl-lang.org/tk/info/0d9c0d50f9
+--- a/pTk/mTk/generic/tkImgPhoto.c
++++ b/pTk/mTk/generic/tkImgPhoto.c
+@@ -676,10 +676,9 @@ ImgPhotoCmd(clientData, interp, objc, objv)
+     XColor color;
+     Tk_PhotoImageFormat *imageFormat;
+     int imageWidth, imageHeight;
+-    int matched;
++    int length, matched;
+     Tcl_Channel chan;
+     Tk_PhotoHandle srcHandle;
+-    size_t length;
+     Tcl_Obj *obj;
+     int c;
+     ThreadSpecificData *tsdPtr = (ThreadSpecificData *)
+@@ -723,7 +722,7 @@ ImgPhotoCmd(clientData, interp, objc, objv)
+ 	    Tcl_WrongNumArgs(interp, 2, objv, "option");
+ 	    return TCL_ERROR;
+ 	}
+-	arg = Tcl_GetStringFromObj(objv[2], (int *) &length);
++	arg = Tcl_GetStringFromObj(objv[2], &length);
+ 	if (strncmp(arg,"-data", length) == 0) {
+ 	    if (masterPtr->dataString) {
+ 		Tcl_SetObjResult(interp, masterPtr->dataString);
+@@ -768,7 +767,7 @@ ImgPhotoCmd(clientData, interp, objc, objv)
+ 	    return TCL_OK;
+ 	}
+ 	if (objc == 3) {
+-	    char *arg = Tcl_GetStringFromObj(objv[2], (int *) &length);
++	    char *arg = Tcl_GetStringFromObj(objv[2], &length);
+ 	    if (!strncmp(arg, "-data", length)) {
+ 		Tcl_Obj *subobj = Tcl_NewStringObj("-data {} {} {}", 14);
+ 		if (masterPtr->dataString) {
+@@ -5753,8 +5752,8 @@ PhotoOptionFind(interp, obj)
+     Tcl_Interp *interp;         /* Interpreter that is being deleted. */
+     Tcl_Obj *obj;                       /* Name of option to be found. */
+ {
+-    size_t length;
+-    char *name = Tcl_GetStringFromObj(obj, (int *) &length);
++    int length;
++    char *name = Tcl_GetStringFromObj(obj, &length);
+     OptionAssocData *list;
+     char *prevname = NULL;
+     Tcl_ObjCmdProc *proc = (Tcl_ObjCmdProc *) NULL;
+
+
+Backported from Tcl/Tk 8.6.10:
+see https://core.tcl-lang.org/tk/info/9e31fd944934
+
+Fixes #87
+--- a/pTk/mTk/xlib/X11/X.h
++++ b/pTk/mTk/xlib/X11/X.h
+@@ -73,7 +73,9 @@ typedef unsigned long KeyCode;	/* In order to use IME, the Macintosh needs
+  * RESERVED RESOURCE AND CONSTANT DEFINITIONS
+  *****************************************************************/
+ 
+-#define None                 0L	/* universal null resource or null atom */
++#ifndef _WIN32
++#   define None              0L      /* See bug [9e31fd9449] and below */
++#endif
+ 
+ #define ParentRelative       1L	/* background pixmap in CreateWindow
+ 				    and ChangeWindowAttributes */
+@@ -179,13 +181,20 @@ are reserved in the protocol for errors and replies. */
+ 
+ #define ShiftMask		(1<<0)
+ #define LockMask		(1<<1)
+-#define ControlMask		(1<<2)
++#ifndef _WIN32
++#   define ControlMask		(1<<2) /* See bug [9e31fd9449] and below */
++#endif
+ #define Mod1Mask		(1<<3)
+ #define Mod2Mask		(1<<4)
+ #define Mod3Mask		(1<<5)
+ #define Mod4Mask		(1<<6)
+ #define Mod5Mask		(1<<7)
+ 
++/* See bug [9e31fd9449], this way prevents conflicts with Win32 headers */
++#ifdef _WIN32
++enum _Bug9e31fd9449 { None = 0, ControlMask = (1<<2) };
++#endif
++
+ /* modifier names.  Used to build a SetModifierMapping request or
+    to read a GetModifierMapping request.  These correspond to the
+    masks defined above. */
+
