@@ -1,25 +1,19 @@
-# Podman Stack Build Order
+# Update order
 
-When updating the Podman stack, build the lower-level runtime and shared
-container tooling first, then build Podman last.
+Suggested update order for the Podman stack (dependencies first):
 
-Practical order:
+- `crun`
+- `conmon`
+- `passt`
+- `netavark`
+  - This recipe also builds `aardvark-dns`; keep it on the same minor.
+- `skopeo`
+  - Keep `container-libs` `common/v*` aligned with Skopeo's `go.mod`.
+  - Ships shared defaults under `/usr/share/containers/` (not `/etc`).
+- `buildah`
+- `podman`
 
-1. `crun`
-2. `conmon`
-3. `netavark`
-   - This recipe also builds `aardvark-dns`; update the bundled source there.
-4. `skopeo`
-   - Keep the `container-libs` `common/v*` source aligned with Skopeo's `go.mod`.
-   - This package installs the shared `/etc/containers/` config files.
-5. `buildah`
-6. `podman`
+`crun`, `conmon`, and `passt` are independent leaves and can be updated in any
+order among themselves.
 
-Notes:
-
-- `podman` has runtime dependencies on `conmon`, `netavark`, and `skopeo`, so it
-  should be built after those are available.
-- `buildah` also uses `netavark` and `skopeo`, so build it after those packages.
-- `crun` is independent from the recipe dependency chain, but it is part of the
-  practical container runtime stack and is safest to build before testing the
-  higher-level tools.
+Netavark v2 drops iptables (nftables only) and changes default network isolation.
