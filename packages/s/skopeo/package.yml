@@ -1,13 +1,13 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : skopeo
-version    : 1.23.0
-release    : 34
+version    : 1.24.0
+release    : 35
 source     :
-    - https://github.com/containers/skopeo/archive/refs/tags/v1.23.0.tar.gz : de96bfc2bb523c852af675ffdadd934484812ce190aa8620e1d5fd6c51442e25
+    - https://github.com/containers/skopeo/archive/refs/tags/v1.24.0.tar.gz : 1eea9364e344c4d6cb398fac53bc387663d19690552003b43c75819e8bb55527
     # we need these extra sources so we can grab configs and config manpages to package them
     # these are vendored with skopeo but are missing configs we need
     # match same versions as in go.mod for given release tag
-    - https://github.com/containers/container-libs/archive/refs/tags/common/v0.68.0.tar.gz#container-libs.tar.gz : 61391b67e58ecffe4aae8ed620f35c57098b612d0b602d640ad541fb24b06908
+    - https://github.com/containers/container-libs/archive/refs/tags/common/v0.69.0.tar.gz#container-libs.tar.gz : ba2309a2a493ab3dc0dc60f6db501256ee2ccbd4b82745419aaaac8f7f9648e5
 homepage   : https://github.com/containers/skopeo
 license    : Apache-2.0
 component  : virt
@@ -30,26 +30,29 @@ setup      : |
     sed -i 's|-gcflags "$(GOGCFLAGS)"||' Makefile
 build      : |
     export BUILDTAGS="containers_image_ostree_stub libsqlite3 libsubid"
-    # The containers/image prefix has changed domain names so in order to ensure that we use the correct setting regardless of which one is used just use both
-    %make bin/skopeo EXTRA_LDFLAGS="-X github.com/containers/image/v5/signature.systemDefaultPolicyPath=/etc/containers/policy.json -X go.podman.io/image/v5/signature.systemDefaultPolicyPath=/etc/containers/policy.json"
+    # Vendor defaults live under /usr/share/containers (stateless); /etc/containers is for admin overrides.
+    # The containers/image prefix has changed domain names so set both module paths.
+    %make bin/skopeo EXTRA_LDFLAGS="-X github.com/containers/image/v5/signature.systemDefaultPolicyPath=/usr/share/containers/policy.json -X go.podman.io/image/v5/signature.systemDefaultPolicyPath=/usr/share/containers/policy.json"
     %make docs
 install    : |
-    %make_install PREFIX="/usr"
+    # Install policy.json and registries.d defaults under /usr/share/containers
+    %make_install PREFIX="/usr" CONTAINERSCONFDIR="/usr/share/containers"
+    # make install creates /var/lib/containers/sigstore; drop all of /var
+    # (runtime state, created on demand)
+    rm -rf "${installdir}/var"
 
     mkdir container-libs
-    tar --strip-components=1 -xf $sources/container-libs.tar.gz -C container-libs
+    tar --strip-components=1 -xf ${sources}/container-libs.tar.gz -C container-libs
+    %patch -p1 -d container-libs/storage -i ${pkgfiles}/storage.conf.patch
+    %patch -p1 -d container-libs/image -i ${pkgfiles}/registries.conf.patch
 
-    install -m644 container-libs/storage/storage.conf -t "$installdir/etc/containers/"
-    install -m644 container-libs/image/registries.conf -t "$installdir/etc/containers/"
-    install -m644 container-libs/common/pkg/config/containers.conf -t "$installdir/etc/containers/"
-    %patch -d $installdir/etc/containers/ -i $pkgfiles/storage.conf.patch
-    %patch -d $installdir/etc/containers/ -i $pkgfiles/registries.conf.patch
-    %patch -d $installdir/etc/containers/ -i $pkgfiles/containers.conf.patch
+    %install_file container-libs/storage/storage.conf -t ${installdir}/usr/share/containers/
+    %install_file container-libs/image/registries.conf -t ${installdir}/usr/share/containers/
 
-    install -d "$installdir/usr/share/man/man5/"
-    go-md2man -in "container-libs/storage/docs/containers-storage.conf.5.md" -out "$installdir/usr/share/man/man5/containers-storage.conf.5"
-    go-md2man -in "container-libs/image/docs/containers-registries.conf.5.md" -out "$installdir/usr/share/man/man5/containers-registries.conf.5"
-    go-md2man -in "container-libs/image/docs/containers-policy.json.5.md" -out "$installdir/usr/share/man/man5/containers-policy.conf.5"
-    go-md2man -in "container-libs/common/docs/containers.conf.5.md" -out "$installdir/usr/share/man/man5/containers.conf.5"
+    %install_dir ${installdir}/usr/share/man/man5/
+    go-md2man -in "container-libs/storage/docs/containers-storage.conf.5.md" -out "${installdir}/usr/share/man/man5/containers-storage.conf.5"
+    go-md2man -in "container-libs/image/docs/containers-registries.conf.5.md" -out "${installdir}/usr/share/man/man5/containers-registries.conf.5"
+    go-md2man -in "container-libs/image/docs/containers-policy.json.5.md" -out "${installdir}/usr/share/man/man5/containers-policy.conf.5"
+    go-md2man -in "container-libs/common/docs/containers.conf.5.md" -out "${installdir}/usr/share/man/man5/containers.conf.5"
 
     %install_license LICENSE
