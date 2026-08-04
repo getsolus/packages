@@ -70,7 +70,7 @@ class Index:
 
 class Publisher:
     def __init__(self, base: Optional[str], head: str, path: str, title: str,
-                 push: bool, noop: bool, render: bool, wait: bool):
+                 push: bool, noop: bool, render: bool, wait: bool, skip_before: int):
         self.base = base or 'HEAD'
         self.head = head
         self.title = title
@@ -78,6 +78,7 @@ class Publisher:
         self.noop = noop
         self.render = render
         self.wait = wait
+        self.skip_before = skip_before
         self.git = Git(path)
         self.builds = Builds().all
 
@@ -103,7 +104,7 @@ class Publisher:
             if self.render:
                 self._render(commit)
 
-            if self._skip_commit(commit):
+            if self._skip_commit(commit, i):
                 print(f'Skipping commit: {self._commit_str(commit)}')
                 continue
 
@@ -152,7 +153,10 @@ class Publisher:
 
         return str(os.path.join(*parts[0:3]))
 
-    def _skip_commit(self, commit: str) -> bool:
+    def _skip_commit(self, commit: str, index: int = -1) -> bool:
+        if index > -1 and index < self.skip_before:
+            return True
+
         msg = self.git.commit_summary(commit)
         return msg.startswith('[NFC]') or \
             msg.startswith('common:') or \
@@ -248,6 +252,8 @@ if __name__ == "__main__":
                         help='Optional reference to the current branch head')
     parser.add_argument('--root', type=str, default='.',
                         help='Repository root directory')
+    parser.add_argument('--skip-before', type=int, default=0,
+                        help='Specify a build in the order to skip to')
     parser.add_argument('--title', type=str, default='',
                         help='Title of the build series')
     parser.add_argument('-n', '--dry-run', action='store_true',
@@ -261,6 +267,7 @@ if __name__ == "__main__":
 
     cli_args = parser.parse_args()
     checker = Publisher(cli_args.base, cli_args.head, cli_args.root, cli_args.title,
-                        not cli_args.skip_push, cli_args.dry_run, cli_args.render_commits, cli_args.wait)
+                        not cli_args.skip_push, cli_args.dry_run, cli_args.render_commits, cli_args.wait,
+                        cli_args.skip_before)
 
     exit(checker.run())
