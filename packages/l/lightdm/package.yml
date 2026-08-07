@@ -1,21 +1,33 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : lightdm
-version    : 1.32.0
-release    : 51
+version    : 1.33.1
+release    : 52
 source     :
-    - https://github.com/canonical/lightdm/archive/refs/tags/1.32.0.tar.gz : 6dbcd58332abdc113a7a345c22027c9e485ada802706c6b7fbf5f410464e53e3
+    - https://github.com/canonical/lightdm/archive/refs/tags/1.33.1.tar.gz : 53df1c45508e0d14dc8403667566a39164c222b3cc3f3494b169f48ac05d8243
 homepage   : https://github.com/Canonical/lightdm
 license    :
     - LGPL-3.0-or-later
     - GPL-3.0-or-later
-component  : desktop.lightdm
-conflicts  :
-    - gdm
-    - sddm
-summary    : Lightweight and attractive Display Manager
-description: |
-    Lightweight and attractive Display Manager
+component  :
+    - gobject : desktop.gtk
+    - gobject-devel : programming.devel
+    - qt6 : desktop.qt
+    - qt6-devel : programming.devel
+    - desktop
+summary    :
+    - gobject : LightDM GObject client library
+    - gobject-devel : Development files for lightdm-gobject
+    - qt6 : LightDM Qt6 client library
+    - qt6-devel : Development files for lightdm-qt6
+    - Lightweight and attractive Display Manager
+description:
+    - gobject : This package contains a GObject based library for LightDM clients to use to interface with LightDM.
+    - qt6 : This package contains a Qt6-based library for LightDM clients to use to interface with LightDM.
+    - Lightweight and attractive Display Manager
 builddeps  :
+    - pkgconfig(Qt6Core)
+    - pkgconfig(Qt6DBus)
+    - pkgconfig(Qt6Gui)
     - pkgconfig(libgcrypt)
     - pkgconfig(libxklavier)
     - pkgconfig(x11)
@@ -29,6 +41,14 @@ builddeps  :
     - yelp-devel
     - yelp-tools
 rundeps    :
+    - gobject :
+        - lightdm
+    - gobject-devel :
+        - lightdm-gobject
+    - qt6 :
+        - lightdm
+    - qt6-devel :
+        - lightdm-qt6
     - linux-driver-management-lightdm-integration
     - setxkbmap
     - xauth
@@ -37,40 +57,73 @@ rundeps    :
     - xkeyboard-config
 setup      : |
     sed -i -e 's:getgroups:lightdm_&:' tests/src/libsystem.c
-    %apply_patches
-    %reconfigure --enable-introspection \
-                 --disable-static \
-                 --disable-tests \
-                 --enable-gtk-doc \
-                 --libexecdir=%libdir%/lightdm \
-                 --with-greeter-user=lightdm \
-                 --with-greeter-session=lightdm-gtk-greeter
+
+    %patch -p1 -i ${pkgfiles}/0004-common-Support-a-stateless-configuration-for-etc-lig.patch
+
+    %autogen \
+        --disable-static \
+        --disable-tests \
+        --enable-gtk-doc \
+        --enable-liblightdm-qt6 \
+        --enable-introspection \
+        --with-greeter-user=lightdm \
+        --with-greeter-session=lightdm-gtk-greeter
 build      : |
-    %make -j1
+    %make
 install    : |
     %make_install
+    %install_license COPYING.LGPL2 COPYING.LGPL3
 
     # Enable by default
-    install -Dm00644 $pkgfiles/lightdm.service $installdir/%libdir%/systemd/system/lightdm.service
-    ln -s lightdm.service $installdir/%libdir%/systemd/system/display-manager.service
+    %install_file -t ${installdir}/%libdir%/systemd/system ${pkgfiles}/lightdm.service
+    ln -sv lightdm.service ${installdir}/%libdir%/systemd/system/display-manager.service
 
     # Stateless configuration
-    rm -rfv $installdir/etc/lightdm
+    rm -rfv ${installdir}/etc/lightdm
+
     # We don't use apparmor
-    rm -rfv $installdir/etc/init
-    rm -rfv $installdir/etc/apparmor.d
-    install -Dm00755 $pkgfiles/lightdm-wrapper $installdir/usr/bin/lightdm-wrapper
-    install -Dm00644 $pkgfiles/lightdm.conf $installdir/usr/share/lightdm/lightdm.conf.d/10_solus_default.conf
-    install -m00644 $pkgfiles/users.conf $installdir/usr/share/lightdm/users.conf
+    rm -rfv ${installdir}/etc/init
+    rm -rfv ${installdir}/etc/apparmor.d
 
-    install -Dm00644 $pkgfiles/lightdm.tmpfiles $installdir/%libdir%/tmpfiles.d/lightdm.conf
-    install -Dm00644 $pkgfiles/lightdm.sysusers $installdir/%libdir%/sysusers.d/lightdm.conf
+    # Install our lightdm wrapper
+    %install_bin ${pkgfiles}/lightdm-wrapper
 
-    install -Dm00644 $pkgfiles/lightdm.polkit $installdir/usr/share/polkit-1/rules.d/lightdm.rules
+    # Install lightdm configuration
+    %install_file ${pkgfiles}/lightdm.conf ${installdir}/usr/share/lightdm/lightdm.conf.d/10_solus_default.conf
+    %install_file -t ${installdir}/usr/share/lightdm ${pkgfiles}/users.conf
+
+    # Sysusers and tmpfiles
+    %install_file ${pkgfiles}/lightdm.tmpfiles ${installdir}/%libdir%/tmpfiles.d/lightdm.conf
+    %install_file ${pkgfiles}/lightdm.sysusers ${installdir}/%libdir%/sysusers.d/lightdm.conf
+
+    # Install polkit rules
+    %install_file -t ${installdir}/usr/share/polkit-1/rules.d ${pkgfiles}/lightdm.rules
 
     # Allow us to forward xorg logs to the journal
-    install -Dm 00755 $pkgfiles/xserver-wrapper $installdir/%libdir%/%PKGNAME%/xserver-wrapper
+    %install_exe -t ${installdir}/%libdir%/${package} ${pkgfiles}/xserver-wrapper
 
-    install -d $installdir/usr/share/defaults
-    mv $installdir{,/usr/share/defaults}/etc
-    install -Dm00644 $pkgfiles/pam.d/* -t $installdir/usr/share/defaults/etc/pam.d
+    # PAM configs
+    %install_file -t ${installdir}/usr/share/defaults/etc/pam.d \
+        data/pam/lightdm-greeter \
+        ${pkgfiles}/pam.d/*
+    rm -rfv ${installdir}/etc/pam.d \
+            ${installdir}/etc
+conflicts  :
+    - gdm
+    - greetd
+    - sddm
+patterns   :
+    - gobject :
+        - /usr/lib64/liblightdm-gobject-*.so.*
+    - gobject-devel :
+        - /usr/include/lightdm-gobject-*
+        - /usr/lib64/liblightdm-gobject-*.so
+        - /usr/lib64/pkgconfig/liblightdm-gobject-*.pc
+        - /usr/share/gir-1.0/LightDM-*.gir
+        - /usr/share/vala/vapi/liblightdm-gobject-*.*
+    - qt6 :
+        - /usr/lib64/liblightdm-qt6-*.so.*
+    - qt6-devel :
+        - /usr/include/lightdm-qt6-*
+        - /usr/lib64/liblightdm-qt6-*.so
+        - /usr/lib64/pkgconfig/liblightdm-qt6-*.pc
