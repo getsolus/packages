@@ -1,0 +1,736 @@
+# HG changeset patch
+# User Daniel Hillier <daniel.hillier@gmail.com>
+# Date 1760398968 -39600
+#      Tue Oct 14 10:42:48 2025 +1100
+# Branch 2.0
+# Node ID 73172a7ce6d819ce13e6706f9a1c6d50f1646dde
+# Parent  7bf584f2b7fff95565483a40a04e64a0a4951cdc
+Update stdlib tests to py3.14.0
+
+diff --git a/et_xmlfile/tests/_vendor/test/test_xml_etree.py b/et_xmlfile/tests/_vendor/test/test_xml_etree.py
+--- a/et_xmlfile/tests/_vendor/test/test_xml_etree.py
++++ b/et_xmlfile/tests/_vendor/test/test_xml_etree.py
+@@ -18,17 +18,21 @@
+ import textwrap
+ import types
+ import unittest
++import unittest.mock as mock
+ import warnings
+ import weakref
+ 
++from contextlib import nullcontext
+ from functools import partial
+ from itertools import product, islice
++# et_xmlfile change: make test imports relative to vendored modules
+ from . import support
+ from .support import os_helper
+ from .support import warnings_helper
+ from .support import findfile, gc_collect, swap_attr, swap_item
+ from .support.import_helper import import_fresh_module
+ from .support.os_helper import TESTFN
++# end et_xmlfile change
+ 
+ 
+ # pyET is the pure-Python implementation.
+@@ -121,6 +125,21 @@
+ </foo>
+ """
+ 
++def is_python_implementation():
++    assert ET is not None, "ET must be initialized"
++    assert pyET is not None, "pyET must be initialized"
++    return ET is pyET
++
++
++def equal_wrapper(cls):
++    """Mock cls.__eq__ to check whether it has been called or not.
++
++    The behaviour of cls.__eq__ (side-effects included) is left as is.
++    """
++    eq = cls.__eq__
++    return mock.patch.object(cls, "__eq__", autospec=True, wraps=eq)
++
++
+ def checkwarnings(*filters, quiet=False):
+     def decorator(test):
+         def newtest(*args, **kwargs):
+@@ -201,6 +220,33 @@
+     def serialize_check(self, elem, expected):
+         self.assertEqual(serialize(elem), expected)
+ 
++    def test_constructor(self):
++        # Test constructor behavior.
++
++        with self.assertRaises(TypeError):
++            tree = ET.ElementTree("")
++        with self.assertRaises(TypeError):
++            tree = ET.ElementTree(ET.ElementTree())
++
++    def test_setroot(self):
++        # Test _setroot behavior.
++
++        tree = ET.ElementTree()
++        element = ET.Element("tag")
++        tree._setroot(element)
++        self.assertEqual(tree.getroot().tag, "tag")
++        self.assertEqual(tree.getroot(), element)
++
++        # Test behavior with an invalid root element
++
++        tree = ET.ElementTree()
++        with self.assertRaises(TypeError):
++            tree._setroot("")
++        with self.assertRaises(TypeError):
++            tree._setroot(ET.ElementTree())
++        with self.assertRaises(TypeError):
++            tree._setroot(None)
++
+     def test_interface(self):
+         # Test element tree interface.
+ 
+@@ -208,8 +254,7 @@
+             self.assertTrue(ET.iselement(element), msg="not an element")
+             direlem = dir(element)
+             for attr in 'tag', 'attrib', 'text', 'tail':
+-                self.assertTrue(hasattr(element, attr),
+-                        msg='no %s member' % attr)
++                self.assertHasAttr(element, attr)
+                 self.assertIn(attr, direlem,
+                         msg='no %s visible by dir' % attr)
+ 
+@@ -234,7 +279,7 @@
+         # Make sure all standard element methods exist.
+ 
+         def check_method(method):
+-            self.assertTrue(hasattr(method, '__call__'),
++            self.assertHasAttr(method, '__call__',
+                     msg="%s not callable" % method)
+ 
+         check_method(element.append)
+@@ -327,9 +372,9 @@
+         self.serialize_check(element, '<tag key="value"><subtag /></tag>') # 4
+         element.remove(subelement)
+         self.serialize_check(element, '<tag key="value" />') # 5
+-        with self.assertRaises(ValueError) as cm:
++        with self.assertRaisesRegex(ValueError,
++                                    r'Element\.remove\(.+\): element not found'):
+             element.remove(subelement)
+-        self.assertEqual(str(cm.exception), 'list.remove(x): x not in list')
+         self.serialize_check(element, '<tag key="value" />') # 6
+         element[0:0] = [subelement, subelement, subelement]
+         self.serialize_check(element[1], '<subtag />')
+@@ -2642,6 +2687,7 @@
+ 
+ 
+ class BadElementTest(ElementTestCase, unittest.TestCase):
++
+     def test_extend_mutable_list(self):
+         class X:
+             @property
+@@ -2680,18 +2726,168 @@
+         e = ET.Element('foo')
+         e.extend(L)
+ 
+-    def test_remove_with_mutating(self):
+-        class X(ET.Element):
++    def test_remove_with_clear_assume_missing(self):
++        # gh-126033: Check that a concurrent clear() for an assumed-to-be
++        # missing element does not make the interpreter crash.
++        self.do_test_remove_with_clear(raises=True)
++
++    def test_remove_with_clear_assume_existing(self):
++        # gh-126033: Check that a concurrent clear() for an assumed-to-be
++        # existing element does not make the interpreter crash.
++        self.do_test_remove_with_clear(raises=False)
++
++    def do_test_remove_with_clear(self, *, raises):
++
++        # Until the discrepency between "del root[:]" and "root.clear()" is
++        # resolved, we need to keep two tests. Previously, using "del root[:]"
++        # did not crash with the reproducer of gh-126033 while "root.clear()"
++        # did.
++
++        class E(ET.Element):
++            """Local class to be able to mock E.__eq__ for introspection."""
++
++        class X(E):
++            def __eq__(self, o):
++                del root[:]
++                return not raises
++
++        class Y(E):
+             def __eq__(self, o):
+-                del e[:]
+-                return False
+-        e = ET.Element('foo')
+-        e.extend([X('bar')])
+-        self.assertRaises(ValueError, e.remove, ET.Element('baz'))
+-
+-        e = ET.Element('foo')
+-        e.extend([ET.Element('bar')])
+-        self.assertRaises(ValueError, e.remove, X('baz'))
++                root.clear()
++                return not raises
++
++        if raises:
++            get_checker_context = lambda: self.assertRaises(ValueError)
++        else:
++            get_checker_context = nullcontext
++
++        self.assertIs(E.__eq__, object.__eq__)
++
++        for Z, side_effect in [(X, 'del root[:]'), (Y, 'root.clear()')]:
++            self.enterContext(self.subTest(side_effect=side_effect))
++
++            # test removing R() from [U()]
++            for R, U, description in [
++                (E, Z, "remove missing E() from [Z()]"),
++                (Z, E, "remove missing Z() from [E()]"),
++                (Z, Z, "remove missing Z() from [Z()]"),
++            ]:
++                with self.subTest(description):
++                    root = E('top')
++                    root.extend([U('one')])
++                    with get_checker_context():
++                        root.remove(R('missing'))
++
++            # test removing R() from [U(), V()]
++            cases = self.cases_for_remove_missing_with_mutations(E, Z)
++            for R, U, V, description in cases:
++                with self.subTest(description):
++                    root = E('top')
++                    root.extend([U('one'), V('two')])
++                    with get_checker_context():
++                        root.remove(R('missing'))
++
++            # Test removing root[0] from [Z()].
++            #
++            # Since we call root.remove() with root[0], Z.__eq__()
++            # will not be called (we branch on the fast Py_EQ path).
++            with self.subTest("remove root[0] from [Z()]"):
++                root = E('top')
++                root.append(Z('rem'))
++                with equal_wrapper(E) as f, equal_wrapper(Z) as g:
++                    root.remove(root[0])
++                f.assert_not_called()
++                g.assert_not_called()
++
++            # Test removing root[1] (of type R) from [U(), R()].
++            is_special = is_python_implementation() and raises and Z is Y
++            if is_python_implementation() and raises and Z is Y:
++                # In pure Python, using root.clear() sets the children
++                # list to [] without calling list.clear().
++                #
++                # For this reason, the call to root.remove() first
++                # checks root[0] and sets the children list to []
++                # since either root[0] or root[1] is an evil element.
++                #
++                # Since checking root[1] still uses the old reference
++                # to the children list, PyObject_RichCompareBool() branches
++                # to the fast Py_EQ path and Y.__eq__() is called exactly
++                # once (when checking root[0]).
++                continue
++            else:
++                cases = self.cases_for_remove_existing_with_mutations(E, Z)
++                for R, U, description in cases:
++                    with self.subTest(description):
++                        root = E('top')
++                        root.extend([U('one'), R('rem')])
++                        with get_checker_context():
++                            root.remove(root[1])
++
++    def test_remove_with_mutate_root_assume_missing(self):
++        # gh-126033: Check that a concurrent mutation for an assumed-to-be
++        # missing element does not make the interpreter crash.
++        self.do_test_remove_with_mutate_root(raises=True)
++
++    def test_remove_with_mutate_root_assume_existing(self):
++        # gh-126033: Check that a concurrent mutation for an assumed-to-be
++        # existing element does not make the interpreter crash.
++        self.do_test_remove_with_mutate_root(raises=False)
++
++    def do_test_remove_with_mutate_root(self, *, raises):
++        E = ET.Element
++
++        class Z(E):
++            def __eq__(self, o):
++                del root[0]
++                return not raises
++
++        if raises:
++            get_checker_context = lambda: self.assertRaises(ValueError)
++        else:
++            get_checker_context = nullcontext
++
++        # test removing R() from [U(), V()]
++        cases = self.cases_for_remove_missing_with_mutations(E, Z)
++        for R, U, V, description in cases:
++            with self.subTest(description):
++                root = E('top')
++                root.extend([U('one'), V('two')])
++                with get_checker_context():
++                    root.remove(R('missing'))
++
++        # test removing root[1] (of type R) from [U(), R()]
++        cases = self.cases_for_remove_existing_with_mutations(E, Z)
++        for R, U, description in cases:
++            with self.subTest(description):
++                root = E('top')
++                root.extend([U('one'), R('rem')])
++                with get_checker_context():
++                    root.remove(root[1])
++
++    def cases_for_remove_missing_with_mutations(self, E, Z):
++        # Cases for removing R() from [U(), V()].
++        # The case U = V = R = E is not interesting as there is no mutation.
++        for U, V in [(E, Z), (Z, E), (Z, Z)]:
++            description = (f"remove missing {E.__name__}() from "
++                           f"[{U.__name__}(), {V.__name__}()]")
++            yield E, U, V, description
++
++        for U, V in [(E, E), (E, Z), (Z, E), (Z, Z)]:
++            description = (f"remove missing {Z.__name__}() from "
++                           f"[{U.__name__}(), {V.__name__}()]")
++            yield Z, U, V, description
++
++    def cases_for_remove_existing_with_mutations(self, E, Z):
++        # Cases for removing root[1] (of type R) from [U(), R()].
++        # The case U = R = E is not interesting as there is no mutation.
++        for U, R, description in [
++            (E, Z, "remove root[1] from [E(), Z()]"),
++            (Z, E, "remove root[1] from [Z(), E()]"),
++            (Z, Z, "remove root[1] from [Z(), Z()]"),
++        ]:
++            description = (f"remove root[1] (of type {R.__name__}) "
++                           f"from [{U.__name__}(), {R.__name__}()]")
++            yield R, U, description
+ 
+     @support.infinite_recursion(25)
+     def test_recursive_repr(self):
+@@ -2792,21 +2988,83 @@
+         del b
+         gc_collect()
+ 
+-
+-class MutatingElementPath(str):
++    def test_deepcopy_clear(self):
++        # Prevent crashes when __deepcopy__() clears the children list.
++        # See https://github.com/python/cpython/issues/133009.
++        class X(ET.Element):
++            def __deepcopy__(self, memo):
++                root.clear()
++                return self
++
++        root = ET.Element('a')
++        evil = X('x')
++        root.extend([evil, ET.Element('y')])
++        if is_python_implementation():
++            # Mutating a list over which we iterate raises an error.
++            self.assertRaises(RuntimeError, copy.deepcopy, root)
++        else:
++            c = copy.deepcopy(root)
++            # In the C implementation, we can still copy the evil element.
++            self.assertListEqual(list(c), [evil])
++
++    def test_deepcopy_grow(self):
++        # Prevent crashes when __deepcopy__() mutates the children list.
++        # See https://github.com/python/cpython/issues/133009.
++        a = ET.Element('a')
++        b = ET.Element('b')
++        c = ET.Element('c')
++
++        class X(ET.Element):
++            def __deepcopy__(self, memo):
++                root.append(a)
++                root.append(b)
++                return self
++
++        root = ET.Element('top')
++        evil1, evil2 = X('1'), X('2')
++        root.extend([evil1, c, evil2])
++        children = list(copy.deepcopy(root))
++        # mock deep copies
++        self.assertIs(children[0], evil1)
++        self.assertIs(children[2], evil2)
++        # true deep copies
++        self.assertEqual(children[1].tag, c.tag)
++        self.assertEqual([c.tag for c in children[3:]],
++                         [a.tag, b.tag, a.tag, b.tag])
++
++
++class MutationDeleteElementPath(str):
+     def __new__(cls, elem, *args):
+         self = str.__new__(cls, *args)
+         self.elem = elem
+         return self
++
+     def __eq__(self, o):
+         del self.elem[:]
+         return True
+-MutatingElementPath.__hash__ = str.__hash__
++
++    __hash__ = str.__hash__
++
++
++class MutationClearElementPath(str):
++    def __new__(cls, elem, *args):
++        self = str.__new__(cls, *args)
++        self.elem = elem
++        return self
++
++    def __eq__(self, o):
++        self.elem.clear()
++        return True
++
++    __hash__ = str.__hash__
++
+ 
+ class BadElementPath(str):
+     def __eq__(self, o):
+         raise 1/0
+-BadElementPath.__hash__ = str.__hash__
++
++    __hash__ = str.__hash__
++
+ 
+ class BadElementPathTest(ElementTestCase, unittest.TestCase):
+     def setUp(self):
+@@ -2821,9 +3079,11 @@
+         super().tearDown()
+ 
+     def test_find_with_mutating(self):
+-        e = ET.Element('foo')
+-        e.extend([ET.Element('bar')])
+-        e.find(MutatingElementPath(e, 'x'))
++        for cls in [MutationDeleteElementPath, MutationClearElementPath]:
++            with self.subTest(cls):
++                e = ET.Element('foo')
++                e.extend([ET.Element('bar')])
++                e.find(cls(e, 'x'))
+ 
+     def test_find_with_error(self):
+         e = ET.Element('foo')
+@@ -2834,9 +3094,11 @@
+             pass
+ 
+     def test_findtext_with_mutating(self):
+-        e = ET.Element('foo')
+-        e.extend([ET.Element('bar')])
+-        e.findtext(MutatingElementPath(e, 'x'))
++        for cls in [MutationDeleteElementPath, MutationClearElementPath]:
++            with self.subTest(cls):
++                e = ET.Element('foo')
++                e.extend([ET.Element('bar')])
++                e.findtext(cls(e, 'x'))
+ 
+     def test_findtext_with_error(self):
+         e = ET.Element('foo')
+@@ -2861,9 +3123,11 @@
+         self.assertEqual(root_elem.findtext('./bar'), '')
+ 
+     def test_findall_with_mutating(self):
+-        e = ET.Element('foo')
+-        e.extend([ET.Element('bar')])
+-        e.findall(MutatingElementPath(e, 'x'))
++        for cls in [MutationDeleteElementPath, MutationClearElementPath]:
++            with self.subTest(cls):
++                e = ET.Element('foo')
++                e.extend([ET.Element('bar')])
++                e.findall(cls(e, 'x'))
+ 
+     def test_findall_with_error(self):
+         e = ET.Element('foo')
+@@ -4372,7 +4636,7 @@
+     # When invoked without a module, runs the Python ET tests by loading pyET.
+     # Otherwise, uses the given module as the ET.
+     global pyET
+-    pyET = import_fresh_module(module.__name__,
++    pyET = import_fresh_module('xml.etree.ElementTree',
+                                blocked=['_elementtree'])
+     if module is None:
+         module = pyET
+diff --git a/et_xmlfile/tests/stdlib_base_tests.py b/et_xmlfile/tests/stdlib_base_tests.py
+--- a/et_xmlfile/tests/stdlib_base_tests.py
++++ b/et_xmlfile/tests/stdlib_base_tests.py
+@@ -1,6 +1,7 @@
+ import io
+ import platform
+ import sys
++import types
+ import unittest
+ import unittest.case
+ 
+@@ -11,6 +12,18 @@
+ old_serialize = test_xml_etree.serialize
+ 
+ 
++def is_version_before(*versions):
++    sys_ver = sys.version_info[:3]
++    for version in sorted(versions):
++        if sys_ver[:2] == version[:2]:
++            # Check for point release eg. (3, 12, 10)
++            if sys_ver < version:
++                return True
++    if sys_ver < min(versions):
++        return True
++    return False
++
++
+ def serialize(elem, **options):
+     if "root_ns_only" not in options:
+         options["root_ns_only"] = True
+@@ -51,6 +64,88 @@
+ 
+ 
+ class ElementTreeTest(test_xml_etree.ElementTreeTest):
++    if sys.version_info[:2] < (3, 14):
++        def assertHasAttr(self, obj, name, msg=None):
++            if not hasattr(obj, name):
++                if isinstance(obj, types.ModuleType):
++                    standardMsg = f'module {obj.__name__!r} has no attribute {name!r}'
++                elif isinstance(obj, type):
++                    standardMsg = f'type object {obj.__name__!r} has no attribute {name!r}'
++                else:
++                    standardMsg = f'{type(obj).__name__!r} object has no attribute {name!r}'
++                self.fail(self._formatMessage(msg, standardMsg))
++
++    @unittest.skipIf(
++        sys.version_info[:2] < (3, 13, 6),
++        "Added in 3.13.6"
++    )
++    def test_setroot(self):
++        super().test_setroot()
++
++    @unittest.skipIf(
++        sys.version_info[:2] < (3, 13, 6),
++        "Added in 3.13.6"
++    )
++    def test_constructor(self):
++        super().test_constructor()
++
++    def _test_simpleops_pre_3_13(self):
++        # Basic method sanity checks.
++
++        elem = test_xml_etree.ET.XML("<body><tag/></body>")
++        self.serialize_check(elem, '<body><tag /></body>')
++        e = test_xml_etree.ET.Element("tag2")
++        elem.append(e)
++        self.serialize_check(elem, '<body><tag /><tag2 /></body>')
++        elem.remove(e)
++        self.serialize_check(elem, '<body><tag /></body>')
++        elem.insert(0, e)
++        self.serialize_check(elem, '<body><tag2 /><tag /></body>')
++        elem.remove(e)
++        elem.extend([e])
++        self.serialize_check(elem, '<body><tag /><tag2 /></body>')
++        elem.remove(e)
++        elem.extend(iter([e]))
++        self.serialize_check(elem, '<body><tag /><tag2 /></body>')
++        elem.remove(e)
++
++        element = test_xml_etree.ET.Element("tag", key="value")
++        self.serialize_check(element, '<tag key="value" />')  # 1
++        subelement = test_xml_etree.ET.Element("subtag")
++        element.append(subelement)
++        self.serialize_check(element, '<tag key="value"><subtag /></tag>')  # 2
++        element.insert(0, subelement)
++        self.serialize_check(element,
++                             '<tag key="value"><subtag /><subtag /></tag>')  # 3
++        element.remove(subelement)
++        self.serialize_check(element, '<tag key="value"><subtag /></tag>')  # 4
++        element.remove(subelement)
++        self.serialize_check(element, '<tag key="value" />')  # 5
++        with self.assertRaises(ValueError) as cm:
++            element.remove(subelement)
++        self.assertEqual(str(cm.exception), 'list.remove(x): x not in list')
++        self.serialize_check(element, '<tag key="value" />')  # 6
++        element[0:0] = [subelement, subelement, subelement]
++        self.serialize_check(element[1], '<subtag />')
++        self.assertEqual(element[1:9], [element[1], element[2]])
++        self.assertEqual(element[:9:2], [element[0], element[2]])
++        del element[1:2]
++        self.serialize_check(element,
++                             '<tag key="value"><subtag /><subtag /></tag>')
++
++    @unittest.skipIf(
++        (
++            platform.python_implementation() == "PyPy"
++            and sys.version_info[:3] < (3, 10, 15)
++        ),
++        "Functionality reverted but not picked up by PyPy yet",
++    )
++    def test_simpleops(self):
++        if sys.version_info[:2] < (3, 14):
++            self._test_simpleops_pre_3_13()
++        else:
++            super().test_simpleops()
++
+     def _test_iterparse_pre_3_13(self):
+         # Test iterparse interface.
+ 
+@@ -241,16 +336,6 @@
+     def test_initialize_parser_without_target(self):
+         super().test_initialize_parser_without_target()
+ 
+-    @unittest.skipIf(
+-        (
+-            platform.python_implementation() == "PyPy"
+-            and sys.version_info[:3] < (3, 10, 15)
+-        ),
+-        "Functionality reverted but not picked up by PyPy yet",
+-    )
+-    def test_simpleops(self):
+-        super().test_simpleops()
+-
+ 
+ class BasicElementTest(test_xml_etree.BasicElementTest):
+     @unittest.skipIf(
+@@ -291,6 +376,21 @@
+         super().test_xinclude_repeated()
+ 
+ 
++# Need for _test_findall_with_mutating_pre_3_12_5_or_3_13_4
++class MutatingElementPath(str):
++    def __new__(cls, elem, *args):
++        self = str.__new__(cls, *args)
++        self.elem = elem
++        return self
++
++    def __eq__(self, o):
++        del self.elem[:]
++        return True
++
++
++MutatingElementPath.__hash__ = str.__hash__
++
++
+ class BadElementPathTest(test_xml_etree.BadElementPathTest):
+     @unittest.skipIf(
+         sys.version_info[:2] < (3, 11),
+@@ -299,6 +399,54 @@
+     def test_findtext_with_falsey_text_attribute(self):
+         super().test_findtext_with_falsey_text_attribute()
+ 
++    def _test_findall_with_mutating_pre_3_12_10_or_3_13_4(self):
++        e = test_xml_etree.ET.Element('foo')
++        e.extend([test_xml_etree.ET.Element('bar')])
++        e.findall(MutatingElementPath(e, 'x'))
++
++    def test_findall_with_mutating(self):
++        if is_version_before((3, 12, 10), (3, 13, 4)):
++            self._test_findall_with_mutating_pre_3_12_10_or_3_13_4()
++        else:
++            super().test_findall_with_mutating()
++
++
++class BadElementTest(test_xml_etree.BadElementTest):
++    @unittest.skipIf(
++        sys.version_info[:3] < (3, 13, 4),
++        "Crashes python before fix",
++    )
++    def test_deepcopy_clear(self):
++        super().test_deepcopy_clear()
++
++    @unittest.skipIf(
++        sys.version_info[:3] < (3, 13, 4),
++        "Crashes python before fix",
++    )
++    def test_deepcopy_grow(self):
++        super().test_deepcopy_grow()
++
++    @unittest.skipIf(
++        is_version_before((3, 12, 10), (3, 13, 4)),
++        "Only fixed in 3.12.10 and after",
++    )
++    def test_remove_with_clear_assume_existing(self):
++        super().test_remove_with_clear_assume_existing()
++
++    @unittest.skipIf(
++        is_version_before((3, 12, 10), (3, 13, 4)),
++        "Only fixed in 3.12.10 and after",
++    )
++    def test_remove_with_clear_assume_missing(self):
++        super().test_remove_with_clear_assume_missing()
++
++    @unittest.skipIf(
++        is_version_before((3, 12, 10), (3, 13, 4)),
++        "Only fixed in 3.12.10 and after",
++    )
++    def test_remove_with_mutate_root_assume_existing(self):
++        super().test_remove_with_mutate_root_assume_existing()
++
+ 
+ class NoAcceleratorTest(test_xml_etree.NoAcceleratorTest):
+     @unittest.skipIf(
+diff --git a/et_xmlfile/tests/test_incremental_tree_with_stdlib_tests.py b/et_xmlfile/tests/test_incremental_tree_with_stdlib_tests.py
+--- a/et_xmlfile/tests/test_incremental_tree_with_stdlib_tests.py
++++ b/et_xmlfile/tests/test_incremental_tree_with_stdlib_tests.py
+@@ -29,7 +29,7 @@
+     if sys.version_info[:2] == (3, 10):
+         class IOTest(stdlib_base_tests.IOTest):
+             @unittest.skip(
+-                "Fixeb by: gh-91810: Fix regression with writing an XML declaration with encoding='unicode'"
++                "Fixed by: gh-91810: Fix regression with writing an XML declaration with encoding='unicode'"
+             )
+             def test_write_to_text_file(self):
+                 pass
+diff --git a/et_xmlfile/tests/updating_stdlib_tests.rst b/et_xmlfile/tests/updating_stdlib_tests.rst
+new file mode 100644
+--- /dev/null
++++ b/et_xmlfile/tests/updating_stdlib_tests.rst
+@@ -0,0 +1,55 @@
++======================
++Updating stdlib tests
++======================
++
++The ``incremental_tree.py`` code extends many classes defined by Python's
++``xml.etree.ElementTree`` adding additional functionality with regards to how
++these trees are serialised. Serialising xml is not a trivial task so we
++leverage the standard library tests to take advantage of the ~4600 loc of tests
++to ensure the implementation in this package is working as expected.
++
++An overview:
++
++* We vendor the latest tests from a Python release in the the ``tests/_vendor``
++  directory.
++* ``pytest`` is configured to ignore the tests in ``tests/_vendor`` so we can apply
++  some shims and workarounds to support mulitple versions of Pythons.
++* Modifications to the stdlib ``TestCase`` classes are created in subclasses of
++  the those TestCases in the ``tests/stdlib_base_tests.py`` file. This keeps
++  the vendored code clean to allow easy updates to newer releases of cPython.
++* The test runner will find these modified test cases via the
++  ``tests/test_incremental_tree_with_stdlib_tests.py`` file.
++
++
++# Updating the stdlib tests
++
++As cPython implements new features and adds bug fixes, the snapshot of the
++tests we've vendored from the cPython project (under the ``tests/_vendor``
++directory) may start to fail for more recent versions of cPython.
++
++To update the vendored tests:
++
++* Clone the cPython repository
++* Checkout the latest release tag. It's important it is a release tag so that
++  we don't include tests that aren't released yet as that may cause test
++  failures.
++* Copy the ``Lib/test/test_xml_etree.py`` file over the
++  ``tests/_vendor/teststest_xml_etree.py`` file in this repository.
++* Changes to the local ``teststest_xml_etree.py`` are kept to a minimum but there
++  are a few required modifications. They are surrounded by the comments:
++
++    ```
++    # et_xmlfile change: ...
++    <changes>
++    # end et_xmlfile change
++    ```
++
++    Check the hg diff after replacing the local ``test_xml_etree.py`` with the
++    newer version to find any of these sections that may have been removed and
++    readd them.
++* Run ``pytest`` for supported python versions. Look for test failures due to new
++  features or code changes and update the corresponding classes in
++  ``stdlib_base_tests.py`` to override the tests in ``test_xml_etree.py``. This can
++  mean copying the old version of a test and running that on older versions of
++  Python while retaining the newer test for the Pythons that support that.
++* Don't forget to check pypy :)
