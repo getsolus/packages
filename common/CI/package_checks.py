@@ -1197,6 +1197,30 @@ class StaticLibs(PullRequestCheck):
         )
 
 
+class MetainfoFile(PullRequestCheck):
+    """
+    Checks that AppStream metainfo files have a correct name.
+    """
+    _level = Level.WARNING
+
+    def run(self) -> List[Result]:
+        return [self._result(pspec, file)
+                for pspec in self.filter_files('pspec_x86_64.xml')
+                for file in self.load_pspec_xml(pspec).files
+                if self._check(file)]
+
+    def _result(self, pspec: str, file: str) -> Result:
+        return Result(message=f'An AppStream metainfo file is misnamed in the package: `{file}`. '
+                      'File name should be in the format `id.metainfo.xml`, e.g. `org.gnome.Software.metainfo.xml`, '
+                      'or `id.appdata.xml`, e.g. `org.kde.discover.appdata.xml`.',
+                      file=pspec, line=self.file_line(pspec, f'.*{file}.*'), level=self._level)
+
+    def _check(self, file: str) -> bool:
+        return (file.startswith('/usr/share/metainfo') and
+                (not file.endswith('.appdata.xml') and
+                not file.endswith('.metainfo.xml')))
+
+
 class SystemDependencies(PullRequestCheck):
     _components: list[str] = ["system.base", "system.devel"]
 
@@ -1305,6 +1329,7 @@ class Checker:
         CommitMessage,
         FrozenPackage,
         Homepage,
+        MetainfoFile,
         Monitoring,
         MonitoringFormat,
         License,
