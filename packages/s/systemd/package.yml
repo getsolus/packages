@@ -1,21 +1,20 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : systemd
-version    : '259.6'
-release    : 188
+version    : '261.2'
+release    : 189
 source     :
-    - https://github.com/systemd/systemd/archive/refs/tags/v259.6.tar.gz : 10deced11705484f6abb732cadc72998a65f368c39ef4ea63a5527a9749d5b18
+    - https://github.com/systemd/systemd/archive/refs/tags/v261.2.tar.gz : ed1059ff964f5df35b6056434cc17cc83f86dc913f10489948a0b19b6081c5ec
 license    :
     - LGPL-2.1-or-later
     - GPL-2.0-or-later
-component  :
-    - system.base
-    - devel : system.devel
+component  : system.base
 homepage   : https://www.github.com/systemd/systemd
 summary    : System and Service Manager
 description: |
     systemd is a system and service manager for Linux, compatible with SysV and LSB init scripts. systemd provides aggressive parallelization capabilities, uses socket and D-Bus activation for starting services, offers on-demand starting of daemons, keeps track of processes using Linux control groups, supports snapshotting and restoring of the system state, maintains mount and automount points and implements an elaborate transactional dependency-based service control logic. It can work as a drop-in replacement for sysvinit.
 autodep    : false
 clang      : true
+devel      : true
 emul32     : true
 libsplit   : false
 optimize   :
@@ -96,11 +95,9 @@ setup      : |
     %patch -p1 -i ${pkgfiles}/patches/downstream/0001-path-lookup-Include-stateless-xdg-path-by-default.patch
     %patch -p1 -i ${pkgfiles}/patches/downstream/0001-downstream-Allow-default-font-to-be-set.patch
     %patch -p1 -i ${pkgfiles}/patches/downstream/0001-Don-t-build-32bit-EFI-stub.patch
-    %patch -p1 -i ${pkgfiles}/patches/downstream/0001-systemd-Support-sysconfdir-for-system-sleep-scripts.patch
     %patch -p1 -i ${pkgfiles}/patches/downstream/0001-Remove-etc-os-release-from-tmpfiles.patch
 
     # Upstream patches
-    %patch -p1 -i ${pkgfiles}/patches/upstream/systemd-259.6-drop-sockets.target-from-networkd-resolved-hook.patch
 
     # ERROR: File fuzz-unit-file/dm-back-slash.swap does not exist.
     # mv "test/fuzz/fuzz-unit-file/dm-back\x2dslash.swap" "test/fuzz/fuzz-unit-file/dm-back-slash.swap"
@@ -235,78 +232,80 @@ install    : |
     %ninja_install
 
     # Solus is responsible for its own glibc + PAM configuration, *not* systemd..
-    rm -rfv $installdir/usr/share/factory/*
+    rm -rfv ${installdir}/usr/share/factory/*
 
     # Only need to do the rest of the stuff on 64-bit build
     if [[ ! -z "${EMUL32BUILD}" ]]; then
         exit 0
     fi
 
-    # Configure solus-specific-timeout values for units
-    install -Dm00644 -t $installdir/usr/lib/systemd/system.conf.d/ $pkgfiles/configs/timeouts.conf
-    install -Dm00644 -t $installdir/usr/lib/systemd/journald.conf.d/ $pkgfiles/configs/journald.conf
-    install -Dm00644 -t $installdir/usr/lib/systemd/system/service.d/ $pkgfiles/configs/10-timeout-abort.conf
+    # Move licenses
+    %install_dir ${installdir}/usr/share/licenses/${package}
+    mv ${installdir}/usr/share/doc/${package}/LICENSE.* \
+       ${installdir}/usr/share/doc/${package}/LICENSES \
+       ${installdir}/usr/share/licenses/${package}/
 
-    # Disable networkd in favor of NetworkManager
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/60-systemd.preset
-
-    # Disable services by default, unless explicitly enabled
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/99-default.preset
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/user-preset/ ${pkgfiles}/99-default.preset
-
-    # User config defaults
-    install -Dm00644 -t $installdir/usr/lib/systemd/user.conf.d/ $pkgfiles/configs/timeouts.conf
+    # Configs
+    %install_file -t ${installdir}/usr/lib/systemd/journald.conf.d ${pkgfiles}/configs/journald/00-journald.conf
+    %install_file -t ${installdir}/usr/lib/systemd/system/service.d ${pkgfiles}/configs/10-timeout-abort.conf
+    %install_file -t ${installdir}/usr/lib/systemd/system.conf.d ${pkgfiles}/configs/00-timeouts.conf
+    %install_file -t ${installdir}/usr/lib/systemd/user.conf.d ${pkgfiles}/configs/00-timeouts.conf
+    %install_file -t ${installdir}/%libdir%/sysctl.d ${pkgfiles}/configs/10-map-count.conf
 
     # Default to BFQ scheduler for rotational drives, and kyber for sata/nvme SSDs
-    install -Dm00644 -t $installdir/usr/lib/udev/rules.d/ $pkgfiles/configs/60-block-scheduler.rules
+    %install_file -t ${installdir}/usr/lib/udev/rules.d ${pkgfiles}/configs/60-block-scheduler.rules
 
-    ln -sv systemd-timesyncd.service $installdir/usr/lib/systemd/system/dbus-org.freedesktop.timesync1.service
+    # Coredump configuration
+    %install_file ${pkgfiles}/configs/coredump/limits.conf ${installdir}/usr/share/defaults/etc/security/limits.d/20-coredump-solus.conf
+    %install_file ${pkgfiles}/configs/coredump/manager.conf ${installdir}/usr/lib/systemd/system.conf.d/20-coredump-solus.conf
+    %install_file ${pkgfiles}/configs/coredump/manager.conf ${installdir}/usr/lib/systemd/user.conf.d/20-coredump-solus.conf
+
+    # OOMD configuration
+    %install_file -t ${installdir}/usr/lib/systemd/oomd.conf.d ${pkgfiles}/configs/oomd/10-defaults.conf
+    %install_file -t ${installdir}/usr/lib/systemd/system/-.slice.d ${pkgfiles}/configs/oomd/10-oomd-root-slice-defaults.conf
+    %install_file -t ${installdir}/usr/lib/systemd/system/user@.service.d ${pkgfiles}/configs/oomd/10-oomd-user-service-defaults.conf
+
+    # Resolved configuration
+    # Temporarily disabled until we figure out how we want to handle mDNS (https://github.com/AerynOS/recipes/issues/1952)
+    # %install_file -t ${installdir}/usr/lib/systemd/resolved.conf.d ${pkgfiles}/configs/resolved/00-disable-mdns.conf
+
+    # Disable networkd in favor of NetworkManager
+    %install_file -t ${installdir}/usr/lib/systemd/system-preset/ ${pkgfiles}/60-systemd.preset
+
+    # Disable services by default, unless explicitly enabled
+    %install_file -t ${installdir}/usr/lib/systemd/system-preset/ ${pkgfiles}/99-default.preset
+    %install_file -t ${installdir}/usr/lib/systemd/user-preset/ ${pkgfiles}/99-default.preset
+
+    ln -sv systemd-timesyncd.service ${installdir}/usr/lib/systemd/system/dbus-org.freedesktop.timesync1.service
 
     # Install compat dirs
-    install -dm00755 $installdir/{,usr/}lib64/udev
+    %install_dir ${installdir}/%libdir%/udev
 
     # Compat for old tools
-    ln -srv $installdir/usr/lib/systemd/systemd-udevd $installdir/usr/lib64/udev/udevd
-    ln -srv $installdir/usr/lib/systemd/systemd-udevd $installdir/lib64/udev/udevd
+    ln -srv ${installdir}/usr/lib/systemd/systemd-udevd ${installdir}/%libdir%/udev/udevd
 
     # Ensure that XDG_CONFIG_DIRS is set globally
-    install -Dm00755 $pkgfiles/50-xdg-config-dirs -t $installdir/usr/lib/systemd/system-environment-generators/
+    %install_exe -t ${installdir}/usr/lib/systemd/system-environment-generators ${pkgfiles}/configs/50-xdg-{config,data}-dirs
 
     # Stateless xinitrc.d path
-    install -Dm00755 xorg/50-systemd-user.sh -t $installdir/usr/share/defaults/etc/X11/xinit/xinitrc.d/
+    %install_exe -t ${installdir}/usr/share/defaults/etc/X11/xinit/xinitrc.d xorg/50-systemd-user.sh
 
     # Required basic support
-    install -m 00644 $pkgfiles/solus-base-groups.sysusers $installdir/usr/lib/sysusers.d/solus-base-groups.conf
+    %install_file ${pkgfiles}/solus-base-groups.sysusers ${installdir}/usr/lib/sysusers.d/solus-base-groups.conf
 
     # add fixed pam config
-    rm -rfv $installdir/usr/lib/pam.d
-    install -Dm00644 $pkgfiles/systemd-user.pam $installdir/usr/share/defaults/etc/pam.d/systemd-user
+    rm -rfv ${installdir}/usr/lib/pam.d
+    %install_file ${pkgfiles}/systemd-user.pam ${installdir}/usr/share/defaults/etc/pam.d/systemd-user
 
     # Sign systemd-boot with our MOK key if it exists
-    if [[ -e $pkgfiles/secureboot-keys/MOK.key ]]; then
-        sbsign --key $pkgfiles/secureboot-keys/MOK.key \
-                --cert $pkgfiles/secureboot-keys/MOK.crt \
-                --output $installdir/usr/lib/systemd/boot/efi/systemd-bootx64.efi \
-                $installdir/usr/lib/systemd/boot/efi/systemd-bootx64.efi
+    if [[ -e ${pkgfiles}/secureboot-keys/MOK.key ]]; then
+        sbsign --key ${pkgfiles}/secureboot-keys/MOK.key \
+               --cert ${pkgfiles}/secureboot-keys/MOK.crt \
+               --output ${installdir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi \
+               ${installdir}/usr/lib/systemd/boot/efi/systemd-bootx64.efi
 
-        install -Dm00644 $pkgfiles/secureboot-keys/MOK.cer $installdir/usr/lib/systemd/boot/solus-mok.cer
+        %install_file ${pkgfiles}/secureboot-keys/MOK.cer ${installdir}/usr/lib/systemd/boot/solus-mok.cer
     fi
 
     # Make sure systemd can be found
-    ln -srv $installdir/usr/lib/systemd/systemd $installdir/usr/bin/systemd
-
-    rm -rfv $installdir/usr/share/doc/
-
-    # We don't need 32-bit EFI binaries, probably
-    # TODO figure out if we actually don't need them. For now leave them in
-    # rm -v $installdir/usr/lib/systemd/boot/efi/{addonia32.efi.stub,linuxia32.efi.stub,systemd-bootia32.efi} \
-    #       $installdir/usr/share/man/man7/linuxia32.efi.stub.7
-
-    # Stateless. Don't blindly convert any of these to recursive (-r) or force (-f)
-    # It's important that all additions and removals are investigated
-    rmdir -v $installdir/var/lib/systemd \
-             $installdir/var/lib \
-             $installdir/var
-
-    # Install licenses
-    %install_license LICENSE.GPL2 LICENSES/MIT.txt
+    ln -srv ${installdir}/usr/lib/systemd/systemd ${installdir}/usr/bin/systemd
