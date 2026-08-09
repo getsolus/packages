@@ -1,6 +1,6 @@
-From 1286ce92a5ccf68b5dcf1b4a7c0884ce29d5c51b Mon Sep 17 00:00:00 2001
+From 656390df46ba963afe51420ecb9399b6dde9a2bd Mon Sep 17 00:00:00 2001
 From: fujiwarat <takao.fujiwara1@gmail.com>
-Date: Fri, 12 Jul 2024 23:30:25 +0900
+Date: Thu, 30 Apr 2026 09:00:00 +0900
 Subject: [PATCH] Fix SEGV in bus_panel_proxy_focus_in()
 
 rhbz#1350291 SEGV in BUS_IS_CONNECTION(skip_connection) in
@@ -21,9 +21,6 @@ WIP: Add a GError to get the error message to check why the SEGV happened.
 rhbz#1663528 SEGV in g_mutex_clear() in bus_dbus_impl_destroy()
 If the mutex is not unlocked, g_mutex_clear() causes assert.
 
-rhbz#1767691 SEGV in client/x11/main.c:_sighandler().
-Do not call atexit functions in _sighandler().
-
 rhbz#2195895 SEGV in client/x11/main.c:_xim_set_cursor_location()
 check if IBusInputContext was disconnected.
 
@@ -35,9 +32,6 @@ rhbz#1771238 SEGV in assert(m_loop == null) in switcher.vala.
 Grabbing keyboard could be failed and switcher received the keyboard
 events and m_loop was not released.
 
-rhbz#1797120 SEGV in assert(bus.is_connected()) in panel_binding_construct()
-Check m_ibus in extension.vala:bus_name_acquired_cb()
-
 rhbz#2151344 SEGV with portal_context->owner in name_owner_changed()
 Maybe g_object_unref() is called but not finalized yet.
 
@@ -45,33 +39,37 @@ rhbz#2239633 SEGV with g_object_unref() in
 ibus_portal_context_handle_destroy()
 Connect "handle-destroy" signal after g_list_prepend().
 
-BUG=rhbz#1350291
-BUG=rhbz#1601577
-BUG=rhbz#1663528
-BUG=rhbz#1767691
-BUG=rhbz#1795499
-BUG=rhbz#1771238
-BUG=rhbz#1767976
-BUG=rhbz#1797120
-BUG=rhbz#2151344
-BUG=rhbz#2195895
-BUG=rhbz#2239633
+rhbz#2480408 SEGV with zwp_input_method_context_v1_preedit_string() in
+_context_hide_preedit_text_cb()
+If the `zwp_input_method_context_v1` is deactivate, the `IBusIMContext`
+is should be cleared and the "hide-preedit-text" signal is also
+disconnected.
+
+Closes: rhbz#1350291
+Closes: rhbz#1601577
+Closes: rhbz#1663528
+Closes: rhbz#1795499
+Closes: rhbz#1771238
+Closes: rhbz#1767976
+Closes: rhbz#2151344
+Closes: rhbz#2195895
+Closes: rhbz#2239633
+Closes: rhbz#2480408
 ---
- bus/dbusimpl.c         | 47 ++++++++++++++++++++++++---
- bus/engineproxy.c      | 44 +++++++++++++++++++------
- bus/panelproxy.c       |  9 +++++-
- client/x11/main.c      | 56 ++++++++++++++++++++++++++++----
- portal/portal.c        | 25 ++++++++++++---
- src/ibusbus.c          |  6 ++++
- ui/gtk3/extension.vala |  4 +++
- ui/gtk3/switcher.vala  | 73 +++++++++++++++++++++++++-----------------
- 8 files changed, 208 insertions(+), 56 deletions(-)
+ bus/engineproxy.c              | 44 +++++++++++++++++++++++-------
+ bus/panelproxy.c               |  9 ++++++-
+ client/wayland/ibuswaylandim.c | 20 +++++++++++++-
+ client/x11/main.c              | 49 ++++++++++++++++++++++++++++++----
+ portal/portal.c                | 25 +++++++++++++----
+ src/ibusbus.c                  |  6 +++++
+ ui/gtk3/switcher.vala          | 48 ++++++++++++++++++++-------------
+ 8 files changed, 203 insertions(+), 45 deletions(-)
 
 diff --git a/bus/dbusimpl.c b/bus/dbusimpl.c
-index 110d864a..391d576a 100644
+index 70792be..9c535bf 100644
 --- a/bus/dbusimpl.c
 +++ b/bus/dbusimpl.c
-@@ -621,6 +621,7 @@ static void
+@@ -634,6 +634,7 @@ static void
  bus_dbus_impl_destroy (BusDBusImpl *dbus)
  {
      GList *p;
@@ -79,7 +77,7 @@ index 110d864a..391d576a 100644
  
      for (p = dbus->objects; p != NULL; p = p->next) {
          IBusService *object = (IBusService *) p->data;
-@@ -644,6 +645,10 @@ bus_dbus_impl_destroy (BusDBusImpl *dbus)
+@@ -657,6 +658,10 @@ bus_dbus_impl_destroy (BusDBusImpl *dbus)
  
      for (p = dbus->connections; p != NULL; p = p->next) {
          BusConnection *connection = BUS_CONNECTION (p->data);
@@ -90,7 +88,7 @@ index 110d864a..391d576a 100644
          g_signal_handlers_disconnect_by_func (connection,
                  bus_dbus_impl_connection_destroy_cb, dbus);
          ibus_object_destroy (IBUS_OBJECT (connection));
-@@ -658,12 +663,39 @@ bus_dbus_impl_destroy (BusDBusImpl *dbus)
+@@ -675,12 +680,39 @@ bus_dbus_impl_destroy (BusDBusImpl *dbus)
      dbus->unique_names = NULL;
      dbus->names = NULL;
  
@@ -132,7 +130,7 @@ index 110d864a..391d576a 100644
  
      /* FIXME destruct _lock and _queue members. */
      IBUS_OBJECT_CLASS(bus_dbus_impl_parent_class)->destroy ((IBusObject *)dbus);
-@@ -1539,13 +1571,20 @@ bus_dbus_impl_connection_filter_cb (GDBusConnection *dbus_connection,
+@@ -1556,13 +1588,20 @@ bus_dbus_impl_connection_filter_cb (GDBusConnection *dbus_connection,
                                      gboolean         incoming,
                                      gpointer         user_data)
  {
@@ -156,10 +154,10 @@ index 110d864a..391d576a 100644
      if (incoming) {
          /* is incoming message */
 diff --git a/bus/engineproxy.c b/bus/engineproxy.c
-index b3e16066..ba479b59 100644
+index 37736b6..7f34604 100644
 --- a/bus/engineproxy.c
 +++ b/bus/engineproxy.c
-@@ -693,10 +693,12 @@ bus_engine_proxy_g_signal (GDBusProxy  *proxy,
+@@ -775,10 +775,12 @@ bus_engine_proxy_g_signal (GDBusProxy  *proxy,
      g_return_if_reached ();
  }
  
@@ -173,7 +171,7 @@ index b3e16066..ba479b59 100644
  {
      GDBusProxyFlags flags;
      BusEngineProxy *engine;
-@@ -706,12 +708,20 @@ bus_engine_proxy_new_internal (const gchar     *path,
+@@ -788,12 +790,20 @@ bus_engine_proxy_new_internal (const gchar     *path,
      g_assert (path);
      g_assert (IBUS_IS_ENGINE_DESC (desc));
      g_assert (G_IS_DBUS_CONNECTION (connection));
@@ -195,7 +193,7 @@ index b3e16066..ba479b59 100644
              "desc",              desc,
              "g-connection",      connection,
              "g-interface-name",  IBUS_INTERFACE_ENGINE,
-@@ -719,6 +729,12 @@ bus_engine_proxy_new_internal (const gchar     *path,
+@@ -801,6 +811,12 @@ bus_engine_proxy_new_internal (const gchar     *path,
              "g-default-timeout", g_gdbus_timeout,
              "g-flags",           flags,
              NULL);
@@ -208,7 +206,7 @@ index b3e16066..ba479b59 100644
      const gchar *layout = ibus_engine_desc_get_layout (desc);
      if (layout != NULL && layout[0] != '\0') {
          engine->keymap = ibus_keymap_get (layout);
-@@ -756,6 +772,7 @@ bus_engine_proxy_new_internal (const gchar     *path,
+@@ -838,6 +854,7 @@ bus_engine_proxy_new_internal (const gchar     *path,
  
      return engine;
  }
@@ -216,7 +214,7 @@ index b3e16066..ba479b59 100644
  
  typedef struct {
      GTask           *task;
-@@ -818,23 +835,30 @@ create_engine_ready_cb (BusFactoryProxy    *factory,
+@@ -900,23 +917,30 @@ create_engine_ready_cb (BusFactoryProxy    *factory,
                          GAsyncResult       *res,
                          EngineProxyNewData *data)
  {
@@ -256,10 +254,10 @@ index b3e16066..ba479b59 100644
      /* FIXME: set destroy callback ? */
      g_task_return_pointer (data->task, engine, NULL);
 diff --git a/bus/panelproxy.c b/bus/panelproxy.c
-index e6001ebf..00828fbc 100644
+index 4c2c888..a7bec19 100644
 --- a/bus/panelproxy.c
 +++ b/bus/panelproxy.c
-@@ -122,6 +122,8 @@ bus_panel_proxy_new (BusConnection *connection,
+@@ -124,6 +124,8 @@ bus_panel_proxy_new (BusConnection *connection,
      const gchar *path = NULL;
      GObject *obj;
      BusPanelProxy *panel;
@@ -268,7 +266,7 @@ index e6001ebf..00828fbc 100644
  
      g_assert (BUS_IS_CONNECTION (connection));
  
-@@ -138,7 +140,7 @@ bus_panel_proxy_new (BusConnection *connection,
+@@ -140,7 +142,7 @@ bus_panel_proxy_new (BusConnection *connection,
  
      obj = g_initable_new (BUS_TYPE_PANEL_PROXY,
                            NULL,
@@ -277,7 +275,7 @@ index e6001ebf..00828fbc 100644
                            "g-object-path",     path,
                            "g-interface-name",  IBUS_INTERFACE_PANEL,
                            "g-connection",      bus_connection_get_dbus_connection (connection),
-@@ -146,6 +148,11 @@ bus_panel_proxy_new (BusConnection *connection,
+@@ -148,6 +150,11 @@ bus_panel_proxy_new (BusConnection *connection,
                            "g-flags",           G_DBUS_PROXY_FLAGS_DO_NOT_AUTO_START | G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
                            NULL);
  
@@ -289,8 +287,81 @@ index e6001ebf..00828fbc 100644
      panel = BUS_PANEL_PROXY (obj);
      panel->panel_type = panel_type;
      return panel;
+diff --git a/client/wayland/ibuswaylandim.c b/client/wayland/ibuswaylandim.c
+index 5762f10..f1e3b9e 100644
+--- a/client/wayland/ibuswaylandim.c
++++ b/client/wayland/ibuswaylandim.c
+@@ -387,7 +387,7 @@ ibus_wayland_im_commit_text (IBusWaylandIM *wlim,
+                              const char    *str)
+ {
+     IBusWaylandIMPrivate *priv;
+-    g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
++    g_assert (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
+     switch (priv->version) {
+     case INPUT_METHOD_V1:
+@@ -822,6 +822,14 @@ _context_commit_text_cb (IBusInputContext *context,
+                          IBusText         *text,
+                          IBusWaylandIM    *wlim)
+ {
++    IBusWaylandIMPrivate *priv;
++
++    g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
++    priv = ibus_wayland_im_get_instance_private (wlim);
++    /* FIXME: rhbz#2480408 If priv->ibuscontext exists,
++     * priv->context also should exists.
++     */
++    g_assert (priv->ibuscontext);
+     ibus_wayland_im_commit_text (wlim, text->text);
+ }
+ 
+@@ -838,6 +846,8 @@ _context_forward_key_event_cb (IBusInputContext *context,
+ 
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
++    /* FIXME: rhbz#2480408 */
++    g_assert (priv->ibuscontext);
+     if (modifiers & IBUS_RELEASE_MASK)
+         state = WL_KEYBOARD_KEY_STATE_RELEASED;
+     else
+@@ -1055,6 +1065,8 @@ _context_show_preedit_text_cb (IBusInputContext *context,
+     const char *commit = "";
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
++    /* FIXME: rhbz#2480408 */
++    g_assert (priv->ibuscontext);
+     /* CURSOR is byte offset.  */
+     cursor =
+         g_utf8_offset_to_pointer (priv->preedit_text->text,
+@@ -1098,6 +1110,8 @@ _context_hide_preedit_text_cb (IBusInputContext *context,
+     IBusWaylandIMPrivate *priv;
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
++    /* FIXME: rhbz#2480408 */
++    g_assert (priv->ibuscontext);
+     switch (priv->version) {
+     case INPUT_METHOD_V1:
+         zwp_input_method_context_v1_preedit_string (priv->context,
+@@ -1137,6 +1151,8 @@ _context_update_preedit_text_cb (IBusInputContext *context,
+     priv->preedit_cursor_pos = cursor_pos;
+     priv->preedit_mode = mode;
+ 
++    /* FIXME: rhbz#2480408 */
++    g_assert (priv->ibuscontext);
+     if (visible)
+         _context_show_preedit_text_cb (context, wlim);
+     else
+@@ -1161,6 +1177,8 @@ _context_delete_surrounding_text_cb (IBusInputContext *context,
+     g_return_if_fail (IBUS_IS_WAYLAND_IM (wlim));
+     priv = ibus_wayland_im_get_instance_private (wlim);
+ 
++    /* FIXME: rhbz#2480408 */
++    g_assert (priv->ibuscontext);
+     if (!priv->surrounding_text)
+         return;
+ 
 diff --git a/client/x11/main.c b/client/x11/main.c
-index b7eb5961..3075d5d0 100644
+index accebde..cac4cd6 100644
 --- a/client/x11/main.c
 +++ b/client/x11/main.c
 @@ -45,6 +45,7 @@
@@ -436,22 +507,8 @@ index b7eb5961..3075d5d0 100644
  
      ibus_input_context_reset (x11ic->context);
  
-@@ -1309,7 +1348,12 @@ _atexit_cb ()
- static void
- _sighandler (int sig)
- {
--    exit(EXIT_FAILURE);
-+    /* rhbz#1767691 _sighandler() is called with SIGTERM
-+     * and exit() causes SEGV during calling atexit functions.
-+     * _atexit_cb() might be broken. _exit() does not call
-+     * atexit functions.
-+     */
-+    _exit(EXIT_FAILURE);
- }
- 
- static void
 diff --git a/portal/portal.c b/portal/portal.c
-index 5cd38779..5110baad 100644
+index 5cd3877..5110baa 100644
 --- a/portal/portal.c
 +++ b/portal/portal.c
 @@ -92,6 +92,11 @@ static void portal_context_g_signal (GDBusProxy        *proxy,
@@ -510,10 +567,10 @@ index 5cd38779..5110baad 100644
                  g_object_unref (portal_context);
              }
 diff --git a/src/ibusbus.c b/src/ibusbus.c
-index 0e6d67f1..fcc742b6 100644
+index 540d1da..defdb73 100644
 --- a/src/ibusbus.c
 +++ b/src/ibusbus.c
-@@ -742,6 +742,12 @@ ibus_bus_destroy (IBusObject *object)
+@@ -750,6 +750,12 @@ ibus_bus_destroy (IBusObject *object)
      _bus = NULL;
  
      if (bus->priv->monitor) {
@@ -526,26 +583,11 @@ index 0e6d67f1..fcc742b6 100644
          g_object_unref (bus->priv->monitor);
          bus->priv->monitor = NULL;
      }
-diff --git a/ui/gtk3/extension.vala b/ui/gtk3/extension.vala
-index a6f2e8e6..b7a04081 100644
---- a/ui/gtk3/extension.vala
-+++ b/ui/gtk3/extension.vala
-@@ -73,6 +73,10 @@ class ExtensionGtk : Gtk.Application {
-                                       string         signal_name,
-                                       Variant        parameters) {
-         debug("signal_name = %s", signal_name);
-+        /* rhbz#1797120 Fix assert(bus.is_connected()) in
-+         * panel_binding_construct()
-+         */
-+        return_if_fail(m_bus.is_connected());
-         m_panel = new PanelBinding(m_bus, this);
-         m_panel.load_settings();
-     }
 diff --git a/ui/gtk3/switcher.vala b/ui/gtk3/switcher.vala
-index 26bded99..21ede7be 100644
+index d4a5fa1..788eea0 100644
 --- a/ui/gtk3/switcher.vala
 +++ b/ui/gtk3/switcher.vala
-@@ -236,16 +236,18 @@ class Switcher : Gtk.Window {
+@@ -251,27 +251,37 @@ class Switcher : Gtk.Window {
                             null,
                             event,
                             null);
@@ -560,6 +602,13 @@ index 26bded99..21ede7be 100644
 -                           null);
 -        if (status != Gdk.GrabStatus.SUCCESS)
 -            warning("Grab pointer failed! status = %d", status);
+-
+-        // Probably we can delete m_popup_delay_time in 1.6
+-        pointer.get_position_double(null,
+-                                    out m_mouse_init_x,
+-                                    out m_mouse_init_y);
+-        m_mouse_moved = false;
+-
 +        } else {
 +            status = seat.grab(get_window(),
 +                               Gdk.SeatCapabilities.POINTER,
@@ -570,45 +619,10 @@ index 26bded99..21ede7be 100644
 +            if (status != Gdk.GrabStatus.SUCCESS)
 +                warning("Grab pointer failed! status = %d", status);
 +        }
- #else
-         Gdk.Device device = event.get_device();
-         if (device == null) {
-@@ -281,30 +283,41 @@ class Switcher : Gtk.Window {
-                                Gdk.EventMask.KEY_RELEASE_MASK,
-                                null,
-                                Gdk.CURRENT_TIME);
--        if (status != Gdk.GrabStatus.SUCCESS)
-+        if (status != Gdk.GrabStatus.SUCCESS) {
-             warning("Grab keyboard failed! status = %d", status);
--        // Grab all pointer events
--        status = pointer.grab(get_window(),
--                              Gdk.GrabOwnership.NONE,
--                              true,
--                              Gdk.EventMask.BUTTON_PRESS_MASK |
--                              Gdk.EventMask.BUTTON_RELEASE_MASK,
--                              null,
--                              Gdk.CURRENT_TIME);
--        if (status != Gdk.GrabStatus.SUCCESS)
--            warning("Grab pointer failed! status = %d", status);
-+        } else {
-+            // Grab all pointer events
-+            status = pointer.grab(get_window(),
-+                                  Gdk.GrabOwnership.NONE,
-+                                  true,
-+                                  Gdk.EventMask.BUTTON_PRESS_MASK |
-+                                  Gdk.EventMask.BUTTON_RELEASE_MASK,
-+                                  null,
-+                                  Gdk.CURRENT_TIME);
-+            if (status != Gdk.GrabStatus.SUCCESS)
-+                warning("Grab pointer failed! status = %d", status);
-+        }
- #endif
  
--        // Probably we can delete m_popup_delay_time in 1.6
--        pointer.get_position_double(null,
--                                    out m_mouse_init_x,
--                                    out m_mouse_init_y);
--        m_mouse_moved = false;
+-        m_loop = new GLib.MainLoop();
+-        m_loop.run();
+-        m_loop = null;
 +        /* Fix RHBZ #1771238 assert(m_loop == null)
 +         * Grabbing keyboard can be failed when the second Super-e is typed
 +         * before Switcher dialog is focused. And m_loop could not be released
@@ -622,18 +636,14 @@ index 26bded99..21ede7be 100644
 +                                        out m_mouse_init_x,
 +                                        out m_mouse_init_y);
 +            m_mouse_moved = false;
- 
- 
--        m_loop = new GLib.MainLoop();
--        m_loop.run();
--        m_loop = null;
++
 +            m_loop = new GLib.MainLoop();
 +            m_loop.run();
 +            m_loop = null;
 +        }
  
- #if VALA_0_34
          seat.ungrab();
+ 
 -- 
-2.45.0
+2.53.0
 
