@@ -1,0 +1,127 @@
+From da794f1c5fc36ea341d89f8bf8be364439ffefef Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Mon, 10 Aug 2026 16:08:02 +0100
+Subject: [PATCH 1/1] Add visible hint & tooltip when hardware drivers matches
+ hardware
+
+When a hardware driver's provided modaliases matches against the
+system's, add a new quirk GS_APP_QUIRK_HARDWARE_MATCHED.
+
+When apps have this quirk show a tick indicating that the driver is
+suitable for the system.
+
+Additionally, remove the previous hint mechanism used which replaced the
+icon with emblem-system-symbolic. This really didn't indicate anything
+and instead confused users.
+---
+ lib/gs-app.h                          |  2 ++
+ plugins/modalias/gs-plugin-modalias.c |  4 +---
+ src/gs-summary-tile.c                 | 18 +++++++++++++++++-
+ src/gs-summary-tile.ui                |  6 +++---
+ 4 files changed, 23 insertions(+), 7 deletions(-)
+
+diff --git a/lib/gs-app.h b/lib/gs-app.h
+index d59eee4e4..f4a3f788e 100644
+--- a/lib/gs-app.h
++++ b/lib/gs-app.h
+@@ -138,6 +138,7 @@ typedef enum {
+  * @GS_APP_QUIRK_HIDE_EVERYWHERE:	The app should not be shown anywhere (it’s blocklisted)
+  * @GS_APP_QUIRK_DO_NOT_AUTO_UPDATE:	The app should not be automatically updated
+  * @GS_APP_QUIRK_FROM_DEVELOPMENT_REPOSITORY: The app is from a development/beta repository (Since: 49)
++ * @GS_APP_QUIRK_HARDWARE_MATCHED:     The app provides support for hardware attached to this system (Since: 51)
+  *
+  * The application attributes.
+  **/
+@@ -162,6 +163,7 @@ typedef enum {
+ 	GS_APP_QUIRK_HIDE_EVERYWHERE	= 1 << 16,	/* Since: 3.36 */
+ 	GS_APP_QUIRK_DO_NOT_AUTO_UPDATE	= 1 << 17,	/* Since: 3.36 */
+ 	GS_APP_QUIRK_FROM_DEVELOPMENT_REPOSITORY = 1 << 18,	/* Since: 49 */
++	GS_APP_QUIRK_HARDWARE_MATCHED   = 1 << 19,      /* Since: 52 */
+ 	GS_APP_QUIRK_LAST  /*< skip >*/
+ } GsAppQuirk;
+ 
+diff --git a/plugins/modalias/gs-plugin-modalias.c b/plugins/modalias/gs-plugin-modalias.c
+index 3d334c210..ab948e7ea 100644
+--- a/plugins/modalias/gs-plugin-modalias.c
++++ b/plugins/modalias/gs-plugin-modalias.c
+@@ -147,9 +147,7 @@ refine_app (GsPluginModalias            *self,
+ 		items = as_provided_get_items (prov);
+ 		for (guint j = 0; j < items->len; j++) {
+ 			if (gs_plugin_modalias_matches (self, (const gchar*) g_ptr_array_index (items, j))) {
+-				g_autoptr(GIcon) ic = NULL;
+-				ic = g_themed_icon_new ("emblem-system-symbolic");
+-				gs_app_add_icon (app, ic);
++				gs_app_add_quirk (app, GS_APP_QUIRK_HARDWARE_MATCHED);
+ 				gs_app_add_quirk (app, GS_APP_QUIRK_NOT_LAUNCHABLE);
+ 				break;
+ 			}
+diff --git a/src/gs-summary-tile.c b/src/gs-summary-tile.c
+index 7c17f6f31..35b06e049 100644
+--- a/src/gs-summary-tile.c
++++ b/src/gs-summary-tile.c
+@@ -12,6 +12,7 @@
+ #include <glib/gi18n.h>
+ 
+ #include "gs-summary-tile.h"
++#include "glibconfig.h"
+ #include "gs-layout-manager.h"
+ #include "gs-common.h"
+ 
+@@ -91,6 +92,7 @@ gs_summary_tile_refresh (GsAppTile *self)
+ 	GsAppIconsState app_icons_state;
+ 	GsApp *app = gs_app_tile_get_app (self);
+ 	gboolean installed;
++	gboolean matches_hardware;
+ 	g_autofree gchar *name = NULL;
+ 	const gchar *summary;
+ 
+@@ -162,7 +164,21 @@ gs_summary_tile_refresh (GsAppTile *self)
+ 		break;
+ 	}
+ 
+-	gtk_widget_set_visible (tile->bin, installed);
++	if (gs_app_has_quirk (app, GS_APP_QUIRK_HARDWARE_MATCHED)) {
++		matches_hardware = TRUE;
++	} else {
++		matches_hardware = FALSE;
++	}
++	gtk_widget_set_visible (tile->bin, installed || matches_hardware);
++
++	/* Do not show "success" if not installed */
++	if (matches_hardware && !installed) {
++		gtk_widget_remove_css_class (tile->bin, "success");
++	} else {
++		gtk_widget_add_css_class (tile->bin, "success");
++	}
++	gtk_widget_set_tooltip_text (tile->bin,
++				     matches_hardware ? _("Matches your hardware") : NULL);
+ 
+ 	if (name != NULL) {
+ 		gtk_accessible_update_property (GTK_ACCESSIBLE (tile),
+diff --git a/src/gs-summary-tile.ui b/src/gs-summary-tile.ui
+index 55b400d7c..287985723 100644
+--- a/src/gs-summary-tile.ui
++++ b/src/gs-summary-tile.ui
+@@ -38,6 +38,9 @@
+                     <property name="visible">False</property>
+                     <property name="halign">end</property>
+                     <property name="valign">start</property>
++                    <style>
++                      <class name="success"/>
++                    </style>
+                     <child>
+                       <object class="GtkImage" id="installed-icon">
+                         <property name="halign">center</property>
+@@ -46,9 +49,6 @@
+                         <property name="margin-top">9</property>
+                         <property name="margin-end">9</property>
+                         <property name="icon-name">app-installed-symbolic</property>
+-                        <style>
+-                          <class name="success"/>
+-                        </style>
+                       </object>
+                     </child>
+                   </object>
+-- 
+2.55.0
+
