@@ -1,23 +1,25 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : openssh
-version    : 10.4_p1
-release    : 66
+version    : 10.5_p1
+release    : 67
 source     :
-    - https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.4p1.tar.gz : ef6026dd2aea8d56059638d5d3262902c892ceba9f88395835e0d06d3fb63238
+    - https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.5p1.tar.gz : d44d28a839ea9daf969cc69150fde59910b2b39361dad81a3bd6cbd19218db11
 homepage   : https://www.openssh.com/
 license    :
     - BSD-2-Clause
     - BSD-3-Clause
     - ISC
     - MIT
-summary    :
-    - OpenSSH (OpenBSD Secure Shell)
-    - server : OpenSSH Daemon
-description: |
-    OpenSSH is a free version of secure shell tools developed by the OpenBSD project to help facilitate secure connections and communications.
 component  :
     - network.clients
     - server : network.clients
+    - server-preset : system.utils
+summary    :
+    - OpenSSH (OpenBSD Secure Shell)
+    - server : OpenSSH - Server daemon
+    - server-preset : OpenSSH - Server daemon vendor-enabled systemd preset
+description: |
+    OpenSSH is a free version of secure shell tools developed by the OpenBSD project to help facilitate secure connections and communications.
 builddeps  :
     - pkgconfig(ext2fs)
     - pkgconfig(krb5)
@@ -32,23 +34,30 @@ rundeps    :
     - server :
         - openssh
         - xauth
+    - server-preset :
+        - openssh-server
 setup      : |
-    %apply_patches
+    %patch -p1 -i ${pkgfiles}/stateless/0001-Make-SSH-stateless.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0002-Stateless-moduli.patch
+    %patch -p1 -i ${pkgfiles}/security/0003-Increase-ECDSA-default-length-to-521.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0001-stateless-config.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0001-Use-config-drop-ins.patch
 
     # --disable-strip is specified because we want the build toolchain to do it instead
-    %configure --sysconfdir=/etc/ssh \
-               --datadir=/usr/share/sshd \
-               --with-pid-dir=/run \
-               --with-xauth=/usr/bin/xauth \
-               --with-kerberos5=/usr \
-               --with-ldns=/usr \
-               --with-libedit \
-               --with-pam \
-               --with-ssl-engine \
-               --with-security-key-builtin \
-               --with-privsep-path=/var/lib/sshd \
-               --disable-lastlog \
-               --disable-strip
+    %configure \
+        --sysconfdir=/etc/ssh \
+        --datadir=/usr/share/sshd \
+        --with-pid-dir=/run \
+        --with-xauth=/usr/bin/xauth \
+        --with-kerberos5=/usr \
+        --with-ldns=/usr \
+        --with-libedit \
+        --with-pam \
+        --with-ssl-engine \
+        --with-security-key-builtin \
+        --with-privsep-path=/var/lib/sshd \
+        --disable-lastlog \
+        --disable-strip
 build      : |
     %make
 install    : |
@@ -56,43 +65,56 @@ install    : |
     %install_license LICENCE
 
     # PAM
-    install -Dm 00644 $pkgfiles/sshd.pam $installdir/usr/share/defaults/etc/pam.d/sshd
+    %install_file ${pkgfiles}/sshd.pam ${installdir}/usr/share/defaults/etc/pam.d/sshd
 
     # systemd
-    install -Dm 00644 $pkgfiles/sshd.service $installdir/usr/lib/systemd/system/sshd.service
-    install -Dm 00644 $pkgfiles/sshd@.service $installdir/usr/lib/systemd/system/sshd@.service
-    install -Dm 00644 $pkgfiles/sshd-keygen.service $installdir/usr/lib/systemd/system/sshd-keygen.service
+    %install_file -t ${installdir}/usr/lib/systemd/system ${pkgfiles}/sshd*.service
+    %install_file -t ${installdir}/usr/lib/systemd/user ${pkgfiles}/ssh-agent.{service,socket}
 
     # Folks want ssh-copy-id :)
-    install -Dm 00755 contrib/ssh-copy-id $installdir/usr/bin/.
+    %install_bin contrib/ssh-copy-id
 
-    install -Dm 00644 $pkgfiles/openssh.tmpfiles $installdir/usr/lib/tmpfiles.d/openssh.conf
-    install -Dm 00644 $pkgfiles/openssh-server.tmpfiles $installdir/usr/lib/tmpfiles.d/openssh-server.conf
-    install -Dm 00644 $pkgfiles/openssh.sysusers $installdir/usr/lib/sysusers.d/openssh.conf
+    # Tmpfiles and sysusers
+    %install_file ${pkgfiles}/openssh.tmpfiles ${installdir}/usr/lib/tmpfiles.d/openssh.conf
+    %install_file ${pkgfiles}/openssh-server.tmpfiles ${installdir}/usr/lib/tmpfiles.d/openssh-server.conf
+    %install_file ${pkgfiles}/openssh-server.sysusers ${installdir}/usr/lib/sysusers.d/openssh-server.conf
 
-    # Enable openssh-server for the package
-    install -Dm0644 $pkgfiles/openssh-server.preset $installdir/usr/lib/systemd/system-preset/60-openssh.preset
+    # Enable openssh-server for the package, overriding systemd presets that disable it
+    %install_file ${pkgfiles}/openssh-server.preset ${installdir}/usr/lib/systemd/system-preset/90-openssh.preset
 
     # Stateless
-    install -dm00755 $installdir/usr/share/defaults/
-    mv $installdir/etc/ssh $installdir/usr/share/defaults/
-    ls -ahl $installdir/var/lib
-    rmdir $installdir/var/lib/sshd
-    rmdir $installdir/var/lib
-    rmdir $installdir/var
-    rmdir $installdir/etc
+    %install_dir ${installdir}/usr/share/defaults/
+    mv ${installdir}/etc/ssh ${installdir}/usr/share/defaults/
+
+    # Default sshd config
+    %install_file ${pkgfiles}/sshd_config_solus.conf -t ${installdir}/usr/share/defaults/ssh/sshd_config.d/
+
+    # Default ssh config
+    %install_file ${pkgfiles}/ssh_config_solus.conf -t ${installdir}/usr/share/defaults/ssh/ssh_config.d/
+
+    # User READMEs
+    %install_file ${pkgfiles}/README* -t ${installdir}/usr/share/docs/openssh
+
+    # Cleanup
+    rmdir ${installdir}/var/lib/sshd
+    rmdir ${installdir}/var/lib
+    rmdir ${installdir}/var
+    rmdir ${installdir}/etc
 patterns   :
     - server :
         - /usr/sbin
         - /usr/lib/systemd/system
-        - /usr/lib/systemd/system-preset
-        - /usr/lib/sysusers.d
+        - /usr/lib/sysusers.d/openssh-server.conf
         - /usr/lib/tmpfiles.d/openssh-server.conf
         - /usr/lib64/openssh/sftp*
-        - /usr/lib64/openssh/sshd-session
+        - /usr/lib64/openssh/sshd-*
         - /usr/share/defaults/etc/pam.d/sshd
         - /usr/share/defaults/ssh/moduli
         - /usr/share/defaults/ssh/sshd_config
+        - /usr/share/defaults/ssh/sshd_config.d
+        - /usr/share/docs/openssh/README.sshd
         - /usr/share/man/*/moduli*
         - /usr/share/man/*/sshd*
         - /usr/share/man/*/sftp-*
+    - server-preset :
+        - /usr/lib/systemd/system-preset
