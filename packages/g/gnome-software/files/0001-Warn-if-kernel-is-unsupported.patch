@@ -1,0 +1,236 @@
+From ef1251c3a283f9a2c1c7b07b3f047de3ec7ae3e5 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Wed, 12 Aug 2026 21:49:48 +0100
+Subject: [PATCH 1/1] Warn if kernel is unsupported
+
+DOWNSTREAM ONLY FOR SOLUS
+
+Some edge-cases are not yet considered
+---
+ lib/gs-app.h           |  2 ++
+ lib/gs-appstream.c     | 35 +++++++++++++++++++++++++++++++++++
+ src/gs-details-page.c  | 22 ++++++++++++++++++++++
+ src/gs-details-page.ui | 38 ++++++++++++++++++++++++++++++++++++++
+ src/gs-summary-tile.c  | 14 ++++++++++++++
+ src/style.css          |  4 ++++
+ 6 files changed, 115 insertions(+)
+
+diff --git a/lib/gs-app.h b/lib/gs-app.h
+index 1938ee4c9..251986471 100644
+--- a/lib/gs-app.h
++++ b/lib/gs-app.h
+@@ -139,6 +139,7 @@ typedef enum {
+  * @GS_APP_QUIRK_DO_NOT_AUTO_UPDATE:	The app should not be automatically updated
+  * @GS_APP_QUIRK_FROM_DEVELOPMENT_REPOSITORY: The app is from a development/beta repository (Since: 49)
+  * @GS_APP_QUIRK_HARDWARE_MATCHED:	The app provides support for hardware attached to this system (Since: 52)
++ * @GS_APP_QUIRK_UNSUPPORTED_KERNEL:	The app is incompatible with the current kernel
+  *
+  * The application attributes.
+  **/
+@@ -164,6 +165,7 @@ typedef enum {
+ 	GS_APP_QUIRK_DO_NOT_AUTO_UPDATE	= 1 << 17,	/* Since: 3.36 */
+ 	GS_APP_QUIRK_FROM_DEVELOPMENT_REPOSITORY = 1 << 18,	/* Since: 49 */
+ 	GS_APP_QUIRK_HARDWARE_MATCHED   = 1 << 19,	/* Since: 52 */
++	GS_APP_QUIRK_UNSUPPORTED_KERNEL	= 1 << 20,
+ 	GS_APP_QUIRK_LAST  /*< skip >*/
+ } GsAppQuirk;
+ 
+diff --git a/lib/gs-appstream.c b/lib/gs-appstream.c
+index dd7c89296..1f3ab60d5 100644
+--- a/lib/gs-appstream.c
++++ b/lib/gs-appstream.c
+@@ -690,6 +690,40 @@ gs_appstream_refine_app_relation (GsApp           *app,
+ 	return TRUE;
+ }
+ 
++static void
++gs_appstream_refine_app_kernel_relation (GsApp  *app,
++                                         XbNode *relation_node)
++{
++	/* https://www.freedesktop.org/software/appstream/docs/chap-Metadata.html#tag-relations-kernel */
++	for (g_autoptr(XbNode) child = xb_node_get_child (relation_node); child != NULL; node_set_to_next (&child)) {
++		g_autoptr(AsRelation) relation = NULL;
++		g_autoptr(AsSystemInfo) sysinfo = NULL;
++		g_autoptr(AsRelationCheckResult) rcr = NULL;
++		g_autoptr(GError) error_local = NULL;
++		const gchar *compare;
++
++		if (!g_str_equal (xb_node_get_element (child), "kernel"))
++			continue;
++
++		relation = as_relation_new ();
++		as_relation_set_kind (relation, AS_RELATION_KIND_REQUIRES);
++		as_relation_set_item_kind (relation, AS_RELATION_ITEM_KIND_KERNEL);
++		as_relation_set_version (relation, xb_node_get_attr (child, "version"));
++		as_relation_set_value_str (relation, xb_node_get_text (child));
++		compare = xb_node_get_attr (child, "compare");
++		as_relation_set_compare (relation, (compare != NULL) ? as_relation_compare_from_string (compare) : AS_RELATION_COMPARE_GE);
++
++		sysinfo = as_system_info_new ();
++		rcr = as_relation_is_satisfied (relation, sysinfo, NULL, &error_local);
++		if (rcr != NULL &&
++		    as_relation_check_result_get_status (rcr) == AS_RELATION_STATUS_NOT_SATISFIED) {
++			g_debug ("%s requires an unsupported kernel, hiding it",
++				 gs_app_get_id (app));
++			gs_app_add_quirk (app, GS_APP_QUIRK_UNSUPPORTED_KERNEL);
++		}
++	}
++}
++
+ typedef enum {
+ 	ELEMENT_KIND_UNKNOWN = -1,
+ 	ELEMENT_KIND_BRANDING,
+@@ -1427,6 +1461,7 @@ gs_appstream_refine_app (GsPlugin *plugin,
+ 			}
+ 			} break;
+ 		case ELEMENT_KIND_REQUIRES:
++			gs_appstream_refine_app_kernel_relation (app, child);
+ 			if ((require_flags & GS_PLUGIN_REFINE_REQUIRE_FLAGS_PERMISSIONS) != 0) {
+ 				if (!gs_appstream_refine_app_relation (app, child, AS_RELATION_KIND_REQUIRES, error))
+ 						return FALSE;
+diff --git a/src/gs-details-page.c b/src/gs-details-page.c
+index 7319fa579..8b48a3b31 100644
+--- a/src/gs-details-page.c
++++ b/src/gs-details-page.c
+@@ -137,6 +137,8 @@ struct _GsDetailsPage
+ 	GsProgressButton	*button_cancel;
+ 	GtkWidget		*infobar_details_eol;
+ 	GtkWidget		*label_eol;
++	GtkWidget		*infobar_details_kernel;
++	GtkWidget		*label_kernel_unsupported;
+ 	GtkWidget		*infobar_details_problems_label;
+ 	GtkWidget		*infobar_details_app_norepo;
+ 	GtkWidget		*infobar_details_app_repo;
+@@ -1351,6 +1353,24 @@ gs_details_page_refresh_all (GsDetailsPage *self)
+ 	/* ignore the provided EOL reason, which might not be localized */
+ 	gtk_widget_set_visible (self->infobar_details_eol, tmp != NULL && *tmp != '\0');
+ 
++	/* Warn if the app does not support the current running kernel. Some distros
++	 * support co-installable kernel flavours so don't outright hide it. */
++	if (gs_app_has_quirk (self->app, GS_APP_QUIRK_UNSUPPORTED_KERNEL)) {
++		g_autoptr(AsSystemInfo) sysinfo = as_system_info_new ();
++		g_autofree gchar *str = NULL;
++		const gchar *kernel_version = as_system_info_get_kernel_version (sysinfo);
++		if (kernel_version != NULL) {
++			/* Translators: %s is the version of the current running kernel */
++			str = g_strdup_printf (_("This software is not supported on the current running kernel: v%s."),
++						 kernel_version);
++		} else {
++			str = g_strdup (_("This software is not supported on the current running kernel."));
++		}
++		gtk_label_set_label (GTK_LABEL (self->label_kernel_unsupported), str);
++	}
++	gtk_widget_set_visible (self->infobar_details_kernel,
++				gs_app_has_quirk (self->app, GS_APP_QUIRK_UNSUPPORTED_KERNEL));
++
+ 	/* refresh buttons */
+ 	gs_details_page_refresh_buttons (self);
+ 
+@@ -2813,6 +2833,8 @@ gs_details_page_class_init (GsDetailsPageClass *klass)
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, button_cancel);
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, infobar_details_eol);
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_eol);
++	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, infobar_details_kernel);
++	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, label_kernel_unsupported);
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, infobar_details_problems_label);
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, infobar_details_app_norepo);
+ 	gtk_widget_class_bind_template_child (widget_class, GsDetailsPage, infobar_details_app_repo);
+diff --git a/src/gs-details-page.ui b/src/gs-details-page.ui
+index 06e5d38e1..9294460d2 100644
+--- a/src/gs-details-page.ui
++++ b/src/gs-details-page.ui
+@@ -390,6 +390,44 @@
+                               </object>
+                             </child>
+ 
++                            <child>
++                              <object class="AdwClamp">
++                                <property name="visible" bind-source="infobar_details_kernel" bind-property="visible" bind-flags="sync-create"/>
++                                <property name="maximum-size">860</property>
++                                <!-- ~⅔ of the maximum size. -->
++                                <property name="tightening-threshold">576</property>
++                                <property name="margin-start">12</property>
++                                <property name="margin-end">12</property>
++                                <child>
++                                  <object class="GtkBox" id="infobar_details_kernel">
++                                    <property name="orientation">vertical</property>
++                                    <child>
++                                      <object class="GtkLabel">
++                                        <property name="justify">center</property>
++                                        <property name="label" translatable="yes">Not Supported</property>
++                                        <property name="wrap">True</property>
++                                        <style>
++                                          <class name="heading"/>
++                                        </style>
++                                      </object>
++                                    </child>
++                                    <child>
++                                      <object class="GtkLabel" id="label_kernel_unsupported">
++                                        <property name="justify">center</property>
++                                        <property name="label"><!-- filled in the code --></property>
++                                        <property name="wrap">True</property>
++                                      </object>
++                                    </child>
++                                    <style>
++                                      <class name="card"/>
++                                      <class name="warning"/>
++                                      <class name="infobox"/>
++                                    </style>
++                                  </object>
++                                </child>
++                              </object>
++                            </child>
++
+                             <child>
+                               <object class="AdwClamp">
+                                 <property name="maximum-size">860</property>
+diff --git a/src/gs-summary-tile.c b/src/gs-summary-tile.c
+index 084c8ac9c..914b236d0 100644
+--- a/src/gs-summary-tile.c
++++ b/src/gs-summary-tile.c
+@@ -93,6 +93,7 @@ gs_summary_tile_refresh (GsAppTile *self)
+ 	GsApp *app = gs_app_tile_get_app (self);
+ 	gboolean installed;
+ 	gboolean matches_hardware;
++	gboolean unsupported_kernel;
+ 	g_autofree gchar *name = NULL;
+ 	const gchar *summary;
+ 
+@@ -176,6 +177,19 @@ gs_summary_tile_refresh (GsAppTile *self)
+ 	gtk_widget_set_tooltip_text (tile->matches_hardware_icon,
+ 				     matches_hardware ? _("Known to support your system") : NULL);
+ 
++	/*
++	 * Show unsupported kernel apps as gray monotone tiles. Some distros support co-installable
++	 * kernel flavours so avoid hiding them entirely.
++	 */
++	unsupported_kernel = !installed && gs_app_has_quirk (app, GS_APP_QUIRK_UNSUPPORTED_KERNEL);
++	if (unsupported_kernel) {
++		gtk_widget_add_css_class (GTK_WIDGET (tile), "unsupported-kernel");
++	} else {
++		gtk_widget_remove_css_class (GTK_WIDGET (tile), "unsupported-kernel");
++	}
++	gtk_widget_set_tooltip_text (GTK_WIDGET (tile),
++				     unsupported_kernel ? _("Not supported on the running kernel") : NULL);
++
+ 	if (name != NULL) {
+ 		gtk_accessible_update_property (GTK_ACCESSIBLE (tile),
+ 						GTK_ACCESSIBLE_PROPERTY_LABEL, name,
+diff --git a/src/style.css b/src/style.css
+index ab7bb3251..15a3bb760 100644
+--- a/src/style.css
++++ b/src/style.css
+@@ -37,6 +37,10 @@ gs-summary-tile image.loading-icon {
+   border-radius: 8px;
+ }
+ 
++gs-summary-tile.unsupported-kernel {
++  filter: grayscale(1) opacity(0.5);
++}
++
+ .review-row > box {
+ 	margin: 12px;
+ 	border-spacing: 3px 0px;
+-- 
+2.55.0
+
