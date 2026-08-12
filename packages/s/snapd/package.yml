@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : snapd
-version    : 2.76.3
+version    : 2.77.1
 homepage   : https://snapcraft.io/
-release    : 97
+release    : 98
 source     :
-    - https://github.com/canonical/snapd/releases/download/2.76.3/snapd_2.76.3.vendor.tar.xz : d97627913cbe4ec0a72b507e561f7c9da87c4be5c59412a3e1a94bdc079fa838
+    - https://github.com/canonical/snapd/archive/refs/tags/2.77.1.tar.gz : 873f8853da6c27c0ebb7b0c6ddc1b4e396c6ccf5de237a2dd59bad4b9df74ec7
 license    : GPL-3.0-only
 component  : desktop
 summary    : The snapd and snap tools enable systems to work with .snap files
@@ -31,18 +31,12 @@ environment: |
     export CGO_CPPFLAGS="${CPPFLAGS}"
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
-    export import_path=github.com/snapcore/snapd
-    export go_binaries=(snap snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure snapd-apparmor)
+    export go_binaries=(snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure snapd-apparmor)
     export static_binaries=(snap-update-ns snap-exec snapctl)
-    export bincommands=(snap)
     export dcommands=(snapctl snapd snap-exec snap-update-ns snap-seccomp snap-failure snapd-apparmor)
 setup      : |
     go mod vendor
 
-    mkdir -p src/github.com/snapcore
-    ln -s `pwd` src/github.com/snapcore/snapd
-
-    pushd src/${import_path}
     ./mkversion.sh "$version"
 
     %apply_patches
@@ -54,30 +48,30 @@ setup      : |
         --with-snap-mount-dir=/snap
     popd
 build      : |
-    %make -C src/${import_path}/cmd
+    %make -C cmd
 
     for snapvar in ${go_binaries[@]}; do
-        go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath -mod=vendor ${import_path}/cmd/$snapvar
+        go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath -mod=vendor ./cmd/$snapvar
     done
     for staticpath in ${static_binaries[@]} ; do
-        go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath -mod=vendor ${import_path}/cmd/$staticpath
+        go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath -mod=vendor ./cmd/$staticpath
     done
 install    : |
-    %make_install -C src/${import_path}/cmd
+    %make_install -C cmd
 
     # Golang binaries
-    for snap_bin in ${bincommands[@]} ; do
-        install -Dm00755 $pkgfiles/wrapper.sh $installdir/usr/bin/$snap_bin
-        install -Dm00755 bin/$snap_bin $installdir/%libdir%/$package/.
-    done
     for snap_lib in ${dcommands[@]} ; do
-        install -m00755 bin/$snap_lib $installdir/%libdir%/$package/.
+        %install_exe bin/$snap_lib $installdir/%libdir%/$package/.
     done
+
+    # install snap wrapper and symlink
+    %install_exe $pkgfiles/wrapper.sh $installdir/usr/bin/snap
+    ln -s -r $installdir/%libdir%/$package/{snapd,snap}
+
     # snapctl is run from inside the snap
-    ln -s /%libdir%/$package/snapctl $installdir/usr/bin/snapctl
+    ln -s %libdir%/$package/snapctl $installdir/usr/bin/snapctl
 
     # Move into the base dir so we can install stuff
-    pushd src/${import_path}
     %make_install -C data/ \
             DBUSSERVICESDIR=/usr/share/dbus-1/services \
             LIBEXECDIR="%libdir%" \
@@ -86,35 +80,35 @@ install    : |
 
     # empty usr/src directory (i.e. linux-lts-headers linux-current-headers) to
     # satisfy bindmounts in confinement
-    install -Ddm00755 $installdir/usr/src
+    %install_dir $installdir/usr/src
 
-    install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/60-snap.preset
+    %install_file -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/60-snap.preset
 
-    install -Dm00644 data/info $installdir/%libdir%/$package/info
-    install -Dm00644 data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
-    install -Dm00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
+    %install_file data/info $installdir/%libdir%/$package/info
+    %install_file data/polkit/io.snapcraft.snapd.policy $installdir/usr/share/polkit-1/actions/io.snapcraft.snapd.policy
+    %install_file $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
 
     # Capabilities
-    setcap -q - $installdir/%libdir%/snapd/snap-confine < $installdir/%libdir%/snapd/snap-confine.caps
-    rm $installdir/%libdir%/snapd/snap-confine.caps
+    setcap -q - $installdir/%libdir%/snapd/snap-confine < $installdir/%libdir%/snapd/snap-confine.v2-only.caps
+    rm -v $installdir/%libdir%/snapd/*.caps
 
     # Completions
-    install -Dm00644 data/completion/bash/snap $installdir/usr/share/bash-completion/completions/snap
-    install -Dm00644 data/completion/bash/complete.sh $installdir/%libdir%/snapd/complete.sh
-    install -Dm00644 data/completion/bash/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
-    install -Dm00644 data/completion/zsh/_snap $installdir/usr/share/zsh/site-functions/_snap
+    %install_file data/completion/bash/snap $installdir/usr/share/bash-completion/completions/snap
+    %install_file data/completion/bash/complete.sh $installdir/%libdir%/snapd/complete.sh
+    %install_file data/completion/bash/etelpmoc.sh $installdir/%libdir%/snapd/etelpmoc.sh
+    %install_file data/completion/zsh/_snap $installdir/usr/share/zsh/site-functions/_snap
 
     # Sort out fish completions (unsure why this is automatic and bash/zsh are not)
-    install -dm00755 $installdir/usr/share/fish/vendor_completions.d/
+    %install_dir $installdir/usr/share/fish/vendor_completions.d/
     mv $installdir/usr/share/fish/vendor_conf.d/snapd.fish $installdir/usr/share/fish/vendor_completions.d/snapd.fish
     rmdir $installdir/usr/share/fish/vendor_conf.d/
 
     # Stateless
-    install -dDm00755 $installdir/usr/share/xdg/autostart/
+    %install_dir $installdir/usr/share/xdg/autostart/
     mv $installdir/etc/xdg/autostart/snap-userd-autostart.desktop $installdir/usr/share/xdg/autostart/
     rmdir $installdir/etc/xdg/autostart
     rmdir $installdir/etc/xdg
-    install -dDm00755 $installdir/usr/share/defaults/etc/profile.d
+    %install_dir $installdir/usr/share/defaults/etc/profile.d
     mv $installdir/etc/profile.d/snapd.sh $installdir/usr/share/defaults/etc/profile.d/70-snapd.sh
     rmdir $installdir/etc/profile.d
 
