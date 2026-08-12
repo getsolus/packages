@@ -36,15 +36,15 @@ if [[ "${CONFINEMENT}" != "strict" ]] && [[ "${DISABLE_CONFINEMENT_WARNING:-n}" 
   # https://specifications.freedesktop.org/notification-spec/latest/
   # Keep it short and test on all DEs
   # Also, we can't use any HTML tags, they are only optionally supported
-      notify-send \
-          --app-name Snap \
-          --urgency critical \
-          --icon dialog-warning \
-          "Snap has ${CONFINEMENT} confinement" \
-          "See ${URL}"
+  notify-send \
+    --app-name Snap \
+    --urgency critical \
+    --icon dialog-warning \
+    "Snap has ${CONFINEMENT} confinement" \
+    "See ${URL}"
   else
       echo -e "${YELLOW}WARNING:${NC} snap is running with ${CONFINEMENT} confinement." \
-        "See ${URL} for details."
+        "See ${URL} for details." >/dev/stderr
   fi
 fi
 
