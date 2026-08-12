@@ -1,13 +1,13 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : apparmor
-version    : 4.1.7
-release    : 37
+version    : 5.0.2
+release    : 38
 source     :
-    - https://gitlab.com/apparmor/apparmor/-/archive/v4.1.7/apparmor-v4.1.7.tar.gz : ded4cd419b8a05002a108a0912208e2098695752664c6a59464d2dda418e0452
+    - https://gitlab.com/apparmor/apparmor/-/archive/v5.0.2/apparmor-v5.0.2.tar.gz : bef45f228c0bde2f80d9630084e56bd8020b3fc4dfa7ee48a6aca585bb5ea0ed
 license    :
     - GPL-2.0-only
     - LGPL-2.1-or-later
-component  : security.library
+component  : system.base
 homepage   : https://gitlab.com/apparmor/apparmor
 summary    : AppArmor LSM user-space component
 description: |
@@ -31,8 +31,7 @@ environment: |
     export PYTHON_VERSION=3
     export PYTHON_VERSIONS=python3
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-Add-stateless-directory-to-default-apparmor-profile.patch
-    %patch -p1 -i $pkgfiles/0001-Adjust-paths-to-usr-location.patch
+    %apply_patches
     # You can't build this with --disable-static since the libraries here need to statically compile it
     cd libraries/libapparmor
     %autogen --with-python
@@ -44,14 +43,16 @@ build      : |
     %make -C utils
     %make -C changehat/pam_apparmor
 install    : |
+    install -dm0644 $installdir/lib/apparmor
+
     # TODO: Validate profiles, tools, etc, and make stateless!
     %make_install -C libraries/libapparmor
     %make_install -C binutils
     %make_install -C parser
-    %make_install -C profiles
+    %make_install -C init install-systemd
     %make_install -C utils
     %make_install -C changehat/pam_apparmor
-    %make_install -C parser install-systemd
+    %make_install -C profiles
 
     # Enable apparmor service by default
     install -Dm00644 -t ${installdir}/%libdir%/systemd/system-preset/ ${pkgfiles}/20-apparmor.preset
@@ -66,28 +67,15 @@ install    : |
 
     # Disable apparmor for samba
     find $installdir/etc/apparmor.d/ \( -path '*smb*' -o -path '*samba*' -o -path '*nmb*' \) \( -print -a -delete \)
+    sed -i '/smbpass/d' $installdir/etc/apparmor.d/abstractions/authentication
 
-    # TODO T10615
-    # Move some things into /usr, create symlinks so things still work
-    mv $installdir/lib/security $installdir/usr/lib64/
-    mv $installdir/sbin/apparmor_parser $installdir/usr/sbin/apparmor_parser
-    ln -srv $installdir/usr/sbin/apparmor_parser $installdir/sbin/apparmor_parser
+    # Move some things into /usr
+    mv $installdir/lib/*  $installdir/usr/lib64/
+    mv $installdir/sbin/* $installdir/usr/sbin/
+    rmdir $installdir/lib $installdir/sbin
 
-    # Usr-merge for libdir
-    install -dm00755 $installdir/lib%LIBSUFFIX%
-    pushd $installdir/usr
-    file_list=()
-    while IFS=  read -r -d $'\0'; do
-        file_list+=("$REPLY")
-    done < <(find lib%LIBSUFFIX%/apparmor -type f -print0)
-    for file in "${file_list[@]}"; do
-        parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
-    done
-    popd
-
-    # Stateless
-    rmdir $installdir/lib
+    # Cleanup
+    #rmdir $installdir/etc/apparmor.d/disable
+    # TODO: fix /etc/apparmor.d/abstractions/authentication
 
     %install_license LICENSE
