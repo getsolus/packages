@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : snapd
-version    : '2.76'
+version    : '2.77'
 homepage   : https://snapcraft.io/
-release    : 96
+release    : 97
 source     :
-    - https://github.com/canonical/snapd/releases/download/2.76/snapd_2.76.vendor.tar.xz : 78ad358dc685ab5a40b9ca0b3fc283ae7c8fbbabb4612182d512bde7efeef605
+    - https://github.com/canonical/snapd/archive/refs/tags/2.77.tar.gz : c80c96bb00fd1308e5581ff67f4e5bc2cf2ec1baa1799e5c50325da91ef0c63c
 license    : GPL-3.0-only
 component  : desktop
 summary    : The snapd and snap tools enable systems to work with .snap files
@@ -31,16 +31,15 @@ environment: |
     export CGO_CPPFLAGS="${CPPFLAGS}"
     export CGO_CXXFLAGS="${CXXFLAGS}"
     export CGO_LDFLAGS="${LDFLAGS}"
-    export import_path=github.com/snapcore/snapd
-    export go_binaries=(snap snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure snapd-apparmor)
+    #export import_path=github.com/snapcore/snapd
+    export go_binaries=(snapctl snap-seccomp snap-update-ns snap-exec snapd snap-failure snapd-apparmor)
     export static_binaries=(snap-update-ns snap-exec snapctl)
-    export bincommands=(snap)
     export dcommands=(snapctl snapd snap-exec snap-update-ns snap-seccomp snap-failure snapd-apparmor)
 setup      : |
-    mkdir -p src/github.com/snapcore
-    ln -s `pwd` src/github.com/snapcore/snapd
+    #mkdir -p src/github.com/snapcore
+    #ln -s `pwd` src/github.com/snapcore/snapd
 
-    pushd src/${import_path}
+    #pushd src/${import_path}
     ./mkversion.sh "$version"
 
     %apply_patches
@@ -52,30 +51,35 @@ setup      : |
         --with-snap-mount-dir=/snap
     popd
 build      : |
-    %make -C src/${import_path}/cmd
+    %make -C cmd
+    # %make -C src/${import_path}/cmd
 
     for snapvar in ${go_binaries[@]}; do
-        go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath -mod=vendor ${import_path}/cmd/$snapvar
+        #go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath -mod=vendor ./cmd/$snapvar
+        go build -o bin/$snapvar -buildmode=pie --ldflags "-w -linkmode external -extldflags '$LDFLAGS'" -trimpath ./cmd/$snapvar
     done
     for staticpath in ${static_binaries[@]} ; do
-        go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath -mod=vendor ${import_path}/cmd/$staticpath
+        #go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath -mod=vendor ./cmd/$staticpath
+        go build -o bin/$staticpath -buildmode=pie --ldflags "-linkmode external -extldflags '$LDFLAGS -static'" -trimpath ./cmd/$staticpath
     done
 install    : |
-    %make_install -C src/${import_path}/cmd
+    %make_install -C cmd
+    #src/${import_path}/cmd
 
     # Golang binaries
-    for snap_bin in ${bincommands[@]} ; do
-        install -Dm00755 $pkgfiles/wrapper.sh $installdir/usr/bin/$snap_bin
-        install -Dm00755 bin/$snap_bin $installdir/%libdir%/$package/.
-    done
     for snap_lib in ${dcommands[@]} ; do
         install -m00755 bin/$snap_lib $installdir/%libdir%/$package/.
     done
+
+    # install snap wrapper and symlink
+    install -Dm00755 $pkgfiles/wrapper.sh $installdir/usr/bin/snap
+    ln -s -r $installdir/%libdir%/$package/{snapd,snap}
+
     # snapctl is run from inside the snap
-    ln -s /%libdir%/$package/snapctl $installdir/usr/bin/snapctl
+    ln -s %libdir%/$package/snapctl $installdir/usr/bin/snapctl
 
     # Move into the base dir so we can install stuff
-    pushd src/${import_path}
+    #pushd src/${import_path}
     %make_install -C data/ \
             DBUSSERVICESDIR=/usr/share/dbus-1/services \
             LIBEXECDIR="%libdir%" \
@@ -93,8 +97,8 @@ install    : |
     install -Dm00644 $pkgfiles/snapd.tmpfiles $installdir/%libdir%/tmpfiles.d/snapd.conf
 
     # Capabilities
-    setcap -q - $installdir/%libdir%/snapd/snap-confine < $installdir/%libdir%/snapd/snap-confine.caps
-    rm $installdir/%libdir%/snapd/snap-confine.caps
+    setcap -q - $installdir/%libdir%/snapd/snap-confine < $installdir/%libdir%/snapd/snap-confine.v2-only.caps
+    rm -v $installdir/%libdir%/snapd/*.caps
 
     # Completions
     install -Dm00644 data/completion/bash/snap $installdir/usr/share/bash-completion/completions/snap
