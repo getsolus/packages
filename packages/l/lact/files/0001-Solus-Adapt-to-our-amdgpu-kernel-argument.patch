@@ -6,12 +6,12 @@ Subject: [PATCH] Adapt to Solus amdgpu kernel argument
 ---
  lact-client/src/lib.rs                 |   2 -
  lact-daemon/src/server.rs              |   2 -
- lact-daemon/src/system.rs              | 139 ++++---------------------
- lact-gui/src/app.rs                    |  32 ------
+ lact-daemon/src/system.rs              | 137 ++++-----------------------------
+ lact-gui/src/app.rs                    |  32 --------
  lact-gui/src/app/msg.rs                |   3 -
- lact-gui/src/app/preferences_dialog.rs |  15 ---
+ lact-gui/src/app/preferences_dialog.rs |  15 ----
  lact-schema/src/request.rs             |   2 -
- 7 files changed, 19 insertions(+), 176 deletions(-)
+ 7 files changed, 13 insertions(+), 180 deletions(-)
 
 diff --git a/lact-client/src/lib.rs b/lact-client/src/lib.rs
 index 08a16c1..f7e32ab 100644
@@ -40,7 +40,6 @@ index 9ec8ffd..62fe03b 100644
          Request::ConfirmPendingConfig(command) => {
              ok_response(handler.confirm_pending_config(command)?)
 diff --git a/lact-daemon/src/system.rs b/lact-daemon/src/system.rs
-index 0c9a7e6..36a1d0d 100644
 --- a/lact-daemon/src/system.rs
 +++ b/lact-daemon/src/system.rs
 @@ -1,6 +1,6 @@
@@ -49,27 +48,27 @@ index 0c9a7e6..36a1d0d 100644
 -use anyhow::{Context, anyhow, bail, ensure};
 +use anyhow::{Context, anyhow};
  use lact_schema::{
-     AmdgpuParamsConfigurator, BootArgConfigurator, GIT_COMMIT, InitramfsType, SystemInfo,
+     AmdgpuParamsConfigurator, BootArgConfigurator, InitramfsType, SystemInfo, VersionInfo,
  };
-@@ -13,36 +13,27 @@ use nix::sys::{
+@@ -12,37 +12,23 @@ use nix::sys::{
+ };
  use os_release::OsRelease;
  use std::{
-     env,
+-    env,
 -    fs::{self, File, Permissions},
 -    io::{self, Write},
-+    fs::{self},
-+    io::{self},
-     iter,
+-    iter,
 -    os::{fd::AsRawFd, unix::prelude::PermissionsExt},
 -    path::{Path, PathBuf},
-+    os::{fd::AsRawFd},
-+    path::{Path},
++    env, fs, io, iter,
++    os::fd::AsRawFd,
++    path::Path,
      process::{self, Output},
-     sync::{
+-    sync::{
 -        LazyLock,
 -        atomic::{AtomicBool, Ordering},
-+        LazyLock
-     },
+-    },
++    sync::LazyLock,
  };
  use tokio::{process::Command, sync::Notify};
 -use tracing::{debug, error, info};
@@ -94,21 +93,19 @@ index 0c9a7e6..36a1d0d 100644
 -});
  
  pub async fn info() -> anyhow::Result<SystemInfo> {
-     let version = DAEMON_VERSION.to_owned();
-@@ -61,8 +52,10 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
+     let kernel_version = uname().map_or_else(
+@@ -53,7 +39,9 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
          |info| info.release().to_string_lossy().into_owned(),
      );
  
 -    let amdgpu_overdrive_enabled = if let Ok(mask) = read_current_mask() {
--        Some((mask & PP_OVERDRIVE_MASK) > 0)
 +    let amdgpu_overdrive_enabled = if let Ok(true) = is_overdrive_enabled_flag() {
 +        Some(true)
 +    } else if let Ok(mask) = read_current_mask() {
-+    	Some((mask & PP_OVERDRIVE_MASK) > 0)
+         Some((mask & PP_OVERDRIVE_MASK) > 0)
      } else {
          None
-     };
-@@ -83,109 +76,15 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
+@@ -73,108 +61,9 @@ pub async fn info() -> anyhow::Result<SystemInfo> {
      })
  }
  
@@ -203,15 +200,8 @@ index 0c9a7e6..36a1d0d 100644
 -
 -    // Returning a string only to maintain API compat
 -    Ok(String::new())
-+fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
-+	let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
-+	if overdrive_enabled.trim() != "0" {
-+		Ok(true)
-+	} else {
-+		Ok(false)
-+	}
- }
- 
+-}
+-
 -async fn regenerate_initramfs(initramfs_type: InitramfsType) -> anyhow::Result<()> {
 -    info!("detected initramfs type {initramfs_type:?}, regenerating");
 -    let result = match initramfs_type {
@@ -221,12 +211,13 @@ index 0c9a7e6..36a1d0d 100644
 -    };
 -    result.context("Initramfs generation command failed")?;
 -    Ok(())
--}
++fn is_overdrive_enabled_flag() -> anyhow::Result<bool> {
++    let overdrive_enabled = fs::read_to_string(OVERDRIVE_ENABLED_PATH)?;
++    Ok(overdrive_enabled.trim() != "0")
+ }
  
  fn read_current_mask() -> anyhow::Result<u64> {
-     let ppfeaturemask = fs::read_to_string(PP_FEATURE_MASK_PATH)?;
 diff --git a/lact-gui/src/app.rs b/lact-gui/src/app.rs
-index 8c74244..73caf20 100644
 --- a/lact-gui/src/app.rs
 +++ b/lact-gui/src/app.rs
 @@ -4,7 +4,6 @@ mod gpu_selector;
@@ -245,7 +236,7 @@ index 8c74244..73caf20 100644
          pages::displays_page::DisplaysPage,
          preferences_dialog::{PreferencesDialog, PreferencesDialogMsg},
          process_monitor::{ProcessMonitorWindow, ProcessMonitorWindowMsg},
-@@ -101,7 +99,6 @@ pub struct AppModel {
+@@ -106,7 +104,6 @@ pub struct AppModel {
      daemon_client: DaemonClient,
      graphs_window: relm4::Controller<GraphsWindow>,
      process_monitor_window: relm4::Controller<ProcessMonitorWindow>,
@@ -253,7 +244,7 @@ index 8c74244..73caf20 100644
      preferences_dialog: relm4::Controller<PreferencesDialog>,
      about_dialog: relm4::Controller<AboutDialog>,
      info_dialog: relm4::Controller<InfoDialog>,
-@@ -261,16 +258,6 @@ impl AsyncComponent for AppModel {
+@@ -268,16 +265,6 @@ impl AsyncComponent for AppModel {
                                      },
                                  },
  
@@ -270,7 +261,7 @@ index 8c74244..73caf20 100644
                                  add_top_bar = &adw::Banner {
                                      set_title: &fl!(I18N, "reconnecting-to-daemon"),
                                      add_binding: (&model.is_reconnecting, "revealed"),
-@@ -440,9 +427,6 @@ impl AsyncComponent for AppModel {
+@@ -436,9 +423,6 @@ impl AsyncComponent for AppModel {
  
          let crash_page = CrashPage::launch_default().forward(sender.input_sender(), |msg| msg);
  
@@ -280,7 +271,7 @@ index 8c74244..73caf20 100644
          let preferences_dialog = PreferencesDialog::detach((system_info.clone(), root.clone()));
  
          let about_dialog = AboutDialog::detach(root.clone());
-@@ -492,7 +476,6 @@ impl AsyncComponent for AppModel {
+@@ -489,7 +473,6 @@ impl AsyncComponent for AppModel {
              daemon_client,
              graphs_window,
              process_monitor_window,
@@ -288,17 +279,17 @@ index 8c74244..73caf20 100644
              preferences_dialog,
              about_dialog,
              info_dialog,
-@@ -684,9 +667,6 @@ impl AppModel {
+@@ -662,9 +645,6 @@ impl AppModel {
              AppMsg::ShowAboutDialog => {
                  self.about_dialog.emit(AboutDialogMsg::Show);
              }
 -            AppMsg::ShowOverdriveDialog => {
 -                self.overdrive_dialog.emit(OverdriveDialogMsg::Show);
 -            }
-             AppMsg::SelectProfile {
-                 profile,
-                 auto_switch,
-@@ -843,18 +823,6 @@ impl AppModel {
+             AppMsg::ShowServiceSetupDialog => {
+                 let (manager_proxy, unit_proxy) = systemd::connect_unit_proxy().await?;
+ 
+@@ -838,18 +818,6 @@ impl AppModel {
                      .await
                      .context("Could not generate snapshot")?;
              }
@@ -318,24 +309,24 @@ index 8c74244..73caf20 100644
                  self.info_dialog
                      .emit(InfoDialogMsg::Show(Box::new(InfoDialogData {
 diff --git a/lact-gui/src/app/msg.rs b/lact-gui/src/app/msg.rs
-index 3cdc179..cef9455 100644
 --- a/lact-gui/src/app/msg.rs
 +++ b/lact-gui/src/app/msg.rs
-@@ -28,9 +28,6 @@ pub enum AppMsg {
+@@ -28,11 +28,8 @@ pub enum AppMsg {
      DebugSnapshot,
      ShowPreferencesDialog,
      ShowAboutDialog,
 -    ShowOverdriveDialog,
+     ShowServiceSetupDialog,
+     ServiceSetupDialogClosed,
 -    EnableOverdrive,
 -    DisableOverdrive,
      ResetConfig,
      ResetConfigConfirmed,
      FetchProcessList,
 diff --git a/lact-gui/src/app/preferences_dialog.rs b/lact-gui/src/app/preferences_dialog.rs
-index fff2302..1bdac6b 100644
 --- a/lact-gui/src/app/preferences_dialog.rs
 +++ b/lact-gui/src/app/preferences_dialog.rs
-@@ -112,21 +112,6 @@ impl relm4::Component for PreferencesDialog {
+@@ -162,21 +162,6 @@ impl relm4::Component for PreferencesDialog {
                  add = &adw::PreferencesGroup {
                      set_title: &fl!(I18N, "daemon"),
  
