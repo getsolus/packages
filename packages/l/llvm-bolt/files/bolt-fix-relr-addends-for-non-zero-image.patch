@@ -1,0 +1,65 @@
+From 30611cae030a654be821dfc817126568ac6d2baa Mon Sep 17 00:00:00 2001
+From: Adam Bzowski <adam.bzowski@arm.com>
+Date: Thu, 30 Jul 2026 23:03:38 +0100
+Subject: [PATCH] [BOLT] Fix RELR addend updates for non-zero image bases
+ (#213000)
+
+This patch fixes an AArch64 BOLT failure exposed by LLVM commit
+`fbba327208d7f6994f9a28a51dca3e913e3b444a`, which enabled packed
+relative relocations (RELR) globally. BOLT incorrectly used a virtual
+relocation address as a file offset when updating RELR addends,
+corrupting instrumented executables when their image base was non-zero.
+The observed CMake compiler-check failure was only a consequence of the
+corrupted BOLT-instrumented Clang executable crashing; the defect itself
+is in BOLT, not CMake.
+
+The regression test links an AArch64 PIE with a non-zero image base and
+verifies that BOLT updates the RELR addend at the correct file offset.
+
+Assisted-by: Codex
+---
+ bolt/lib/Rewrite/RewriteInstance.cpp           |  2 +-
+ bolt/test/AArch64/constant_island_pie_update.s | 15 +++++++++++++++
+ 2 files changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/bolt/lib/Rewrite/RewriteInstance.cpp b/bolt/lib/Rewrite/RewriteInstance.cpp
+index 86b078e1de177..05ea606bdad7b 100644
+--- a/bolt/lib/Rewrite/RewriteInstance.cpp
++++ b/bolt/lib/Rewrite/RewriteInstance.cpp
+@@ -5990,7 +5990,7 @@ void RewriteInstance::patchELFAllocatableRelrSection(
+       RelOffset = RelOffset == 0 ? SectionAddress + Rel.Offset : RelOffset;
+       assert((RelOffset & 1) == 0 && "Wrong relocation offset");
+       RelOffsets.emplace(RelOffset);
+-      FixAddend(Section, Rel, RelOffset);
++      FixAddend(Section, Rel, getFileOffsetForAddress(RelOffset));
+     }
+   }
+ 
+diff --git a/bolt/test/AArch64/constant_island_pie_update.s b/bolt/test/AArch64/constant_island_pie_update.s
+index 889f6b6acd9f2..8d83a79782cd2 100644
+--- a/bolt/test/AArch64/constant_island_pie_update.s
++++ b/bolt/test/AArch64/constant_island_pie_update.s
+@@ -21,8 +21,23 @@
+ # RUN: llvm-readelf -rsW %t.relr.bolt | FileCheck --check-prefix=RELRELFCHECK %s
+ # RUN: llvm-readelf -SW %t.relr.bolt | FileCheck --check-prefix=RELRSZCHECK %s
+ 
++// Check that RELR addends are patched at file offsets rather than virtual
++// addresses when the two differ.
++# RUN: %clang %cflags -fPIC -pie %t.o -o %t.relr.bias.exe -nostdlib \
++# RUN:   -Wl,-q -Wl,-z,notext -Wl,--pack-dyn-relocs=relr \
++# RUN:   -Wl,--image-base=0x20000
++# RUN: llvm-objcopy --remove-section .rela.mytext %t.relr.bias.exe
++# RUN: llvm-readelf -lW %t.relr.bias.exe | FileCheck --check-prefix=BIAS %s
++# RUN: llvm-bolt %t.relr.bias.exe -o %t.relr.bias.bolt --use-old-text=0 \
++# RUN:   --lite=0
++# RUN: llvm-objdump -j .text -d -z %t.relr.bias.bolt | \
++# RUN:   FileCheck %s --check-prefix=ADDENDCHECK
++
+ // Check that the CI value was updated
+ # CHECK: [[#%x,ADDR:]] <exitLocal>:
++
++# BIAS: LOAD {{.*}} 0x0000000000020000
++
+ # CHECK: {{.*}} <$d>:
+ # CHECK-NEXT: {{.*}} .word 0x{{[0]+}}[[#ADDR]]
+ # CHECK-NEXT: {{.*}} .word 0x00000000

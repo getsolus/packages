@@ -1,0 +1,93 @@
+From abbda74a1629842b8517be5d58cc6e64b66dd73a Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Thu, 13 Aug 2026 23:11:33 +0100
+Subject: [PATCH 1/1] [BOLT][X86] Add missing MOV8 instruction cases in
+ X86MCPlusBuilder
+
+StackLayoutModifier::performChanges can request 1-byte access rewrites
+for byte-sized stack accesses (MOV8rm/MOV8mr) located in stack regions
+moved by shrink wrapping, which caused an out-of-bounds read and a
+crash when running with -frame-opt.
+
+Assisted-by: DeepSeek v4 Flash
+---
+ bolt/lib/Target/X86/X86MCPlusBuilder.cpp   |  2 +
+ bolt/test/X86/shrinkwrapping-byte-access.s | 46 ++++++++++++++++++++++
+ 2 files changed, 48 insertions(+)
+ create mode 100644 bolt/test/X86/shrinkwrapping-byte-access.s
+
+diff --git a/bolt/lib/Target/X86/X86MCPlusBuilder.cpp b/bolt/lib/Target/X86/X86MCPlusBuilder.cpp
+index 684bedacde3e..20eacd88e973 100644
+--- a/bolt/lib/Target/X86/X86MCPlusBuilder.cpp
++++ b/bolt/lib/Target/X86/X86MCPlusBuilder.cpp
+@@ -2286,6 +2286,7 @@ public:
+     default:
+       llvm_unreachable("Invalid operand size");
+       return;
++    case 1:      NewOpcode = X86::MOV8mr; break;
+     case 2:      NewOpcode = X86::MOV16mr; break;
+     case 4:      NewOpcode = X86::MOV32mr; break;
+     case 8:      NewOpcode = X86::MOV64mr; break;
+@@ -2317,6 +2318,7 @@ public:
+     default:
+       llvm_unreachable("Invalid operand size");
+       return;
++    case 1:      NewOpcode = X86::MOV8rm; break;
+     case 2:      NewOpcode = X86::MOV16rm; break;
+     case 4:      NewOpcode = X86::MOV32rm; break;
+     case 8:      NewOpcode = X86::MOV64rm; break;
+diff --git a/bolt/test/X86/shrinkwrapping-byte-access.s b/bolt/test/X86/shrinkwrapping-byte-access.s
+new file mode 100644
+index 000000000000..e4ce435c2519
+--- /dev/null
++++ b/bolt/test/X86/shrinkwrapping-byte-access.s
+@@ -0,0 +1,46 @@
++## Regression test for a crash in StackLayoutModifier when a 1-byte stack
++## access is located in a stack region moved by shrink wrapping.
++##
++## Shrink wrapping moves the push of %rbx from the hot block "c" to the
++## cold block "a". StackLayoutModifier then has to adjust all stack
++## accesses affected by the collapsed region, including byte-sized ones
++## (movb). The X86 createSaveToStack/createLoad helpers used to only
++## handle 2/4/8-byte accesses, which crashed with an out-of-bounds read
++## for 1-byte accesses.
++
++# REQUIRES: system-linux
++
++# RUN: llvm-mc -filetype=obj -triple x86_64-unknown-unknown %s -o %t.o
++# RUN: link_fdata %s %t.o %t.fdata
++# RUN: llvm-strip --strip-unneeded %t.o
++# RUN: %clang %cflags %t.o -o %t.exe -Wl,-q -nostdlib
++# RUN: llvm-bolt %t.exe -o %t.out --data %t.fdata --frame-opt=all --lite=0 \
++# RUN:           --print-fop 2>&1 | FileCheck %s
++
++  .globl _start
++  .type _start, %function
++_start:
++    .cfi_startproc
++# FDATA: 0 [unknown] 0 1 _start 0 0 6
++    je a
++b:  jne b
++# FDATA: 1 _start #b# 1 _start #b# 0 3
++# FDATA: 1 _start #b# 1 _start #c# 0 3
++c:
++  push  %rbx
++  movb  %al, 0x10(%rsp)
++  movb  0x10(%rsp), %cl
++  pop   %rbx
++  ret
++## This basic block is treated as having 0 execution count.
++## The push/pop will be sinked into this block, collapsing the region
++## in the hot block and requiring byte accesses to be readjusted.
++a:
++  ud2
++    .cfi_endproc
++  .size _start, .-_start
++
++# CHECK: BOLT-INFO: Shrink wrapping moved 0 spills inserting load/stores and 1 spills inserting push/pops
++# CHECK: Binary Function "_start" after frame-optimizer
++# CHECK: movb %al, 0x8(%rsp)
++# CHECK: movb 0x8(%rsp), %cl
+-- 
+2.55.0
+
