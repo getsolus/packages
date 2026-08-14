@@ -1,0 +1,279 @@
+--- a/src/drivers/Qt/AviRecord.cpp
++++ b/src/drivers/Qt/AviRecord.cpp
+@@ -64,6 +64,64 @@
+ #include "libswresample/swresample.h"
+ }
+ #endif
++
++/* avcodec_get_supported_config() replaced AVCodec.pix_fmts / sample_fmts /
++ * supported_samplerates / ch_layouts (removed in FFmpeg 9 / lavc 63). */
++#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
++#define HAVE_AVCODEC_GET_SUPPORTED_CONFIG 1
++#else
++#define HAVE_AVCODEC_GET_SUPPORTED_CONFIG 0
++#endif
++
++static const enum AVPixelFormat *fceux_avcodec_pix_fmts(const AVCodec *codec)
++{
++#if HAVE_AVCODEC_GET_SUPPORTED_CONFIG
++	const void *configs = NULL;
++	if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0, &configs, NULL) < 0)
++		return NULL;
++	return (const enum AVPixelFormat *)configs;
++#else
++	return codec->pix_fmts;
++#endif
++}
++
++static const enum AVSampleFormat *fceux_avcodec_sample_fmts(const AVCodec *codec)
++{
++#if HAVE_AVCODEC_GET_SUPPORTED_CONFIG
++	const void *configs = NULL;
++	if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &configs, NULL) < 0)
++		return NULL;
++	return (const enum AVSampleFormat *)configs;
++#else
++	return codec->sample_fmts;
++#endif
++}
++
++static const int *fceux_avcodec_supported_samplerates(const AVCodec *codec)
++{
++#if HAVE_AVCODEC_GET_SUPPORTED_CONFIG
++	const void *configs = NULL;
++	if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0, &configs, NULL) < 0)
++		return NULL;
++	return (const int *)configs;
++#else
++	return codec->supported_samplerates;
++#endif
++}
++
++#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
++static const AVChannelLayout *fceux_avcodec_ch_layouts(const AVCodec *codec)
++{
++#if HAVE_AVCODEC_GET_SUPPORTED_CONFIG
++	const void *configs = NULL;
++	if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0, &configs, NULL) < 0)
++		return NULL;
++	return (const AVChannelLayout *)configs;
++#else
++	return codec->ch_layouts;
++#endif
++}
++#endif
+ #endif
+ 
+ #include "Qt/AviRecord.h"
+@@ -1173,19 +1231,19 @@
+ 	//printf("compression_level:%i\n", c->compression_level);
+ 	//printf("TAG:0x%08X\n", c->codec_tag);
+ 
+-	if ( codec->pix_fmts )
++	if ( fceux_avcodec_pix_fmts(codec) )
+ 	{
+ 		if ( ost->pixelFormat == -1 )
+ 		{
+ 			// Auto select least lossy format to comvert to.
+-			c->pix_fmt = avcodec_find_best_pix_fmt_of_list( codec->pix_fmts, AV_PIX_FMT_BGRA, 0, NULL);
++			c->pix_fmt = avcodec_find_best_pix_fmt_of_list( fceux_avcodec_pix_fmts(codec), AV_PIX_FMT_BGRA, 0, NULL);
+ 		}
+ 
+ 		int i=0, formatOk=0;
+-		while (codec->pix_fmts[i] != -1)
++		while (fceux_avcodec_pix_fmts(codec)[i] != -1)
+ 		{
+-			//printf("Codec PIX_FMT: %i\n", codec->pix_fmts[i]);
+-			if ( codec->pix_fmts[i] == c->pix_fmt )
++			//printf("Codec PIX_FMT: %i\n", fceux_avcodec_pix_fmts(codec)[i]);
++			if ( fceux_avcodec_pix_fmts(codec)[i] == c->pix_fmt )
+ 			{
+ 				printf("CODEC Supports PIX_FMT:%i\n", c->pix_fmt );
+ 				formatOk = 1;
+@@ -1196,7 +1254,7 @@
+ 		{
+ 			printf("CODEC Does Not Support PIX_FMT:%i\n", c->pix_fmt);
+ 
+-			c->pix_fmt = avcodec_find_best_pix_fmt_of_list( codec->pix_fmts, AV_PIX_FMT_BGRA, 0, NULL);
++			c->pix_fmt = avcodec_find_best_pix_fmt_of_list( fceux_avcodec_pix_fmts(codec), AV_PIX_FMT_BGRA, 0, NULL);
+ 
+ 			printf("Changing to:%i\n", c->pix_fmt);
+ 		}
+@@ -1332,12 +1390,12 @@
+ 	av_channel_layout_from_mask( &defaultLayout, AV_CH_LAYOUT_MONO );
+ 	#endif
+ 
+-	if (!codec->ch_layouts)
++	if (!fceux_avcodec_ch_layouts(codec))
+ 	{
+ 		return av_channel_layout_copy(dst, &defaultLayout);
+ 	}
+ 
+-	best_ch_layout = p = codec->ch_layouts;
++	best_ch_layout = p = fceux_avcodec_ch_layouts(codec);
+ 	while (p && p->nb_channels)
+ 	{
+ 		int nb_channels = p->nb_channels;
+@@ -1405,12 +1463,12 @@
+ 	{
+ 		c->sample_fmt  = (AVSampleFormat)ost->sampleFormat;
+ 
+-		if ( codec->sample_fmts )
++		if ( fceux_avcodec_sample_fmts(codec) )
+ 		{
+ 			int i=0, formatOk=0;
+-			while ( codec->sample_fmts[i] != -1 )
++			while ( fceux_avcodec_sample_fmts(codec)[i] != -1 )
+ 			{
+-				if ( c->sample_fmt == codec->sample_fmts[i] )
++				if ( c->sample_fmt == fceux_avcodec_sample_fmts(codec)[i] )
+ 				{
+ 					formatOk = true; break;
+ 				}
+@@ -1418,13 +1476,13 @@
+ 			}
+ 			if ( !formatOk )
+ 			{
+-				c->sample_fmt = codec->sample_fmts  ? codec->sample_fmts[0] : AV_SAMPLE_FMT_S16;
++				c->sample_fmt = fceux_avcodec_sample_fmts(codec)  ? fceux_avcodec_sample_fmts(codec)[0] : AV_SAMPLE_FMT_S16;
+ 			}
+ 		}
+ 	}
+ 	else
+ 	{
+-		c->sample_fmt = codec->sample_fmts ? codec->sample_fmts[0] : AV_SAMPLE_FMT_S16;
++		c->sample_fmt = fceux_avcodec_sample_fmts(codec) ? fceux_avcodec_sample_fmts(codec)[0] : AV_SAMPLE_FMT_S16;
+ 	}
+ 
+ 	// Sample Rate Selection
+@@ -1432,12 +1490,12 @@
+ 	{
+ 		c->sample_rate = ost->sampleRate;
+ 
+-		if ( codec->supported_samplerates )
++		if ( fceux_avcodec_supported_samplerates(codec) )
+ 		{
+ 			int i=0, formatOk=0;
+-			while ( codec->supported_samplerates[i] != 0 )
++			while ( fceux_avcodec_supported_samplerates(codec)[i] != 0 )
+ 			{
+-				if ( c->sample_rate == codec->supported_samplerates[i] )
++				if ( c->sample_rate == fceux_avcodec_supported_samplerates(codec)[i] )
+ 				{
+ 					formatOk = true; break;
+ 				}
+@@ -1445,13 +1503,13 @@
+ 			}
+ 			if ( !formatOk )
+ 			{
+-				c->sample_rate    = codec->supported_samplerates ? codec->supported_samplerates[0] : audioSampleRate;
++				c->sample_rate    = fceux_avcodec_supported_samplerates(codec) ? fceux_avcodec_supported_samplerates(codec)[0] : audioSampleRate;
+ 			}
+ 		}
+ 	}
+ 	else
+ 	{
+-		c->sample_rate    = codec->supported_samplerates ? codec->supported_samplerates[0] : audioSampleRate;
++		c->sample_rate    = fceux_avcodec_supported_samplerates(codec) ? fceux_avcodec_supported_samplerates(codec)[0] : audioSampleRate;
+ 	}
+ 
+ 	// Channel Layout Selection
+@@ -2983,21 +3041,21 @@
+ 	{
+ 		return;
+ 	}
+-	if ( c->pix_fmts )
++	if ( fceux_avcodec_pix_fmts(c) )
+ 	{
+ 		int i=0; //, formatOk=0;
+-		while (c->pix_fmts[i] != -1)
++		while (fceux_avcodec_pix_fmts(c)[i] != -1)
+ 		{
+-			desc = av_pix_fmt_desc_get( c->pix_fmts[i] );
++			desc = av_pix_fmt_desc_get( fceux_avcodec_pix_fmts(c)[i] );
+ 
+ 			if ( desc )
+ 			{
+-				//printf("Codec PIX_FMT: %i: %s 0x%04X\t-  %s\n", c->pix_fmts[i],
+-				//		desc->name, av_get_pix_fmt_loss(c->pix_fmts[i], AV_PIX_FMT_BGRA, 0), desc->alias);
++				//printf("Codec PIX_FMT: %i: %s 0x%04X\t-  %s\n", fceux_avcodec_pix_fmts(c)[i],
++				//		desc->name, av_get_pix_fmt_loss(fceux_avcodec_pix_fmts(c)[i], AV_PIX_FMT_BGRA, 0), desc->alias);
+ 
+-				videoPixfmt->addItem( tr(desc->name), c->pix_fmts[i]);
++				videoPixfmt->addItem( tr(desc->name), fceux_avcodec_pix_fmts(c)[i]);
+ 
+-				if ( LIBAV::video_st.pixelFormat == c->pix_fmts[i] )
++				if ( LIBAV::video_st.pixelFormat == fceux_avcodec_pix_fmts(c)[i] )
+ 				{
+ 					videoPixfmt->setCurrentIndex( videoPixfmt->count() - 1 );
+ 					formatOk = true;
+@@ -3007,8 +3065,8 @@
+ 		}
+ 		//if ( !formatOk )
+ 		//{
+-		//	printf("CODEC Does Not Support PIX_FMT:%i  Changing to:%i\n", c->pix_fmt, codec->pix_fmts[0] );
+-		//	c->pix_fmt = codec->pix_fmts[0];
++		//	printf("CODEC Does Not Support PIX_FMT:%i  Changing to:%i\n", c->pix_fmt, fceux_avcodec_pix_fmts(codec)[0] );
++		//	c->pix_fmt = fceux_avcodec_pix_fmts(codec)[0];
+ 		//}
+ 	}
+ 	else
+@@ -3086,20 +3144,20 @@
+ 	{
+ 		return;
+ 	}
+-	if ( c->sample_fmts )
++	if ( fceux_avcodec_sample_fmts(c) )
+ 	{
+ 		int i=0;
+ 		const char *fmtName;
+ 
+-		while ( c->sample_fmts[i] != -1 )
++		while ( fceux_avcodec_sample_fmts(c)[i] != -1 )
+ 		{
+-			fmtName = av_get_sample_fmt_name( c->sample_fmts[i] );
++			fmtName = av_get_sample_fmt_name( fceux_avcodec_sample_fmts(c)[i] );
+ 
+ 			if ( fmtName )
+ 			{
+-				audioSamplefmt->addItem( tr(fmtName), c->sample_fmts[i] );
++				audioSamplefmt->addItem( tr(fmtName), fceux_avcodec_sample_fmts(c)[i] );
+ 
+-				if ( LIBAV::audio_st.sampleFormat == c->sample_fmts[i] )
++				if ( LIBAV::audio_st.sampleFormat == fceux_avcodec_sample_fmts(c)[i] )
+ 				{
+ 					audioSamplefmt->setCurrentIndex( audioSamplefmt->count() - 1 );
+ 					formatOk = true;
+@@ -3129,18 +3187,18 @@
+ 	{
+ 		return;
+ 	}
+-	if ( c->supported_samplerates )
++	if ( fceux_avcodec_supported_samplerates(c) )
+ 	{
+ 		int i=0;
+ 		char rateName[64];
+ 
+-		while ( c->supported_samplerates[i] != 0 )
++		while ( fceux_avcodec_supported_samplerates(c)[i] != 0 )
+ 		{
+-			sprintf( rateName, "%i", c->supported_samplerates[i] );
++			sprintf( rateName, "%i", fceux_avcodec_supported_samplerates(c)[i] );
+ 
+-			audioSampleRate->addItem( tr(rateName), c->supported_samplerates[i] );
++			audioSampleRate->addItem( tr(rateName), fceux_avcodec_supported_samplerates(c)[i] );
+ 
+-			if ( LIBAV::audio_st.sampleRate == c->supported_samplerates[i] )
++			if ( LIBAV::audio_st.sampleRate == fceux_avcodec_supported_samplerates(c)[i] )
+ 			{
+ 				audioSampleRate->setCurrentIndex( audioSampleRate->count() - 1 );
+ 				formatOk = true;
+@@ -3191,7 +3249,7 @@
+ 
+ 	}
+ 	#else
+-	const AVChannelLayout *p = c->ch_layouts;
++	const AVChannelLayout *p = fceux_avcodec_ch_layouts(c);
+ 
+ 	while (p && p->nb_channels)
+ 	{

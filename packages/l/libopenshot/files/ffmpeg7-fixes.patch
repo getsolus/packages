@@ -1,0 +1,122 @@
+--- a/src/FFmpegWriter.cpp	2026-08-11 19:37:23.816886529 -0400
++++ b/src/FFmpegWriter.cpp	2026-08-11 19:37:52.621000000 -0400
+@@ -1042,6 +1042,27 @@
+ #endif
+ 
+ 	// Set valid sample rate (or throw error)
++#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
++	const int *supported_samplerates = NULL;
++	int nb_supported_samplerates = 0;
++	avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_RATE, 0,
++		(const void **)&supported_samplerates, &nb_supported_samplerates);
++	if (supported_samplerates) {
++		int i;
++		bool found_samplerate = false;
++		for (i = 0; i < nb_supported_samplerates; i++)
++			if (info.sample_rate == supported_samplerates[i]) {
++				// Set the valid sample rate
++				c->sample_rate = info.sample_rate;
++				found_samplerate = true;
++				break;
++			}
++		if (!found_samplerate)
++			throw InvalidSampleRate("An invalid sample rate was detected for this codec.", path);
++	} else
++		// Set sample rate
++		c->sample_rate = info.sample_rate;
++#else
+ 	if (codec->supported_samplerates) {
+ 		int i;
+ 		for (i = 0; codec->supported_samplerates[i] != 0; i++)
+@@ -1055,12 +1076,32 @@
+ 	} else
+ 		// Set sample rate
+ 		c->sample_rate = info.sample_rate;
++#endif
+ 
+ 	uint64_t channel_layout = info.channel_layout;
+ #if HAVE_CH_LAYOUT
+ 	// Set a valid number of channels (or throw error)
+ 	AVChannelLayout ch_layout;
+ 	av_channel_layout_from_mask(&ch_layout, info.channel_layout);
++#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
++	const AVChannelLayout *supported_ch_layouts = NULL;
++	int nb_supported_ch_layouts = 0;
++	avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_CHANNEL_LAYOUT, 0,
++		(const void **)&supported_ch_layouts, &nb_supported_ch_layouts);
++	if (supported_ch_layouts) {
++		int i;
++		for (i = 0; i < nb_supported_ch_layouts; i++)
++			if (av_channel_layout_compare(&ch_layout, &supported_ch_layouts[i])) {
++				// Set valid channel layout
++				av_channel_layout_copy(&c->ch_layout, &ch_layout);
++				break;
++			}
++		if (i == nb_supported_ch_layouts)
++			throw InvalidChannels("An invalid channel layout was detected (i.e. MONO / STEREO).", path);
++	} else
++		// Set valid channel layout
++		av_channel_layout_copy(&c->ch_layout, &ch_layout);
++#else
+ 	if (codec->ch_layouts) {
+ 		int i;
+ 		for (i = 0; av_channel_layout_check(&codec->ch_layouts[i]); i++)
+@@ -1074,6 +1115,7 @@
+ 	} else
+ 		// Set valid channel layout
+ 		av_channel_layout_copy(&c->ch_layout, &ch_layout);
++#endif
+ #else
+ 	// Set a valid number of channels (or throw error)
+ 	if (codec->channel_layouts) {
+@@ -1092,6 +1134,16 @@
+ #endif
+ 
+ 	// Choose a valid sample_fmt
++#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
++	const enum AVSampleFormat *supported_sample_fmts = NULL;
++	int nb_supported_sample_fmts = 0;
++	avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
++		(const void **)&supported_sample_fmts, &nb_supported_sample_fmts);
++	if (supported_sample_fmts && nb_supported_sample_fmts > 0) {
++		// Set sample format to 1st valid format
++		c->sample_fmt = supported_sample_fmts[0];
++	}
++#else
+ 	if (codec->sample_fmts) {
+ 		for (int i = 0; codec->sample_fmts[i] != AV_SAMPLE_FMT_NONE; i++) {
+ 			// Set sample format to 1st valid format (and then exit loop)
+@@ -1099,6 +1151,7 @@
+ 			break;
+ 		}
+ 	}
++#endif
+ 	if (c->sample_fmt == AV_SAMPLE_FMT_NONE) {
+ 		// Default if no sample formats found
+ 		c->sample_fmt = AV_SAMPLE_FMT_S16;
+@@ -1297,6 +1350,17 @@
+ #endif
+ 
+ 	// Find all supported pixel formats for this codec
++#if LIBAVCODEC_VERSION_INT >= AV_VERSION_INT(61, 13, 100)
++	const PixelFormat *supported_pixel_formats = NULL;
++	int nb_supported_pixel_formats = 0;
++	avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_PIX_FORMAT, 0,
++		(const void **)&supported_pixel_formats, &nb_supported_pixel_formats);
++	for (int i = 0; i < nb_supported_pixel_formats; i++) {
++		// Assign the 1st valid pixel format (if one is missing)
++		if (c->pix_fmt == PIX_FMT_NONE)
++			c->pix_fmt = supported_pixel_formats[i];
++	}
++#else
+ 	const PixelFormat *supported_pixel_formats = codec->pix_fmts;
+ 	while (supported_pixel_formats != NULL && *supported_pixel_formats != PIX_FMT_NONE) {
+ 		// Assign the 1st valid pixel format (if one is missing)
+@@ -1304,6 +1368,7 @@
+ 			c->pix_fmt = *supported_pixel_formats;
+ 		++supported_pixel_formats;
+ 	}
++#endif
+ 
+ 	// Codec doesn't have any pix formats?
+ 	if (c->pix_fmt == PIX_FMT_NONE) {
