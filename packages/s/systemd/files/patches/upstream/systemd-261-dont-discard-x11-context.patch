@@ -1,0 +1,130 @@
+From 05791203a5a2f5c9ed22081bf82871db1207e6ee Mon Sep 17 00:00:00 2001
+From: Liu Zheng <liuzheng@uniontech.com>
+Date: Tue, 28 Jul 2026 08:07:16 +0800
+Subject: [PATCH] localed: normalize empty X11 option values to NULL after
+ parsing
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+x11_read_data() parses an 'Option "XkbVariant" ""' line in
+00-keyboard.conf with strv_split_full(..., EXTRACT_UNQUOTE), which turns
+the empty quoted value into a non-NULL empty string rather than NULL.
+Since 812aa57d2c ("string-util: beef up string_is_safe()") an empty
+string is rejected by string_is_safe() unless STRING_ALLOW_EMPTY is
+passed, so x11_context_is_safe() now refuses such a context and
+x11_context_verify() discards the whole thing. As a result "localectl
+status" reports "X11 Layout: (unset)" even though the file names a valid
+layout, and compositors reading org.freedesktop.locale1 (e.g. the SDDM
+greeter) fall back to the us layout.
+
+Introduce x11_context_normalize(), suggested by @lionheartyu, which
+converts empty strings to NULL while freeing the heap allocation —
+unlike x11_context_empty_to_null() which only NULLs the pointer without
+freeing. Call it at the end of x11_read_data(), before
+x11_context_verify(), so empty option values are treated as unset. This
+also keeps x11_context_equal() comparisons consistent with the setter
+path (method_set_x11_keyboard) and vconsole_read_data(), which both
+store NULL for empty values.
+
+Fixes #43007
+---
+ src/locale/localed-util.c      |  2 ++
+ src/locale/test-localed-util.c | 27 +++++++++++++++++++++++++++
+ src/shared/vconsole-util.c     | 19 +++++++++++++++++++
+ src/shared/vconsole-util.h     |  1 +
+ 4 files changed, 49 insertions(+)
+
+diff --git a/src/locale/localed-util.c b/src/locale/localed-util.c
+index ab2abd7daea..f66db07b145 100644
+--- a/src/locale/localed-util.c
++++ b/src/locale/localed-util.c
+@@ -288,6 +288,8 @@ int x11_read_data(Context *c, sd_bus_message *m) {
+                         in_section = false;
+         }
+ 
++        x11_context_normalize(&c->x11_from_xorg);
++
+         if (x11_context_verify(&c->x11_from_xorg) < 0)
+                 x11_context_clear(&c->x11_from_xorg);
+ 
+diff --git a/src/locale/test-localed-util.c b/src/locale/test-localed-util.c
+index 9bcc8020096..094f300266c 100644
+--- a/src/locale/test-localed-util.c
++++ b/src/locale/test-localed-util.c
+@@ -231,6 +231,33 @@ TEST(x11_convert_to_vconsole) {
+         ASSERT_STREQ(vc.keymap, "ru");
+ }
+ 
++TEST(x11_context_normalize) {
++        _cleanup_(x11_context_clear) X11Context xc = {};
++
++        /* x11_read_data() parses 'Option "XkbVariant" ""' into a non-NULL
++         * empty string. x11_context_normalize() converts empty strings back
++         * to NULL (with freeing), so that x11_context_is_safe() and
++         * x11_context_equal() treat them as unset. See issue #43007. */
++
++        /* Empty fields are normalized to NULL. */
++        ASSERT_OK(free_and_strdup(&xc.layout, "gb"));
++        ASSERT_OK(free_and_strdup(&xc.variant, ""));
++        ASSERT_OK(free_and_strdup(&xc.options, ""));
++        x11_context_normalize(&xc);
++        ASSERT_STREQ(xc.layout, "gb");
++        ASSERT_NULL(xc.variant);
++        ASSERT_NULL(xc.options);
++        ASSERT_TRUE(x11_context_is_safe(&xc));
++        ASSERT_OK(x11_context_verify(&xc));
++
++        /* An empty layout leaves the context empty, not unsafe. */
++        x11_context_clear(&xc);
++        ASSERT_OK(free_and_strdup(&xc.layout, ""));
++        x11_context_normalize(&xc);
++        ASSERT_NULL(xc.layout);
++        ASSERT_TRUE(x11_context_isempty(&xc));
++}
++
+ static int intro(void) {
+         _cleanup_free_ char *map = NULL;
+ 
+diff --git a/src/shared/vconsole-util.c b/src/shared/vconsole-util.c
+index a780b273aab..048c44b55b1 100644
+--- a/src/shared/vconsole-util.c
++++ b/src/shared/vconsole-util.c
+@@ -84,6 +84,25 @@ void x11_context_empty_to_null(X11Context *xc) {
+         xc->options = empty_to_null(xc->options);
+ }
+ 
++static char* empty_to_null_and_free(char *p) {
++        return isempty(p) ? mfree(p) : p;
++}
++
++void x11_context_normalize(X11Context *xc) {
++        assert(xc);
++
++        /* Like x11_context_empty_to_null(), but also frees the heap memory
++         * owned by the fields. Use this for contexts whose strings are
++         * heap-allocated (e.g. x11_read_data()), not for borrowed contexts
++         * such as the one built by method_set_x11_keyboard() from a D-Bus
++         * message. */
++
++        xc->layout  = empty_to_null_and_free(xc->layout);
++        xc->model   = empty_to_null_and_free(xc->model);
++        xc->variant = empty_to_null_and_free(xc->variant);
++        xc->options = empty_to_null_and_free(xc->options);
++}
++
+ bool x11_context_is_safe(const X11Context *xc) {
+         assert(xc);
+ 
+diff --git a/src/shared/vconsole-util.h b/src/shared/vconsole-util.h
+index 624674b7ba5..97fb5f4d9ec 100644
+--- a/src/shared/vconsole-util.h
++++ b/src/shared/vconsole-util.h
+@@ -19,6 +19,7 @@ void x11_context_clear(X11Context *xc);
+ void x11_context_replace(X11Context *dest, X11Context *src);
+ bool x11_context_isempty(const X11Context *xc);
+ void x11_context_empty_to_null(X11Context *xc);
++void x11_context_normalize(X11Context *xc);
+ bool x11_context_is_safe(const X11Context *xc);
+ bool x11_context_equal(const X11Context *a, const X11Context *b);
+ int x11_context_copy(X11Context *dest, const X11Context *src);
