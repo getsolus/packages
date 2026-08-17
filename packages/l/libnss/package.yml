@@ -1,24 +1,94 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : libnss
 version    : '3.127'
-release    : 86
+release    : 87
 source     :
     - https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_127_RTM/src/nss-3.127.tar.gz : 5a899cad21ae2c9d3c5132de79726eda8df3b7fdf18eeb239fc544d43b87338b
+homepage   : https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS
 license    :
     - GPL-2.0-or-later
     - LGPL-2.1-or-later
     - MPL-2.0
-component  : system.base
+component  :
+    - ^ca-certificates-mozilla : system.base
+    - system.base
+summary    :
+    - ^ca-certificates-mozilla : Mozilla's set of trusted CA certificates
+    - Network Security Services
+description:
+    - ^ca-certificates-mozilla : Mozilla's set of trusted CA certificates
+    - The Network Security Services (NSS) package is a set of libraries designed to support cross-platform development of security-enabled client and server applications. Applications built with NSS can support SSL v2 and v3, TLS, PKCS #5, PKCS #7, PKCS #11, PKCS #12, S/MIME, X.509 v3 certificates, and other security standards. This is useful for implementing SSL and S/MIME or other Internet security standards into an application.
 emul32     : true
 libsplit   : false
-homepage   : https://developer.mozilla.org/en-US/docs/Mozilla/Projects/NSS
-summary    : Network Security Services
-description: |
-    The Network Security Services (NSS) package is a set of libraries designed to support cross-platform development of security-enabled client and server applications. Applications built with NSS can support SSL v2 and v3, TLS, PKCS #5, PKCS #7, PKCS #11, PKCS #12, S/MIME, X.509 v3 certificates, and other security standards. This is useful for implementing SSL and S/MIME or other Internet security standards into an application.
 builddeps  :
     - pkgconfig32(nspr)
     - pkgconfig32(sqlite3)
     - pkgconfig32(zlib)
+setup      : |
+    %patch -p1 -i ${pkgfiles}/nss-3.75-standalone-1.patch
+    %patch -p1 -i ${pkgfiles}/respect-ldflags.patch
+
+    cd nss
+    mkdir -p certs
+    ln -srft certs lib/ckfw/builtins/{certdata.txt,nssckbi.h}
+build      : |
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        export USE_64=1
+    fi
+
+    cd nss
+    %make \
+        BUILD_OPT=1 \
+        NSPR_INCLUDE_DIR=$(pkg-config --variable=includedir nspr) \
+        NSS_DISABLE_GTESTS=1 \
+        NSS_ENABLE_WERROR=0 \
+        NSS_USE_SYSTEM_SQLITE=1 \
+        USE_SYSTEM_ZLIB=1 \
+        NATIVE_CC="${CC}" \
+        NATIVE_FLAGS="${CFLAGS}" \
+        NATIVE_LDFLAGS="${LDFLAGS}"
+
+    # Only need to do certs in one build
+    if [[ "${EMUL32BUILD}" ]]; then
+        exit 0
+    fi
+
+    # Build ca-certificates-mozilla
+    pushd certs
+    python ${pkgfiles}/certdata2pem.py
+    popd
+    bash -c "${pkgfiles}/bundle.sh"
+install    : |
+    if [[ -z "${EMUL32BUILD}" ]]; then
+        # NSS
+        for f in certutil modutil pk12util signtool ssltap nss-config; do
+            %install_bin dist/Linux*/bin/${f}
+        done
+
+        # ca-certificates-mozilla
+        %install_file nss/ca-bundle.trust.p11-kit ${installdir}/usr/share/ca-certificates/trust-source/mozilla.trust.p11-kit
+
+        # License
+        %install_license nss/COPYING
+    fi
+
+    # Headers
+    for f in dist/public/nss/*.h dist/private/nss/*.h; do
+        %install_file -t ${installdir}/usr/include/nss ${f}
+    done
+
+    for f in *.a *.chk *.so; do
+        %install_exe -t ${installdir}/%libdir%/nss dist/Linux*/lib/${f}
+    done
+
+    # Install nss.pc
+    sed -e 's|\/lib\b|/lib%LIBSUFFIX%|g' -i dist/Linux*/lib/pkgconfig/nss.pc
+    %install_file dist/Linux*/lib/pkgconfig/nss.pc ${installdir}/%libdir%/pkgconfig/nss.pc
+
+    for f in libcrmf.a libfreebl3.so libfreeblpriv3.so libnssutil3.so libnss3.so libsmime3.so libnssckbi.so \
+             libsoftokn3.so libnssdbm3.so libssl3.so libnsssysinit.so; do
+        ln -srv ${installdir}/%libdir%/nss/${f} ${installdir}/%libdir%/${f}
+    done
 patterns   :
     - 32bit-devel :
         - /usr/lib32/nss/lib*.a
@@ -26,46 +96,5 @@ patterns   :
     - devel :
         - /usr/lib64/nss/lib*.a
         - /usr/lib64/*.a
-setup      : |
-    %patch -p1 -i $pkgfiles/nss-3.75-standalone-1.patch
-build      : |
-    export BUILD_OPT=1
-    export NSPR_INCLUDE_DIR=$(pkg-config --variable=includedir nspr)
-    export USE_SYSTEM_ZLIB=1
-    export NSS_USE_SYSTEM_SQLITE=1
-    export NSS_ENABLE_WERROR=0
-
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        export USE_64=1
-    fi
-
-    %make -C nss nss_build_all
-install    : |
-    if [[ -z "${EMUL32BUILD}" ]]; then
-        mkdir -p $installdir/usr/bin
-        for f in certutil modutil pk12util signtool ssltap nss-config; do
-            install -m00755 dist/Linux*/bin/${f} $installdir/usr/bin
-        done
-    fi
-
-    # Headers
-    install -d -m00755 $installdir/usr/include/nss
-    for f in dist/public/nss/*.h dist/private/nss/*.h; do
-        install -m00644 ${f} $installdir/usr/include/nss
-    done
-
-    install -d -m00755 $installdir/%libdir%/nss
-    for f in *.a *.chk *.so; do
-        install dist/Linux*/lib/${f} $installdir/%libdir%/nss
-    done
-
-    # Install nss.pc
-    sed -e 's|\/lib\b|/lib%LIBSUFFIX%|g' -i dist/Linux*/lib/pkgconfig/nss.pc
-    install -D -m00644 dist/Linux*/lib/pkgconfig/nss.pc $installdir/%libdir%/pkgconfig/nss.pc
-
-    for f in libcrmf.a libfreebl3.so libfreeblpriv3.so libnssutil3.so libnss3.so libsmime3.so libnssckbi.so \
-             libsoftokn3.so libnssdbm3.so libssl3.so libnsssysinit.so; do
-        ln -s %libdir%/nss/${f} $installdir/%libdir%/${f}
-    done
-
-    %install_license nss/COPYING
+    - ^ca-certificates-mozilla :
+        - /usr/share/ca-certificates
