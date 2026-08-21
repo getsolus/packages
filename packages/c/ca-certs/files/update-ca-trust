@@ -1,0 +1,127 @@
+#!/usr/bin/bash
+
+set -eu
+
+# For backwards compatibility reasons, future versions of this script must
+# support the syntax "update-ca-trust extract" trigger the generation of output
+# files in $DEST.
+
+DEST=/etc/ca-certificates/extracted
+
+# Prevent p11-kit from reading user configuration files.
+export P11_KIT_NO_USER_CONFIG=1
+
+usage() {
+  fold -s -w 79 >&2 <<EOF
+Usage: $0 [extract] [-o DIR|--output=DIR]
+
+Update the system trust store in $DEST.
+
+COMMANDS
+  (absent/empty command): Same as the extract command described below.
+
+  extract: Instruct update-ca-trust to scan the source configuration in
+  /usr/share/ca-certificates/trust-source and /etc/ca-certificates/trust-source
+  and produce updated versions of the consolidated configuration files stored
+  below the $DEST directory hierarchy.
+
+EXTRACT OPTIONS
+  -o DIR, --output=DIR: Write the extracted trust store into the given
+                        directory instead of updating
+                        $DEST.
+EOF
+}
+
+extract() {
+  local dest="$DEST" f=
+
+  # can't use getopt here. ca-certificates can't depend on a lot
+  # of other libraries since openssl depends on ca-certificates
+  # just fail when we hand parse
+
+  while (( $# != 0 )); do
+    case "$1" in
+      "-o"|"--output")
+        dest="$2"
+        shift 2
+        continue
+        ;;
+      "--")
+        shift
+        break
+        ;;
+      *)
+        usage
+        exit 1
+        ;;
+    esac
+  done
+
+  mkdir -p "$dest"
+
+  # Simple PEM bundles (BEGIN CERTIFICATE)
+  trust extract --overwrite --comment --format=pem-bundle --filter=ca-anchors \
+    --purpose=server-auth "$dest/tls-ca-bundle.pem"
+  trust extract --overwrite --comment --format=pem-bundle --filter=ca-anchors \
+    --purpose=email "$dest/email-ca-bundle.pem"
+  trust extract --overwrite --comment --format=pem-bundle --filter=ca-anchors \
+    --purpose=code-signing "$dest/objsign-ca-bundle.pem"
+
+  # OpenSSL PEM bundle that includes trust flags (BEGIN TRUSTED CERTIFICATE)
+  trust extract --overwrite --comment --format=openssl-bundle \
+    --filter=certificates "$dest/ca-bundle.trust.crt"
+
+  # TianoCore EDK II bundle
+  trust extract --overwrite --format=edk2-cacerts --filter=ca-anchors \
+    --purpose=server-auth "$dest/edk2-cacerts.bin"
+
+  # Java KeyStore bundle
+  trust extract --overwrite --format=java-cacerts --filter=ca-anchors \
+    --purpose=server-auth "$dest/java-cacerts.jks"
+
+  # Hashed directory of simple PEM certs
+  # (BEGIN CERTIFICATE, usable as OpenSSL CApath and by GnuTLS)
+  trust extract --overwrite --format=pem-directory-hash --filter=ca-anchors \
+    --purpose=server-auth "$dest/cadir"
+
+  # Workaround for https://github.com/AerynOS/os-tools/issues/498
+  chmod --recursive u+w "$dest/cadir"
+
+  if [[ "$dest" == "$DEST" ]]; then
+    # We can't extract directly to /etc/ssl/certs as this would indiscriminately
+    # empty the directory, but it contains packaged symlinks and directories.
+
+    # Symlink all files from the extracted cadir
+    for f in "$dest"/cadir/*; do
+      ln -fsr -t /etc/ssl/certs "$f"
+    done
+
+    # Now find and remove all broken symlinks
+    find -L /etc/ssl/certs -maxdepth 1 -type l -delete
+
+    ln -fsr "$dest/java-cacerts.jks" /etc/ssl/certs/java/cacerts
+  fi
+}
+
+if (( $# < 1 )); then
+    set -- extract
+fi
+
+case "$1" in
+  "extract")
+    shift
+    extract "$@"
+  ;;
+  "--"*|"-"*)
+    # First parameter seems to be an option, assume the command is 'extract'
+    extract "$@"
+  ;;
+  *)
+    echo >&2 "Error: Unknown command: $1"
+    echo >&2
+    usage
+    exit 1
+  ;;
+esac
+
+# vim:set sw=2 sts=-1 et:
