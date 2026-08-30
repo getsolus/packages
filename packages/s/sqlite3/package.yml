@@ -1,9 +1,11 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : sqlite3
-version    : 3.53.3
-release    : 68
+version    : 3.53.4
+release    : 69
 source     :
     - https://sqlite.org/2026/sqlite-src-3530300.zip : bb80bf8a3bffc19241ce8aba5a4bc74e9c3980013cb0b5f0f0976a99516942af
+    - https://github.com/ClickHouse/ClickBench/archive/39e175c2bf6fcd58376260cb39ef9f66edaf889b.tar.gz#ClickBench.tar.gz : 1c5b3e96a9fb9eab95997fe5356a5107f99ec45cde6a9f0c6c030c54cdbc5c69
+    - https://datasets.clickhouse.com/hits_compatible/hits.csv.gz : 189c37a5f2020d20ef9ebc0b9d4cf2204fe78658bbab235f0313d41447410ddd
 homepage   : https://www.sqlite.org
 license    : Public-Domain
 component  :
@@ -25,7 +27,13 @@ environment: |
     if [[ -z "${EMUL32BUILD}" ]]; then
         ex_opts="--enable-readline"
     fi
+
+    # PGO
+    export CFLAGS+=" -mllvm -vp-counters-per-site=4"
 setup      : |
+    mkdir clickbench
+    tar -xf $sources/ClickBench.tar.gz -C $workdir/clickbench --strip-components=1
+
     %patch -p1 -i ${pkgfiles}/sqlite-lemon-system-template.patch
 
     # When this C-preprocessor macro is defined, SQLite includes some additional APIs that provide convenient access to meta-data about tables and queries
@@ -82,6 +90,21 @@ build      : |
     if [[ -z "${EMUL32BUILD}" ]]; then
         ${CC} ${CFLAGS} tool/lemon.c -o tool/lemon
     fi
+profile    : |
+    pushd clickbench/sqlite
+    zcat $sources/hits.csv.gz | head -n 500000 > sample.csv
+
+    rm mydb || :
+    $workdir/sqlite3 mydb <create.sql
+    $workdir/sqlite3 mydb '.import --csv sample.csv hits'
+    wc -c mydb
+    cat queries.sql | while read query; do
+        sync
+        echo "$query"
+        for i in $(seq 1 3); do
+            $workdir/sqlite3 mydb <<<"${query}"
+        done
+    done
 install    : |
     %make_install
     %install_license LICENSE.md
