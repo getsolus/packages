@@ -560,7 +560,7 @@ class Git:
         if out is None:
             return []
 
-        lines = out.read().decode('utf8').strip().split("\n")
+        lines: List[str] = out.read().decode('utf8').strip().split("\n")
         if lines == ['']:
             return []
 
