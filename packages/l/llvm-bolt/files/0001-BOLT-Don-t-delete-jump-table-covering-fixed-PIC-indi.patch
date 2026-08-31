@@ -1,0 +1,125 @@
+From c7f0ae3fec1dfc19aec303a9a6b9be0f588dbdfe Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sun, 30 Aug 2026 15:58:01 +0100
+Subject: [PATCH 1/1] [BOLT] Don't delete jump table covering fixed PIC
+ indirect branch
+
+A fixed PIC indirect branch is a jump of the form
+
+    movslq En(%rip), %r1
+    leaq PIC_JUMP_TABLE(%rip), %r2
+    addq %r2, %r1
+    jmpq *%r1
+
+where the entry loaded at En is added to the jump table base to compute
+the destination. When En is the first entry of the jump table (En ==
+PIC_JUMP_TABLE), processIndirectBranch deletes the jump table at
+EntryAddress as "spurious" and then looks up the jump table covering
+ArrayStart. The deleted table is the same one that covers ArrayStart, so
+the lookup returns nullptr and JT->getFirstLabel() dereferences a null
+pointer.
+
+Look up the outer jump table before deleting the table at EntryAddress,
+and only delete it when it is a different table.
+---
+ bolt/lib/Core/BinaryFunction.cpp              | 12 ++++---
+ .../Inputs/jump-table-fixed-ref-pic-zero.s    | 34 +++++++++++++++++++
+ .../X86/jump-table-fixed-ref-pic-zero.test    | 18 ++++++++++
+ 3 files changed, 60 insertions(+), 4 deletions(-)
+ create mode 100644 bolt/test/X86/Inputs/jump-table-fixed-ref-pic-zero.s
+ create mode 100644 bolt/test/X86/jump-table-fixed-ref-pic-zero.test
+
+diff --git a/bolt/lib/Core/BinaryFunction.cpp b/bolt/lib/Core/BinaryFunction.cpp
+index 99d6d27264fb..cef67b9a7527 100644
+--- a/bolt/lib/Core/BinaryFunction.cpp
++++ b/bolt/lib/Core/BinaryFunction.cpp
+@@ -936,14 +936,18 @@ BinaryFunction::processIndirectBranch(MCInst &Instruction, unsigned Size,
+ 
+     TargetAddress = ArrayStart + *Value;
+ 
+-    // Remove spurious JumpTable at EntryAddress caused by PIC reference from
+-    // the load instruction.
+-    BC.deleteJumpTable(EntryAddress);
+-
+     // Replace FixedEntryDispExpr used in target address calculation with outer
+     // jump table reference.
+     JumpTable *JT = BC.getJumpTableContainingAddress(ArrayStart);
+     assert(JT && "Must have a containing jump table for PIC fixed branch");
++
++    // Remove spurious JumpTable at EntryAddress caused by PIC reference from
++    // the load instruction, unless it's the same table as the outer jump table
++    // covering ArrayStart (e.g. when the fixed entry is the first entry of the
++    // jump table). Deleting it would invalidate JT above.
++    if (JT->getAddress() != EntryAddress)
++      BC.deleteJumpTable(EntryAddress);
++
+     BC.MIB->replaceMemOperandDisp(*FixedEntryLoadInstr, JT->getFirstLabel(),
+                                   EntryAddress - ArrayStart, &*BC.Ctx);
+ 
+diff --git a/bolt/test/X86/Inputs/jump-table-fixed-ref-pic-zero.s b/bolt/test/X86/Inputs/jump-table-fixed-ref-pic-zero.s
+new file mode 100644
+index 000000000000..1c14ad016622
+--- /dev/null
++++ b/bolt/test/X86/Inputs/jump-table-fixed-ref-pic-zero.s
+@@ -0,0 +1,34 @@
++  .globl main
++  .type main, %function
++main:
++  .cfi_startproc
++  cmpq $0x3, %rdi
++  jae .L4
++  cmpq $0x1, %rdi
++  jne .L4
++  movslq .Ljt_pic(%rip), %rax
++  lea .Ljt_pic(%rip), %rdx
++  add %rdx, %rax
++  jmpq *%rax
++.L1:
++  movq $0x1, %rax
++  jmp .L5
++.L2:
++  movq $0x0, %rax
++  jmp .L5
++.L3:
++  movq $0x2, %rax
++  jmp .L5
++.L4:
++  mov $0x3, %rax
++.L5:
++  retq
++  .cfi_endproc
++
++  .section .rodata
++  .align 16
++.Ljt_pic:
++  .long .L1 - .Ljt_pic
++  .long .L2 - .Ljt_pic
++  .long .L3 - .Ljt_pic
++  .long .L4 - .Ljt_pic
+diff --git a/bolt/test/X86/jump-table-fixed-ref-pic-zero.test b/bolt/test/X86/jump-table-fixed-ref-pic-zero.test
+new file mode 100644
+index 000000000000..3b2481f4e2cf
+--- /dev/null
++++ b/bolt/test/X86/jump-table-fixed-ref-pic-zero.test
+@@ -0,0 +1,18 @@
++## Verify that BOLT detects fixed destination of indirect jump for PIC
++## case when the fixed entry load references the first entry of the jump
++## table (i.e. the address referenced by the load coincides with the jump
++## table base). Previously this crashed with a null-pointer dereference in
++## processIndirectBranch: the jump table at the load address was deleted as
++## "spurious" before looking up the jump table covering the branch base
++## address, which is the same table in this case.
++
++RUN: %clang %cflags -no-pie %S/Inputs/jump-table-fixed-ref-pic-zero.s -Wl,-q -o %t
++RUN: llvm-bolt %t --relocs -o %t.null -print-cfg 2>&1 | FileCheck %s
++
++CHECK: BOLT-INFO: fixed PIC indirect branch detected in main {{.*}} the destination value is 0x[[#TGT:]]
++CHECK: Binary Function "main" after building cfg
++
++CHECK:      movslq ".rodata/1"(%rip), %rax
++CHECK-NEXT: leaq ".rodata/1"(%rip), %rdx
++CHECK-NEXT: addq %rdx, %rax
++CHECK-NEXT: jmpq *%rax # UNKNOWN CONTROL FLOW
+-- 
+2.55.0
+

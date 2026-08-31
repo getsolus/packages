@@ -1,0 +1,877 @@
+From 983a8dc12786e7eca6bba6a00a9cddb7a3960dc3 Mon Sep 17 00:00:00 2001
+From: Andreas Mullen <Andreas.Mullen@arm.com>
+Date: Wed, 12 Aug 2026 08:53:10 +0000
+Subject: [PATCH] [BOLT] Support SHF_COMPRESSED DWARF debug sections.
+
+---
+ bolt/lib/Core/DebugData.cpp                   |   8 +-
+ bolt/lib/Rewrite/RewriteInstance.cpp          | 145 ++++++++-
+ .../AArch64/compressed-debug-sections.test    |   7 +-
+ .../AArch64/zlib-compressed-debug-sections.s  | 285 ++++++++++++++++++
+ .../AArch64/zstd-compressed-debug-sections.s  | 285 ++++++++++++++++++
+ bolt/test/CMakeLists.txt                      |   2 +
+ bolt/test/lit.site.cfg.py.in                  |   2 +
+ 7 files changed, 715 insertions(+), 19 deletions(-)
+ create mode 100644 bolt/test/AArch64/zlib-compressed-debug-sections.s
+ create mode 100644 bolt/test/AArch64/zstd-compressed-debug-sections.s
+
+diff --git a/bolt/lib/Core/DebugData.cpp b/bolt/lib/Core/DebugData.cpp
+index 6bae374b460a7..a2dac9091861e 100644
+--- a/bolt/lib/Core/DebugData.cpp
++++ b/bolt/lib/Core/DebugData.cpp
+@@ -1219,11 +1219,9 @@ void DwarfLineTable::emitCU(MCStreamer *MCOS, MCDwarfLineTableParams Params,
+ // Bonus is that when we output a final binary we can reuse .debug_line_str
+ // section. So we don't have to do the SHF_ALLOC trick we did with
+ // .debug_line.
+-static void parseAndPopulateDebugLineStr(BinarySection &LineStrSection,
+-                                         MCDwarfLineStr &LineStr,
++static void parseAndPopulateDebugLineStr(MCDwarfLineStr &LineStr,
+                                          BinaryContext &BC) {
+-  DataExtractor StrData(LineStrSection.getContents(),
+-                        BC.DwCtx->isLittleEndian());
++  DataExtractor StrData = BC.DwCtx->getLineStringExtractor();
+   uint64_t Offset = 0;
+   while (StrData.isValidOffset(Offset)) {
+     const uint64_t StrOffset = Offset;
+@@ -1262,7 +1260,7 @@ void DwarfLineTable::emit(BinaryContext &BC, MCStreamer &Streamer) {
+   // .debug_line, so need to check if section exists.
+   if (LineStrSection) {
+     LineStr.emplace(*BC.Ctx);
+-    parseAndPopulateDebugLineStr(*LineStrSection, *LineStr, BC);
++    parseAndPopulateDebugLineStr(*LineStr, BC);
+   }
+ 
+   // Switch to the section where the table will be emitted into.
+diff --git a/bolt/lib/Rewrite/RewriteInstance.cpp b/bolt/lib/Rewrite/RewriteInstance.cpp
+index fd445f7550d16..9b7d8b68415e6 100644
+--- a/bolt/lib/Rewrite/RewriteInstance.cpp
++++ b/bolt/lib/Rewrite/RewriteInstance.cpp
+@@ -48,10 +48,12 @@
+ #include "llvm/MC/MCStreamer.h"
+ #include "llvm/MC/MCSymbol.h"
+ #include "llvm/MC/TargetRegistry.h"
++#include "llvm/Object/Decompressor.h"
+ #include "llvm/Object/ObjectFile.h"
+ #include "llvm/Support/Alignment.h"
+ #include "llvm/Support/Casting.h"
+ #include "llvm/Support/CommandLine.h"
++#include "llvm/Support/Compression.h"
+ #include "llvm/Support/DataExtractor.h"
+ #include "llvm/Support/Errc.h"
+ #include "llvm/Support/Error.h"
+@@ -61,6 +63,7 @@
+ #include "llvm/Support/ToolOutputFile.h"
+ #include "llvm/Support/raw_ostream.h"
+ #include <algorithm>
++#include <cstring>
+ #include <fstream>
+ #include <memory>
+ #include <optional>
+@@ -386,6 +389,38 @@ MCPlusBuilder *createMCPlusBuilder(const Triple::ArchType Arch,
+ 
+ namespace {
+ 
++static Error reportDecompressionError(StringRef SectionName, Error E) {
++  return createStringError("failed to decompress section '" + SectionName +
++                           "': " + toString(std::move(E)));
++}
++
++static Error validateCompressedDebugSections(const ELFObjectFileBase &File) {
++  for (const SectionRef &Section : File.sections()) {
++    Expected<StringRef> NameOrErr = Section.getName();
++    if (!NameOrErr)
++      return NameOrErr.takeError();
++
++    if (!RewriteInstance::isDebugSection(*NameOrErr) || !Section.isCompressed())
++      continue;
++
++    Expected<StringRef> SectionContentsOrErr = Section.getContents();
++    if (!SectionContentsOrErr)
++      return SectionContentsOrErr.takeError();
++
++    Expected<Decompressor> DecompressorOrErr =
++        Decompressor::create(*NameOrErr, *SectionContentsOrErr,
++                             File.isLittleEndian(), File.is64Bit());
++    if (!DecompressorOrErr)
++      return reportDecompressionError(*NameOrErr,
++                                      DecompressorOrErr.takeError());
++
++    SmallVector<uint8_t, 0> DecompressedContents;
++    if (Error E = DecompressorOrErr->resizeAndDecompress(DecompressedContents))
++      return reportDecompressionError(*NameOrErr, std::move(E));
++  }
++  return Error::success();
++}
++
+ bool refersToReorderedSection(ErrorOr<BinarySection &> Section) {
+   return llvm::any_of(opts::ReorderData, [&](const std::string &SectionName) {
+     return Section && Section->getName() == SectionName;
+@@ -446,6 +481,13 @@ RewriteInstance::RewriteInstance(ELFObjectFileBase *File, const int Argc,
+     }
+   }
+ 
++  if (opts::UpdateDebugSections) {
++    if (Error E = validateCompressedDebugSections(*File)) {
++      Err = std::move(E);
++      return;
++    }
++  }
++
+   Relocation::Arch = TheTriple.getArch();
+   auto BCOrErr = BinaryContext::createBinaryContext(
+       TheTriple, std::make_shared<orc::SymbolStringPool>(), File->getFileName(),
+@@ -2393,17 +2435,9 @@ Error RewriteInstance::readSpecialSections() {
+     check_error(SectionNameOrErr.takeError(), "cannot get section name");
+     StringRef SectionName = *SectionNameOrErr;
+ 
+-    // Detect a debug section and check if it's compressed.
+-    // Compressed debug sections currently aren't supported.
++    // Detect a debug section.
+     if (isDebugSection(SectionName)) {
+       HasDebugInfo = true;
+-      if (opts::UpdateDebugSections && isCompressedDebugSection(Section)) {
+-        return createStringError(errc::not_supported,
+-                                 Twine("compressed debug section '") +
+-                                     SectionName +
+-                                     "' detected. --update-debug-sections "
+-                                     "requires uncompressed debug info");
+-      }
+     }
+ 
+     if (Error E = Section.getContents().takeError())
+@@ -4964,6 +4998,66 @@ uint64_t appendPadding(raw_pwrite_stream &OS, uint64_t Offset,
+ 
+ }
+ 
++template <typename ELFT>
++static Expected<uint64_t>
++writeCompressedDebugSection(StringRef SectionName,
++                            ArrayRef<uint8_t> CompressedSection,
++                            raw_ostream &OS, StringRef UncompressedSection) {
++  using ChdrTy = typename ELFT::Chdr;
++
++  if (CompressedSection.size() < sizeof(ChdrTy)) {
++    return createStringError(
++        errc::invalid_argument,
++        "Compressed debug section '" + SectionName +
++            "' is too small to contain a valid compression header.");
++  }
++
++  // Copy the InputHeader from the compressed section to the new recompressed
++  // section as they remain unchanged.
++  ChdrTy InputHeader{};
++  std::memcpy(&InputHeader, CompressedSection.data(), sizeof(ChdrTy));
++
++  DebugCompressionType CompressionMethod;
++  switch (InputHeader.ch_type) {
++  case ELF::ELFCOMPRESS_ZLIB:
++    CompressionMethod = DebugCompressionType::Zlib;
++    break;
++  case ELF::ELFCOMPRESS_ZSTD:
++    CompressionMethod = DebugCompressionType::Zstd;
++    break;
++  default:
++    return createStringError(
++        errc::not_supported,
++        "Unsupported compression method for debug section '" + SectionName +
++            "'");
++  }
++
++  // Ensure the compression method is supported by the current build.
++  if (const char *Reason = compression::getReasonIfUnsupported(
++          compression::formatFor(CompressionMethod))) {
++    return createStringError(errc::not_supported,
++                             "Compression method for debug section '" +
++                                 SectionName + "' is not supported: " + Reason);
++  }
++
++  SmallVector<uint8_t, 0> CompressedData;
++  compression::compress(compression::Params(CompressionMethod),
++                        arrayRefFromStringRef(UncompressedSection),
++                        CompressedData);
++
++  ChdrTy OutputHeader{};
++  OutputHeader.ch_type = InputHeader.ch_type;
++  OutputHeader.ch_addralign = InputHeader.ch_addralign;
++  OutputHeader.ch_size = UncompressedSection.size();
++
++  OS.write(reinterpret_cast<const char *>(&OutputHeader), sizeof(ChdrTy));
++  OS.write(reinterpret_cast<const char *>(CompressedData.data()),
++           CompressedData.size());
++
++  // Return the total size of the compressed section.
++  return sizeof(ChdrTy) + CompressedData.size();
++}
++
+ template <typename ELFT>
+ void RewriteInstance::rewriteNoteSections(ELFObjectFile<ELFT> *File) {
+   using ShdrTy = typename ELFT::Shdr;
+@@ -5019,7 +5113,9 @@ void RewriteInstance::rewriteNoteSections(ELFObjectFile<ELFT> *File) {
+         DataWritten = true;
+ 
+         // Add padding as the section extension might rely on the alignment.
+-        Size = appendPadding(OS, Size, Section.sh_addralign);
++        if (!(Section.sh_flags & ELF::SHF_COMPRESSED)) {
++          Size = appendPadding(OS, Size, Section.sh_addralign);
++        }
+       }
+     }
+ 
+@@ -5030,7 +5126,34 @@ void RewriteInstance::rewriteNoteSections(ELFObjectFile<ELFT> *File) {
+     if (BSec->getAllocAddress()) {
+       assert(!DataWritten && "Writing section twice.");
+       (void)DataWritten;
+-      Size += BSec->write(OS);
++
++      // If this is a debug-section and it is has been de-compressed.
++      if (isDebugSection(SectionName) &&
++          (Section.sh_flags & ELF::SHF_COMPRESSED)) {
++        // Get the uncompressed section data from the BinarySection.
++        Expected<ArrayRef<uint8_t>> UncompressedDataOrErr =
++            Obj.getSectionContents(Section);
++        if (!UncompressedDataOrErr) {
++          consumeError(UncompressedDataOrErr.takeError());
++          report_fatal_error("Failed to get uncompressed data for section '" +
++                             SectionName + "'");
++        }
++
++        // Write the re-compressed section to the output stream.
++        Expected<uint64_t> CompressedSizeOrErr =
++            writeCompressedDebugSection<ELFT>(SectionName,
++                                              *UncompressedDataOrErr, OS,
++                                              BSec->getOutputContents());
++        if (!CompressedSizeOrErr) {
++          consumeError(CompressedSizeOrErr.takeError());
++          report_fatal_error("Failed to write re-compressed debug section '" +
++                             SectionName + "'");
++        }
++
++        Size += *CompressedSizeOrErr;
++      } else {
++        Size += BSec->write(OS);
++      }
+     }
+ 
+     BSec->setOutputFileOffset(NextAvailableOffset);
+diff --git a/bolt/test/AArch64/compressed-debug-sections.test b/bolt/test/AArch64/compressed-debug-sections.test
+index 8d5231b36896a..939f8a9d6d092 100644
+--- a/bolt/test/AArch64/compressed-debug-sections.test
++++ b/bolt/test/AArch64/compressed-debug-sections.test
+@@ -1,6 +1,7 @@
+-// Checks that BOLT correctly errors out on compressed debug sections.
++// Checks that BOLT can error gracefully when given corrupted, zstd compressed DWARF
++// debug information.
+ //
++// REQUIRES: zstd
+ // RUN: yaml2obj %p/Inputs/compressed-debug-sections.yaml -o %t.exe
+ // RUN: not llvm-bolt %t.exe -o %t.bolt --update-debug-sections 2>&1 | FileCheck %s
+-//
+-// CHECK: compressed debug section '.debug_info' detected. --update-debug-sections requires uncompressed debug info
++// CHECK: failed to decompress section '.debug_info': Src size is incorrect
+diff --git a/bolt/test/AArch64/zlib-compressed-debug-sections.s b/bolt/test/AArch64/zlib-compressed-debug-sections.s
+new file mode 100644
+index 0000000000000..a88f8c1418f4d
+--- /dev/null
++++ b/bolt/test/AArch64/zlib-compressed-debug-sections.s
+@@ -0,0 +1,285 @@
++## Checks that BOLT can correctly decompress, process and recompress zlib
++## compressed DWARF debug information.
++#
++# REQUIRES: zlib
++#
++# RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %s -o %t.o
++# RUN: %clang %cflags %t.o -o %t.exe
++# RUN: llvm-dwarfdump --verify %t.exe 2>&1 | FileCheck %s --check-prefix=VERIFY-DWARF
++# RUN: llvm-objcopy --compress-debug-sections=zlib %t.exe %t.zlib
++# RUN: llvm-readelf -t %t.zlib | FileCheck %s --check-prefix=INPUT-ELF
++# INPUT-ELF: .debug_info
++# INPUT-ELF: COMPRESSED
++# INPUT-ELF-NEXT: ZLIB,
++#
++# RUN: llvm-bolt %t.zlib -o %t.bolt.exe --update-debug-sections
++# RUN: llvm-readelf -t %t.bolt.exe | FileCheck %s --check-prefix=BOLTED-ELF
++# BOLTED-ELF: .debug_info
++# BOLTED-ELF-NEXT: {{.*}}PROGBITS
++# BOLTED-ELF-NEXT: {{.*}}COMPRESSED
++# BOLTED-ELF-NEXT: {{.*}}ZLIB,
++#
++# RUN: llvm-dwarfdump --verify %t.bolt.exe 2>&1 | FileCheck %s --check-prefix=VERIFY-DWARF
++# VERIFY-DWARF: No errors.
++
++	.file	"main.c"
++	.text
++	.globl	square                          // -- Begin function square
++	.p2align	2
++	.type	square,@function
++square:                                 // @square
++.Lfunc_begin0:
++	.file	0 "." "main.c" md5 0x23769560df9190f53a5be0173a252c67
++	.loc	0 1 0                           // main.c:1:0
++	.cfi_startproc
++// %bb.0:                               // %entry
++	sub	sp, sp, #16
++	.cfi_def_cfa_offset 16
++	str	w0, [sp, #12]
++.Ltmp1:
++	.loc	0 1 28 prologue_end             // main.c:1:28
++	ldr	w8, [sp, #12]
++	.loc	0 1 32 is_stmt 0                // main.c:1:32
++	ldr	w9, [sp, #12]
++	.loc	0 1 30                          // main.c:1:30
++	mul	w0, w8, w9
++	.loc	0 1 21 epilogue_begin           // main.c:1:21
++	add	sp, sp, #16
++	.cfi_def_cfa_offset 0
++	ret
++.Ltmp2:
++.Lfunc_end0:
++	.size	square, .Lfunc_end0-square
++	.cfi_endproc
++                                        // -- End function
++	.globl	main                            // -- Begin function main
++	.p2align	2
++	.type	main,@function
++main:                                   // @main
++.Lfunc_begin1:
++	.loc	0 2 0 is_stmt 1                 // main.c:2:0
++	.cfi_startproc
++// %bb.0:                               // %entry
++	sub	sp, sp, #32
++	.cfi_def_cfa_offset 32
++	stp	x29, x30, [sp, #16]             // 16-byte Folded Spill
++	add	x29, sp, #16
++	.cfi_def_cfa w29, 16
++	.cfi_offset w30, -8
++	.cfi_offset w29, -16
++	stur	wzr, [x29, #-4]
++.Ltmp3:
++	.loc	0 2 25 prologue_end             // main.c:2:25
++	mov	w0, #7                          // =0x7
++	bl	square
++	.loc	0 2 35 is_stmt 0                // main.c:2:35
++	subs	w8, w0, #49
++	cset	w0, ne
++	.cfi_def_cfa wsp, 32
++	.loc	0 2 18 epilogue_begin           // main.c:2:18
++	ldp	x29, x30, [sp, #16]             // 16-byte Folded Reload
++	add	sp, sp, #32
++	.cfi_def_cfa_offset 0
++	.cfi_restore w30
++	.cfi_restore w29
++	ret
++.Ltmp4:
++.Lfunc_end1:
++	.size	main, .Lfunc_end1-main
++	.cfi_endproc
++                                        // -- End function
++	.section	.debug_abbrev,"",@progbits
++	.byte	1                               // Abbreviation Code
++	.byte	17                              // DW_TAG_compile_unit
++	.byte	1                               // DW_CHILDREN_yes
++	.byte	37                              // DW_AT_producer
++	.byte	37                              // DW_FORM_strx1
++	.byte	19                              // DW_AT_language
++	.byte	5                               // DW_FORM_data2
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	114                             // DW_AT_str_offsets_base
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	16                              // DW_AT_stmt_list
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	27                              // DW_AT_comp_dir
++	.byte	37                              // DW_FORM_strx1
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	115                             // DW_AT_addr_base
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	2                               // Abbreviation Code
++	.byte	46                              // DW_TAG_subprogram
++	.byte	1                               // DW_CHILDREN_yes
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	64                              // DW_AT_frame_base
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	39                              // DW_AT_prototyped
++	.byte	25                              // DW_FORM_flag_present
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	63                              // DW_AT_external
++	.byte	25                              // DW_FORM_flag_present
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	3                               // Abbreviation Code
++	.byte	5                               // DW_TAG_formal_parameter
++	.byte	0                               // DW_CHILDREN_no
++	.byte	2                               // DW_AT_location
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	4                               // Abbreviation Code
++	.byte	46                              // DW_TAG_subprogram
++	.byte	0                               // DW_CHILDREN_no
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	64                              // DW_AT_frame_base
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	39                              // DW_AT_prototyped
++	.byte	25                              // DW_FORM_flag_present
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	63                              // DW_AT_external
++	.byte	25                              // DW_FORM_flag_present
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	5                               // Abbreviation Code
++	.byte	36                              // DW_TAG_base_type
++	.byte	0                               // DW_CHILDREN_no
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	62                              // DW_AT_encoding
++	.byte	11                              // DW_FORM_data1
++	.byte	11                              // DW_AT_byte_size
++	.byte	11                              // DW_FORM_data1
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	0                               // EOM(3)
++	.section	.debug_info,"",@progbits
++.Lcu_begin0:
++	.word	.Ldebug_info_end0-.Ldebug_info_start0 // Length of Unit
++.Ldebug_info_start0:
++	.hword	5                               // DWARF version number
++	.byte	1                               // DWARF Unit Type
++	.byte	8                               // Address Size (in bytes)
++	.word	.debug_abbrev                   // Offset Into Abbrev. Section
++	.byte	1                               // Abbrev [1] 0xc:0x46 DW_TAG_compile_unit
++	.byte	0                               // DW_AT_producer
++	.hword	29                              // DW_AT_language
++	.byte	1                               // DW_AT_name
++	.word	.Lstr_offsets_base0             // DW_AT_str_offsets_base
++	.word	.Lline_table_start0             // DW_AT_stmt_list
++	.byte	2                               // DW_AT_comp_dir
++	.byte	0                               // DW_AT_low_pc
++	.word	.Lfunc_end1-.Lfunc_begin0       // DW_AT_high_pc
++	.word	.Laddr_table_base0              // DW_AT_addr_base
++	.byte	2                               // Abbrev [2] 0x23:0x1b DW_TAG_subprogram
++	.byte	0                               // DW_AT_low_pc
++	.word	.Lfunc_end0-.Lfunc_begin0       // DW_AT_high_pc
++	.byte	1                               // DW_AT_frame_base
++	.byte	111
++	.byte	3                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	1                               // DW_AT_decl_line
++                                        // DW_AT_prototyped
++	.word	77                              // DW_AT_type
++                                        // DW_AT_external
++	.byte	3                               // Abbrev [3] 0x32:0xb DW_TAG_formal_parameter
++	.byte	2                               // DW_AT_location
++	.byte	145
++	.byte	12
++	.byte	6                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	1                               // DW_AT_decl_line
++	.word	77                              // DW_AT_type
++	.byte	0                               // End Of Children Mark
++	.byte	4                               // Abbrev [4] 0x3e:0xf DW_TAG_subprogram
++	.byte	1                               // DW_AT_low_pc
++	.word	.Lfunc_end1-.Lfunc_begin1       // DW_AT_high_pc
++	.byte	1                               // DW_AT_frame_base
++	.byte	109
++	.byte	5                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	2                               // DW_AT_decl_line
++                                        // DW_AT_prototyped
++	.word	77                              // DW_AT_type
++                                        // DW_AT_external
++	.byte	5                               // Abbrev [5] 0x4d:0x4 DW_TAG_base_type
++	.byte	4                               // DW_AT_name
++	.byte	5                               // DW_AT_encoding
++	.byte	4                               // DW_AT_byte_size
++	.byte	0                               // End Of Children Mark
++.Ldebug_info_end0:
++	.section	.debug_str_offsets,"",@progbits
++	.word	32                              // Length of String Offsets Set
++	.hword	5
++	.hword	0
++.Lstr_offsets_base0:
++	.section	.debug_str,"MS",@progbits,1
++.Linfo_string0:
++	.asciz	"clang"                         // string offset=0 ; clang
++.Linfo_string1:
++	.asciz	"main.c"                        // string offset=6 ; main.c
++.Linfo_string2:
++	.asciz	"."                             // string offset=13 ; .
++.Linfo_string3:
++	.asciz	"square"                        // string offset=15 ; square
++.Linfo_string4:
++	.asciz	"int"                           // string offset=22 ; int
++.Linfo_string5:
++	.asciz	"main"                          // string offset=26 ; main
++.Linfo_string6:
++	.asciz	"x"                             // string offset=31 ; x
++	.section	.debug_str_offsets,"",@progbits
++	.word	.Linfo_string0
++	.word	.Linfo_string1
++	.word	.Linfo_string2
++	.word	.Linfo_string3
++	.word	.Linfo_string4
++	.word	.Linfo_string5
++	.word	.Linfo_string6
++	.section	.debug_addr,"",@progbits
++	.word	.Ldebug_addr_end0-.Ldebug_addr_start0 // Length of contribution
++.Ldebug_addr_start0:
++	.hword	5                               // DWARF version number
++	.byte	8                               // Address size
++	.byte	0                               // Segment selector size
++.Laddr_table_base0:
++	.xword	.Lfunc_begin0
++	.xword	.Lfunc_begin1
++.Ldebug_addr_end0:
++	.section	".note.GNU-stack","",@progbits
++	.addrsig
++	.addrsig_sym square
++	.section	.debug_line,"",@progbits
++.Lline_table_start0:
+diff --git a/bolt/test/AArch64/zstd-compressed-debug-sections.s b/bolt/test/AArch64/zstd-compressed-debug-sections.s
+new file mode 100644
+index 0000000000000..4aeef2e1b82c4
+--- /dev/null
++++ b/bolt/test/AArch64/zstd-compressed-debug-sections.s
+@@ -0,0 +1,285 @@
++## Checks that BOLT can correctly decompress, process and recompress zstd
++## compressed DWARF debug information.
++#
++# REQUIRES: zstd
++#
++# RUN: llvm-mc -filetype=obj -triple=aarch64-unknown-linux-gnu %s -o %t.o
++# RUN: %clang %cflags %t.o -o %t.exe
++# RUN: llvm-dwarfdump --verify %t.exe 2>&1 | FileCheck %s --check-prefix=VERIFY-DWARF
++# RUN: llvm-objcopy --compress-debug-sections=zstd %t.exe %t.zstd
++# RUN: llvm-readelf -t %t.zstd | FileCheck %s --check-prefix=INPUT-ELF
++# INPUT-ELF: .debug_info
++# INPUT-ELF: COMPRESSED
++# INPUT-ELF-NEXT: ZSTD,
++#
++# RUN: llvm-bolt %t.zstd -o %t.bolt.exe --update-debug-sections
++# RUN: llvm-readelf -t %t.bolt.exe | FileCheck %s --check-prefix=BOLTED-ELF
++# BOLTED-ELF: .debug_info
++# BOLTED-ELF-NEXT: {{.*}}PROGBITS
++# BOLTED-ELF-NEXT: {{.*}}COMPRESSED
++# BOLTED-ELF-NEXT: {{.*}}ZSTD,
++#
++# RUN: llvm-dwarfdump --verify %t.bolt.exe 2>&1 | FileCheck %s --check-prefix=VERIFY-DWARF
++# VERIFY-DWARF: No errors.
++
++	.file	"main.c"
++	.text
++	.globl	square                          // -- Begin function square
++	.p2align	2
++	.type	square,@function
++square:                                 // @square
++.Lfunc_begin0:
++	.file	0 "." "main.c" md5 0x23769560df9190f53a5be0173a252c67
++	.loc	0 1 0                           // main.c:1:0
++	.cfi_startproc
++// %bb.0:                               // %entry
++	sub	sp, sp, #16
++	.cfi_def_cfa_offset 16
++	str	w0, [sp, #12]
++.Ltmp1:
++	.loc	0 1 28 prologue_end             // main.c:1:28
++	ldr	w8, [sp, #12]
++	.loc	0 1 32 is_stmt 0                // main.c:1:32
++	ldr	w9, [sp, #12]
++	.loc	0 1 30                          // main.c:1:30
++	mul	w0, w8, w9
++	.loc	0 1 21 epilogue_begin           // main.c:1:21
++	add	sp, sp, #16
++	.cfi_def_cfa_offset 0
++	ret
++.Ltmp2:
++.Lfunc_end0:
++	.size	square, .Lfunc_end0-square
++	.cfi_endproc
++                                        // -- End function
++	.globl	main                            // -- Begin function main
++	.p2align	2
++	.type	main,@function
++main:                                   // @main
++.Lfunc_begin1:
++	.loc	0 2 0 is_stmt 1                 // main.c:2:0
++	.cfi_startproc
++// %bb.0:                               // %entry
++	sub	sp, sp, #32
++	.cfi_def_cfa_offset 32
++	stp	x29, x30, [sp, #16]             // 16-byte Folded Spill
++	add	x29, sp, #16
++	.cfi_def_cfa w29, 16
++	.cfi_offset w30, -8
++	.cfi_offset w29, -16
++	stur	wzr, [x29, #-4]
++.Ltmp3:
++	.loc	0 2 25 prologue_end             // main.c:2:25
++	mov	w0, #7                          // =0x7
++	bl	square
++	.loc	0 2 35 is_stmt 0                // main.c:2:35
++	subs	w8, w0, #49
++	cset	w0, ne
++	.cfi_def_cfa wsp, 32
++	.loc	0 2 18 epilogue_begin           // main.c:2:18
++	ldp	x29, x30, [sp, #16]             // 16-byte Folded Reload
++	add	sp, sp, #32
++	.cfi_def_cfa_offset 0
++	.cfi_restore w30
++	.cfi_restore w29
++	ret
++.Ltmp4:
++.Lfunc_end1:
++	.size	main, .Lfunc_end1-main
++	.cfi_endproc
++                                        // -- End function
++	.section	.debug_abbrev,"",@progbits
++	.byte	1                               // Abbreviation Code
++	.byte	17                              // DW_TAG_compile_unit
++	.byte	1                               // DW_CHILDREN_yes
++	.byte	37                              // DW_AT_producer
++	.byte	37                              // DW_FORM_strx1
++	.byte	19                              // DW_AT_language
++	.byte	5                               // DW_FORM_data2
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	114                             // DW_AT_str_offsets_base
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	16                              // DW_AT_stmt_list
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	27                              // DW_AT_comp_dir
++	.byte	37                              // DW_FORM_strx1
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	115                             // DW_AT_addr_base
++	.byte	23                              // DW_FORM_sec_offset
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	2                               // Abbreviation Code
++	.byte	46                              // DW_TAG_subprogram
++	.byte	1                               // DW_CHILDREN_yes
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	64                              // DW_AT_frame_base
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	39                              // DW_AT_prototyped
++	.byte	25                              // DW_FORM_flag_present
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	63                              // DW_AT_external
++	.byte	25                              // DW_FORM_flag_present
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	3                               // Abbreviation Code
++	.byte	5                               // DW_TAG_formal_parameter
++	.byte	0                               // DW_CHILDREN_no
++	.byte	2                               // DW_AT_location
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	4                               // Abbreviation Code
++	.byte	46                              // DW_TAG_subprogram
++	.byte	0                               // DW_CHILDREN_no
++	.byte	17                              // DW_AT_low_pc
++	.byte	27                              // DW_FORM_addrx
++	.byte	18                              // DW_AT_high_pc
++	.byte	6                               // DW_FORM_data4
++	.byte	64                              // DW_AT_frame_base
++	.byte	24                              // DW_FORM_exprloc
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	58                              // DW_AT_decl_file
++	.byte	11                              // DW_FORM_data1
++	.byte	59                              // DW_AT_decl_line
++	.byte	11                              // DW_FORM_data1
++	.byte	39                              // DW_AT_prototyped
++	.byte	25                              // DW_FORM_flag_present
++	.byte	73                              // DW_AT_type
++	.byte	19                              // DW_FORM_ref4
++	.byte	63                              // DW_AT_external
++	.byte	25                              // DW_FORM_flag_present
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	5                               // Abbreviation Code
++	.byte	36                              // DW_TAG_base_type
++	.byte	0                               // DW_CHILDREN_no
++	.byte	3                               // DW_AT_name
++	.byte	37                              // DW_FORM_strx1
++	.byte	62                              // DW_AT_encoding
++	.byte	11                              // DW_FORM_data1
++	.byte	11                              // DW_AT_byte_size
++	.byte	11                              // DW_FORM_data1
++	.byte	0                               // EOM(1)
++	.byte	0                               // EOM(2)
++	.byte	0                               // EOM(3)
++	.section	.debug_info,"",@progbits
++.Lcu_begin0:
++	.word	.Ldebug_info_end0-.Ldebug_info_start0 // Length of Unit
++.Ldebug_info_start0:
++	.hword	5                               // DWARF version number
++	.byte	1                               // DWARF Unit Type
++	.byte	8                               // Address Size (in bytes)
++	.word	.debug_abbrev                   // Offset Into Abbrev. Section
++	.byte	1                               // Abbrev [1] 0xc:0x46 DW_TAG_compile_unit
++	.byte	0                               // DW_AT_producer
++	.hword	29                              // DW_AT_language
++	.byte	1                               // DW_AT_name
++	.word	.Lstr_offsets_base0             // DW_AT_str_offsets_base
++	.word	.Lline_table_start0             // DW_AT_stmt_list
++	.byte	2                               // DW_AT_comp_dir
++	.byte	0                               // DW_AT_low_pc
++	.word	.Lfunc_end1-.Lfunc_begin0       // DW_AT_high_pc
++	.word	.Laddr_table_base0              // DW_AT_addr_base
++	.byte	2                               // Abbrev [2] 0x23:0x1b DW_TAG_subprogram
++	.byte	0                               // DW_AT_low_pc
++	.word	.Lfunc_end0-.Lfunc_begin0       // DW_AT_high_pc
++	.byte	1                               // DW_AT_frame_base
++	.byte	111
++	.byte	3                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	1                               // DW_AT_decl_line
++                                        // DW_AT_prototyped
++	.word	77                              // DW_AT_type
++                                        // DW_AT_external
++	.byte	3                               // Abbrev [3] 0x32:0xb DW_TAG_formal_parameter
++	.byte	2                               // DW_AT_location
++	.byte	145
++	.byte	12
++	.byte	6                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	1                               // DW_AT_decl_line
++	.word	77                              // DW_AT_type
++	.byte	0                               // End Of Children Mark
++	.byte	4                               // Abbrev [4] 0x3e:0xf DW_TAG_subprogram
++	.byte	1                               // DW_AT_low_pc
++	.word	.Lfunc_end1-.Lfunc_begin1       // DW_AT_high_pc
++	.byte	1                               // DW_AT_frame_base
++	.byte	109
++	.byte	5                               // DW_AT_name
++	.byte	0                               // DW_AT_decl_file
++	.byte	2                               // DW_AT_decl_line
++                                        // DW_AT_prototyped
++	.word	77                              // DW_AT_type
++                                        // DW_AT_external
++	.byte	5                               // Abbrev [5] 0x4d:0x4 DW_TAG_base_type
++	.byte	4                               // DW_AT_name
++	.byte	5                               // DW_AT_encoding
++	.byte	4                               // DW_AT_byte_size
++	.byte	0                               // End Of Children Mark
++.Ldebug_info_end0:
++	.section	.debug_str_offsets,"",@progbits
++	.word	32                              // Length of String Offsets Set
++	.hword	5
++	.hword	0
++.Lstr_offsets_base0:
++	.section	.debug_str,"MS",@progbits,1
++.Linfo_string0:
++	.asciz	"clang"                         // string offset=0 ; clang
++.Linfo_string1:
++	.asciz	"main.c"                        // string offset=6 ; main.c
++.Linfo_string2:
++	.asciz	"."                             // string offset=13 ; .
++.Linfo_string3:
++	.asciz	"square"                        // string offset=15 ; square
++.Linfo_string4:
++	.asciz	"int"                           // string offset=22 ; int
++.Linfo_string5:
++	.asciz	"main"                          // string offset=26 ; main
++.Linfo_string6:
++	.asciz	"x"                             // string offset=31 ; x
++	.section	.debug_str_offsets,"",@progbits
++	.word	.Linfo_string0
++	.word	.Linfo_string1
++	.word	.Linfo_string2
++	.word	.Linfo_string3
++	.word	.Linfo_string4
++	.word	.Linfo_string5
++	.word	.Linfo_string6
++	.section	.debug_addr,"",@progbits
++	.word	.Ldebug_addr_end0-.Ldebug_addr_start0 // Length of contribution
++.Ldebug_addr_start0:
++	.hword	5                               // DWARF version number
++	.byte	8                               // Address size
++	.byte	0                               // Segment selector size
++.Laddr_table_base0:
++	.xword	.Lfunc_begin0
++	.xword	.Lfunc_begin1
++.Ldebug_addr_end0:
++	.section	".note.GNU-stack","",@progbits
++	.addrsig
++	.addrsig_sym square
++	.section	.debug_line,"",@progbits
++.Lline_table_start0:
+diff --git a/bolt/test/CMakeLists.txt b/bolt/test/CMakeLists.txt
+index 6e18b028bddfc..fb3332065e3b2 100644
+--- a/bolt/test/CMakeLists.txt
++++ b/bolt/test/CMakeLists.txt
+@@ -1,5 +1,7 @@
+ llvm_canonicalize_cmake_booleans(
+   BOLT_ENABLE_RUNTIME
++  LLVM_ENABLE_ZLIB
++  LLVM_ENABLE_ZSTD
+   )
+ 
+ configure_lit_site_cfg(
+diff --git a/bolt/test/lit.site.cfg.py.in b/bolt/test/lit.site.cfg.py.in
+index 457908fc7c446..825e238591a93 100644
+--- a/bolt/test/lit.site.cfg.py.in
++++ b/bolt/test/lit.site.cfg.py.in
+@@ -13,6 +13,8 @@ config.lit_tools_dir = "@LLVM_LIT_TOOLS_DIR@"
+ config.host_triple = "@LLVM_HOST_TRIPLE@"
+ config.target_triple = "@LLVM_TARGET_TRIPLE@"
+ config.llvm_use_sanitizer = "@LLVM_USE_SANITIZER@"
++config.have_zlib = @LLVM_ENABLE_ZLIB@
++config.have_zstd = @LLVM_ENABLE_ZSTD@
+ config.host_arch = "@HOST_ARCH@"
+ config.python_executable = "@Python3_EXECUTABLE@"
+ config.bolt_clang = "@BOLT_CLANG_EXE@"
