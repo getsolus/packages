@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : gcc
 version    : 15.2.0
-release    : 94
+release    : 95
 source     :
     # - https://ftp.gnu.org/gnu/gcc/gcc-15.2.0/gcc-15.2.0.tar.xz : a7b39bc69cbf9e25826c5a60ab26477001f7c08d85cec04bc0e29cabed6f3cc9
     # Latest in releases/gcc-15
@@ -29,11 +29,14 @@ description: |
     The GNU Compiler Collection includes front ends for C, C++, Objective-C, Fortran, Java, Ada, and Go, as well as libraries for these languages (libstdc++, libgcj,...). GCC was originally written as the compiler for the GNU operating system. The GNU system was developed to be 100% free software, free in the sense that it respects the user's freedom.
 builddeps  :
     - pkgconfig32(libzstd)
-    - rust
     - glibc-32bit-devel
     - gcc-ada-32bit
     - gcc-ada
     - isl-devel
+    - llvm-bolt
+    - rust
+checkdeps  :
+    - dejagnu
 rundeps    :
     - isl
     - mpc
@@ -158,9 +161,8 @@ patterns   :
 environment: |
     export triplet=x86_64-solus-linux
     # Set sane and safe flags for a compiler build
-    export CFLAGS="-mtune=generic -march=x86-64 -g1 -O3 -fstack-protector -pipe -fPIC -Wl,-z,relro -Wl,-z,now -Wl,-z,max-page-size=0x1000"
-    export CXXFLAGS="-mtune=generic -march=x86-64 -g1 -O3 -pipe -fPIC -Wl,-z,max-page-size=0x1000"
-    export CFLAGS_FOR_TARGET=${CFLAGS}
+    export CFLAGS="-mtune=generic -march=x86-64 -g1 -O3 -fstack-protector -pipe -fPIC -fno-semantic-interposition"
+    export CXXFLAGS="-mtune=generic -march=x86-64 -g1 -O3 -pipe -fPIC -fno-semantic-interposition"
     export CC=${triplet}-gcc
     export CXX=${triplet}-g++
 setup      : |
@@ -223,12 +225,31 @@ setup      : |
 build      : |
     # Note: If you're working on GCC and want fast build times then use `bootstrap2-lean` instead of `profiledbootstrap`,
     # and `bootstrap-O1` for the build config above instead of `bootstrap-lto-lean`. This cuts build times by ~68%
-    env CCACHE_BASEDIR=${pwd}/gcc_build %make -C gcc_build profiledbootstrap -O
+    env CCACHE_BASEDIR=${pwd}/gcc_build %make -C gcc_build profiledbootstrap -O \
+                                        BOOT_CFLAGS="$CFLAGS -fno-reorder-blocks-and-partition" \
+                                        BOOT_LDFLAGS="$LDFLAGS -Wl,--emit-relocs"
     env CCACHE_BASEDIR=${pwd}/libgccjit_build %make -C libgccjit_build all-gcc
 
     cp -a libgccjit_build/gcc/libgccjit.so* gcc_build/gcc/
 install    : |
     %make_install -C gcc_build
+
+    export BOLTED_BINS="/usr/lib64/gcc/x86_64-solus-linux/15/cc1plus /usr/lib64/gcc/x86_64-solus-linux/15/cc1"
+    for i in ${BOLTED_BINS}; do
+        %bolt_instr $installdir/$i
+    done
+    export CC=$installdir/usr/bin/gcc
+    export CXX=$installdir/usr/bin/g++
+    mkdir bolt-profiled-build
+    pushd bolt-profiled-build
+        ../configure --enable-languages=c,c++
+        %make all-gcc
+    popd
+    for i in ${BOLTED_BINS}; do
+        %bolt_merge $installdir/$i
+        %bolt_opt $installdir/$i
+        rm -v $installdir/$i.{bolt,orig}
+    done
 
     # libgccjit
     DESTDIR="$installdir" %make -C gcc_build/gcc jit.install-common jit.install-info
