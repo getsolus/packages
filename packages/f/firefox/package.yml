@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : firefox
 version    : '155.0'
-release    : 424
+release    : 425
 source     :
     - https://ftp.mozilla.org/pub/firefox/releases/155.0/source/firefox-155.0.source.tar.xz : c57fd59835f8c5b9c7f68bead2782238c11d8626b57509cc809915b0b4d70dfb
 homepage   : https://www.mozilla.org/firefox/
@@ -52,26 +52,35 @@ builddeps  :
     - rust
     - yasm
 checkdeps  :
-    - xorg-server-xvfb
+    - xwayland-run
 rundeps    :
     - ffmpeg
     - firefox-langpacks
 environment: |
+    # Set this to 1 if you want to create a release build, 0 if you're just doing builds locally for testing purposes
+    # Note that you still need to do a full release build locally and test it before pushing it
+    FULL_BUILD=1
+
     export MOZ_NOSPAM=1
-    # Causes error mozshellutil not found with v148
-    # export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
-    export MOZBUILD_STATE_PATH=$PWD
-    export MOZ_BUILD_DATE="$(date -u${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH} +%Y%m%d%H%M%S)"
+    export PIP_NETWORK_INSTALL_RESTRICTED_VIRTUALENVS=mach
 
     # Saves some time compressing the archive when we're just going to immediately decompress it to install it
     # Saves about 23 seconds on the build server. Very important.
     export MOZ_PKG_FORMAT=TAR
 
+    export LLVM_PROFDATA="llvm-profdata"
+
+    # Temporarily disabled due to mozshellutil build failure
+    # 2026-09-02 Update: Still bork
+    # export MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE=system
+    export MOZBUILD_STATE_PATH=$PWD
+    export MOZ_BUILD_DATE="$(date -u${SOURCE_DATE_EPOCH:+d @$SOURCE_DATE_EPOCH} +%Y%m%d%H%M%S)"
+
     export CFLAGS="${CFLAGS} -Wa,--crel,--allow-experimental-crel"
     export CXXFLAGS="${CXXFLAGS} -Wa,--crel,--allow-experimental-crel"
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-Fix-Firefox-Thunderbird-envvar-conflicts.patch
-    %patch -p1 -i $pkgfiles/0001-Allow-installing-addons-from-user-scope.patch
+    %patch -p1 -i ${pkgfiles}/0001-Fix-Firefox-Thunderbird-envvar-conflicts.patch
+    %patch -p1 -i ${pkgfiles}/0001-Allow-installing-addons-from-user-scope.patch
 
     # Fixes a build issue with PGO introduced with f1d273acc9442cc43a8c340a86056fbc4ad85d57. Unknown if there's an upstream fix
     %patch -p1 -i ${pkgfiles}/pgo-simple-programs-2.patch
@@ -84,80 +93,99 @@ setup      : |
     # %patch -p1 -i $pkgfiles/bmo-1559213-Support-system-av1.patch
     # %patch -p1 -i $pkgfiles/bmo-1559213-fix-system-av1-libs.patch
 
-    cp $pkgfiles/{google-safebrowsing,mozilla}-api-key .
-    cp $pkgfiles/config .mozconfig
-    sed 's@\#\#JOBCOUNT\#\#@%JOBS%@' -i .mozconfig
-    echo "ac_add_options --with-mozilla-api-keyfile=${workdir}/mozilla-api-key" >> .mozconfig
-    echo "ac_add_options --with-google-safebrowsing-api-keyfile=${workdir}/google-safebrowsing-api-key" >> .mozconfig
+    cp ${pkgfiles}/{google-safebrowsing,mozilla}-api-key .
+    cp ${pkgfiles}/config mozconfig
+    sed 's@\#\#JOBCOUNT\#\#@%JOBS%@' -i mozconfig
+
+    if [ $FULL_BUILD -ne 0 ]; then
+        # PGO build, no LTO
+        echo "ac_add_options --enable-profile-generate=cross" >> mozconfig
+    else
+        # Might as well do it with LTO
+        echo "ac_add_options MOZ_LTO=cross,full" >> mozconfig
+        echo "ac_add_options --enable-lto=cross,full" >> mozconfig
+    fi
+
+    echo "ac_add_options --with-mozilla-api-keyfile=${workdir}/mozilla-api-key" >> mozconfig
+    echo "ac_add_options --with-google-safebrowsing-api-keyfile=${workdir}/google-safebrowsing-api-key" >> mozconfig
     ./mach configure
 build      : |
+    ./mach build
     # Set this to 1 if you want to create a release build, 0 if you're just doing builds locally for testing purposes
     # Note that you still need to do a full release build locally and test it before pushing it
-    FULL_BUILD=1
-    if [ $FULL_BUILD -ne 1 ]; then
-        ./mach build
-    else
-        # Instrument build
-        echo "ac_add_options --enable-profile-generate=cross" >> .mozconfig
-        ./mach build
-
-        # Package and run automated benchmarks for profiling
-        # Use software rendering (LIBGL_ALWAYS_SOFTWARE=true) everywhere to work around potential display issues
+    if [ $FULL_BUILD -ne 0 ]; then
         ./mach package
-        HOME=/root \
-        JARLOG_FILE="$PWD/jarlog" \
-        LLVM_PROFDATA=llvm-profdata \
-        LIBGL_ALWAYS_SOFTWARE=true \
-        MOZ_REMOTE_SETTINGS_DEVTOOLS=1 \
-        XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)" \
-          xvfb-run -s "-screen 0 1920x1080x24 -nolisten local" \
-            ./mach python build/pgo/profileserver.py
+        # PGO
+        # Much of this taken from https://github.com/chaotic-aur/packages/blob/main/firefox-nightly/PKGBUILD
+        env \
+            JARLOG_FILE="${PWD}/jarlog" \
+            HOME=/root \
+            XDG_RUNTIME_DIR="$(mktemp -p $(pwd) -d xdg-runtime-XXXXXX)" \
+            LIBGL_ALWAYS_SOFTWARE=true \
+            MOZ_DISABLE_CONTENT_SANDBOX=1 \
+            MOZ_DISABLE_GMP_SANDBOX=1 \
+            MOZ_DISABLE_GPU_SANDBOX=1 \
+            MOZ_DISABLE_RDD_SANDBOX=1 \
+            MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1 \
+            MOZ_DISABLE_UTILITY_SANDBOX=1 \
+            MOZ_DISABLE_VR_SANDBOX=1 \
+            GTK_A11Y=none \
+            NO_AT_BRIDGE=1 \
+            MOZ_REMOTE_SETTINGS_DEVTOOLS=1 \
+        dbus-run-session \
+            wlheadless-run \
+                -c weston --width=1920 --height=1080 \
+                -- ./mach python build/pgo/profileserver.py
 
-        export HOME=/home/build
-
-        stat -c "Profile data found (%s bytes)" merged.profdata
+        # Make sure PGO data is present
+        stat -c "Profile data found (%%s bytes)" merged.profdata
         test -s merged.profdata
-
-        stat -c "Jar log found (%s bytes)" jarlog
+        stat -c "Jar log found (%%s bytes)" jarlog
         test -s jarlog
 
-        # Clean for rebuild
-        ./mach clobber
+        # Delete instrumented browser
+        ./mach clobber objdir
 
-        # Profile use build and enable lto
-        sed -i '/--enable-profile-generate=cross/d' .mozconfig
-        echo "ac_add_options --enable-lto=cross" >> .mozconfig
-        echo "ac_add_options --enable-profile-use=cross" >> .mozconfig
-        echo "ac_add_options --with-pgo-profile-path=${PWD@Q}/merged.profdata" >> .mozconfig
-        echo "ac_add_options --with-pgo-jarlog=${PWD@Q}/jarlog" >> .mozconfig
+        # Reset mozconfig
+        rm mozconfig && cp ${pkgfiles}/config mozconfig
+        sed 's@\#\#JOBCOUNT\#\#@%JOBS%@' -i mozconfig
+
+        # Enable LTO
+        echo "ac_add_options MOZ_LTO=cross,full" >> mozconfig
+        echo "ac_add_options --enable-lto=cross,full" >> mozconfig
+
+        # PGO
+        echo "ac_add_options --enable-profile-use=cross" >> mozconfig
+        echo "ac_add_options --with-pgo-profile-path=${PWD}/merged.profdata" >> mozconfig
+        echo "ac_add_options --with-pgo-jarlog=${PWD}/jarlog" >> mozconfig
+
         ./mach build
-        ./mach buildsymbols
     fi
 install    : |
-    DESTDIR=$installdir ./mach install
+    DESTDIR=${installdir} ./mach install
     %install_license LICENSE
 
     # Desktop file, icons, appdata
     for s in 16 22 24 32 48 256; do
-        install -Dm00644 browser/branding/official/default${s}.png $installdir/usr/share/icons/hicolor/${s}x${s}/apps/firefox.png
+        %install_file browser/branding/official/default${s}.png ${installdir}/usr/share/icons/hicolor/${s}x${s}/apps/firefox.png
     done
-    install -Dm00644 $pkgfiles/firefox-symbolic.svg $installdir/usr/share/icons/hicolor/symbolic/apps/firefox-symbolic.svg
-    install -Dm00644 $pkgfiles/firefox.desktop $installdir/usr/share/applications/firefox.desktop
-    install -Dm00644 $pkgfiles/org.mozilla.firefox.appdata.xml $installdir/usr/share/metainfo/org.mozilla.firefox.appdata.xml
+    %install_file ${pkgfiles}/firefox-symbolic.svg ${installdir}/usr/share/icons/hicolor/symbolic/apps/firefox-symbolic.svg
+    %install_file ${pkgfiles}/firefox.desktop ${installdir}/usr/share/applications/firefox.desktop
+    %install_file ${pkgfiles}/org.mozilla.firefox.appdata.xml ${installdir}/usr/share/metainfo/org.mozilla.firefox.appdata.xml
 
     # Man page
-    install -Dm00644 $pkgfiles/firefox.1 $installdir/usr/share/man/man1/firefox.1
-    sed -i "s|@@VERSION@@|$version|g" $installdir/usr/share/man/man1/firefox.1
+    %install_file ${pkgfiles}/firefox.1 ${installdir}/usr/share/man/man1/firefox.1
+    sed -i "s|@@VERSION@@|$version|g" ${installdir}/usr/share/man/man1/firefox.1
 
     # Use a wrapper script to launch in Wayland, as well as ensure that Firefox correctly detects whether or not it's the default browser
-    rm -v $installdir/usr/bin/firefox
-    install -D -m 00755 $pkgfiles/firefox-wrapper.sh $installdir/usr/bin/firefox
+    rm -v ${installdir}/usr/bin/firefox
+    install -D -m 00755 ${pkgfiles}/firefox-wrapper.sh ${installdir}/usr/bin/firefox
 
     # set up defaults
-    mkdir -p $installdir/%libdir%/firefox/browser/defaults/preferences
-    install -m00644 $pkgfiles/prefs.js $installdir/%libdir%/firefox/browser/defaults/preferences/prefs.js
-    install -m00644 $pkgfiles/firefox-l10n.js $installdir/%libdir%/firefox/browser/defaults/preferences/firefox-l10n.js
+    %install_dir ${installdir}/%libdir%/firefox/browser/defaults/preferences
+    %install_file ${pkgfiles}/prefs.js ${installdir}/%libdir%/firefox/browser/defaults/preferences/prefs.js
+    %install_file ${pkgfiles}/firefox-l10n.js ${installdir}/%libdir%/firefox/browser/defaults/preferences/firefox-l10n.js
 
     # gnome search provider
-    install -Dm00644 $pkgfiles/org.mozilla.firefox.SearchProvider.service $installdir/usr/share/dbus-1/services/org.mozilla.firefox.SearchProvider.service
-    install -Dm00644 $pkgfiles/org.mozilla.firefox.search-provider.ini $installdir/usr/share/gnome-shell/search-providers/org.mozilla.firefox.search-provider.ini
+    %install_file ${pkgfiles}/org.mozilla.firefox.SearchProvider.service ${installdir}/usr/share/dbus-1/services/org.mozilla.firefox.SearchProvider.service
+    %install_file ${pkgfiles}/org.mozilla.firefox.search-provider.ini ${installdir}/usr/share/gnome-shell/search-providers/org.mozilla.firefox.search-provider.ini
