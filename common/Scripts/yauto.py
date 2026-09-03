@@ -360,12 +360,12 @@ description: |
                 setup = "%configure --disable-static"
             elif self.compile_type == CMAKE:
                 setup = "%cmake_ninja"
-                build = "%ninja_build"
-                install = "%ninja_install"
+                build = "%cmake_build"
+                install = "%cmake_install"
             elif self.compile_type == MESON:
                 setup = "%meson_configure"
-                build = "%ninja_build"
-                install = "%ninja_install"
+                build = "%meson_build"
+                install = "%meson_install"
             elif self.compile_type == PYTHON_MODULES:
                 setup = ""
                 build = "%python3_setup"
