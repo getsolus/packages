@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : bbswitch
 version    : '0.8'
-release    : 398
+release    : 399
 source     :
     - https://github.com/Bumblebee-Project/bbswitch/archive/v0.8.tar.gz : 76cabd3f734fb4fe6ebfe3ec9814138d0d6f47d47238521ecbd6a986b60d1477
 homepage   : https://github.com/Bumblebee-Project/bbswitch
@@ -21,45 +21,55 @@ builddeps  :
     - linux-lts
     - linux-lts-headers
     - zstd
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-proc_ops-struct.patch
-    %patch -p1 -i $pkgfiles/linux-5.7.patch
-    %patch -p1 -i $pkgfiles/linux-5.18.patch
-    pushd ..
-    cp -a bbswitch-${version} lts-build
-    cp -a bbswitch-${version} current-build
-build      : |
-    pushd lts-build
-    %make KVERSION="%kernel_version_lts%"
+    %patch -p1 -i ${pkgfiles}/0001-proc_ops-struct.patch
+    %patch -p1 -i ${pkgfiles}/linux-5.7.patch
+    %patch -p1 -i ${pkgfiles}/linux-5.18.patch
 
-    pushd ../current-build
-    %make KVERSION="%kernel_version_current%"
+    pushd ..
+    for _kernel in "${kernels[@]}"; do
+        cp -a "bbswitch-${version}" "${_kernel}"
+    done
+build      : |
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %make KVERSION="${_kernel}"
+        popd
+    done
 install    : |
-    KVERSION_LTS="%kernel_version_lts%"
-    KVERSION_CURRENT="%kernel_version_current%"
-    install -D -m 00755 lts-build/bbswitch.ko $installdir/usr/lib64/modules/${KVERSION_LTS}/extra/misc/bbswitch.ko
-    install -D -m 00755 current-build/bbswitch.ko $installdir/usr/lib64/modules/${KVERSION_CURRENT}/extra/misc/bbswitch.ko
+    for _kernel in "${kernels[@]}"; do
+        %install_exe "${_kernel}/${package}.ko" -t "${installdir}/%libdir%/modules/${_kernel}/extra/misc"
+        %install_license "${_kernel}"/COPYING
+    done
+
+    %install_file ${installdir}/usr/share/licenses/${package}/COPYING -t ${installdir}/usr/share/licenses/${package}-current
 
     # Compress modules with zstd
     find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
 
     # Usr-merge
-    install -dm00755 $installdir/lib64
-    pushd $installdir/usr
+    %install_dir ${installdir}/lib64
+    pushd ${installdir}/usr
     file_list=()
     while IFS=  read -r -d $'\0'; do
         file_list+=("$REPLY")
     done < <(find lib64/modules -type f -print0)
     for file in "${file_list[@]}"; do
         parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
+        %install_dir "${installdir}/${parent}"
+        ln -srv "${installdir}/usr/${file}" "${installdir}/${file}"
     done
     popd
 patterns   :
     - current :
         - /lib64/modules/*.current
         - /usr/lib64/modules/*.current
+        - /usr/share/licenses/bbswitch-current
 permanent  :
     - /lib64/modules
     - /usr/lib64/modules
