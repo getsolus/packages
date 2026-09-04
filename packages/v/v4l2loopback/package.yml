@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : v4l2loopback
-version    : 0.15.3
-release    : 362
+version    : 0.15.4
+release    : 363
 source     :
-    - https://github.com/umlaeute/v4l2loopback/archive/v0.15.3.tar.gz : 2758ea287da8dd34a0421c0dd50094a0342d22414e1bbccbbe92f41bbaa26b2d
+    - https://github.com/umlaeute/v4l2loopback/archive/v0.15.4.tar.gz : 21a17702648aa6a937b88a93bd71ef9f547815ead28719cafcfcc247396643dc
+homepage   : https://github.com/umlaeute/v4l2loopback
 license    : GPL-2.0-or-later
 component  :
     - kernel.drivers
     - current : kernel.drivers
     - common : system.utils
-homepage   : https://github.com/umlaeute/v4l2loopback
 summary    :
     - A kernel module to create V4L2 loopback devices
     - current : v4l2loopback package for linux-current
@@ -27,39 +27,42 @@ rundeps    :
     - current :
         - v4l2loopback-common
     - v4l2loopback-common
-permanent  :
-    - /lib64/modules
-    - /usr/lib64/modules
-patterns   :
-    - common :
-        - /usr/bin
-        - /usr/share/man
-    - current :
-        - /lib64/modules/*.current
-        - /usr/lib64/modules/*.current
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
     pushd ..
-    cp -aR v4l2loopback-$version lts-build
-    cp -aR v4l2loopback-$version current-build
+
+    for _kernel in "${kernels[@]}"; do
+        cp -ar v4l2loopback-${version} "${_kernel}"
+    done
 build      : |
-    pushd lts-build
-    %make KERNELRELEASE=%kernel_version_lts%
-    pushd ../current-build
-    %make KERNELRELEASE=%kernel_version_current%
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %make KERNELRELEASE="${_kernel}"
+        popd
+    done
 install    : |
-    pushd lts-build
-    export KERN=%kernel_version_lts%
-    %make KERNELRELEASE=$KERN install-utils install-man DESTDIR=$installdir PREFIX=/usr
-    install -D -m 00755 v4l2loopback.ko $installdir/usr/lib64/modules/$KERN/extra/v4l2loopback.ko
-    pushd ../current-build
-    export KERN=%kernel_version_current%
-    install -D -m 00755 v4l2loopback.ko $installdir/usr/lib64/modules/$KERN/extra/v4l2loopback.ko
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %make \
+            KERNELRELEASE="${_kernel}" \
+            install-utils \
+            install-man \
+            DESTDIR="${installdir}" \
+            PREFIX=%PREFIX%
+        %install_exe "${package}.ko" -t "${installdir}/%libdir%/modules/${_kernel}/extra"
+        %install_license COPYING
+        popd
+    done
 
     # Compress modules with zstd
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+    find "${installdir}" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
 
     # Usr-merge
-    install -dm00755 $installdir/lib64
+    %install_dir ${installdir}/lib64
     pushd $installdir/usr
     file_list=()
     while IFS=  read -r -d $'\0'; do
@@ -67,7 +70,18 @@ install    : |
     done < <(find lib64/modules -type f -print0)
     for file in "${file_list[@]}"; do
         parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
+        %install_dir "${installdir}/${parent}"
+        ln -srv "${installdir}/usr/${file}" "${installdir}/${file}"
     done
     popd
+patterns   :
+    - common :
+        - /usr/bin
+        - /usr/share/man
+        - /usr/share/licenses
+    - current :
+        - /lib64/modules/*.current
+        - /usr/lib64/modules/*.current
+permanent  :
+    - /lib64/modules
+    - /usr/lib64/modules
