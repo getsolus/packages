@@ -1,15 +1,15 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : vhba-module
 version    : '20260313'
-release    : 320
+release    : 321
 source     :
     - https://sourceforge.net/projects/cdemu/files/vhba-module/vhba-module-20260313.tar.xz#vhba-module.tar.xz : 293003bf5d9dc2b386db0d05f595c5548355a535d6dfc06fd379fd98bb190174
 extract    : false
+homepage   : https://cdemu.sourceforge.io/
 license    : GPL-2.0-or-later
 component  :
     - kernel.drivers
     - current : kernel.drivers
-homepage   : https://cdemu.sourceforge.io/
 summary    : Provides the vhba_ctl device for CDemu
 description: |
     Provides the vhba_ctl device for CDemu
@@ -24,56 +24,61 @@ rundeps    :
         - vhba-module-common
     - main :
         - vhba-module-common
-permanent  :
-    - /lib64/modules
-    - /usr/lib64/modules
-patterns   :
-    - common : /usr/lib64/udev
-    - common : /usr/lib64/modules-load.d
-    - current :
-        - /lib64/modules/*.current
-        - /usr/lib64/modules/*.current
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
-    mkdir lts-build current-build
-    tar --strip-components=1 -xf $sources/vhba-module.tar.xz -C lts-build
-    tar --strip-components=1 -xf $sources/vhba-module.tar.xz -C current-build
+    for _kernel in "${kernels[@]}"; do
+        mkdir "${_kernel}"
+        tar -xf ${sources}/vhba-module.tar.xz --strip-components=1 -C "${_kernel}"
+    done
 build      : |
-    pushd lts-build
-    KERNELRELEASE="%kernel_version_lts%" %make
-    pushd ../current-build
-    KERNELRELEASE="%kernel_version_current%" %make
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        KERNELRELEASE="${_kernel}" %make
+        popd
+    done
 install    : |
+    # Kernel modules
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %install_file vhba.ko -t "${installdir}/%libdir%/modules/${_kernel}/extra/drivers/misc"
+
+        # Install license here so we don't have to find the subdir
+        %install_license COPYING
+        popd
+    done
+
     # common files
-    pushd lts-build
-    install -D -m 00644 $pkgfiles/60-udev.rules $installdir/%libdir%/udev/rules.d/60-vhba-module.rules
-    install -D -m 00644 $pkgfiles/modprobe $installdir/%libdir%/modules-load.d/vhba-module.conf
-
-    # lts kernel
-    export KERNELRELEASE="%kernel_version_lts%"
-    export KDIR="$installdir/usr/lib64/modules/${KERNELRELEASE}/extra/drivers/misc"
-    install -D -m 00644 vhba.ko $KDIR/vhba.ko
-    popd
-
-    # current kernel
-    pushd current-build
-    export KERNELRELEASE="%kernel_version_current%"
-    export KDIR="$installdir/usr/lib64/modules/${KERNELRELEASE}/extra/drivers/misc"
-    install -D -m 00644 vhba.ko $KDIR/vhba.ko
-    popd
+    %install_file ${pkgfiles}/60-udev.rules ${installdir}/%libdir%/udev/rules.d/60-vhba-module.rules
+    %install_file ${pkgfiles}/modprobe ${installdir}/%libdir%/modules-load.d/vhba-module.conf
 
     # Compress modules with zstd
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+    find "${installdir}" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
 
     # Usr-merge
-    install -dm00755 $installdir/lib64
-    pushd $installdir/usr
+    %install_dir ${installdir}/lib64
+    pushd ${installdir}/usr
     file_list=()
     while IFS=  read -r -d $'\0'; do
         file_list+=("$REPLY")
     done < <(find lib64/modules -type f -print0)
     for file in "${file_list[@]}"; do
         parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
+        %install_dir "${installdir}/${parent}"
+        ln -srv "${installdir}/usr/${file}" "${installdir}/${file}"
     done
     popd
+patterns   :
+    - common :
+        - /usr/lib64/udev
+        - /usr/lib64/modules-load.d
+        - /usr/share/licenses
+    - current :
+        - /lib64/modules/*.current
+        - /usr/lib64/modules/*.current
+permanent  :
+    - /lib64/modules
+    - /usr/lib64/modules
