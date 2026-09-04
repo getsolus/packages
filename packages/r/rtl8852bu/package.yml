@@ -1,11 +1,16 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : rtl8852bu
 version    : 1.19.3
-release    : 91
+release    : 92
 source     :
-    - git|https://github.com/morrownr/rtl8852bu-20250826.git : 38fc5a310f775d40074f4f02dfab988d5a8530e4
+    - git|https://github.com/morrownr/rtl8852bu-20250826.git : 606ad3ef2d1b6498fb161ad251781e008f7d6a6d
 homepage   : https://github.com/morrownr/rtl8852bu-20250826
-license    : Distributable
+license    : GPL-2.0-only
+component  :
+    - kernel.drivers
+    - common : kernel.drivers
+    - current : kernel.drivers
+    - modaliases : kernel.drivers
 summary    :
     - Realtek RTL8832BU/RTL8852BU Driver
     - common : Common components for rtl8852bu drivers
@@ -13,11 +18,6 @@ summary    :
     - modaliases : These files are used by the Software Center for hardware detection.
 description: |
     Linux Driver for USB WiFi Adapters that are based on the RTL8832BU and RTL8852BU Chipsets
-component  :
-    - kernel.drivers
-    - common : kernel.drivers
-    - current : kernel.drivers
-    - modaliases : kernel.drivers
 builddeps  :
     - linux-current
     - linux-current-headers
@@ -27,47 +27,48 @@ rundeps    :
     - current :
         - rtl8852bu-common
     - rtl8852bu-common
-permanent  :
-    - /lib64/modules
-    - /usr/lib64/modules
-patterns   :
-    - common : /usr/lib/modprobe.d
-    - current :
-        - /lib64/modules/*.current
-        - /usr/lib64/modules/*.current
-    - modaliases : /usr/share/linux-driver-management/modaliases
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
+    %patch -p1 -i ${pkgfiles}/0001-linux-Fix-compilation-with-Linux-7.2.patch
+
     pushd ..
-    cp -a rtl8852bu-20250826.git current-build
-    cp -a rtl8852bu-20250826.git lts-build
+    for _kernel in "${kernels[@]}"; do
+        cp -a rtl8852bu-20250826.git "${_kernel}"
+    done
 build      : |
-    pushd ../current-build
-    %make KVER=%kernel_version_current% KSRC=/usr/lib64/modules/%kernel_version_current%/build
+    for _kernel in "${kernels[@]}"; do
+        pushd "../${_kernel}"
+        %make \
+            KVER="${_kernel}" \
+            KSRC="/usr/lib64/modules/${_kernel}/build"
 
-    pushd ../lts-build
-    %make KVER=%kernel_version_lts% KSRC=/usr/lib64/modules/%kernel_version_lts%/build
+        # Build modaliases for LDM
+        mkmodaliases "${package}" -o "${package}.modaliases" 8852bu.ko
+        popd
+    done
 
-    # Build modaliases for LDM
-    mkmodaliases "${package}" -o "${package}.modaliases" 8852bu.ko
 install    : |
     %install_license LICENSE
-    install -Dm00644 8852bu.conf $installdir/usr/lib/modprobe.d/8852bu.conf
+    %install_file 8852bu.conf ${installdir}/usr/lib/modprobe.d/8852bu.conf
 
-    pushd ../current-build
-    KERNEL_VERSION="%kernel_version_current%"
-    install -Dm755 8852bu.ko $installdir/usr/lib64/modules/${KERNEL_VERSION}/extra/drivers/net/wireless/rtl8852bu/8852bu.ko
+    for _kernel in "${kernels[@]}"; do
+        pushd "../${_kernel}"
+        %install_exe 8852bu.ko -t "${installdir}/%libdir%/modules/${_kernel}/extra/drivers/net/wireless/rtl8852bu"
 
-    pushd ../lts-build
-    KERNEL_VERSION="%kernel_version_lts%"
-    install -Dm755 8852bu.ko $installdir/usr/lib64/modules/${KERNEL_VERSION}/extra/drivers/net/wireless/rtl8852bu/8852bu.ko
+        # Install modaliases for hardware detection
+        %install_file ${package}.modaliases -t ${installdir}/usr/share/linux-driver-management/modaliases
+        popd
+    done
 
-    # Install modaliases for hardware detection
-    install -Dm00644 ${package}.modaliases $installdir/usr/share/linux-driver-management/modaliases/${package}.modaliases
 
     find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
 
     # Usr-merge
-    install -dm00755 $installdir/lib64
+    %install_dir $installdir/lib64
     pushd $installdir/usr
     file_list=()
     while IFS=  read -r -d $'\0'; do
@@ -75,7 +76,18 @@ install    : |
     done < <(find lib64/modules -type f -print0)
     for file in "${file_list[@]}"; do
         parent=$(dirname "$file")
-        install -dm00755 "$installdir/$parent"
+        %install_dir "$installdir/$parent"
         ln -srv "$installdir/usr/$file" "$installdir/$file"
     done
     popd
+patterns   :
+    - common :
+        - /usr/lib/modprobe.d
+        - /usr/share/licenses/rtl8850bu
+    - current :
+        - /lib64/modules/*.current
+        - /usr/lib64/modules/*.current
+    - modaliases : /usr/share/linux-driver-management/modaliases
+permanent  :
+    - /lib64/modules
+    - /usr/lib64/modules
