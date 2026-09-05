@@ -93,7 +93,8 @@ class Publisher:
         if len(invalid) > 0:
             print('Found commits with an incorrect number of packages:')
             for commit, package_names in invalid.items():
-                print(f'Commit {repr(commit)}: {", ".join(package_names) if package_names else "no packages"}')
+                print(self._commit_str(commit) + ': ' +
+                      (", ".join(package_names) if package_names else "no packages"))
 
             return True
 
