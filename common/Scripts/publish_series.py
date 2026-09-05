@@ -93,7 +93,8 @@ class Publisher:
         if len(invalid) > 0:
             print('Found commits with an incorrect number of packages:')
             for commit, package_names in invalid.items():
-                print(f'Commit {repr(commit)}: {", ".join(package_names) if package_names else "no packages"}')
+                print(self._commit_str(commit) + ': ' +
+                      (", ".join(package_names) if package_names else "no packages"))
 
             return True
 
@@ -159,6 +160,7 @@ class Publisher:
 
         msg = self.git.commit_summary(commit)
         return msg.startswith('[NFC]') or \
+            msg.startswith('ci:') or\
             msg.startswith('common:') or \
             msg.startswith('packages:') or\
             msg.startswith('repo_data:') or\
