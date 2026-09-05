@@ -159,6 +159,7 @@ class Publisher:
 
         msg = self.git.commit_summary(commit)
         return msg.startswith('[NFC]') or \
+            msg.startswith('ci:') or\
             msg.startswith('common:') or \
             msg.startswith('packages:') or\
             msg.startswith('repo_data:') or\
