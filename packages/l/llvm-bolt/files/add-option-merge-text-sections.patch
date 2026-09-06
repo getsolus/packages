@@ -1,0 +1,400 @@
+From 4524e399e04c31326e2cb818b81dc92493a5062c Mon Sep 17 00:00:00 2001
+From: YongKang Zhu <yongzhu@fb.com>
+Date: Mon, 17 Aug 2026 16:39:59 -0700
+Subject: [PATCH 1/2] [BOLT] Add option --merge-text-sections
+
+Summary:
+With BOLT optimization enabled the output carries the new hot code in
+.text and the cold code in .text.cold, allocated back to back in the
+same segment. Some consumers may prefer a single .text covering both.
+
+The two text sections are already in one contiguous address range, so
+only the section header table separates them. Under this new option
+"--merge-text-sections" the lowest addressed code section keeps the
+header, reports the extent of the whole run under the name .text, and
+the rest are marked anonymous so no header is written for them. Their
+contents and addresses are untouched, which keeps the emitted code
+byte for byte identical to the one built without the option.
+
+Symbols defined in a folded section, such as cold fragments, take the
+index of the merged section so they won't end up referencing SHN_UNDEF.
+Each folded section also gets a local marker symbol, named as
+".bolt.pre_merge<original_section_name>", recording the name and start
+address it had before the merge, so the previous layout stays
+recoverable from the symbol table. The marker symbols have size zero
+so they won't compete with the STT_FUNC symbols inside the range when
+symbolizer resolves address.
+
+The order of hot and cold code inside the range does not matter, so
+--hot-functions-at-end is supported as well.
+
+The new option requires relocation mode and only applies to ELF.
+---
+ bolt/include/bolt/Rewrite/RewriteInstance.h |  21 ++++
+ bolt/lib/Rewrite/RewriteInstance.cpp        |  93 +++++++++++++-
+ bolt/test/AArch64/merge-text-sections.s     | 131 ++++++++++++++++++++
+ 3 files changed, 244 insertions(+), 1 deletion(-)
+ create mode 100644 bolt/test/AArch64/merge-text-sections.s
+
+diff --git a/bolt/include/bolt/Rewrite/RewriteInstance.h b/bolt/include/bolt/Rewrite/RewriteInstance.h
+index a624c056ada14..8299cc392eade 100644
+--- a/bolt/include/bolt/Rewrite/RewriteInstance.h
++++ b/bolt/include/bolt/Rewrite/RewriteInstance.h
+@@ -219,6 +219,11 @@ class RewriteInstance {
+   /// Map code without relocating sections.
+   void mapCodeSectionsInPlace(BOLTLinker::SectionMapper MapSection);
+ 
++  /// Fold every section in \p CodeSections into a single output section named
++  /// ".text". Sections in \p CodeSections form one contiguous address range
++  /// and their relative order is kept unchanged.
++  void mergeCodeSections(const std::vector<BinarySection *> &CodeSections);
++
+   /// Map the rest of allocatable sections.
+   void mapAllocatableSections(BOLTLinker::SectionMapper MapSection);
+ 
+@@ -501,6 +506,22 @@ class RewriteInstance {
+   uint64_t NewTextSegmentOffset{0};
+   uint64_t NewTextSegmentSize{0};
+ 
++  /// Bookkeeping for --merge-text-sections.
++  BinarySection *MergedTextSection{nullptr};
++  uint64_t MergedTextSize{0};
++  std::vector<BinarySection *> MergedAwayTextSections;
++
++  /// Original name and start address of each code section folded into the
++  /// merged .text, captured before the headers are dropped. Emitted as local
++  /// marker symbols so the pre-merge section layout stays recoverable. The
++  /// symbols are sizeless to keep symbolizers from attributing the range to
++  /// them instead of to the functions it contains.
++  struct MergedTextMarker {
++    std::string Name;
++    uint64_t Address;
++  };
++  std::vector<MergedTextMarker> MergedTextMarkers;
++
+   /// New writable segment info.
+   uint64_t NewWritableSegmentAddress{0};
+   uint64_t NewWritableSegmentSize{0};
+diff --git a/bolt/lib/Rewrite/RewriteInstance.cpp b/bolt/lib/Rewrite/RewriteInstance.cpp
+index 512af53f0ec59..4486efe926d01 100644
+--- a/bolt/lib/Rewrite/RewriteInstance.cpp
++++ b/bolt/lib/Rewrite/RewriteInstance.cpp
+@@ -108,6 +108,12 @@ static cl::opt<bool> ForceToDataRelocations(
+ 
+     cl::Hidden, cl::cat(BoltCategory));
+ 
++static cl::opt<bool> MergeTextSections(
++    "merge-text-sections",
++    cl::desc("emit new hot and cold code under a single .text section header "
++             "instead of separate .text/.text.cold sections (relocation mode)"),
++    cl::init(false), cl::cat(BoltCategory));
++
+ static cl::opt<std::string>
+     BoltID("bolt-id",
+            cl::desc("add any string to tag this execution in the "
+@@ -2618,6 +2624,19 @@ void RewriteInstance::adjustCommandLineOptions() {
+     opts::UseOldText = false;
+   }
+ 
++  if (opts::MergeTextSections) {
++    if (!BC->HasRelocations) {
++      BC->errs() << "BOLT-ERROR: --merge-text-sections requires relocation "
++                    "mode\n";
++      exit(1);
++    }
++    if (!BC->isELF()) {
++      BC->errs() << "BOLT-ERROR: --merge-text-sections is only supported for "
++                    "ELF binaries\n";
++      exit(1);
++    }
++  }
++
+   if (!opts::AlignText.getNumOccurrences())
+     opts::AlignText = BC->PageAlign;
+ 
+@@ -4625,6 +4644,52 @@ void RewriteInstance::mapCodeSections(BOLTLinker::SectionMapper MapSection) {
+     BC->outs() << "BOLT-INFO: padding code to 0x"
+                << Twine::utohexstr(NextAvailableAddress)
+                << " to accommodate hot text\n";
++
++  if (opts::MergeTextSections)
++    mergeCodeSections(CodeSections);
++}
++
++void RewriteInstance::mergeCodeSections(
++    const std::vector<BinarySection *> &CodeSections) {
++  if (CodeSections.size() < 2)
++    return;
++
++  // The header carrier is the lowest-addressed section and the merged extent
++  // runs to the end of the highest-addressed one. The order of hot and cold
++  // code within the range (e.g. --hot-functions-at-end) does not matter and
++  // is kept unchanged.
++  BinarySection *Head = *llvm::min_element(
++      CodeSections, [](const BinarySection *A, const BinarySection *B) {
++        return A->getOutputAddress() < B->getOutputAddress();
++      });
++  uint64_t End = 0;
++  for (const BinarySection *Section : CodeSections)
++    End = std::max(End, Section->getOutputAddress() + Section->getOutputSize());
++
++  // Record the pre-merge identity of every section while the names are intact.
++  for (const BinarySection *Section : CodeSections)
++    MergedTextMarkers.push_back(
++        {(Twine(".bolt.pre_merge") + Section->getOutputName()).str(),
++         Section->getOutputAddress()});
++
++  MergedTextSection = Head;
++  MergedTextSize = End - Head->getOutputAddress();
++
++  for (BinarySection *Section : CodeSections) {
++    if (Section == Head)
++      continue;
++    Section->setAnonymous(true);
++    MergedAwayTextSections.push_back(Section);
++  }
++
++  // The merged section has the canonical name regardless of which original
++  // section is allocated first.
++  Head->setOutputName(BC->getMainCodeSectionName());
++
++  BC->outs() << "BOLT-INFO: merged " << CodeSections.size()
++             << " code sections into " << BC->getMainCodeSectionName() << " [0x"
++             << Twine::utohexstr(Head->getOutputAddress()) << ", 0x"
++             << Twine::utohexstr(End) << ")\n";
+ }
+ 
+ void RewriteInstance::mapCodeSectionsInPlace(
+@@ -5265,7 +5330,9 @@ RewriteInstance::getOutputSections(ELFObjectFile<ELFT> *File,
+     NewSection.sh_type = ELF::SHT_PROGBITS;
+     NewSection.sh_addr = Section.getOutputAddress();
+     NewSection.sh_offset = Section.getOutputFileOffset();
+-    NewSection.sh_size = Section.getOutputSize();
++    NewSection.sh_size = (&Section == MergedTextSection)
++                             ? MergedTextSize
++                             : Section.getOutputSize();
+     NewSection.sh_entsize = 0;
+     NewSection.sh_flags = Section.getELFFlags();
+     NewSection.sh_link = 0;
+@@ -5378,6 +5445,12 @@ RewriteInstance::getOutputSections(ELFObjectFile<ELFT> *File,
+   for (uint32_t Index = 1; Index < OutputSections.size(); ++Index)
+     OutputSections[Index].first->setIndex(Index);
+ 
++  // Sections folded into the merged code section emit no header of their own.
++  // Point symbols defined in them at the merged section.
++  if (MergedTextSection)
++    for (BinarySection *Section : MergedAwayTextSections)
++      Section->setIndex(MergedTextSection->getIndex());
++
+   // Update section index mapping
+   NewSectionIndex.clear();
+   NewSectionIndex.resize(Sections.size(), 0);
+@@ -5909,6 +5982,24 @@ void RewriteInstance::updateELFSymbolTable(
+     AddEmittedSymbol("__hot_data_end");
+   }
+ 
++  // The code sections folded into the merged .text have no section header in
++  // the output. Emit a local marker per section so the name and start address
++  // each one had before the merge stay recoverable from the symbol table. The
++  // marker symbols have size zero: a sized NOTYPE symbol spanning the section
++  // might compete with the STT_FUNC symbols inside it during symbolization.
++  assert((MergedTextMarkers.empty() || MergedTextSection) &&
++         "merged code section must be set when markers exist");
++  for (const MergedTextMarker &Marker : MergedTextMarkers) {
++    ELFSymTy Symbol;
++    Symbol.st_value = Marker.Address;
++    Symbol.st_size = 0;
++    Symbol.st_shndx = MergedTextSection->getIndex();
++    Symbol.st_name = AddToStrTab(Marker.Name);
++    Symbol.st_other = 0;
++    Symbol.setBindingAndType(ELF::STB_LOCAL, ELF::STT_NOTYPE);
++    Symbols.emplace_back(Symbol);
++  }
++
+   // Put local symbols at the beginning.
+   llvm::stable_sort(Symbols, [](const ELFSymTy &A, const ELFSymTy &B) {
+     if (A.getBinding() == ELF::STB_LOCAL && B.getBinding() != ELF::STB_LOCAL)
+diff --git a/bolt/test/AArch64/merge-text-sections.s b/bolt/test/AArch64/merge-text-sections.s
+new file mode 100644
+index 0000000000000..1bf3c0f5a1fbb
+--- /dev/null
++++ b/bolt/test/AArch64/merge-text-sections.s
+@@ -0,0 +1,131 @@
++## Test option `--merge-text-sections`: all the code emitted by BOLT is
++## described by a single .text section header, with a local marker symbol
++## recording the name and start address each folded section had before
++## the merge.
++
++# REQUIRES: system-linux
++
++## The .cfi_* directives give the input an .eh_frame, which BOLT lays out
++## immediately after the new code, so the merged section is followed by an
++## unrelated allocatable section.
++# RUN: llvm-mc -filetype=obj -triple=aarch64-linux %s -o %t.o
++# RUN: ld.lld %t.o -o %t.exe -q --entry=_start
++# RUN: link_fdata --no-lbr %s %t.exe %t.fdata
++
++## Baseline: without the option, hot and cold code get separate headers.
++# RUN: llvm-bolt %t.exe -o %t.base --data %t.fdata --split-functions
++# RUN: llvm-readelf -S %t.base | FileCheck %s --check-prefix=CHECK-BASE
++
++# CHECK-BASE-DAG: ] .text {{.*}} AX
++# CHECK-BASE-DAG: ] .text.cold {{.*}} AX
++
++## Merged: one .text header, and no .text.cold.
++# RUN: llvm-bolt %t.exe -o %t.merged --data %t.fdata --split-functions \
++# RUN:         --merge-text-sections 2>&1 \
++# RUN:   | FileCheck %s --check-prefix=CHECK-INFO
++# RUN: llvm-readelf -S %t.merged | FileCheck %s --check-prefix=CHECK-SEC
++# RUN: llvm-readelf -S %t.merged | FileCheck %s --check-prefix=CHECK-NOCOLD
++
++# CHECK-INFO: BOLT-INFO: merged {{[0-9]+}} code sections into .text
++
++# CHECK-SEC: ] .text {{.*}} AX
++## The unwind table sits immediately after the merged code and
++## must still be described by its own header.
++# CHECK-SEC: ] .eh_frame {{.*}} A
++# CHECK-NOCOLD-NOT: .text.cold
++
++## The original .text is preserved as .bolt.org.text. It lives at its input
++## address, is not adjacent to the new code, and is never merged.
++# RUN: llvm-readelf -S %t.merged | FileCheck %s --check-prefix=CHECK-ORG
++# CHECK-ORG: ] .bolt.org.text {{.*}} AX
++
++## Marker symbols are local with size zero and resolve to the merged .text,
++## as does the cold fragment of the split function, which would otherwise be
++## left pointing at SHN_UNDEF.
++# RUN: llvm-readelf -s %t.merged | grep -E "bolt\.pre_merge|chain\.cold\." \
++# RUN:   | sort -k8 > %t.merged.markers
++# RUN: FileCheck %s --check-prefix=CHECK-SYMS --input-file=%t.merged.markers
++# RUN: FileCheck %s --check-prefix=CHECK-NOUND --input-file=%t.merged.markers
++
++# CHECK-SYMS:      {{[0-9]+}}: {{[0-9a-f]+}} 0 NOTYPE LOCAL DEFAULT
++# CHECK-SYMS-SAME: [[TEXT:[0-9]+]] .bolt.pre_merge.text{{$}}
++# CHECK-SYMS:      {{[0-9]+}}: {{[0-9a-f]+}} 0 NOTYPE LOCAL DEFAULT
++# CHECK-SYMS-SAME: [[TEXT]] .bolt.pre_merge.text.cold{{$}}
++# CHECK-SYMS:      FUNC LOCAL DEFAULT [[TEXT]] chain.cold.0
++# CHECK-NOUND-NOT: UND
++
++## Merging only rewrites section headers, so every function and fragment keeps
++## the address and size it had without the option.
++# RUN: llvm-readelf -s %t.base | grep " FUNC " | awk '{print $2, $3, $8}' \
++# RUN:   | sort > %t.base.syms
++# RUN: llvm-readelf -s %t.merged | grep " FUNC " | awk '{print $2, $3, $8}' \
++# RUN:   | sort > %t.merged.syms
++# RUN: diff %t.base.syms %t.merged.syms
++
++## --hot-functions-at-end lays cold code first. Merging still applies: the run
++## of new code is contiguous either way, and the marker preserves the identity
++## of the head section even though it is renamed to .text.
++# RUN: llvm-bolt %t.exe -o %t.rev --data %t.fdata --split-functions \
++# RUN:         --hot-functions-at-end --merge-text-sections
++# RUN: llvm-readelf -S %t.rev | FileCheck %s --check-prefix=CHECK-SEC
++# RUN: llvm-readelf -S %t.rev | FileCheck %s --check-prefix=CHECK-NOCOLD
++# RUN: llvm-readelf -s %t.rev | grep -E "bolt\.pre_merge|chain\.cold\." \
++# RUN:   | sort -k8 > %t.rev.markers
++# RUN: FileCheck %s --check-prefix=CHECK-SYMS --input-file=%t.rev.markers
++# RUN: FileCheck %s --check-prefix=CHECK-NOUND --input-file=%t.rev.markers
++
++## The option requires relocation mode.
++# RUN: ld.lld %t.o -o %t.norelocs --entry=_start
++# RUN: not llvm-bolt %t.norelocs -o %t.null --merge-text-sections 2>&1 \
++# RUN:   | FileCheck %s --check-prefix=CHECK-NORELOC
++
++# CHECK-NORELOC: BOLT-ERROR: --merge-text-sections requires relocation mode
++
++        .text
++        .globl  _start
++        .type   _start, %function
++_start:
++        .cfi_startproc
++        stp     x29, x30, [sp, #-16]!
++        .cfi_def_cfa_offset 16
++        .cfi_offset w30, -8
++        .cfi_offset w29, -16
++        mov     x29, sp
++        .cfi_def_cfa w29, 16
++        mov     w0, #1
++        bl      chain
++        ldp     x29, x30, [sp], #16
++        ret
++        .cfi_endproc
++        .size   _start, .-_start
++
++        .globl  chain
++        .type   chain, %function
++chain:
++.entry_bb:
++# FDATA: 1 chain #.entry_bb# 100
++        .cfi_startproc
++        stp     x29, x30, [sp, #-16]!
++        .cfi_def_cfa_offset 16
++        .cfi_offset w30, -8
++        .cfi_offset w29, -16
++        mov     x29, sp
++        .cfi_def_cfa w29, 16
++        cmp     w0, #2
++        b.ge    .Lcold_bb
++        mov     w0, #5
++        ldp     x29, x30, [sp], #16
++        ret
++.Lcold_bb:
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        add     w0, w0, #1
++        ldp     x29, x30, [sp], #16
++        ret
++        .cfi_endproc
++        .size   chain, .-chain
+
+From f3da23783495fc141f5e74e43cd19dc03048df70 Mon Sep 17 00:00:00 2001
+From: YongKang Zhu <yongzhu@fb.com>
+Date: Sun, 23 Aug 2026 15:34:25 -0700
+Subject: [PATCH 2/2] Add a new case in the new test to cover '--use-old-text'
+
+---
+ bolt/test/AArch64/merge-text-sections.s | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/bolt/test/AArch64/merge-text-sections.s b/bolt/test/AArch64/merge-text-sections.s
+index 1bf3c0f5a1fbb..ccf30e55030bb 100644
+--- a/bolt/test/AArch64/merge-text-sections.s
++++ b/bolt/test/AArch64/merge-text-sections.s
+@@ -81,6 +81,17 @@
+ 
+ # CHECK-NORELOC: BOLT-ERROR: --merge-text-sections requires relocation mode
+ 
++## Verify `--merge-text-sections` works with `--use-old-text`.
++# RUN: llvm-bolt %t.exe -o %t.uot --data %t.fdata --split-functions \
++# RUN:         --use-old-text --merge-text-sections --align-text=4
++# RUN: llvm-readelf -S %t.uot | FileCheck %s --check-prefix=CHECK-SEC
++# RUN: llvm-readelf -S %t.uot | FileCheck %s --check-prefix=CHECK-NOCOLD
++# RUN: llvm-readelf -S %t.uot | FileCheck %s --check-prefix=CHECK-ORG
++# RUN: llvm-readelf -s %t.uot | grep -E "bolt\.pre_merge|chain\.cold\." \
++# RUN:   | sort -k8 > %t.uot.markers
++# RUN: FileCheck %s --check-prefix=CHECK-SYMS --input-file=%t.uot.markers
++# RUN: FileCheck %s --check-prefix=CHECK-NOUND --input-file=%t.uot.markers
++
+         .text
+         .globl  _start
+         .type   _start, %function
+@@ -129,3 +140,14 @@ chain:
+         ret
+         .cfi_endproc
+         .size   chain, .-chain
++
++## Filler so the original .text section has room for BOLT generated hot and
++## cold sections under `--use-old-text`.
++        .p2align 6
++        .globl  filler
++        .type   filler, %function
++filler:
++        .rept 32
++        ret
++        .endr
++        .size filler, .-filler
