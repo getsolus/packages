@@ -1,24 +1,43 @@
-# Set  the minimum  required version  of cmake  for a  project.
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.5)
 
 set(ALGLIB_VERSION "" CACHE STRING "The package version")
+
+project(alglib
+    VERSION ${ALGLIB_VERSION}
+    LANGUAGES CXX
+)
+
+include(GNUInstallDirs)
 
 file(GLOB_RECURSE HDR RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} src/*.h)
 file(GLOB_RECURSE SRC RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} src/*.cpp)
 
 add_library(alglib SHARED ${SRC})
-set_target_properties(alglib PROPERTIES SUFFIX "-${ALGLIB_VERSION}${CMAKE_SHARED_LIBRARY_SUFFIX}")
+set_target_properties(alglib PROPERTIES
+    SOVERSION ${PROJECT_VERSION}
+    VERSION ${PROJECT_VERSION}
+)
+target_include_directories(alglib PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>
+)
 
-add_executable(test_c tests/test_c.cpp)
-add_executable(test_i tests/test_i.cpp)
-# add_executable(test_x tests/test_x.cpp)
-set_target_properties(test_c PROPERTIES COMPILE_FLAGS "-DAE_USE_ALLOC_COUNTER -DAE_DEBUG4POSIX")
-set_target_properties(test_i PROPERTIES COMPILE_FLAGS "-DAE_USE_ALLOC_COUNTER -DAE_DEBUG4POSIX")
-# set_target_properties(test_x PROPERTIES COMPILE_FLAGS "-DAE_USE_ALLOC_COUNTER -DAE_DEBUG4POSIX")
-include_directories(src/)
-target_link_libraries(test_c alglib)
-target_link_libraries(test_i alglib)
-# target_link_libraries(test_x alglib)
+install(TARGETS alglib)
+install(FILES ${HDR} DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/alglib)
 
-install(TARGETS alglib LIBRARY DESTINATION lib${LIB_SUFFIX})
-install(FILES ${HDR} DESTINATION include/alglib)
+enable_testing()
+
+foreach(test IN ITEMS
+    test_c
+    test_i
+    # test_x
+)
+    add_executable(${test} tests/${test}.cpp)
+    target_compile_definitions(${test} PRIVATE
+        AE_USE_ALLOC_COUNTER
+        AE_DEBUG4POSIX
+    )
+    target_link_libraries(${test} PRIVATE alglib)
+    add_test(NAME ${test}
+        COMMAND ${test}
+    )
+endforeach()
