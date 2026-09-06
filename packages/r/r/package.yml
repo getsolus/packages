@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : r
 version    : 4.6.1
-release    : 58
+release    : 59
 source     :
     - https://cran.r-project.org/src/base/R-4/R-4.6.1.tar.gz : 4da6e61d2c0aac5f14a2e7e432cb5fcc269efe83da4293050ba7f03dff4e2cf4
 homepage   : https://www.r-project.org/
@@ -29,14 +29,17 @@ builddeps  :
     - pkgconfig(xscrnsaver)
     - gfortran
     - libiconv-devel
+    - llvm-bolt
     - openblas-devel
     - xdg-utils
-extract    : false
 environment: |
     unset LD_AS_NEEDED
 setup      : |
-    # manually extract to work around https://github.com/getsolus/solbuild/issues/126
-    tar --strip-components=1 -xf $sources/R-%version%.tar.gz
+    # Patch just the needed files with flags appropriate for bolt
+    # to avoid bloating package size with needless text relocations
+    %patch -p0 -i $pkgfiles/bolt.patch
+    # Always fails and --keep-going isn't respected
+    %patch -p0 -i $pkgfiles/disable-reg-packages-test.patch
 
     %configure \
         --enable-R-shlib \
@@ -48,8 +51,17 @@ setup      : |
         rsharedir=/usr/share/R
 build      : |
     %make
+profile    : |
+    %make check --keep-going || :
 install    : |
     %make_install
+
+    %bolt_instr ./lib/libR.so
+    %make check --keep-going || :
+    %bolt_merge ./lib/libR.so
+    %bolt_opt ./lib/libR.so -merge-text-sections
+    install -Dm00644 ./lib/libR.so $installdir/usr/lib64/R/lib/libR.so
+
     %install_license COPYING
 patterns   :
     - /usr/include/R
