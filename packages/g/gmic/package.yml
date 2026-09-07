@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : gmic
-version    : 3.7.4
-release    : 64
+version    : 4.0.5
+release    : 65
 source     :
-    - https://gmic.eu/files/source/gmic_3.7.4.tar.gz : f9f0e5267b26b3c8e683092df87159173b649e69bccfd1481cacd4d294398adf
+    - https://gmic.eu/files/source/gmic_4.0.5.tar.gz : c6771c48693ed615b2e85d1db7a9626358d4606eb2c75dcf009b2924f396da59
 homepage   : https://gmic.eu/
 license    :
     - CECILL-2.1
@@ -16,8 +16,6 @@ summary    :
     - gimp : G'MIC plugin for GIMP
 description: |
     G'MIC is a full-featured open-source framework for image processing, distributed under the CeCILL free software licenses (LGPL-like and/or GPL-compatible). It provides several different user interfaces to convert / manipulate / filter / visualize generic image datasets, ranging from 1d scalar signals to 3d+t sequences of multi-spectral volumetric images, hence including 2d color images.
-patterns   :
-    - gimp : /usr/lib64/gimp
 builddeps  :
     - pkgconfig(GraphicsMagick)
     - pkgconfig(OpenEXR)
@@ -36,41 +34,53 @@ rundeps    :
     - gimp : gmic
 build      : |
     # Build gmic
-    %cmake -B build \
+    %cmake_ninja \
         -DBUILD_LIB_STATIC=OFF \
         -DENABLE_DYNAMIC_LINKING=ON \
         -DENABLE_OPENCV=ON
-    %make -C build
+    %cmake_build
 
     # Temporary install so we can link gmic-qt
-    DESTDIR="tmp-install" cmake --install build
+    DESTDIR="tmp-install" cmake --install solusBuildDir
 
-    # Build gmic-qt gimp and krita plugins
+    # Build GIMP and Krita plugins
+    common_flags=(
+        -DENABLE_DYNAMIC_LINKING=ON \
+        -DGMIC_PATH=${workdir}/src \
+        -DCMAKE_PREFIX_PATH=${workdir}/tmp-install/usr \
+        -DBUILD_WITH_QT6=ON \
+    )
+
     pushd gmic-qt
-    export LDFLAGS="$LDFLAGS -L../build"
-    %cmake -B build-qt \
-        -DENABLE_DYNAMIC_LINKING=ON \
-        -DGMIC_PATH=$workdir/src \
-        -DCMAKE_PREFIX_PATH=$workdir/tmp-install/usr \
-        -DBUILD_WITH_QT6=ON \
-        -DGMIC_QT_HOST=none
-    %make -C build-qt
+    for build in qt gimp; do
+        qt_host="none"
 
-    %cmake -B build-gimp \
-        -DENABLE_DYNAMIC_LINKING=ON \
-        -DGMIC_PATH=$workdir/src \
-        -DCMAKE_PREFIX_PATH=$workdir/tmp-install/usr \
-        -DBUILD_WITH_QT6=ON \
-        -DGMIC_QT_HOST=gimp3
-    %make -C build-gimp
+        if [[ "${build}" == "gimp" ]]; then
+            qt_host="gimp3"
+        fi
+
+        export LDFLAGS="$LDFLAGS -L../solusBuildDir"
+        %cmake_ninja -B "build-${build}" \
+            "${common_flags[@]}" \
+            -DGMIC_QT_HOST="${qt_host}"
+
+        BUILDDIR="build-${build}"
+        %cmake_build
+    done
     popd
 install    : |
-    %make_install -C build
+    %cmake_install
     %install_license COPYING
 
-    install -Dm00644 resources/gmic_cluts.gmz $installdir/usr/share/gmic/gmic_cluts.gmz
-    # Included by gmic.h:
-    install -Dm00644 src/gmic.cpp -t $installdir/usr/include
+    %install_file -t ${installdir}/usr/share/gmic resources/gmic_cluts.gmz
 
-    %make_install -C gmic-qt/build-qt
-    %make_install -C gmic-qt/build-gimp
+    # Included by gmic.h:
+    %install_file -t ${installdir}/usr/include src/gmic.cpp
+
+    # Install GIMP and Krita plugins
+    for build in qt gimp; do
+        BUILDDIR="gmic-qt/build-${build}"
+        %cmake_install
+    done
+patterns   :
+    - gimp : /usr/lib64/gimp
