@@ -25,7 +25,7 @@ if n != 2:
 
 version = sys.argv[1]
 
-version_regex = re.compile('[0-9]*\.[0-9]*(?:\.[0-9]*)?(?:esr)?$')
+version_regex = re.compile(r'[0-9]*\.[0-9]*(?:\.[0-9]*)?(?:esr)?$')
 if not version_regex.match(version):
     print_usage()
     exit(1)
