@@ -1,0 +1,183 @@
+From: =?utf-8?q?Joan_Bruguera_Mic=C3=B3?= <joanbrugue...@gmail.com>
+Date: Sat, 5 Aug 2023 20:54:12 +0000
+Subject: Tentative patch for broadcom-wl 6.30.223.271 driver for Linux
+ 6.5-rc1
+
+Applies on top of all the patches applied to broadcom-wl-dkms 6.30.223.271-36 on Arch Linux
+
+On Linux 6.5, due to commit 2d47c6956ab3 ("ubsan: Tighten UBSAN_BOUNDS
+on GCC"), flexible trailing arrays declared like `whatever_t foo[1];`
+will generate warnings when CONFIG_UBSAN & co. is enabled, such as:
+
+    UBSAN: array-index-out-of-bounds in /var/lib/dkms/broadcom-wl/6.30.223.271/build/amd64/src/wl/sys/wl_linux.c:1919:4
+    index 2 is out of range for type 'ether_addr [1]'
+    CPU: 8 PID: 131 Comm: kworker/8:1 Tainted: P           OE      [...]
+    Hardware name: [...]
+    Workqueue: ipv6_addrconf addrconf_dad_work
+    Call Trace:
+     <TASK>
+     dump_stack_lvl+0x47/0x60
+     __ubsan_handle_out_of_bounds+0xc7/0x100
+     _wl_set_multicast_list+0x372/0x710 [wl b2d4dadbf09aee67f0822b96bf7f4b96338be49b]
+     ? __dev_mc_add+0xb3/0x150
+     [...]
+
+This was technically always wrong, but was detected now because of the
+commit above, and because Ubuntu 23.04 enables CONFIG_UBSAN by default.
+Thanks to Satadru Pramanik for the heads-up & report.
+
+Migrate them to the standard C99 syntax `whatever_t foo[];` to fix it.
+(Quite a few trailing one-element arrays remain unchanged, either
+because they are never used, or never accessed past the first element)
+
+Reported-by: Satadru Pramanik <sata...@gmail.com>
+Link: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=2d47c6956ab3c8b580a59d7704aab3e2a4882b6c
+Link: https://lwn.net/Articles/936728/
+Bug-Ubuntu: https://bugs.launchpad.net/bugs/2030978
+Origin: backport, https://bugs.launchpad.net/ubuntu/+source/broadcom-sta/+bug/2030978/+attachment/5691493/+files/broadcom-wl-fix-linux-6.5.patch
+Signed-off-by: You-Sheng Yang <vicamo@gmail.com>
+---
+ amd64/src/include/bcmutils.h          |  2 +-
+ amd64/src/include/wlioctl.h           | 10 +++++-----
+ amd64/src/wl/sys/wl_cfg80211_hybrid.c |  4 ++--
+ amd64/src/wl/sys/wl_cfg80211_hybrid.h |  6 +++---
+ amd64/src/wl/sys/wl_iw.c              |  4 ++--
+ 5 files changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/amd64/src/include/bcmutils.h b/amd64/src/include/bcmutils.h
+index 5fafe3d..7ad55ae 100644
+--- a/amd64/src/include/bcmutils.h
++++ b/amd64/src/include/bcmutils.h
+@@ -558,7 +558,7 @@ typedef struct bcm_bit_desc_ex {
+ typedef struct bcm_tlv {
+ 	uint8	id;
+ 	uint8	len;
+-	uint8	data[1];
++	uint8	data[];
+ } bcm_tlv_t;
+ 
+ #define bcm_valid_tlv(elt, buflen) ((buflen) >= 2 && (int)(buflen) >= (int)(2 + (elt)->len))
+diff --git a/amd64/src/include/wlioctl.h b/amd64/src/include/wlioctl.h
+index 2c05c7c..d47ce17 100644
+--- a/amd64/src/include/wlioctl.h
++++ b/amd64/src/include/wlioctl.h
+@@ -91,7 +91,7 @@ typedef struct wl_scan_results {
+ 	uint32 buflen;
+ 	uint32 version;
+ 	uint32 count;
+-	wl_bss_info_t bss_info[1];
++	wl_bss_info_t bss_info[];
+ } wl_scan_results_t;
+ 
+ #define WL_MAXRATES_IN_SET		16	
+@@ -129,7 +129,7 @@ typedef struct wl_uint32_list {
+ 
+ 	uint32 count;
+ 
+-	uint32 element[1];
++	uint32 element[];
+ } wl_uint32_list_t;
+ 
+ typedef struct wl_assoc_params {
+@@ -247,7 +247,7 @@ typedef struct _pmkid {
+ 
+ typedef struct _pmkid_list {
+ 	uint32	npmkid;
+-	pmkid_t	pmkid[1];
++	pmkid_t	pmkid[];
+ } pmkid_list_t;
+ 
+ typedef struct _pmkid_cand {
+@@ -257,7 +257,7 @@ typedef struct _pmkid_cand {
+ 
+ typedef struct _pmkid_cand_list {
+ 	uint32	npmkid_cand;
+-	pmkid_cand_t	pmkid_cand[1];
++	pmkid_cand_t	pmkid_cand[];
+ } pmkid_cand_list_t;
+ 
+ typedef struct {
+@@ -278,7 +278,7 @@ typedef struct channel_info {
+ 
+ struct maclist {
+ 	uint count;			
+-	struct ether_addr ea[1];	
++	struct ether_addr ea[];
+ };
+ 
+ typedef struct wl_ioctl {
+diff --git a/amd64/src/wl/sys/wl_cfg80211_hybrid.c b/amd64/src/wl/sys/wl_cfg80211_hybrid.c
+index 3cd1eab..26e10b1 100644
+--- a/amd64/src/wl/sys/wl_cfg80211_hybrid.c
++++ b/amd64/src/wl/sys/wl_cfg80211_hybrid.c
+@@ -1622,7 +1622,7 @@ wl_cfg80211_del_pmksa(struct wiphy *wiphy, struct net_device *dev,
+                       struct cfg80211_pmksa *pmksa)
+ {
+ 	struct wl_cfg80211_priv *wl = wiphy_to_wl(wiphy);
+-	struct _pmkid_list pmkid;
++	struct { pmkid_t pmkid[1]; } pmkid;
+ 	s32 err = 0;
+ 	int i;
+ 
+@@ -2030,7 +2030,7 @@ static s32 wl_inform_single_bss(struct wl_cfg80211_priv *wl, struct wl_bss_info
+ 		WL_DBG(("Beacon is larger than buffer. Discarding\n"));
+ 		return -E2BIG;
+ 	}
+-	notif_bss_info = kzalloc(sizeof(*notif_bss_info) + sizeof(*mgmt) - sizeof(u8) +
++	notif_bss_info = kzalloc(sizeof(*notif_bss_info) + sizeof(*mgmt) +
+ 	                         WL_BSS_INFO_MAX, GFP_KERNEL);
+ 	if (!notif_bss_info) {
+ 		WL_ERR(("notif_bss_info alloc failed\n"));
+diff --git a/amd64/src/wl/sys/wl_cfg80211_hybrid.h b/amd64/src/wl/sys/wl_cfg80211_hybrid.h
+index 014c399..e117897 100644
+--- a/amd64/src/wl/sys/wl_cfg80211_hybrid.h
++++ b/amd64/src/wl/sys/wl_cfg80211_hybrid.h
+@@ -126,7 +126,7 @@ struct wl_cfg80211_bss_info {
+ 	u16 channel;
+ 	s16 rssi;
+ 	u16 frame_len;
+-	u8 frame_buf[1];
++	u8 frame_buf[];
+ };
+ 
+ struct wl_cfg80211_scan_req {
+@@ -142,7 +142,7 @@ struct wl_cfg80211_event_q {
+ 	struct list_head eq_list;
+ 	u32 etype;
+ 	wl_event_msg_t emsg;
+-	s8 edata[1];
++	s8 edata[];
+ };
+ 
+ struct wl_cfg80211_security {
+@@ -174,7 +174,7 @@ struct wl_cfg80211_assoc_ielen {
+ 
+ struct wl_cfg80211_pmk_list {
+ 	pmkid_list_t pmkids;
+-	pmkid_t foo[MAXPMKID - 1];
++	pmkid_t foo[MAXPMKID];
+ };
+ 
+ struct wl_cfg80211_priv {
+diff --git a/amd64/src/wl/sys/wl_iw.c b/amd64/src/wl/sys/wl_iw.c
+index e346b15..e28de40 100644
+--- a/amd64/src/wl/sys/wl_iw.c
++++ b/amd64/src/wl/sys/wl_iw.c
+@@ -1875,7 +1875,7 @@ wl_iw_set_encodeext(
+ #if WIRELESS_EXT > 17
+ struct {
+ 	pmkid_list_t pmkids;
+-	pmkid_t foo[MAXPMKID-1];
++	pmkid_t foo[MAXPMKID];
+ } pmkid_list;
+ static int
+ wl_iw_set_pmksa(
+@@ -1898,7 +1898,7 @@ wl_iw_set_pmksa(
+ 		bzero((char *)&pmkid_list, sizeof(pmkid_list));
+ 	}
+ 	if (iwpmksa->cmd == IW_PMKSA_REMOVE) {
+-		pmkid_list_t pmkid, *pmkidptr;
++		struct { pmkid_t pmkid[1]; } pmkid, *pmkidptr;
+ 		pmkidptr = &pmkid;
+ 		bcopy(&iwpmksa->bssid.sa_data[0], &pmkidptr->pmkid[0].BSSID, ETHER_ADDR_LEN);
+ 		bcopy(&iwpmksa->pmkid[0], &pmkidptr->pmkid[0].PMKID, WPA2_PMKID_LEN);

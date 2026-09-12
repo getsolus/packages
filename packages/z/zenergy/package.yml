@@ -1,16 +1,18 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : zenergy
 version    : 1.0.3
-release    : 50
+release    : 51
 source     :
     - https://github.com/uni-dos/zenergy/archive/refs/tags/1.0.3.tar.gz : 196576654ab84f5614d63d68d7f62b63e5f7970ef2cb11f0bad63fa1fce78418
 homepage   : https://github.com/uni-dos/zenergy
 license    : GPL-2.0-only
 component  :
     - kernel.drivers
+    - common : system.utils
     - current : kernel.drivers
 summary    :
     - AMD Zen energy driver for the linux-lts kernel
+    - common : Common component for zenergy kernel modules
     - current : AMD Zen energy driver for the linux-current kernel
 description: |
     Based on AMD_ENERGY driver, modified so non-root users can read it safely. Exposes the energy counters that are reported via the Running Average Power Limit (RAPL) Model-specific Registers (MSRs) through the hardware monitor (HWMON) sysfs interface.
@@ -19,31 +21,38 @@ builddeps  :
     - linux-current-headers
     - linux-lts
     - linux-lts-headers
-patterns   :
+rundeps    :
     - current :
-        - /usr/lib64/modules/*.current
+        - zenergy-common
+    - zenergy-common
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
-    # Prep build dirs for each kernel version
-    pushd ../
-        for KVER in %kernel_version_lts% %kernel_version_current%
-        do
-          cp -ra "zenergy-%version%" ${KVER}-build
-        done
-    popd
+    pushd ..
+
+    for _kernel in "${kernels[@]}"; do
+        cp -a "zenergy-${version}" "${_kernel}"
+    done
 build      : |
-    for KVER in %kernel_version_lts% %kernel_version_current%
-    do
-       pushd ${KVER}-build
-       %make KDIR=/usr/lib64/modules/$KVER/build
-       popd
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %make KDIR="%libdir%/modules/${_kernel}/build"
+        popd
     done
 install    : |
-    for KVER in %kernel_version_lts% %kernel_version_current%
-    do
-
-    pushd ${KVER}-build
-    install -Dm00644 zenergy.ko -t $installdir%libdir%/modules/$KVER/extra/drivers/platform/x86/
-    popd
-
+    for _kernel in "${kernels[@]}"; do
+        pushd "${_kernel}"
+        %install_file zenergy.ko -t "${installdir}/%libdir%/modules/${_kernel}/extra/drivers/platform/x86"
+        %install_license LICENSE
+        popd
     done
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+
+    find "${installdir}" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+patterns   :
+    - common :
+        - /usr/share/licenses
+    - current :
+        - /usr/lib64/modules/*.current

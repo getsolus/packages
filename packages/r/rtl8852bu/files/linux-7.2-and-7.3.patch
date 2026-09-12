@@ -1,0 +1,262 @@
+From fdc8bb679d432f72512ecbaa37068656d13f6a80 Mon Sep 17 00:00:00 2001
+From: Devin Wittmayer <lucid_duck@justthetip.ca>
+Date: Sun, 6 Sep 2026 23:11:39 -0700
+Subject: [PATCH 1/2] Build on kernel 7.2: the kernel dropped strncpy
+
+Five calls compile in this driver. Each is a different judgement.
+
+The platform-layer wrapper needs care. Its eight callers copy a fixed number
+of bytes into the middle of a buffer, one splices text into a filename, and
+none of them wants a terminator. The safe modern replacement adds one, which
+compiles cleanly and quietly corrupts the regulatory file parser, so the
+wrapper keeps its old behaviour in a few lines of its own. Tested against the
+C library across 45 cases, no differences.
+
+Two calls already write their own terminator on the next line. Two more fill
+a fixed width field. Those take the standard replacements, gated so older
+kernels are untouched.
+---
+ os_dep/linux/ioctl_cfg80211.c |  8 ++++++++
+ os_dep/linux/ioctl_linux.c    |  4 ++++
+ os_dep/linux/os_intfs.c       |  4 ++++
+ phl/pltfm_ops_linux.h         | 15 ++++++++++++++-
+ 4 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/os_dep/linux/ioctl_cfg80211.c b/os_dep/linux/ioctl_cfg80211.c
+index 371dd2b..07c7ef9 100644
+--- a/os_dep/linux/ioctl_cfg80211.c
++++ b/os_dep/linux/ioctl_cfg80211.c
+@@ -1938,7 +1938,11 @@ static int cfg80211_rtw_add_key(struct wiphy *wiphy,
+ 		goto addkey_end;
+ 	}
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0))
++	strscpy_pad((char *)param->u.crypt.alg, alg_name, IEEE_CRYPT_ALG_NAME_LEN);
++#else
+ 	strncpy((char *)param->u.crypt.alg, alg_name, IEEE_CRYPT_ALG_NAME_LEN);
++#endif
+ 
+ 
+ 	if (!mac_addr || is_broadcast_ether_addr(mac_addr)
+@@ -5295,7 +5299,11 @@ static int rtw_cfg80211_add_monitor_if(_adapter *padapter, char *name, struct ne
+ 	}
+ 
+ 	mon_ndev->type = ARPHRD_IEEE80211_RADIOTAP;
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0))
++	strscpy(mon_ndev->name, name, IFNAMSIZ);
++#else
+ 	strncpy(mon_ndev->name, name, IFNAMSIZ);
++#endif
+ 	mon_ndev->name[IFNAMSIZ - 1] = 0;
+ #if (LINUX_VERSION_CODE > KERNEL_VERSION(4, 11, 8))
+ 	mon_ndev->priv_destructor = rtw_ndev_destructor;
+diff --git a/os_dep/linux/ioctl_linux.c b/os_dep/linux/ioctl_linux.c
+index b4a8d82..9ad4e81 100644
+--- a/os_dep/linux/ioctl_linux.c
++++ b/os_dep/linux/ioctl_linux.c
+@@ -2976,7 +2976,11 @@ static int rtw_wx_set_enc_ext(struct net_device *dev,
+ 		goto exit;
+ 	}
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0))
++	strscpy_pad((char *)param->u.crypt.alg, alg_name, IEEE_CRYPT_ALG_NAME_LEN);
++#else
+ 	strncpy((char *)param->u.crypt.alg, alg_name, IEEE_CRYPT_ALG_NAME_LEN);
++#endif
+ 
+ 	if (pext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY)
+ 		param->u.crypt.set_tx = 1;
+diff --git a/os_dep/linux/os_intfs.c b/os_dep/linux/os_intfs.c
+index 7b4c8a0..590f69c 100644
+--- a/os_dep/linux/os_intfs.c
++++ b/os_dep/linux/os_intfs.c
+@@ -299,7 +299,11 @@ int rtw_ndev_init(struct net_device *dev)
+ 
+ 	RTW_PRINT(FUNC_ADPT_FMT" if%d mac_addr="MAC_FMT"\n"
+ 		, FUNC_ADPT_ARG(adapter), (adapter->iface_id + 1), MAC_ARG(dev->dev_addr));
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0))
++	strscpy(adapter->old_ifname, dev->name, IFNAMSIZ);
++#else
+ 	strncpy(adapter->old_ifname, dev->name, IFNAMSIZ);
++#endif
+ 	adapter->old_ifname[IFNAMSIZ - 1] = '\0';
+ #ifdef CONFIG_ARCH_CORTINA
+ 	dev->priv_flags = IFF_DOMAIN_WLAN;
+diff --git a/phl/pltfm_ops_linux.h b/phl/pltfm_ops_linux.h
+index 32f19d2..816fc27 100644
+--- a/phl/pltfm_ops_linux.h
++++ b/phl/pltfm_ops_linux.h
+@@ -54,7 +54,20 @@ static inline char *_os_strcpy(char *dest, const char *src)
+ }
+ static inline char *_os_strncpy(char *dest, const char *src, size_t n)
+ {
+-	return strncpy(dest, src, n);
++	size_t i;
++
++	/* strncpy() was removed from the kernel in 7.2. Callers here copy a
++	 * fixed number of bytes into the middle of a buffer and must not be
++	 * NUL terminated, so strscpy() is not a substitute. Keep the original
++	 * semantics: copy up to n, pad the remainder with NUL, no guarantee
++	 * of termination.
++	 */
++	for (i = 0; i < n && src[i] != '\0'; i++)
++		dest[i] = src[i];
++	for (; i < n; i++)
++		dest[i] = '\0';
++
++	return dest;
+ }
+ #if 1
+ #define _os_strchr(s, c) strchr(s, c)
+
+From bd0f018684e8ece83fffea01d8a8b210427d873c Mon Sep 17 00:00:00 2001
+From: Devin Wittmayer <lucid_duck@justthetip.ca>
+Date: Sun, 6 Sep 2026 23:11:39 -0700
+Subject: [PATCH 2/2] Build on kernel 7.3: three callback changes
+
+All three now take the cookie by value, and one of them is also renamed. The
+core hands it down already assigned, so the driver stops making its own.
+
+The renamed one only compiles with SME offload switched on.
+---
+ core/rtw_smeofld.c            |  4 ++++
+ include/rtw_smeofld.h         |  4 ++++
+ os_dep/linux/ioctl_cfg80211.c | 34 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 42 insertions(+)
+
+diff --git a/core/rtw_smeofld.c b/core/rtw_smeofld.c
+index b44d68a..4f594b4 100644
+--- a/core/rtw_smeofld.c
++++ b/core/rtw_smeofld.c
+@@ -21,7 +21,11 @@
+ int cfg80211_rtw_probe_client(struct wiphy *wiphy,
+ 			      struct net_device *ndev,
+ 			      const u8 *peer,
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++			      u64 cookie)
++#else
+ 			      u64 *cookie)
++#endif
+ {
+ 	RTW_INFO(FUNC_NDEV_FMT"\n", FUNC_NDEV_ARG(ndev));
+ 	return 0;
+diff --git a/include/rtw_smeofld.h b/include/rtw_smeofld.h
+index 701c596..c553eb2 100644
+--- a/include/rtw_smeofld.h
++++ b/include/rtw_smeofld.h
+@@ -54,7 +54,11 @@ struct rtw_sme_auth_data {
+ int cfg80211_rtw_probe_client(struct wiphy *wiphy,
+ 			      struct net_device *ndev,
+ 			      const u8 *peer,
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++			      u64 cookie);
++#else
+ 			      u64 *cookie);
++#endif
+ 
+ int rtw_sme_send_auth_challenge(_adapter *padapter, u8 *frame,
+ 				size_t frame_len,
+diff --git a/os_dep/linux/ioctl_cfg80211.c b/os_dep/linux/ioctl_cfg80211.c
+index 07c7ef9..518f34e 100644
+--- a/os_dep/linux/ioctl_cfg80211.c
++++ b/os_dep/linux/ioctl_cfg80211.c
+@@ -8415,8 +8415,15 @@ static s32 cfg80211_rtw_remain_on_channel(struct wiphy *wiphy,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+ 	enum nl80211_channel_type channel_type,
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	unsigned int duration, u64 cookie_in)
++#else
+ 	unsigned int duration, u64 *cookie)
++#endif
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	u64 *cookie = &cookie_in;
++#endif
+ 	s32 err = 0;
+ 	u8 remain_ch = (u8) rtw_freq2ch(channel->center_freq);
+ 	enum band_type ro_band = nl80211_band_to_rtw_band(channel->band);
+@@ -8484,7 +8491,10 @@ static s32 cfg80211_rtw_remain_on_channel(struct wiphy *wiphy,
+ 		}
+ 	}
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++#else
+ 	*cookie = ATOMIC_INC_RETURN(&pcfg80211_rochinfo->ro_ch_cookie_gen);
++#endif
+ 
+ 	RTW_INFO(FUNC_ADPT_FMT"%s ch:%u duration:%d, cookie:0x%llx\n"
+ 		, FUNC_ADPT_ARG(padapter), wdev == wiphy_to_pd_wdev(wiphy) ? " PD" : ""
+@@ -8537,8 +8547,15 @@ static s32 cfg80211_rtw_remain_on_channel(struct wiphy *wiphy,
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 8, 0))
+ 	enum nl80211_channel_type channel_type,
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	unsigned int duration, u64 cookie_in)
++#else
+ 	unsigned int duration, u64 *cookie)
++#endif
+ {
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	u64 *cookie = &cookie_in;
++#endif
+ 	s32 err = 0;
+ 	u8 remain_ch = (u8) rtw_freq2ch(channel->center_freq);
+ 	_adapter *padapter = NULL;
+@@ -8579,7 +8596,10 @@ static s32 cfg80211_rtw_remain_on_channel(struct wiphy *wiphy,
+ 	is_p2p_find = (duration < (pwdinfo->ext_listen_interval)) ? _TRUE : _FALSE;
+ #endif
+ 
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++#else
+ 	*cookie = ATOMIC_INC_RETURN(&pcfg80211_wdinfo->ro_ch_cookie_gen);
++#endif
+ 
+ 	RTW_INFO(FUNC_ADPT_FMT"%s ch:%u duration:%d, cookie:0x%llx\n"
+ 		, FUNC_ADPT_ARG(padapter), wdev == wiphy_to_pd_wdev(wiphy) ? " PD" : ""
+@@ -9034,7 +9054,11 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
+ #else
+ 	struct cfg80211_mgmt_tx_params *params,
+ #endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	u64 cookie_in)
++#else
+ 	u64 *cookie)
++#endif
+ {
+ #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 14, 0)) || defined(COMPAT_KERNEL_RELEASE)
+ 	struct ieee80211_channel *chan = params->chan;
+@@ -9044,6 +9068,9 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
+ #endif
+ #if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 2, 0))
+ 	bool no_cck = 0;
++#endif
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	u64 *cookie = &cookie_in;
+ #endif
+ 	int ret = 0;
+ 	u8 tx_ret;
+@@ -9113,7 +9140,10 @@ static int cfg80211_rtw_mgmt_tx(struct wiphy *wiphy,
+ 	pwdev_priv = adapter_wdev_data(padapter);
+ 
+ 	/* cookie generation */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++#else
+ 	*cookie = pwdev_priv->mgmt_tx_cookie++;
++#endif
+ 
+ #ifdef CONFIG_DEBUG_CFG80211
+ 	RTW_INFO(FUNC_ADPT_FMT"%s len=%zu, ch=%d"
+@@ -12282,8 +12312,12 @@ struct cfg80211_ops rtw_cfg80211_ops = {
+ 	 * hostap::nl80211_setup_ap would not call nl80211_mgmt_subscribe_ap()
+ 	 * (which SAE AP shall use).
+ 	 */
++#if (LINUX_VERSION_CODE >= KERNEL_VERSION(7, 3, 0))
++	.probe_peer = cfg80211_rtw_probe_client,
++#else
+ 	.probe_client = cfg80211_rtw_probe_client,
+ #endif
++#endif
+ #endif /* CONFIG_CFG80211_SME_OFFLOAD */
+ 	/* .auth = cfg80211_rtw_auth, */
+ 	/* .assoc = cfg80211_rtw_assoc,	 */

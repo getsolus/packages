@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : lenovo-legion-linux
 version    : 0.0.20
-release    : 51
+release    : 52
 source     :
     - https://github.com/johnfanv2/LenovoLegionLinux/archive/refs/tags/v0.0.20.tar.gz : c9974cfde03d8fd73de0a09628189f8fd9341037f10e28649b2fe5d1ec68bb2e
 extract    : false
@@ -26,16 +26,6 @@ builddeps  :
     - python-installer
     - python-setuptools
     - python-wheel
-patterns   :
-    - current :
-        - /lib64/modules/*.current/**
-        - /usr/lib64/modules/*.current/**
-    - lts :
-        - /lib64/modules/*.lts/**
-        - /usr/lib64/modules/*.lts/**
-permanent  :
-    - /lib64/modules
-    - /usr/lib64/modules
 rundeps    :
     - current :
         - lenovo-legion-linux
@@ -43,24 +33,50 @@ rundeps    :
         - lenovo-legion-linux
     - python-qt6
     - pyyaml
+environment: |
+    kernels=(
+        %kernel_version_current%
+        %kernel_version_lts%
+    )
 setup      : |
     # Prep build dirs for each kernel version
-    mkdir current lts
-    tar --strip-components=1 -xf $sources/v*.tar.gz -C current
-    tar --strip-components=1 -xf $sources/v*.tar.gz -C lts
+    for _kernel in "${kernels[@]}"; do
+        mkdir "${_kernel}"
+        tar --strip-components=1 -xf ${sources}/v*.tar.gz -C "${_kernel}"
+    done
 
     sed -i 's|version = _VERSION|version = %version%|' */python/legion_linux/setup.cfg
 build      : |
-    %make -C current/kernel_module KERNELVERSION=%kernel_version_current% KSRC=%libdir%/modules/%kernel_version_current%/build
-    %make -C lts/kernel_module KERNELVERSION=%kernel_version_lts% KSRC=%libdir%/modules/%kernel_version_lts%/build
+    for _kernel in "${kernels[@]}"; do
+        %make -C "${_kernel}/kernel_module" \
+            KERNELVERSION="${_kernel}" \
+            KSRC="%libdir%/modules/${_kernel}/build"
 
-    cd current/python/legion_linux
-    %pyproject_build
+        if [[ "${_kernel}" == *".current" ]]; then
+            pushd "${_kernel}/python/legion_linux"
+            %pyproject_build
+            popd
+        fi
+    done
 install    : |
-    install -Dm00644 current/kernel_module/legion-laptop.ko -t $installdir/%libdir%/modules/%kernel_version_current%/extra/drivers/platform/x86/
-    install -Dm00644 lts/kernel_module/legion-laptop.ko -t $installdir/%libdir%/modules/%kernel_version_lts%/extra/drivers/platform/x86/
+    for _kernel in "${kernels[@]}"; do
+        %install_file "${_kernel}/kernel_module/legion-laptop.ko" -t "${installdir}/%libdir%/modules/${_kernel}/extra/drivers/platform/x86"
 
-    find "$installdir" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+        if [[ "${_kernel}" == *".current" ]]; then
+            pushd "${_kernel}/python/legion_linux"
+            %pyproject_install
+            popd
+        fi
 
-    cd current/python/legion_linux
-    %pyproject_install
+        %install_license "${_kernel}/LICENSE"
+    done
+
+    find "${installdir}" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
+patterns   :
+    - current :
+        - /usr/lib64/modules/*.current/**
+    - lts :
+        - /usr/lib64/modules/*.lts/**
+permanent  :
+    - /lib64/modules
+    - /usr/lib64/modules
