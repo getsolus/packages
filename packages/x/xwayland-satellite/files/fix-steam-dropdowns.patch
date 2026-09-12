@@ -1,0 +1,766 @@
+From 55d2dd8ee2b84288778e953cdc1b096da21bb153 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Sun, 6 Sep 2026 15:04:04 +0200
+Subject: [PATCH 1/6] refactor: rename window input hint bitflag
+
+---
+ src/server/mod.rs   | 2 +-
+ src/server/tests.rs | 6 +++---
+ src/xstate/mod.rs   | 7 +++----
+ 3 files changed, 7 insertions(+), 8 deletions(-)
+
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index 379df771..e2de89c2 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -969,7 +969,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
+ 
+         let attrs = &mut self.world.get::<&mut WindowData>(id).unwrap().attrs;
+         attrs.group = hints.window_group;
+-        attrs.acquire_input_via_wm = hints.acquire_input_via_wm;
++        attrs.acquire_input_via_wm = hints.accepts_input;
+     }
+ 
+     pub fn set_take_focus(&mut self, window: x::Window, has_take_focus: bool) {
+diff --git a/src/server/tests.rs b/src/server/tests.rs
+index 0651bb2a..87dece27 100644
+--- a/src/server/tests.rs
++++ b/src/server/tests.rs
+@@ -1342,7 +1342,7 @@ fn window_group_properties() {
+         win,
+         super::WmHints {
+             window_group: Some(prop_win),
+-            acquire_input_via_wm: false,
++            accepts_input: false,
+         },
+     );
+     f.satellite.map_window(win);
+@@ -1690,7 +1690,7 @@ fn popup_focus_on_map_with_input_hint() {
+         win_popup,
+         super::WmHints {
+             window_group: None,
+-            acquire_input_via_wm: true,
++            accepts_input: true,
+         },
+     );
+     f.map_window(&comp, win_popup, &surface.obj, &buffer);
+@@ -1731,7 +1731,7 @@ fn popup_no_focus_input_hint_wm_take_focus() {
+         win_popup,
+         super::WmHints {
+             window_group: None,
+-            acquire_input_via_wm: true,
++            accepts_input: true,
+         },
+     );
+     f.satellite.set_take_focus(win_popup, true);
+diff --git a/src/xstate/mod.rs b/src/xstate/mod.rs
+index efcb13de..c886f3e9 100644
+--- a/src/xstate/mod.rs
++++ b/src/xstate/mod.rs
+@@ -1010,7 +1010,7 @@ impl From<&[u32]> for WmNormalHints {
+ #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+ pub struct WmHints {
+     pub window_group: Option<x::Window>,
+-    pub acquire_input_via_wm: bool,
++    pub accepts_input: bool,
+ }
+ 
+ impl From<&[u32]> for WmHints {
+@@ -1022,9 +1022,8 @@ impl From<&[u32]> for WmHints {
+             let window = x::Window::new(value[8]);
+             ret.window_group = Some(window);
+         }
+-        if flags.contains(WmHintsFlags::Input) {
+-            ret.acquire_input_via_wm = value[1] == 1;
+-        }
++        // if input hint isn't present, set it to true anyways incase the client is misbehaving
++        ret.accepts_input = !flags.contains(WmHintsFlags::Input) || value[1] == 1;
+ 
+         ret
+     }
+
+From 9d51b59ff3c38464e7654096c9b10a8052a26b25 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Sun, 6 Sep 2026 17:56:14 +0200
+Subject: [PATCH 2/6] fix: never focus override-redirect popups; offer
+ WM_TAKE_FOCUS when advertised
+
+---
+ src/lib.rs          |   1 +
+ src/server/event.rs |  14 +++-
+ src/server/mod.rs   |  47 ++++++++----
+ src/server/tests.rs | 178 ++++++++++++++++++++++----------------------
+ src/xstate/mod.rs   |  25 ++++++-
+ 5 files changed, 157 insertions(+), 108 deletions(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 5c861ea0..d3bf003a 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -20,6 +20,7 @@ pub trait XConnection: Sized + 'static {
+     fn set_window_dims(&mut self, window: x::Window, dims: PendingSurfaceState) -> bool;
+     fn set_fullscreen(&mut self, window: x::Window, fullscreen: bool);
+     fn focus_window(&mut self, window: x::Window, output_name: Option<String>);
++    fn send_take_focus(&mut self, window: x::Window);
+     fn close_window(&mut self, window: x::Window);
+     fn unmap_window(&mut self, window: x::Window);
+     fn raise_to_top(&mut self, window: x::Window);
+diff --git a/src/server/event.rs b/src/server/event.rs
+index c75b9f19..c03c03a5 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -431,13 +431,14 @@ impl SurfaceEvents {
+                 });
+ 
+                 if first_configure {
+-                    let window_data = data.get::<&WindowData>().unwrap();
+-                    if window_data.attrs.require_wm_focus() {
+-                        let window = *data.get::<&x::Window>().unwrap();
++                    let attrs = &data.get::<&WindowData>().unwrap().attrs;
++                    let window = *data.get::<&x::Window>().unwrap();
++                    if !attrs.override_redirect && (attrs.has_take_focus || attrs.accepts_input) {
+                         state.inner.to_focus = Some(FocusData {
+                             window,
+                             output_name: None,
+                             is_popup: true,
++                            is_take_focus: attrs.has_take_focus,
+                         });
+                     }
+                 }
+@@ -864,10 +865,17 @@ impl Event for client::wl_keyboard::Event {
+                     serial,
+                 ));
+                 let output_name = get_output_name(output, &state.world);
++                let window_data = data.get::<&WindowData>();
++                let is_take_focus = if let Some(data) = window_data {
++                    data.attrs.has_take_focus
++                } else {
++                    false
++                };
+                 state.to_focus = Some(FocusData {
+                     window: *window,
+                     output_name,
+                     is_popup: false,
++                    is_take_focus,
+                 });
+                 keyboard.enter(serial, surface, keys);
+             }
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index e2de89c2..e928d9bf 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -101,9 +101,10 @@ where
+ 
+ #[derive(Default, Debug)]
+ struct WindowAttributes {
+-    acquire_input_via_wm: bool,
++    accepts_input: bool,
+     has_take_focus: bool,
+     role: WindowRole,
++    override_redirect: bool,
+     dims: WindowDims,
+     size_hints: Option<WmNormalHints>,
+     title: Option<WmName>,
+@@ -113,13 +114,6 @@ struct WindowAttributes {
+     transient_for: Option<x::Window>,
+ }
+ 
+-impl WindowAttributes {
+-    /// AKA "Passive" input model
+-    fn require_wm_focus(&self) -> bool {
+-        self.acquire_input_via_wm && !self.has_take_focus
+-    }
+-}
+-
+ #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
+ struct WindowOutputOffset {
+     x: i32,
+@@ -140,6 +134,7 @@ impl WindowData {
+             mapped: false,
+             attrs: WindowAttributes {
+                 role: WindowRole::new_basic(override_redirect),
++                override_redirect,
+                 dims,
+                 ..Default::default()
+             },
+@@ -398,6 +393,7 @@ struct FocusData {
+     window: x::Window,
+     output_name: Option<String>,
+     is_popup: bool,
++    is_take_focus: bool,
+ }
+ 
+ #[derive(Copy, Clone, Default)]
+@@ -422,6 +418,9 @@ impl<S: X11Selection> XConnection for NoConnection<S> {
+     fn focus_window(&mut self, _: x::Window, _: Option<String>) {
+         debug!("could not focus window without XWayland initialized");
+     }
++    fn send_take_focus(&mut self, _: x::Window) {
++        debug!("could not send take focus without XWayland initialized");
++    }
+     fn close_window(&mut self, _: x::Window) {
+         debug!("could not close window without XWayland initialized");
+     }
+@@ -742,15 +741,20 @@ impl<C: XConnection> ServerState<C> {
+                 window,
+                 output_name,
+                 is_popup,
++                is_take_focus,
+             }) = self.to_focus.take()
+             {
+                 debug!(
+-                    "focusing {} {window:?}",
++                    "focusing (take_focus={is_take_focus:?}) {} {window:?}",
+                     if is_popup { "popup" } else { "window" }
+                 );
+-                self.connection.focus_window(window, output_name);
+-                if !is_popup {
+-                    self.last_focused_toplevel = Some(window);
++                if is_take_focus {
++                    self.connection.send_take_focus(window);
++                } else {
++                    self.connection.focus_window(window, output_name);
++                    if !is_popup {
++                        self.last_focused_toplevel = Some(window);
++                    }
+                 }
+             } else if self.unfocus {
+                 self.connection.focus_window(x::WINDOW_NONE, None);
+@@ -888,9 +892,24 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
+         self.windows.insert(window, id);
+     }
+ 
++    pub fn set_override_redirect(&mut self, window: x::Window, override_redirect: bool) {
++        let Some(id) = self.windows.get(&window).copied() else {
++            debug!(
++                "not setting override_redirect {override_redirect} for unknown window {window:?}"
++            );
++            return;
++        };
++
++        self.world
++            .get::<&mut WindowData>(id)
++            .unwrap()
++            .attrs
++            .override_redirect = override_redirect;
++    }
++
+     pub fn set_window_role(&mut self, window: x::Window, role: WindowRole) {
+         let Some(id) = self.windows.get(&window).copied() else {
+-            debug!("not setting popup for unknown window {window:?}");
++            debug!("not setting role {role:?} for unknown window {window:?}");
+             return;
+         };
+ 
+@@ -969,7 +988,7 @@ impl<S: X11Selection + 'static> InnerServerState<S> {
+ 
+         let attrs = &mut self.world.get::<&mut WindowData>(id).unwrap().attrs;
+         attrs.group = hints.window_group;
+-        attrs.acquire_input_via_wm = hints.accepts_input;
++        attrs.accepts_input = hints.accepts_input;
+     }
+ 
+     pub fn set_take_focus(&mut self, window: x::Window, has_take_focus: bool) {
+diff --git a/src/server/tests.rs b/src/server/tests.rs
+index 87dece27..dfbe3903 100644
+--- a/src/server/tests.rs
++++ b/src/server/tests.rs
+@@ -160,6 +160,7 @@ struct WindowData {
+ #[derive(Default)]
+ struct FakeXConnection {
+     focused_window: Option<Window>,
++    send_take_focus_window: Option<Window>,
+     windows: HashMap<Window, WindowData>,
+     set_window_dims_counter: usize,
+ }
+@@ -234,6 +235,15 @@ impl super::XConnection for FakeXConnection {
+         self.focused_window = window.into();
+     }
+ 
++    #[track_caller]
++    fn send_take_focus(&mut self, window: x::Window) {
++        assert!(
++            self.windows.contains_key(&window),
++            "Unknown window: {window:?}"
++        );
++        self.send_take_focus_window = window.into();
++    }
++
+     fn raise_to_top(&mut self, window: Window) {
+         assert!(
+             self.windows.contains_key(&window),
+@@ -858,6 +868,56 @@ impl TestFixture<FakeXConnection> {
+         (surface, popup_id)
+     }
+ 
++    #[track_caller]
++    fn setup_popup_focus_case(
++        &mut self,
++        comp: &Compositor,
++        override_redirect: bool,
++        accepts_input: Option<bool>,
++        take_focus: bool,
++    ) -> (Window, Window) {
++        let win_toplevel = Window::new(1);
++        self.create_toplevel(comp, win_toplevel);
++
++        let win_popup = Window::new(2);
++        let (buffer, surface) = comp.create_surface();
++        let data = WindowData {
++            mapped: true,
++            dims: WindowDims {
++                x: 10,
++                y: 20,
++                width: 100,
++                height: 50,
++            },
++            fullscreen: false,
++        };
++        self.new_window(win_popup, override_redirect, data);
++        if !override_redirect {
++            self.satellite
++                .set_window_role(win_popup, crate::xstate::WindowRole::Popup);
++        }
++        if let Some(accepts_input) = accepts_input {
++            self.satellite.set_win_hints(
++                win_popup,
++                super::WmHints {
++                    window_group: None,
++                    accepts_input,
++                },
++            );
++        }
++        if take_focus {
++            self.satellite.set_take_focus(win_popup, true);
++        }
++        self.map_window(comp, win_popup, &surface.obj, &buffer);
++        self.run();
++
++        let popup_id = self.check_new_surface();
++        self.testwl.configure_popup(popup_id);
++        self.run();
++
++        (win_toplevel, win_popup)
++    }
++
+     #[track_caller]
+     fn assert_window_dimensions(
+         &self,
+@@ -1647,104 +1707,44 @@ fn override_redirect_choose_hover_window() {
+ }
+ 
+ #[test]
+-fn popup_no_focus_without_input_hint() {
+-    let (mut f, comp) = TestFixture::new_with_compositor();
+-
+-    let win_toplevel = Window::new(1);
+-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
+-
+-    // A popup without acquire_input_via_wm should not receive focus.
+-    let win_popup = Window::new(2);
+-    f.create_popup(
+-        &comp,
+-        PopupBuilder::new(win_popup, win_toplevel, toplevel_id),
+-    );
+-    assert_eq!(f.connection().focused_window, Some(win_toplevel));
++fn popup_override_redirect_never_focused_nor_offered() {
++    for accepts_input in [None, Some(true), Some(false)] {
++        for take_focus in [false, true] {
++            let (mut f, comp) = TestFixture::new_with_compositor();
++
++            let (win_toplevel, _) =
++                f.setup_popup_focus_case(&comp, true, accepts_input, take_focus);
++            assert_eq!(
++                f.connection().focused_window,
++                Some(win_toplevel),
++                "accepts_input={accepts_input:?} take_focus={take_focus}"
++            );
++            assert_eq!(
++                f.connection().send_take_focus_window,
++                None,
++                "accepts_input={accepts_input:?} take_focus={take_focus}"
++            );
++        }
++    }
+ }
+ 
+ #[test]
+-fn popup_focus_on_map_with_input_hint() {
+-    let (mut f, comp) = TestFixture::new_with_compositor();
++fn popup_send_take_focus_when_advertised() {
++    for accepts_input in [None, Some(true), Some(false)] {
++        let (mut f, comp) = TestFixture::new_with_compositor();
+ 
+-    let win_toplevel = Window::new(1);
+-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
+-
+-    // A popup with acquire_input_via_wm should receive X11 keyboard focus
+-    // at map time, matching what a real X11 WM does for windows with
+-    // WM_HINTS input=True.
+-    let win_popup = Window::new(2);
+-    let (buffer, surface) = comp.create_surface();
+-    let dims = WindowDims {
+-        x: 10,
+-        y: 20,
+-        width: 100,
+-        height: 50,
+-    };
+-    let data = WindowData {
+-        mapped: true,
+-        dims,
+-        fullscreen: false,
+-    };
+-    f.new_window(win_popup, true, data);
+-    f.satellite.set_win_hints(
+-        win_popup,
+-        super::WmHints {
+-            window_group: None,
+-            accepts_input: true,
+-        },
+-    );
+-    f.map_window(&comp, win_popup, &surface.obj, &buffer);
+-    f.run();
+-
+-    let popup_id = f.check_new_surface();
+-    assert_ne!(popup_id, toplevel_id);
+-
+-    f.testwl.configure_popup(popup_id);
+-    f.run();
+-
+-    // Focus should have been given directly to the popup at map time.
+-    assert_eq!(f.connection().focused_window, Some(win_popup));
++        let (win_toplevel, win_popup) = f.setup_popup_focus_case(&comp, false, accepts_input, true);
++        assert_eq!(f.connection().focused_window, Some(win_toplevel));
++        assert_eq!(f.connection().send_take_focus_window, Some(win_popup));
++    }
+ }
+ 
+ #[test]
+-fn popup_no_focus_input_hint_wm_take_focus() {
++fn popup_focus_on_map_with_input_hint() {
+     let (mut f, comp) = TestFixture::new_with_compositor();
+ 
+-    let win_toplevel = Window::new(1);
+-    let (_, toplevel_id) = f.create_toplevel(&comp, win_toplevel);
+-
+-    let win_popup = Window::new(2);
+-    let (buffer, surface) = comp.create_surface();
+-    let dims = WindowDims {
+-        x: 10,
+-        y: 20,
+-        width: 100,
+-        height: 50,
+-    };
+-    let data = WindowData {
+-        mapped: true,
+-        dims,
+-        fullscreen: false,
+-    };
+-    f.new_window(win_popup, true, data);
+-    f.satellite.set_win_hints(
+-        win_popup,
+-        super::WmHints {
+-            window_group: None,
+-            accepts_input: true,
+-        },
+-    );
+-    f.satellite.set_take_focus(win_popup, true);
+-    f.map_window(&comp, win_popup, &surface.obj, &buffer);
+-    f.run();
+-
+-    let popup_id = f.check_new_surface();
+-    assert_ne!(popup_id, toplevel_id);
+-
+-    f.testwl.configure_popup(popup_id);
+-    f.run();
+-
+-    assert_eq!(f.connection().focused_window, Some(win_toplevel));
++    let (_, win_popup) = f.setup_popup_focus_case(&comp, false, Some(true), false);
++    assert_eq!(f.connection().focused_window, Some(win_popup));
+ }
+ 
+ #[track_caller]
+diff --git a/src/xstate/mod.rs b/src/xstate/mod.rs
+index c886f3e9..7a7e02d2 100644
+--- a/src/xstate/mod.rs
++++ b/src/xstate/mod.rs
+@@ -653,6 +653,7 @@ impl XState {
+ 
+         let transient_for = self.get_transient_for(window)?;
+         let override_redirect = self.get_override_redirect(window)?;
++        server_state.set_override_redirect(window, override_redirect);
+ 
+         let window_types = self
+             .get_net_wm_window_types(window)?
+@@ -1022,8 +1023,12 @@ impl From<&[u32]> for WmHints {
+             let window = x::Window::new(value[8]);
+             ret.window_group = Some(window);
+         }
+-        // if input hint isn't present, set it to true anyways incase the client is misbehaving
+-        ret.accepts_input = !flags.contains(WmHintsFlags::Input) || value[1] == 1;
++
++        // if input hint isn't present, set it to true anyways in case the client is misbehaving
++        ret.accepts_input = true;
++        if flags.contains(WmHintsFlags::Input) && value[1] == 0 {
++            ret.accepts_input = false;
++        }
+ 
+         ret
+     }
+@@ -1428,6 +1433,22 @@ impl XConnection for RealConnection {
+         }
+     }
+ 
++    fn send_take_focus(&mut self, window: x::Window) {
++        let resource_id = self.atoms.wm_take_focus.resource_id();
++        let data = [resource_id, x::CURRENT_TIME, 0, 0, 0];
++        let event = &x::ClientMessageEvent::new(
++            window,
++            self.atoms.wm_protocols,
++            x::ClientMessageData::Data32(data),
++        );
++        unwrap_or_skip_bad_window_ret!(self.connection.send_and_check_request(&x::SendEvent {
++            destination: x::SendEventDest::Window(window),
++            propagate: false,
++            event_mask: x::EventMask::empty(),
++            event,
++        }));
++    }
++
+     fn close_window(&mut self, window: x::Window) {
+         let cookie = self.connection.send_request(&x::GetProperty {
+             window,
+
+From 464803b0a2da0fd6496fae1cc0c98d4d47fa2323 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Tue, 8 Sep 2026 15:29:28 +0200
+Subject: [PATCH 3/6] Apply suggestion from @Supreeeme
+
+Co-authored-by: Supreeeme <yungwallace@live.com>
+---
+ src/server/event.rs | 6 +-----
+ 1 file changed, 1 insertion(+), 5 deletions(-)
+
+diff --git a/src/server/event.rs b/src/server/event.rs
+index c03c03a5..0c2836c1 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -866,11 +866,7 @@ impl Event for client::wl_keyboard::Event {
+                 ));
+                 let output_name = get_output_name(output, &state.world);
+                 let window_data = data.get::<&WindowData>();
+-                let is_take_focus = if let Some(data) = window_data {
+-                    data.attrs.has_take_focus
+-                } else {
+-                    false
+-                };
++                let is_take_focus = window_data.as_ref().is_some_and(|d| d.attrs.has_take_focus);
+                 state.to_focus = Some(FocusData {
+                     window: *window,
+                     output_name,
+
+From a4f660e1f7cf64e958259f122ad91ef8009017f3 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Tue, 8 Sep 2026 15:32:27 +0200
+Subject: [PATCH 4/6] suggested changes in event.rs
+
+---
+ src/server/event.rs | 8 ++++----
+ src/server/mod.rs   | 6 ++++++
+ 2 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/src/server/event.rs b/src/server/event.rs
+index 0c2836c1..a988bd1b 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -431,14 +431,14 @@ impl SurfaceEvents {
+                 });
+ 
+                 if first_configure {
+-                    let attrs = &data.get::<&WindowData>().unwrap().attrs;
+-                    let window = *data.get::<&x::Window>().unwrap();
+-                    if !attrs.override_redirect && (attrs.has_take_focus || attrs.accepts_input) {
++                    let window_data = data.get::<&WindowData>().unwrap();
++                    if window_data.attrs.require_wm_focus() {
++                        let window = *data.get::<&x::Window>().unwrap();
+                         state.inner.to_focus = Some(FocusData {
+                             window,
+                             output_name: None,
+                             is_popup: true,
+-                            is_take_focus: attrs.has_take_focus,
++                            is_take_focus: window_data.attrs.has_take_focus,
+                         });
+                     }
+                 }
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index e928d9bf..d8583695 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -114,6 +114,12 @@ struct WindowAttributes {
+     transient_for: Option<x::Window>,
+ }
+ 
++impl WindowAttributes {
++    fn require_wm_focus(&self) -> bool {
++        !self.override_redirect && (self.has_take_focus || self.accepts_input)
++    }
++}
++
+ #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
+ struct WindowOutputOffset {
+     x: i32,
+
+From 22cde7d2883a846f26fee8b7a26994f7e08e7a94 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Tue, 8 Sep 2026 15:48:35 +0200
+Subject: [PATCH 5/6] add missing test cases
+
+---
+ src/server/tests.rs | 33 ++++++++++++++++++++-------------
+ 1 file changed, 20 insertions(+), 13 deletions(-)
+
+diff --git a/src/server/tests.rs b/src/server/tests.rs
+index dfbe3903..4e1735ee 100644
+--- a/src/server/tests.rs
++++ b/src/server/tests.rs
+@@ -873,7 +873,7 @@ impl TestFixture<FakeXConnection> {
+         &mut self,
+         comp: &Compositor,
+         override_redirect: bool,
+-        accepts_input: Option<bool>,
++        accepts_input: bool,
+         take_focus: bool,
+     ) -> (Window, Window) {
+         let win_toplevel = Window::new(1);
+@@ -896,15 +896,14 @@ impl TestFixture<FakeXConnection> {
+             self.satellite
+                 .set_window_role(win_popup, crate::xstate::WindowRole::Popup);
+         }
+-        if let Some(accepts_input) = accepts_input {
+-            self.satellite.set_win_hints(
+-                win_popup,
+-                super::WmHints {
+-                    window_group: None,
+-                    accepts_input,
+-                },
+-            );
+-        }
++
++        self.satellite.set_win_hints(
++            win_popup,
++            super::WmHints {
++                window_group: None,
++                accepts_input,
++            },
++        );
+         if take_focus {
+             self.satellite.set_take_focus(win_popup, true);
+         }
+@@ -1708,7 +1707,7 @@ fn override_redirect_choose_hover_window() {
+ 
+ #[test]
+ fn popup_override_redirect_never_focused_nor_offered() {
+-    for accepts_input in [None, Some(true), Some(false)] {
++    for accepts_input in [true, false] {
+         for take_focus in [false, true] {
+             let (mut f, comp) = TestFixture::new_with_compositor();
+ 
+@@ -1730,7 +1729,7 @@ fn popup_override_redirect_never_focused_nor_offered() {
+ 
+ #[test]
+ fn popup_send_take_focus_when_advertised() {
+-    for accepts_input in [None, Some(true), Some(false)] {
++    for accepts_input in [true, false] {
+         let (mut f, comp) = TestFixture::new_with_compositor();
+ 
+         let (win_toplevel, win_popup) = f.setup_popup_focus_case(&comp, false, accepts_input, true);
+@@ -1743,10 +1742,18 @@ fn popup_send_take_focus_when_advertised() {
+ fn popup_focus_on_map_with_input_hint() {
+     let (mut f, comp) = TestFixture::new_with_compositor();
+ 
+-    let (_, win_popup) = f.setup_popup_focus_case(&comp, false, Some(true), false);
++    let (_, win_popup) = f.setup_popup_focus_case(&comp, false, true, false);
+     assert_eq!(f.connection().focused_window, Some(win_popup));
+ }
+ 
++#[test]
++fn popup_no_focus_without_input_hint() {
++    let (mut f, comp) = TestFixture::new_with_compositor();
++
++    let (win_toplevel, _) = f.setup_popup_focus_case(&comp, false, false, false);
++    assert_eq!(f.connection().focused_window, Some(win_toplevel));
++}
++
+ #[track_caller]
+ fn check_output_position_event(output: &TestObject<WlOutput>, pos: (i32, i32)) {
+     let mut geo = None;
+
+From f145d6a5529764355deb563f91afdc28ad7463d3 Mon Sep 17 00:00:00 2001
+From: 3akev <3akevdev@gmail.com>
+Date: Wed, 9 Sep 2026 12:16:02 +0200
+Subject: [PATCH 6/6] rename is_take_focus -> has_take_focus
+
+---
+ src/server/event.rs | 6 +++---
+ src/server/mod.rs   | 8 ++++----
+ 2 files changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/src/server/event.rs b/src/server/event.rs
+index a988bd1b..4fcf9230 100644
+--- a/src/server/event.rs
++++ b/src/server/event.rs
+@@ -438,7 +438,7 @@ impl SurfaceEvents {
+                             window,
+                             output_name: None,
+                             is_popup: true,
+-                            is_take_focus: window_data.attrs.has_take_focus,
++                            has_take_focus: window_data.attrs.has_take_focus,
+                         });
+                     }
+                 }
+@@ -866,12 +866,12 @@ impl Event for client::wl_keyboard::Event {
+                 ));
+                 let output_name = get_output_name(output, &state.world);
+                 let window_data = data.get::<&WindowData>();
+-                let is_take_focus = window_data.as_ref().is_some_and(|d| d.attrs.has_take_focus);
++                let has_take_focus = window_data.as_ref().is_some_and(|d| d.attrs.has_take_focus);
+                 state.to_focus = Some(FocusData {
+                     window: *window,
+                     output_name,
+                     is_popup: false,
+-                    is_take_focus,
++                    has_take_focus,
+                 });
+                 keyboard.enter(serial, surface, keys);
+             }
+diff --git a/src/server/mod.rs b/src/server/mod.rs
+index d8583695..a436331b 100644
+--- a/src/server/mod.rs
++++ b/src/server/mod.rs
+@@ -399,7 +399,7 @@ struct FocusData {
+     window: x::Window,
+     output_name: Option<String>,
+     is_popup: bool,
+-    is_take_focus: bool,
++    has_take_focus: bool,
+ }
+ 
+ #[derive(Copy, Clone, Default)]
+@@ -747,14 +747,14 @@ impl<C: XConnection> ServerState<C> {
+                 window,
+                 output_name,
+                 is_popup,
+-                is_take_focus,
++                has_take_focus,
+             }) = self.to_focus.take()
+             {
+                 debug!(
+-                    "focusing (take_focus={is_take_focus:?}) {} {window:?}",
++                    "focusing (take_focus={has_take_focus:?}) {} {window:?}",
+                     if is_popup { "popup" } else { "window" }
+                 );
+-                if is_take_focus {
++                if has_take_focus {
+                     self.connection.send_take_focus(window);
+                 } else {
+                     self.connection.focus_window(window, output_name);
