@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : glibc
-version    : '2.43'
-release    : 145
+version    : '2.44'
+release    : 146
 source     :
-    # release/2.43/master
-    - git|https://forge.sourceware.org/glibc/glibc-mirror.git : 7d26579873791748c20d874adb66e877412175dd
+    # release/2.44/master
+    - git|https://forge.sourceware.org/glibc/glibc-mirror.git : 1f5026241027260e9280039698bca031484c82ad
 homepage   : https://www.gnu.org/software/libc/
 license    :
     - GPL-2.0-or-later
@@ -65,56 +65,24 @@ environment: |
         --with-selinux=no
     "
 setup      : |
-    # Ensure that ldd can use all interpreters, allowing 64-bit host to run ldd
-    # against 32-bit files.
-    %patch -p1 -i $pkgfiles/0001-ldd-Force-correct-RTLDLIST-for-Solus.patch
-
-    # Enable /usr/lib32 in ldconfig without requiring config files
-    %patch -p1 -i $pkgfiles/0002-sysdeps-Add-support-for-usr-lib32-as-a-system-librar.patch
-
-    # Use a stateless ld.so.conf
-    %patch -p1 -i $pkgfiles/stateless/0003-elf-ldconfig-Use-a-stateless-ld.so.conf.patch
-
-    # Stateless /etc/shells
-    %patch -p1 -i $pkgfiles/stateless/0001-misc-Support-fallback-stateless-shells-path-in-absen.patch
-
-    # Stateless /etc/nsswitch.conf
-    %patch -p1 -i $pkgfiles/stateless/0001-Stateless-nsswitch.conf.patch
-
-    # Stateless other modules (/etc/rpc)
-    %patch -p1 -i $pkgfiles/stateless/0001-Stateless-NSS.patch
-
-    # Allow Steam users with CPU ISA not supporting AVX2 to add an environmental variable to force ldconfig to ignore hwcaps libs
-    # https://github.com/ValveSoftware/steam-for-linux/issues/10556
-    %patch -p1 -i $pkgfiles/0001-Add-hack-for-steam-users-to-skip-hwcaps-directories.patch
-
-    # locale data only exists in /usr/lib64 so hardcode it
-    %patch -p1 -i $pkgfiles/0001-Hardcode-usr-lib64-path-for-locale.patch
-
-    # Clear Linux backports for performance improvements/regression fixes.
-    %patch -p1 -i $pkgfiles/perf/0001-Set-vector-width-and-alignment-to-fix-GCC-AVX-issue.patch
-    %patch -p1 -i $pkgfiles/perf/disable-vectorization-even-more.patch
-
-    # Other Clear Linux performance patches
-    %patch -p1 -i $pkgfiles/perf/0002-tune-adaptive-spin-count.patch
-    %patch -p1 -i $pkgfiles/perf/0003-Malloc-tuning.patch
-
-    # Build glibc with both DT_HASH and DT_GNU_HASH for EasyAntiCheat on linux
-    %patch -p1 -i $pkgfiles/reenable_DT_HASH.patch
-
-    # Compress charmaps with zstd for space savings
-    %patch -p1 -i $pkgfiles/0001-Compress-charmaps-with-zstd.patch
+    %patch -p1 -i ${pkgfiles}/perf/0001-Remove-RELR-dependency-check.patch
+    %patch -p1 -i ${pkgfiles}/solus/0001-ldd-Force-correct-RTLDLIST.patch
+    %patch -p1 -i ${pkgfiles}/solus/0002-sysdeps-Add-support-for-usr-lib32-as-a-system-librar.patch
+    %patch -p1 -i ${pkgfiles}/solus/0001-Add-hack-for-steam-users-to-skip-hwcaps-directories.patch
+    %patch -p1 -i ${pkgfiles}/solus/0001-Hardcode-usr-lib64-path-for-locale.patch
+    %patch -p1 -i ${pkgfiles}/solus/reenable_DT_HASH.patch
+    %patch -p1 -i ${pkgfiles}/solus/0001-Compress-charmaps-with-zstd.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0003-elf-ldconfig-Use-a-stateless-ld.so.conf.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0001-misc-Support-fallback-stateless-shells-path-in-absen.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0001-Stateless-nsswitch.conf.patch
+    %patch -p1 -i ${pkgfiles}/stateless/0001-Stateless-NSS.patch
 
     mkdir build && cd build
 
     cet=""
     if [[ ! -z "${EMUL32BUILD}" ]]; then
-        mkdir b32 && cd b32
-
         cet="--disable-cet"
     else
-        mkdir b64 && cd b64
-
         # Only supported on x86_64 as of glibc v2.39
         cet="--enable-cet=permissive"
     fi
@@ -127,36 +95,24 @@ setup      : |
     # Note this deliberately excludes libsuffix and is not an error
     echo "complocaledir=/usr/lib/locale" >> configparms
 
-    ../../configure \
+    ../configure \
         ${COMMON_GLIBC_OPTIONS} \
         ${cet}
 build      : |
-    cd build
-
-    if [[ "${EMUL32BUILD}" ]]; then
-        cd b32
-    else
-        cd b64
-    fi
-
-    %make
+    %make -C build
 
     # Ifdef to prevent running avx2 instructions on non-avx2 machines
     if [[ -z "${AVX2BUILD}" ]]; then
-        %make bench-build
+        %make -C build bench-build
     fi
 install    : |
-    pushd build
-
     if [[ ! -z "${EMUL32BUILD}" ]]; then
-        cd b32
-        %make_install
+        %make_install -C build
     else
-        cd b64
-        %make_install
+        %make_install -C build
 
         if [[ -z "${AVX2BUILD}" ]]; then
-            %make_install localedata/install-locale-files
+            %make_install localedata/install-locale-files -C build
 
             # Hardlink everything to save space
             pushd ${installdir}/usr/lib64/locale/
@@ -212,7 +168,7 @@ install    : |
 
     # Benchmarks
     if [[ -z "${AVX2BUILD}" ]]; then
-        for f in benchtests/*; do [ -x ${f} -a ! -d ${f} ] && %install_bin ${f}; done
+        for f in build/benchtests/*; do [ -x ${f} -a ! -d ${f} ] && %install_bin ${f}; done
     fi
 
     # Clear out unneeded haswell files
@@ -231,8 +187,6 @@ install    : |
 
     # Cleanup
     find ${installdir} -type d -empty -print -delete
-
-    popd
 
     %install_license LICENSES COPYING*
 patterns   :
