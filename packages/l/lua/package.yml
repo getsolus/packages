@@ -1,25 +1,55 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : lua
-version    : 5.4.7
-release    : 8
+version    : 5.4.9
+release    : 9
 source     :
-    - https://www.lua.org/ftp/lua-5.4.7.tar.gz : 9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30
+    - https://www.lua.org/ftp/lua-5.4.9.tar.gz : 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+    - https://www.lua.org/tests/lua-5.4.9-tests.tar.gz : 7d971845f545ffc09fbb3128a86b2c6524161c70d0fdf0154a16e8c00c343fca
 license    : MIT
 homepage   : https://www.lua.org/
 component  : programming
 summary    : Lightweight programming language
 description: |
     Lua is a powerful light-weight programming language designed for extending applications. It is also frequently used as a general-purpose, stand-alone language. Lua is implemented as a small library of C functions, written in ANSI C, and compiles unmodified in all known platforms. The implementation goals are simplicity, efficiency, portability, and low embedding cost. The result is a fast language engine with small footprint, making it ideal in embedded systems too.
+optimize   :
+    - lto
+    - speed
 builddeps  :
+    - pkgconfig(mimalloc)
     - pkgconfig(readline)
 setup      : |
+    mkdir src/tests
+    tar xf $sources/lua-$version-tests.tar.gz -C $workdir/src/tests --strip-components=1
+
     %patch -p1 -i $pkgfiles/0001-Use-shared-libraries-and-proper-prefix.patch
+
     cd ..
     cp -a $workdir lua++
 build      : |
-    %make MYCFLAGS="$CFLAGS" MYLDFLAGS="$LDFLAGS" linux-readline
+    %make MYCFLAGS="$CFLAGS" MYLDFLAGS="$LDFLAGS" MYLIBS="-lmimalloc" linux-readline
     pushd ../lua++
-    %make MYCFLAGS="$CXXFLAGS" MYLDFLAGS="$LDFLAGS" CC=g++ LUA_A=liblua++.a LUA_SO=liblua++.so linux-readline
+    %make MYCFLAGS="$CXXFLAGS" MYLDFLAGS="$LDFLAGS" MYLIBS="-lmimalloc" CC=g++ LUA_A=liblua++.a LUA_SO=liblua++.so linux-readline
+profile    : |
+    # avoid OOM running heavy.lua test
+    ulimit -v $((1024 * 1024 * 8))
+
+    cd src/tests/libs
+    %make
+    cd ..
+    # all.lua doesn't keep going on failure, we want to maximize profile coverage
+    for f in *.lua; do
+        echo "===== $f ====="
+        ../lua "$f" || echo "FAIL: $f"
+    done
+
+    cd $workdir/../lua++/src/tests/libs
+    %make
+    cd ..
+    # all.lua doesn't keep going on failure, we want to maximize profile coverage
+    for f in *.lua; do
+        echo "===== $f ====="
+        ../lua "$f" || echo "FAIL: $f"
+    done
 install    : |
     %make_install INSTALL_TOP=$installdir/usr TO_LIB="liblua.so liblua.so.5.4 liblua.so.${version}" INSTALL_DATA="cp -d" INSTALL_MAN=$installdir/usr/share/man/man1
     install -Dm00644 $pkgfiles/lua-5.4.pc $installdir/usr/lib/pkgconfig/lua-5.4.pc
