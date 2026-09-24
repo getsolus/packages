@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : suricata
-version    : 8.0.6
-release    : 29
+version    : 8.0.7
+release    : 30
 source     :
-    - https://github.com/OISF/suricata/archive/suricata-8.0.6.tar.gz : 421ca46df71009f3bbd5fcf76d15fed3380b246482474897f7a7ab07240a3c48
+    - https://github.com/OISF/suricata/archive/suricata-8.0.7.tar.gz : 5a98efe60c5af38c9e7e4f76889ab4e664d9cc881c6d4cfc82735623430c11f1
 homepage   : https://suricata.io/
 license    : GPL-2.0-or-later
 component  : security
@@ -11,13 +11,18 @@ summary    : Suricata is a high performance Network IDS, IPS and Network Securit
 description: |
     The Suricata engine is capable of real time intrusion detection (IDS), inline intrusion prevention (IPS), network security monitoring (NSM) and offline pcap processing.
 builddeps  :
-    - pkgconfig(htp)
+    - pkgconfig(hiredis)
     - pkgconfig(jansson)
+    - pkgconfig(libbpf)
     - pkgconfig(libcap-ng)
     - pkgconfig(liblz4)
+    - pkgconfig(libmaxminddb)
+    - pkgconfig(libnetfilter_queue)
+    - pkgconfig(libnfnetlink)
     - pkgconfig(libpcap)
     - pkgconfig(libpcre)
     - pkgconfig(lua-5.4)
+    - pkgconfig(nspr)
     - pkgconfig(nss)
     - pkgconfig(yaml-0.1)
     - cbindgen
@@ -25,36 +30,63 @@ builddeps  :
 networking : true
 environment: |
     export CFLAGS="${CFLAGS} -fcommon"
+
+    # Ensure our Rust flags are set
+    export CARGO_PROFILE_RELEASE_DEBUG="full"
+    export CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO="off"
+    export CARGO_PROFILE_RELEASE_LTO="off"
+    export CARGO_PROFILE_RELEASE_STRIP="none"
 setup      : |
     # Irrelevant txt files are getting installed, drop them
-    %patch -p1 -i $pkgfiles/suricata-2.0.9-docs.patch
+    %patch -p1 -i ${pkgfiles}/suricata-2.0.9-docs.patch
 
-    %reconfigure --disable-static \
-               --enable-afl \
-               --enable-lua \
-               --disable-gccmarch-native \
-               --enable-non-bundled-htp \
-               --enable-gccprotect \
-               --enable-pie \
-               --enable-unittests
+    %patch -p1 -i ${pkgfiles}/suricata-5.0.4-geolite-path-fixup.patch
+    %patch -p1 -i ${pkgfiles}/suricata-6.0.3-log-path-fixup.patch
+
+    %patch -p1 -i ${pkgfiles}/0005-Fix-service-file-for-Solus.patch
+
+    %reconfigure \
+        --disable-static \
+        --enable-afl \
+        --disable-gccmarch-native \
+        --enable-gccprotect \
+        --enable-pie \
+        --enable-nfqueue \
+        --enable-af-packet \
+        --with-libnspr-includes=/usr/include/nspr4 \
+        --with-libnss-includes=/usr/include/nss3 \
+        --enable-jansson \
+        --enable-geoip \
+        --enable-lua \
+        --enable-hiredis \
+        --enable-rust \
+        --enable-ebpf-build \
+        --enable-ebpf \
+        --enable-unittests
 build      : |
     %make
 install    : |
     %make_install
     %install_license COPYING
 
-    install -d -m00755 $installdir/var/log/suricata
+    # Install configs
+    %install_file -m00600 -t ${installdir}/usr/share/defaults/suricata suricata.yaml
+    %install_file -m00600 -t ${installdir}/usr/share/defaults/suricata etc/classification.config
+    %install_file -m00600 -t ${installdir}/usr/share/defaults/suricata etc/reference.config
+    %install_file -m00600 -t ${installdir}/usr/share/defaults/suricata threshold.config
 
-    install -D -m00600 suricata.yaml $installdir/etc/suricata/suricata.yaml
-    install -D -m00600 $workdir/etc/classification.config $installdir/etc/suricata/classification.config
-    install -D -m00600 $workdir/etc/reference.config $installdir/etc/suricata/reference.config
+    # Install default rules
+    %install_dir ${installdir}/usr/share/defaults/suricata/rules
+    %install_file -m 00600 rules/*.rules ${installdir}/usr/share/defaults/suricata/rules/
 
-    install -d -m00750 $installdir/etc/suricata/rules
-    install -D -m00600 rules/*.rules $installdir/etc/suricata/rules/
+    # Install systemd service
+    %install_file -t ${installdir}/%libdir%/systemd/system etc/suricata.service
 
-    sed -i "s|#EnvironmentFile=-/etc/default/suricata|EnvironmentFile=-/etc/default/suricata|" etc/suricata.service
-    install -D -m00644 etc/suricata.service $installdir/%libdir%/systemd/system/suricata.service
+    # Sysusers and tmpfiles
+    %sysusers 'u suricata - - - -'
 
-    install -D -m00644 $pkgfiles/suricata.tmpfiles $installdir/%libdir%/tmpfiles.d/suricata.conf
+    %tmpfiles 'd /run/suricata 0755 suricata suricata -'
+    %tmpfiles 'd /var/lib/suricata 0755 suricata suricata -'
+    %tmpfiles 'd /var/log/suricata 0755 suricata suricata -'
 check      : |
     %make check || :
