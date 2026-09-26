@@ -1,16 +1,17 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : rocblas
-version    : 7.2.0
-release    : 10
+version    : 7.14
+release    : 11
 source     :
     # - https://github.com/ROCm/rocm-libraries/archive/refs/tags/rocm-7.0.2.tar.gz : 85b8afb2e233bb99567b44be7e3655e5272f9bdb36776a60efc1304eddea8c85
-    - git|https://github.com/ROCm/rocm-libraries.git : rocm-7.2.0
+    - git|https://github.com/ROCm/rocm-libraries.git : therock-7.14
 homepage   : https://github.com/ROCmSoftwarePlatform/rocBLAS
 license    : MIT
 component  : programming.library
 summary    : Next generation BLAS implementation for ROCm platform
 description: |
     rocBLAS is the AMD library for Basic Linear Algebra Subprograms (BLAS) on the ROCm platform. It is implemented in the HIP programming language and optimized for AMD GPUs.
+clang      : yes
 builddeps  :
     - pkgconfig(blas)
     - hipblaslt-devel
@@ -19,6 +20,8 @@ builddeps  :
     - msgpack-cxx
     - python-joblib
     - python-msgpack
+    - python-psutil
+    - pyyaml
     - python-wheel
     - rocm-cmake
     - rocm-hip
@@ -28,19 +31,15 @@ builddeps  :
 rundeps    :
     - hipblas-common-devel
 environment: |
+    export CFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
     export CXXFLAGS="${CXXFLAGS/-D_FORTIFY_SOURCE=2 -fstack-protector-strong --param=ssp-buffer-size=32/-fcf-protection=none}"
-    # Too noisy
-    export CXXFLAGS+=" -w"
 
     export ROCM_PATH=/usr
     export HIP_PATH=$ROCM_PATH
     export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
-    export TENSILE_ROCM_ASSEMBLER_PATH=$HIP_CLANG_PATH/clang
-    export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=$HIP_CLANG_PATH/clang-offload-bundler
-    # For Tensile toolchain detection to work
-    export PATH="$PATH:$HIP_CLANG_PATH"
+    export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=/usr/lib64/llvm-rocm/bin/clang-offload-bundler
 
     if [ -e /usr/bin/sccache ]; then
         export CMAKE_C_COMPILER_LAUNCHER=sccache
@@ -51,27 +50,25 @@ environment: |
         export Tensile_CXX_COMPILER_LAUNCHER=sccache
     fi
 setup      : |
-    %patch -p1 -i $pkgfiles/0001-tensile-Extend-ISA-compatibility-by-coercing-arches.patch
-    %patch -p1 -i $pkgfiles/0002-rocblas-Extend-ISA-compatibility.patch
+    %apply_patches
 
     sed -i 's|pip install|pip install --no-build-isolation|' projects/rocblas/cmake/virtualenv.cmake
 
     %cmake_ninja -S projects/rocblas -Wno-dev -L \
-      -DCMAKE_C_COMPILER=$HIP_CLANG_PATH/clang \
-      -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
+      -DCMAKE_C_COMPILER=amdclang \
+      -DCMAKE_CXX_COMPILER=amdclang++ \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DROCM_SYMLINK_LIBS=OFF \
-      -Dpython="/usr/bin/python3" \
       -DBUILD_CLIENTS_TESTS=OFF \
       -DBUILD_CLIENTS_BENCHMARKS=OFF \
       -DBUILD_CLIENTS_SAMPLES=OFF \
       -DBUILD_WITH_TENSILE=ON \
       -DBUILD_WITH_HIPBLASLT=ON \
-      -DTensile_PRINT_DEBUG=ON \
+      -DTensile_PRINT_DEBUG=OFF \
       -DTensile_LIBRARY_FORMAT=msgpack \
       -DTensile_CPU_THREADS=%YJOBS% \
       -DTensile_TEST_LOCAL_PATH=$PWD/shared/tensile \
-      -DGPU_TARGETS="%AMDGPUTARGETS%"
+      -DGPU_TARGETS="%AMDGPUTARGETS%;gfx906;gfx1103;gfx1152;gfx1153"
 build      : |
     %ninja_build
 install    : |
