@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Fri, 4 Nov 2022 08:15:03 +0000
+Subject: [PATCH 3/4] Exclude unwanted paths from initrd creation
+
+The goal is to keep initrd as small as possible. With the introduction of avx2
+libraries for core packages, this results in multiple versions of the same
+libraries installed into the inird.
+
+This patch has two parts:
+
+- remove lib32, libfakeroot and haswell from ldconfig lookup libdirs so the
+  included scripts don't lookup these paths for libraries to include.
+- force dracut_install to remove the avx2 directory paths from source and
+  destination files to ensure the universal library is included only instead of
+  including both versions. This also works around the current mechanism which
+  would be broken with the inclusion of AVX512 libraries in future.
+
+This does make an assumption that all haswell libraries will be in /usr/lib64
+which is safe given the lack of linking libraries in /lib64. If "/haswell/"
+isn't in the path, then the path is unaltered.
+---
+ dracut-functions.sh          |  2 +-
+ src/install/dracut-install.c | 49 +++++++++++++++++++++++++++++-------
+ 2 files changed, 41 insertions(+), 10 deletions(-)
+
+diff --git a/dracut-functions.sh b/dracut-functions.sh
+index 4535871b..5a512d52 100755
+--- a/dracut-functions.sh
++++ b/dracut-functions.sh
+@@ -87,7 +87,7 @@ find_binary() {
+ }
+ 
+ ldconfig_paths() {
+-    $DRACUT_LDCONFIG ${dracutsysrootdir:+-r ${dracutsysrootdir} -f /etc/ld.so.conf} -pN 2> /dev/null | grep -E -v '/(lib|lib64|usr/lib|usr/lib64)/[^/]*$' | sed -n 's,.* => \(.*\)/.*,\1,p' | sort | uniq
++    $DRACUT_LDCONFIG ${dracutsysrootdir:+-r ${dracutsysrootdir} -f /etc/ld.so.conf} -pN 2> /dev/null | grep -E -v '/(libfakeroot|glibc-hwcaps|lib|lib32|lib64|usr/lib|usr/lib64)/[^/]*$' | sed -n 's,.* => \(.*\)/.*,\1,p' | sort | uniq
+ }
+ 
+ # Version comparison function.  Assumes Linux style version scheme.
+diff --git a/src/install/dracut-install.c b/src/install/dracut-install.c
+index 7473e87a..4ab8ea52 100644
+--- a/src/install/dracut-install.c
++++ b/src/install/dracut-install.c
+@@ -757,8 +757,39 @@ static int dracut_mkdir(const char *src)
+         return 0;
+ }
+ 
++const char *strip_avx_path(const char *fullpath, const char *avxpath)
++{
++        int length;
++        char *spntr = NULL;
++        char npath[120] = "/usr/lib64/";
++
++        // Get pointer to found path
++        char *qpntr = strstr(fullpath, avxpath);
++
++        if(qpntr)
++        {
++                // Remove leading path from the pointer
++                length = strlen(avxpath);
++                spntr = qpntr + length;
++
++                // Join path to /usr/lib64 (dracut default)
++                strcat(npath, spntr);
++                char *resultpath = strdup(npath);
++                return resultpath;
++        }
++        return fullpath;
++}
++
+ static int dracut_install(const char *orig_src, const char *orig_dst, bool isdir, bool resolvedeps, bool hashdst)
+ {
++        const char *srctmp = NULL, *srcn = NULL;
++        const char *dsttmp = NULL, *dstn = NULL;
++
++        srctmp = strip_avx_path(orig_src, "/glibc-hwcaps/x86-64-v3/");
++        srcn = strip_avx_path(srctmp, "/glibc-hwcaps/");
++        dsttmp = strip_avx_path(orig_dst, "/glibc-hwcaps/x86-64-v3/");
++        dstn = strip_avx_path(dsttmp, "/glibc-hwcaps/");
++
+         struct stat sb;
+         _cleanup_free_ char *fullsrcpath = NULL;
+         _cleanup_free_ char *fulldstpath = NULL;
+@@ -772,21 +803,21 @@ static int dracut_install(const char *orig_src, const char *orig_dst, bool isdir
+         const char *src, *dst;
+ 
+         if (sysrootdirlen) {
+-                if (strncmp(orig_src, sysrootdir, sysrootdirlen) == 0) {
+-                        src = orig_src + sysrootdirlen;
+-                        fullsrcpath = strdup(orig_src);
++                if (strncmp(srcn, sysrootdir, sysrootdirlen) == 0) {
++                        src = srcn + sysrootdirlen;
++                        fullsrcpath = strdup(srcn);
+                 } else {
+-                        src = orig_src;
++                        src = srcn;
+                         _asprintf(&fullsrcpath, "%s%s", sysrootdir, src);
+                 }
+-                if (strncmp(orig_dst, sysrootdir, sysrootdirlen) == 0)
+-                        dst = orig_dst + sysrootdirlen;
++                if (strncmp(dstn, sysrootdir, sysrootdirlen) == 0)
++                        dst = dstn + sysrootdirlen;
+                 else
+-                        dst = orig_dst;
++                        dst = dstn;
+         } else {
+-                src = orig_src;
++                src = srcn;
+                 fullsrcpath = strdup(src);
+-                dst = orig_dst;
++                dst = dstn;
+         }
+ 
+         log_debug("dracut_install('%s', '%s', %d, %d, %d)", src, dst, isdir, resolvedeps, hashdst);

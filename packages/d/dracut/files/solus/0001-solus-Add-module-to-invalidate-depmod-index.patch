@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Thu, 18 Jul 2024 01:38:10 -0500
+Subject: [PATCH] solus: Add module to invalidate depmod index
+
+If we add an initrd extension containing additional kernel modules we need a mechanism to cause the depmod files in the initrd to be invalidated and regenerated.
+
+Do this by adding a service file which checks for the presence of `/.dracut-depmod-invalidate` and runs depmod if found, running before systemd loads kernel modules. We can just add this file to every initrd with kernel modules, and because of the property that cpio files have where only the first file matching an path is used we can add it to all such packages without causing conflicts.
+
+Signed-off-by: Reilly Brogan <reilly@reillybrogan.com>
+---
+ .../initrd-invalidate-depmod.service          | 16 +++++++++
+ modules.d/99zz-init-extension/module-setup.sh | 34 +++++++++++++++++++
+ 2 files changed, 50 insertions(+)
+ create mode 100644 modules.d/99zz-init-extension/initrd-invalidate-depmod.service
+ create mode 100755 modules.d/99zz-init-extension/module-setup.sh
+
+diff --git a/modules.d/99zz-init-extension/initrd-invalidate-depmod.service b/modules.d/99zz-init-extension/initrd-invalidate-depmod.service
+new file mode 100644
+index 00000000..f08d114c
+--- /dev/null
++++ b/modules.d/99zz-init-extension/initrd-invalidate-depmod.service
+@@ -0,0 +1,16 @@
++[Unit]
++Description=Regenerate initrd depmod index
++ConditionPathExists=/.dracut-depmod-invalidate
++DefaultDependencies=no
++Conflicts=shutdown.target
++Before=systemd-modules-load.service
++
++[Service]
++Type=oneshot
++RemainAfterExit=yes
++ExecStart=/usr/sbin/depmod
++TimeoutSec=10s
++
++[Install]
++WantedBy=initrd.target
++WantedBy=systemd-modules-load.service
+diff --git a/modules.d/99zz-init-extension/module-setup.sh b/modules.d/99zz-init-extension/module-setup.sh
+new file mode 100755
+index 00000000..20f75bd5
+--- /dev/null
++++ b/modules.d/99zz-init-extension/module-setup.sh
+@@ -0,0 +1,34 @@
++#!/bin/bash
++# This file is part of dracut.
++# SPDX-License-Identifier: GPL-2.0-or-later
++
++# Prerequisite check(s) for module.
++check() {
++
++    # If the binary(s) requirements are not fulfilled the module can't be installed.
++    require_binaries \
++        depmod \
++        || return 1
++
++    # Return 255 to only include the module, if another module requires it.
++    return 255
++
++}
++
++# Module dependency requirements.
++depends() {
++
++    # This module has external dependency on other module(s).
++    echo systemd-modules-load
++    # Return 0 to include the dependent module(s) in the initramfs.
++    return 0
++
++}
++
++# Install the required file(s) and directories for the module in the initramfs.
++install() {
++    inst_simple "$moddir/initrd-invalidate-depmod.service" "$systemdsystemunitdir/initrd-invalidate-depmod.service"
++
++    # Enable systemd type unit(s)
++    $SYSTEMCTL -q --root "$initdir" enable initrd-invalidate-depmod.service
++}
