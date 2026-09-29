@@ -1,0 +1,316 @@
+From 987032a97b824aa3fbfa1febba7a1ec9016d9e02 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <me@joshuastrobl.com>
+Date: Tue, 29 Sep 2026 19:30:17 +0300
+Subject: [PATCH] fix(bridges): stop left click on the desktop opening the root
+ menu
+
+labwc's default mousebinds open the root menu on a left press on the desktop. With a touchpad that was easy to trigger by accident, and since releasing over a menu item activates it, a stray tap-and-drag could open or run whatever item the cursor ended up on.
+
+Bind a left press on Desktop to Focus and keep the root menu on a right press, loaded after <default /> since labwc keeps the later of two identical mousebinds. Bump rc.xml to version 5 and merge the template's mouse settings and contexts into existing configs during migration, keeping any the user already has.
+
+Assisted-by: Claude:claude-opus-5-5
+Signed-off-by: Joshua Strobl <me@joshuastrobl.com>
+---
+ .../labwc_bridge/migrations/migration.py      |  60 ++++++++-
+ src/bridges/labwc/rc.xml                      |  18 ++-
+ src/bridges/labwc/tests/test_migration.py     | 121 +++++++++++++++++-
+ 3 files changed, 188 insertions(+), 11 deletions(-)
+
+diff --git a/src/bridges/labwc/labwc_bridge/migrations/migration.py b/src/bridges/labwc/labwc_bridge/migrations/migration.py
+index 52ef874d2..3ed588553 100644
+--- a/src/bridges/labwc/labwc_bridge/migrations/migration.py
++++ b/src/bridges/labwc/labwc_bridge/migrations/migration.py
+@@ -23,7 +23,7 @@
+ 
+ log = logging.getLogger(__name__)
+ 
+-CURRENT_RC_VERSION = 4
++CURRENT_RC_VERSION = 5
+ 
+ 
+ class RcXmlMigration:
+@@ -130,6 +130,53 @@ def replace_keyboard_section(
+ 
+         return True
+ 
++    def merge_mouse_section(
++        self,
++        user_et: Et.ElementTree[Et.Element],
++        template_et: Et.ElementTree[Et.Element],
++    ) -> None:
++        """Add the template's mouse settings and contexts the user's config lacks"""
++        template_mouse = template_et.getroot().find("./mouse")
++        if template_mouse is None:
++            log.info("Template has no mouse section - nothing to merge")
++            return
++
++        user_root = user_et.getroot()
++        user_mouse = user_root.find("./mouse")
++
++        if user_mouse is None:
++            user_root.append(copy.deepcopy(template_mouse))
++            log.info("Inserted mouse section from template")
++            return
++
++        # labwc keeps the later of two identical mousebinds, so <default /> must precede contexts
++        insert_at = 0
++        added_any = False
++        for template_child in template_mouse:
++            existing = self.find_mouse_child(user_mouse, template_child)
++            if existing is not None:
++                insert_at = list(user_mouse).index(existing) + 1
++                continue
++
++            user_mouse.insert(insert_at, copy.deepcopy(template_child))
++            insert_at += 1
++            added_any = True
++
++        if added_any:
++            log.info("Added missing mouse settings from template")
++        else:
++            log.info("Mouse section already has all template settings - nothing to merge")
++
++    def find_mouse_child(
++        self, user_mouse: Et.Element, template_child: Et.Element
++    ) -> Et.Element | None:
++        """The user's counterpart of a template <mouse> child, a context matched by name"""
++        name = template_child.get("name")
++        for child in user_mouse:
++            if child.tag == template_child.tag and child.get("name") == name:
++                return child
++        return None
++
+     def apply_rewrites(
+         self, user_et: Et.ElementTree[Et.Element], from_version: int
+     ) -> bool:
+@@ -148,7 +195,7 @@ def apply_rewrites(
+         return changed
+ 
+     def migrate(self) -> bool:
+-        """Merge the template's keyboard settings, apply the rewrites, and record the version"""
++        """Merge the template's keyboard and mouse settings, apply the rewrites, and record the version"""
+         user_version = self.get_rc_version(self.config.et)
+         log.info(f"Starting rc.xml migration from version {user_version}")
+ 
+@@ -169,13 +216,16 @@ def migrate(self) -> bool:
+             log.error("Migration aborted - failed to replace keyboard section")
+             return False
+ 
+-        # Step 4: Bring values written by older versions up to date
++        # Step 4: Add mouse settings and contexts the user's config lacks
++        self.merge_mouse_section(user_et, template_et)
++
++        # Step 5: Bring values written by older versions up to date
+         self.apply_rewrites(user_et, user_version)
+ 
+-        # Step 5: Set version number on user config
++        # Step 6: Set version number on user config
+         user_et.getroot().set("version", str(CURRENT_RC_VERSION))
+ 
+-        # Step 6: Write updated config
++        # Step 7: Write updated config
+         save(user_et, self.config.path)
+ 
+         return True
+diff --git a/src/bridges/labwc/rc.xml b/src/bridges/labwc/rc.xml
+index c1681c11e..c7257cb6e 100644
+--- a/src/bridges/labwc/rc.xml
++++ b/src/bridges/labwc/rc.xml
+@@ -1,13 +1,11 @@
+-<labwc_config version="4">
++<labwc_config version="5">
+ 	<desktops number="2">
+ 		<popupTime>1000</popupTime>
+ 	</desktops>
+ 	<keyboard>
+ 		<numlock>off</numlock>
+ 
+-		<!-- bridged keybinds merged from keybinds.xml(.example) and current
+-		     gsettings bridged keys.
+-		-->
++		<!-- bridged keybinds merged from keybinds.xml(.example) and current gsettings bridged keys. -->
+ 
+ 		<keybind key="XF86AudioNext">
+ 			<action name="Execute" command="dbus-send --type=method_call --dest=org.buddiesofbudgie.BudgieMprisController /org/buddiesofbudgie/MprisController org.buddiesofbudgie.BudgieMprisController.Next" />
+@@ -63,6 +61,18 @@
+ 	<windowSwitcher style="thumbnail" allWorkspaces="no" />
+ 	<mouse>
+ 		<doubleClickTime>400</doubleClickTime>
++		<default />
++		<context name="Desktop">
++    		<!-- Left click: Closes open menus, does not open anything -->
++    		<mousebind button="Left" action="Press">
++        		<action name="Focus" />
++    		</mousebind>
++
++    		<!-- Right click: Opens the desktop menu -->
++    		<mousebind button="Right" action="Press">
++        		<action name="ShowMenu" menu="root-menu" />
++    		</mousebind>
++		</context>
+ 	</mouse>
+ 	<libinput>
+ 		<device category="touchpad">
+diff --git a/src/bridges/labwc/tests/test_migration.py b/src/bridges/labwc/tests/test_migration.py
+index 1265d6862..1341397e7 100644
+--- a/src/bridges/labwc/tests/test_migration.py
++++ b/src/bridges/labwc/tests/test_migration.py
+@@ -33,10 +33,19 @@
+ 	</keyboard>
+ </labwc_config>"""
+ 
+-TEMPLATE_XML = """<labwc_config version="4">
++TEMPLATE_XML = """<labwc_config version="5">
+ 	<keyboard>
+ 		<numlock>off</numlock>
+ 	</keyboard>
++	<mouse>
++		<doubleClickTime>400</doubleClickTime>
++		<default />
++		<context name="Desktop">
++			<mousebind button="Right" action="Press">
++				<action name="ShowMenu" menu="root-menu" />
++			</mousebind>
++		</context>
++	</mouse>
+ </labwc_config>"""
+ 
+ 
+@@ -134,7 +143,8 @@ def test_a_current_config_has_nothing_to_apply(self):
+         self.assertEqual(et.getroot().findtext("./keyboard/numlock"), "1")
+ 
+     def test_corrects_the_maximize_directions_of_every_older_config(self):
+-        for version in range(migration.CURRENT_RC_VERSION):
++        # The maximize rewrites are keyed at version 4
++        for version in range(4):
+             with self.subTest(version=version):
+                 et = tree(RC_XML)
+ 
+@@ -154,6 +164,97 @@ def test_a_config_already_at_the_current_version_is_left_alone(self):
+         self.assertFalse(applied)
+ 
+ 
++class MergeMouseSectionTest(unittest.TestCase):
++    def setUp(self):
++        self.subject = subject_for(RC_XML)
++
++    def merged(self, user_xml: str, template_xml: str = TEMPLATE_XML) -> Et.Element:
++        et = tree(user_xml)
++        self.subject.merge_mouse_section(et, tree(template_xml))
++        return et.getroot()
++
++    def layout(self, root: Et.Element) -> list[tuple[str, str | None]]:
++        return [(child.tag, child.get("name")) for child in find(root, "./mouse")]
++
++    def test_inserts_the_whole_section_when_the_user_has_none(self):
++        root = self.merged(RC_XML)
++
++        self.assertEqual(
++            self.layout(root),
++            [("doubleClickTime", None), ("default", None), ("context", "Desktop")],
++        )
++
++    def test_adds_what_an_existing_section_lacks(self):
++        root = self.merged(
++            """<labwc_config>
++	<mouse>
++		<doubleClickTime>250</doubleClickTime>
++	</mouse>
++</labwc_config>"""
++        )
++
++        self.assertEqual(
++            self.layout(root),
++            [("doubleClickTime", None), ("default", None), ("context", "Desktop")],
++        )
++        self.assertEqual(root.findtext("./mouse/doubleClickTime"), "250")
++
++    def test_places_default_ahead_of_the_user_contexts(self):
++        root = self.merged(
++            """<labwc_config>
++	<mouse>
++		<context name="Frame">
++			<mousebind button="A-Left" action="Drag"><action name="Move" /></mousebind>
++		</context>
++	</mouse>
++</labwc_config>"""
++        )
++
++        self.assertEqual(
++            self.layout(root),
++            [
++                ("doubleClickTime", None),
++                ("default", None),
++                ("context", "Desktop"),
++                ("context", "Frame"),
++            ],
++        )
++
++    def test_leaves_a_desktop_context_the_user_has_alone(self):
++        root = self.merged(
++            """<labwc_config>
++	<mouse>
++		<default />
++		<context name="Desktop">
++			<mousebind button="Middle" action="Press">
++				<action name="ShowMenu" menu="client-list-combined-menu" />
++			</mousebind>
++		</context>
++	</mouse>
++</labwc_config>"""
++        )
++
++        desktop = root.findall("./mouse/context[@name='Desktop']")
++        self.assertEqual(len(desktop), 1)
++        self.assertEqual(
++            [bind.get("button") for bind in desktop[0].findall("./mousebind")],
++            ["Middle"],
++        )
++        self.assertEqual(len(root.findall("./mouse/default")), 1)
++
++    def test_is_idempotent(self):
++        once = self.merged(RC_XML)
++        twice = tree(Et.tostring(once, encoding="unicode"))
++        self.subject.merge_mouse_section(twice, tree(TEMPLATE_XML))
++
++        self.assertEqual(self.layout(twice.getroot()), self.layout(once))
++
++    def test_a_template_without_a_mouse_section_changes_nothing(self):
++        root = self.merged(RC_XML, "<labwc_config><keyboard /></labwc_config>")
++
++        self.assertIsNone(root.find("./mouse"))
++
++
+ class MigrateTest(unittest.TestCase):
+     """The whole run, against a config on disk."""
+ 
+@@ -209,6 +310,14 @@ def test_writes_the_rewritten_values(self):
+ 
+         self.assertEqual(self.directions(self.written()), ["horizontal", "vertical"])
+ 
++    def test_writes_the_template_mouse_settings(self):
++        with self.with_template():
++            self.subject.migrate()
++
++        written = self.written()
++        self.assertIsNotNone(written.find("./mouse/default"))
++        self.assertIsNotNone(written.find("./mouse/context[@name='Desktop']"))
++
+     def test_backs_the_config_up_before_writing(self):
+         with self.with_template():
+             self.subject.migrate()
+@@ -233,6 +342,14 @@ def test_a_migrated_config_no_longer_needs_migrating(self):
+ 
+ 
+ class ShippedConfigTest(unittest.TestCase):
++    def test_the_shipped_rc_xml_loads_default_mousebinds_ahead_of_its_contexts(self):
++        mouse = find(Et.parse(SHIPPED_RC).getroot(), "./mouse")
++        tags = [child.tag for child in mouse]
++
++        self.assertIn("default", tags)
++        if "context" in tags:
++            self.assertLess(tags.index("default"), tags.index("context"))
++
+     def test_the_shipped_rc_xml_is_at_the_current_version(self):
+         """
+         A fresh install copies this file verbatim. A version below the constant
