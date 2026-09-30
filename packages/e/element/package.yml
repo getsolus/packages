@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : element
-version    : 1.12.23
-release    : 218
+version    : 1.12.30
+release    : 219
 homepage   : https://element.io/
 source     :
-    - git|https://github.com/element-hq/element-web.git : 91b59d0d998f6b67199d55f9bb31f732cbd2d601
+    - git|https://github.com/element-hq/element-web.git : 126f0463ccc5411bc23cdd49ed2e3d35a8843a6d
 license    :
     - AGPL-3.0-or-later
     - GPL-3.0-or-later
@@ -42,13 +42,11 @@ rundeps    :
     - sqlcipher
 environment: |
     export PATH="/usr/lib64/nodejs-22/bin/:$PATH"
-    export pnpm_config_pm_on_fail=warn pnpm install
+    export pnpm_config_pm_on_fail=warn
+    # Work around for https://github.com/nrwl/nx/issues/36727
+    export NX_DAEMON=false
 setup      : |
     %apply_patches
-
-    # Disable updates/tracking, enable labs settings
-    jq '.update_base_url = null | .posthog = null | .show_labs_settings = true' \
-        apps/desktop/element.io/release/config.json > config.json
 
     # Perform pnpm install on both
     pnpm install --frozen-lockfile
@@ -58,15 +56,17 @@ setup      : |
     ln -s /usr/lib64/nodejs-22/bin/node apps/desktop/node_modules/.bin/node
     ln -s /usr/lib64/nodejs-22/bin/node node_modules/.bin/node
 build      : |
-    # Build element-web while working around https://github.com/nrwl/nx/issues/22445
-    script -c "pnpm -C apps/web build" /dev/null
-
-    # Build native components
-    pnpm -C apps/desktop run build:native
+    # Ensure element-desktop can find element-web.
+    ln -s ../web/webapp apps/desktop/webapp
 
     # Build while working around https://github.com/nrwl/nx/issues/22445
-    script -c "pnpm -C apps/desktop run build --publish never" /dev/null
+    script -e -c "pnpm -C apps/web build" /dev/null
+    script -e -c "pnpm -C apps/desktop run asar-webapp" /dev/null
+    script -e -c "pnpm -C apps/desktop run build --publish never" /dev/null
 install    : |
+    # Wrapper script
+    install -Dm00755 $pkgfiles/electron-desktop.sh $installdir/usr/bin/element-desktop
+
     # Installdir for Element
     element_installdir=$installdir/usr/share/element
     install -dm00644 $element_installdir/resources
@@ -75,14 +75,11 @@ install    : |
     cp -Rv webapp $element_installdir/resources/webapp
     popd
 
-    # Wrapper script
-    install -Dm00755 $pkgfiles/electron-desktop.sh $installdir/usr/bin/element-desktop
-
-    # Install configuration
-    install -Dm00644 config.json $element_installdir/resources/webapp/config.json
-
     pushd apps/desktop
     cp -Rv dist/linux-unpacked/* $element_installdir
+
+    # Install configuration
+    install -Dm00644 element.io/release/config.json $element_installdir/resources/webapp/config.json
 
     # Install Icons
     install -Dm00644 build/icon.png $installdir/usr/share/icons/hicolor/512x512/apps/element-desktop.png
@@ -90,12 +87,6 @@ install    : |
 
     # Symlink for existing .desktop files
     ln -s element-desktop.png $installdir/usr/share/icons/hicolor/512x512/apps/element.png
-
-    # Fix Wayland appid
-    package_json=$element_installdir/resources/app.asar.unpacked/package.json
-    tmp=$(mktemp)
-    jq ".desktopName = \"im.riot.Riot.desktop\"" $package_json > "$tmp" && mv "$tmp" $package_json
-    chmod 644 $package_json
 
     # Desktop File
     install -Dm00644 $pkgfiles/im.riot.Riot.desktop $installdir/usr/share/applications/im.riot.Riot.desktop
