@@ -1,0 +1,212 @@
+From b428447cb929544404707bf36aa6613b9a985c49 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <me@joshuastrobl.com>
+Date: Wed, 30 Sep 2026 20:46:00 +0300
+Subject: [PATCH 1/2] fix(panel): stop aborting when a panel has no stored
+ location
+
+The location key defaults to 'none'. A panel loaded with it kept the
+NONE it was constructed with, so update_geometry never notified the
+applets or wrote the position back, and is_horizontal() laid the boxes
+out vertically while the layer shell edge and placement treated NONE as
+bottom. The spacer applet then reported -1 for its height inside a
+vertical box, which GTK treats as a fatal error, and the panel aborted
+on its first show.
+
+Resolve an unset location to the bottom edge, or the first free edge
+when bottom is taken, before the panel is shown so it gets persisted and
+the applets hear about it. Treat NONE as horizontal in the panel and the
+shadow block, matching the other position switches. Have the spacer
+request 0 on the axis the panel controls; GTK never accepts -1 as a
+size, it only survived because the box allocator does not validate the
+cross axis.
+
+Closes #1001
+
+Assisted-by: Claude:claude-fable-5-1
+Signed-off-by: Joshua Strobl <me@joshuastrobl.com>
+---
+ src/lib/shadow.vala                        |  6 +---
+ src/panel/applets/spacer/SpacerApplet.vala | 37 ++++++++--------------
+ src/panel/manager.vala                     | 18 +++++++++++
+ src/panel/panel.vala                       |  4 +--
+ 4 files changed, 34 insertions(+), 31 deletions(-)
+
+diff --git a/src/lib/shadow.vala b/src/lib/shadow.vala
+index 181053828..097619a17 100644
+--- a/src/lib/shadow.vala
++++ b/src/lib/shadow.vala
+@@ -52,11 +52,7 @@ namespace Budgie {
+ 
+ 
+ 		void update_position(PanelPosition? old) {
+-			if (pos == PanelPosition.TOP || pos == PanelPosition.BOTTOM) {
+-				horizontal = true;
+-			} else {
+-				horizontal = false;
+-			}
++			horizontal = (pos != PanelPosition.LEFT && pos != PanelPosition.RIGHT);
+ 			queue_resize();
+ 		}
+ 
+diff --git a/src/panel/applets/spacer/SpacerApplet.vala b/src/panel/applets/spacer/SpacerApplet.vala
+index 51189a202..bb6b87ec3 100644
+--- a/src/panel/applets/spacer/SpacerApplet.vala
++++ b/src/panel/applets/spacer/SpacerApplet.vala
+@@ -73,40 +73,29 @@ public class SpacerApplet : Budgie.Applet {
+ 		queue_resize();
+ 	}
+ 
++	private bool on_vertical_panel() {
++		return this.panel_position == Budgie.PanelPosition.LEFT ||
++			this.panel_position == Budgie.PanelPosition.RIGHT;
++	}
++
+ 	public override void get_preferred_width(out int min, out int nat) {
+-		min = -1;
+-		nat = -1;
+-		if (this.panel_position == Budgie.PanelPosition.TOP ||
+-			this.panel_position == Budgie.PanelPosition.BOTTOM) {
+-				min = nat = space_size;
+-		}
++		// On a horizontal panel our width is the configured spacing; on a vertical one the panel decides our width, so request 0
++		min = nat = on_vertical_panel() ? 0 : space_size;
+ 	}
+ 
+ 	public override void get_preferred_width_for_height(int h, out int min, out int nat) {
+-		min = -1;
+-		nat = -1;
+-		if (this.panel_position == Budgie.PanelPosition.TOP ||
+-			this.panel_position == Budgie.PanelPosition.BOTTOM) {
+-				min = nat = space_size;
+-		}
++		// Same as get_preferred_width
++		min = nat = on_vertical_panel() ? 0 : space_size;
+ 	}
+ 
+ 	public override void get_preferred_height(out int min, out int nat) {
+-		min = -1;
+-		nat = -1;
+-		if (this.panel_position == Budgie.PanelPosition.LEFT ||
+-			this.panel_position == Budgie.PanelPosition.RIGHT) {
+-				min = nat = space_size;
+-		}
++		// On a vertical panel our height is the configured spacing; on a horizontal one the panel decides our height, so request 0
++		min = nat = on_vertical_panel() ? space_size : 0;
+ 	}
+ 
+ 	public override void get_preferred_height_for_width(int h, out int min, out int nat) {
+-		min = -1;
+-		nat = -1;
+-		if (this.panel_position == Budgie.PanelPosition.LEFT ||
+-			this.panel_position == Budgie.PanelPosition.RIGHT) {
+-				min = nat = space_size;
+-		}
++		// Same as get_preferred_height
++		min = nat = on_vertical_panel() ? space_size : 0;
+ 	}
+ }
+ 
+diff --git a/src/panel/manager.vala b/src/panel/manager.vala
+index 6aae57985..2e226b2da 100644
+--- a/src/panel/manager.vala
++++ b/src/panel/manager.vala
+@@ -863,6 +863,19 @@ namespace Budgie {
+ 			this.show_panel(uuid, position, transparency, policy, dock_mode, shadow_visible, spacing);
+ 		}
+ 
++		/**
++		* Pick an edge for a panel whose stored location is unset
++		*/
++		PanelPosition fallback_position() {
++			unowned Screen? area = screens.lookup(primary_monitor);
++			if (area == null || (area.slots & PanelPosition.BOTTOM) == 0) {
++				return PanelPosition.BOTTOM;
++			}
++
++			PanelPosition position = get_first_position(primary_monitor);
++			return position == PanelPosition.NONE ? PanelPosition.BOTTOM : position;
++		}
++
+ 		void show_panel(string uuid, PanelPosition position, PanelTransparency transparency, AutohidePolicy policy,
+ 			bool dock_mode, bool shadow_visible, int spacing) {
+ 
+@@ -872,6 +885,11 @@ namespace Budgie {
+ 				return;
+ 			}
+ 
++			if (position == PanelPosition.NONE) {
++				position = fallback_position();
++				warning("Panel %s has no stored location, placing it on the %s edge", uuid, position.to_string());
++			}
++
+ 			// If WaylandClient isn't initialized yet, defer until it is
+ 			if (wayland_client != null && !wayland_client.is_initialised()) {
+ 				debug("Deferring show_panel for %s until WaylandClient is ready", uuid);
+diff --git a/src/panel/panel.vala b/src/panel/panel.vala
+index caac411b8..b910d9a74 100644
+--- a/src/panel/panel.vala
++++ b/src/panel/panel.vala
+@@ -188,7 +188,7 @@ namespace Budgie {
+ 			case PanelPosition.RIGHT:
+ 				return GtkLayerShell.Edge.RIGHT;
+ 			case PanelPosition.BOTTOM:
+-			case PanelPosition.NONE: // Note: NONE will never actually be hit because of checks where we are calling this function
++			case PanelPosition.NONE:
+ 				return GtkLayerShell.Edge.BOTTOM;
+ 		}
+ 		return GtkLayerShell.Edge.BOTTOM;
+@@ -1387,7 +1387,7 @@ namespace Budgie {
+ 		}
+ 
+ 		private bool is_horizontal() {
+-			return (position == Budgie.PanelPosition.TOP || position == Budgie.PanelPosition.BOTTOM);
++			return (position != Budgie.PanelPosition.LEFT && position != Budgie.PanelPosition.RIGHT);
+ 		}
+ 
+ 		/**
+
+From 0a0acf49a8b899a694ce1693ed30780710a43c10 Mon Sep 17 00:00:00 2001
+From: Joshua Strobl <me@joshuastrobl.com>
+Date: Wed, 30 Sep 2026 21:14:18 +0300
+Subject: [PATCH 2/2] fix(panel): store a new panel's edge before it is shown
+
+create_panel put the uuid into the panels list right away but the
+location was only written once show_panel reached update_geometry.
+show_panel defers until the WaylandClient has found the primary
+monitor, which on a first run is a 200ms poll, so if the process ended
+in that window the next login had a panel with no stored location.
+
+Write the edge as soon as the panel object exists. A layout section
+with no Position key now gets a real edge at creation too.
+
+Assisted-by: Claude:claude-fable-5-1
+Signed-off-by: Joshua Strobl <me@joshuastrobl.com>
+---
+ src/panel/manager.vala | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/panel/manager.vala b/src/panel/manager.vala
+index 2e226b2da..56783df32 100644
+--- a/src/panel/manager.vala
++++ b/src/panel/manager.vala
+@@ -1339,6 +1339,11 @@ namespace Budgie {
+ 				} catch (Error e) {
+ 					warning("create_panel(): %s", e.message);
+ 				}
++
++				// The layout did not say where this panel goes, so pick an edge for it
++				if (position == PanelPosition.NONE) {
++					position = fallback_position();
++				}
+ 			} else {
+ 				position = get_first_position(this.primary_monitor);
+ 				if (position == PanelPosition.NONE) {
+@@ -1349,6 +1354,8 @@ namespace Budgie {
+ 
+ 			var uuid = LibUUID.new(UUIDFlags.LOWER_CASE|UUIDFlags.TIME_SAFE_TYPE);
+ 			load_panel(uuid, false);
++			// show_panel may be deferred, so store the edge now
++			panels.lookup(uuid).set_position_setting(position);
+ 
+ 			set_panels();
+ 			show_panel(uuid, position, transparency, policy, dock_mode, shadow_visible, spacing);
