@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : linux-current
-version    : 7.2.8
-release    : 362
+version    : 7.2.9
+release    : 363
 source     :
-    - https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.8.tar.xz : 12e8d5a973d1ad7c5a5c69882e4022b131ed715db7003fdcd760ddf8c3e51941
+    - https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-7.2.9.tar.xz : b4c5dfbe51a364a6c7f03869200f88c8e1f77403539005f14b7fc6bc91b8d8ba
 homepage   : https://www.kernel.org/
 license    : GPL-2.0-only
 component  :
@@ -32,6 +32,7 @@ builddeps  :
     - nvme-cli
     - pahole
     - perl
+    - plymouth
     - sbsigntools
     - tpm2-tools
 rundeps    :
@@ -91,6 +92,7 @@ install    : |
     kernID="com.solus-project.current"
     kversion="${version}-${release}.current"
     %install_exe arch/x86/boot/bzImage $installdir/usr/lib64/kernel/$kernID.${version}-${release}
+    ln -sv vmlinux $installdir/usr/lib64/kernel/$kernID.${version}-${release}
 
     # Install additional files
     %install_file .config $installdir/usr/lib64/kernel/config-$kversion
@@ -121,7 +123,7 @@ install    : |
     # uncompressed before we compress the entire initramfs.
     mkdir -p decompressed-modules/lib/modules/
     cp -ra --no-preserve=ownership $installdir/usr/lib64/modules/${kversion} decompressed-modules/lib/modules/
-    find "decompressed-modules" -name '*.ko' -exec strip --strip-unneeded {} \;
+    find "decompressed-modules" -name '*.ko' -print0 | xargs -0 -r -P "$(nproc)" -n 1 strip --strip-unneeded
 
     # We can make the initrd smaller by decompressing the firmware prior to compressing the entire initrd.
     mkdir -p usr/lib/firmware/
@@ -162,7 +164,7 @@ install    : |
     vfio_modules="vfio_pci vfio_iommu_type1"
     LD_PRELOAD='' dracut --tmpdir /tmp -N -f  \
         --kmoddir decompressed-modules/lib/modules/${kversion} --kver $kversion --fwdir usr/lib/firmware/ \
-        --add "bash systemd lvm dm rescue resume fido2 tpm2-tss qemu virtiofs zz-init-extension" --omit "nvmf" \
+        --add "bash systemd lvm dm rescue resume fido2 tpm2-tss qemu virtiofs zz-init-extension plymouth" --omit "nvmf" \
         --strip --hardlink --zstd --reproducible --nomdadmconf --early-microcode \
         --add-drivers "${drm_modules} ${vfio_modules}" \
         --include $pkgfiles/initrd/timeouts.conf /usr/lib/systemd/system.conf.d/timeouts.conf \
@@ -182,6 +184,12 @@ install    : |
     export dstDir="$installdir/$tgtDir"
     install -D -d -m 00755 $dstDir
     find . -path './include/*' -prune -o -path './scripts/*' -prune -o -path './Documentation/*' -prune -o -type f \( -name 'Makefile*' -o -name 'Kconfig*' -o -name 'Kbuild*' -o -name '*.sh' -o -name '*.pl' -o -name '*.lds' \) -print | cpio -pVd --preserve-modification-time $dstDir/
+
+    # Uncompressed vmlinux. Used for extramodule BTF generation
+    %install_exe vmlinux ${dstDir}
+
+    # Used for extramodules BTF generation
+    %install_exe tools/bpf/resolve_btfids/resolve_btfids -t ${dstDir}/tools/bpf/resolve_btfids/
 
     # Necessary for out of tree modules
     for h in "drivers/media/dvb-frontends" "drivers/media/tuners"; do
@@ -221,22 +229,6 @@ install    : |
     # Compress modules with zstd and strip them in the process
     # TODO remove this once the kernel module compression w/ dbginfo is fixed
     find "$installdir/usr/lib64/modules" -name '*.ko' -exec strip --strip-debug {} \; -exec zstd {} \; -exec rm -v {} \;
-
-    # Usr-merge
-    install -dm00755 $installdir/lib64
-    pushd $installdir/usr
-    file_list=()
-    while IFS=  read -r -d $'\0'; do
-        file_list+=("$REPLY")
-    done < <(find lib64/modules -type f -print0)
-    for file in "${file_list[@]}"; do
-        parent=$(dirname "$file")
-        %install_dir "$installdir/$parent"
-        ln -srv "$installdir/usr/$file" "$installdir/$file"
-    done
-    popd
-    ln -svf build $installdir/lib64/modules/$kversion/source
-    ln -srvf ${dstDir} $installdir/lib64/modules/$kversion/build
 patterns   :
     - headers : /usr/src
 permanent  :
