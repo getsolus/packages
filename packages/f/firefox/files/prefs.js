@@ -5,7 +5,8 @@ pref("app.update.autoInstallEnabled",       false);
 // Disable auto update
 pref("app.update.enabled",                  false);
 // Pressing [Backspace] will go back a page in the session history and [Shift]+[Backspace] will go forward
-pref("browser.backspace_action",            0);
+// Changed from 0 to 2 to disable this feature.
+pref("browser.backspace_action",            2);
 // Open links from external programs in new tabs in an existing window
 pref("browser.link.open_external",          3);
 pref("browser.newtabpage.activity-stream.disableSnippets", true);
