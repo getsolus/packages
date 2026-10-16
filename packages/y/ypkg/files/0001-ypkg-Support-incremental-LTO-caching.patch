@@ -1,0 +1,123 @@
+From 7da1577da049fa40ca7994efe2927cc84e589c16 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Wed, 2 Sep 2026 14:10:55 +0100
+Subject: [PATCH 1/1] ypkg: Support incremental LTO caching
+
+LTO for the GNU toolchain and thin-lto for clang both support caching
+LTO artefacts for future reuse. This can compliment ccache/sccache
+when enabled.
+---
+ ypkg2/build.py       |  8 +++++++
+ ypkg2/ypkgcontext.py | 56 ++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+)
+
+diff --git a/ypkg2/build.py b/ypkg2/build.py
+index cef01a6..9b824b7 100644
+--- a/ypkg2/build.py
++++ b/ypkg2/build.py
+@@ -279,6 +279,14 @@ def build_package(filename, outputDir, buildDir=None):
+                         print(e)
+                         sys.exit(1)
+ 
++                if context.lto_cache and not os.path.exists(context.lto_cache):
++                    try:
++                        os.makedirs(context.lto_cache, 0o0755)
++                    except Exception as e:
++                        console_ui.emit_error("Build", "Error creating LTO cache dir")
++                        print(e)
++                        sys.exit(1)
++
+             work_dir = manager.get_working_dir(context)
+             if not os.path.exists(work_dir):
+                 try:
+diff --git a/ypkg2/ypkgcontext.py b/ypkg2/ypkgcontext.py
+index 5180d13..23fed46 100644
+--- a/ypkg2/ypkgcontext.py
++++ b/ypkg2/ypkgcontext.py
+@@ -273,6 +273,10 @@ class YpkgContext:
+ 
+     can_dbginfo = False
+ 
++    # Incremental LTO cache directory, only set when LTO caching is active.
++    # Shared by the GNU and LLVM toolchains.
++    lto_cache = None
++
+     def __init__(self, spec, emul32=False, avx2=False):
+         self.spec = spec
+         self.emul32 = emul32
+@@ -359,6 +363,17 @@ class YpkgContext:
+             "{}/root/{}".format(self.get_build_prefix(), self.spec.pkg_name)
+         )
+ 
++    def get_lto_cache_dir(self):
++        """Get the shared incremental LTO cache directory
++
++        GNU (-flto-incremental) and LLVM (--thinlto-cache-dir) toolchains
++        share this single directory.
++        """
++
++        return os.path.join(
++            os.path.expanduser("~"), ".cache", "ltocache"
++        )
++
+     def get_pgo_dir(self):
+         """Get the PGO data directory for the given package"""
+         pgoSuffix = "pgo"
+@@ -407,6 +422,7 @@ class YpkgContext:
+         self.pconfig = conf
+ 
+         self.init_compiler()
++        self.init_lto_cache()
+ 
+         # Set the $pkgfiles up properly
+         spec_dir = os.path.dirname(os.path.abspath(self.spec.path))
+@@ -463,6 +479,46 @@ class YpkgContext:
+         if self.avx2:
+             self.init_avx2()
+ 
++    def init_lto_cache(self):
++        """Enable the incremental LTO cache when the ccache helper is active"""
++
++        if not (self.build.ccache and self.spec.pkg_ccache):
++            return
++        if not self.spec.pkg_optimize:
++            return
++
++        has_lto = "lto" in self.spec.pkg_optimize
++        has_thin_lto = "thin-lto" in self.spec.pkg_optimize
++        if not has_lto and not has_thin_lto:
++            return
++
++        self.lto_cache = self.get_lto_cache_dir()
++
++        console_ui.emit_info("Build", "Enabling LTO cache")
++
++        if has_thin_lto:
++            self.build.rustflags.append(
++                f"-C link-args=-Wl,--thinlto-cache-dir={self.lto_cache}"
++            )
++
++        if self.spec.pkg_clang:
++            # Only thin LTO links can be cached incrementally
++            if not has_thin_lto:
++                self.lto_cache = None
++                return
++            self.build.ldflags.append(
++                f"-Wl,--thinlto-cache-dir={self.lto_cache}"
++            )
++            return
++
++        if not has_lto:
++            return
++
++        cache_flag = f"-flto-incremental={self.lto_cache}"
++        self.build.cflags.append(cache_flag)
++        self.build.cxxflags.append(cache_flag)
++        self.build.ldflags.append(cache_flag)
++
+     def init_optimize(self):
+         """Handle optimize settings within the spec"""
+         for opt in self.spec.pkg_optimize:
+-- 
+2.55.0
+
