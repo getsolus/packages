@@ -1,0 +1,345 @@
+From f8069c1f792252cee3ba0ba19c6eb0f957b9af6c Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Jul 2024 20:47:26 +0200
+Subject: [PATCH 1/5] Remove unused Display::m_relogin variable
+
+---
+ src/daemon/Display.h | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/daemon/Display.h b/src/daemon/Display.h
+index a70671afa..b215852ff 100644
+--- a/src/daemon/Display.h
++++ b/src/daemon/Display.h
+@@ -94,7 +94,6 @@ namespace SDDM {
+ 
+         DisplayServerType m_displayServerType = X11DisplayServerType;
+ 
+-        bool m_relogin { true };
+         bool m_started { false };
+ 
+         int m_terminalId = -1;
+
+From b07df3f5f2e89839040199cb9acc3fa8f8c08cfb Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Jul 2024 21:10:12 +0200
+Subject: [PATCH 2/5] Set Display::m_started early
+
+It's only read to check whether start() and stop() should do anything,
+so set it true as soon as it attempted to start anything.
+---
+ src/daemon/Display.cpp | 18 ++++++------------
+ 1 file changed, 6 insertions(+), 12 deletions(-)
+
+diff --git a/src/daemon/Display.cpp b/src/daemon/Display.cpp
+index 1a0a3698a..91e4dac45 100644
+--- a/src/daemon/Display.cpp
++++ b/src/daemon/Display.cpp
+@@ -205,7 +205,12 @@ namespace SDDM {
+     }
+ 
+     bool Display::start() {
+-        return m_started || m_displayServer->start();
++        if (m_started)
++            return true;
++
++        m_started = true;
++
++        return m_displayServer->start();
+     }
+ 
+     bool Display::attemptAutologin() {
+@@ -256,9 +261,6 @@ namespace SDDM {
+ 
+         // reset first flag
+         daemonApp->first = false;
+-
+-        // set flags
+-        m_started = true;
+     }
+ 
+     void Display::handleAutologinFailure() {
+@@ -268,10 +270,6 @@ namespace SDDM {
+     }
+ 
+     void Display::displayServerStarted() {
+-        // check flag
+-        if (m_started)
+-            return;
+-
+         // setup display
+         m_displayServer->setupDisplay();
+ 
+@@ -283,9 +281,6 @@ namespace SDDM {
+             // reset first flag
+             daemonApp->first = false;
+ 
+-            // set flags
+-            m_started = true;
+-
+             const bool autologinStarted = attemptAutologin();
+             if (!autologinStarted)
+                 handleAutologinFailure();
+@@ -484,7 +479,6 @@ namespace SDDM {
+                 OrgFreedesktopLogin1ManagerInterface manager(Logind::serviceName(), Logind::managerPath(), QDBusConnection::systemBus());
+                 manager.UnlockSession(m_reuseSessionId);
+                 manager.ActivateSession(m_reuseSessionId);
+-                m_started = true;
+             } else {
+                 if (qobject_cast<XorgDisplayServer *>(m_displayServer))
+                     m_auth->setCookie(qobject_cast<XorgDisplayServer *>(m_displayServer)->cookie());
+
+From f75b9007fa9fec51ed5a781ae391646bf5f58ac9 Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Jul 2024 21:13:35 +0200
+Subject: [PATCH 3/5] Load autologin configuration in Display::Display
+
+Makes m_autologinSession more easily available and simplifies runtime
+handling.
+---
+ src/daemon/Display.cpp | 53 +++++++++++++++++++-----------------------
+ src/daemon/Display.h   |  3 ++-
+ 2 files changed, 26 insertions(+), 30 deletions(-)
+
+diff --git a/src/daemon/Display.cpp b/src/daemon/Display.cpp
+index 91e4dac45..56b9b8a10 100644
+--- a/src/daemon/Display.cpp
++++ b/src/daemon/Display.cpp
+@@ -171,6 +171,27 @@ namespace SDDM {
+             stop();
+         });
+         connect(m_greeter, &Greeter::displayServerFailed, this, &Display::displayServerFailed);
++
++        // Load autologin configuration (whether to autologin, user, session, session type)
++        if ((daemonApp->first || mainConfig.Autologin.Relogin.get()) &&
++            !mainConfig.Autologin.User.get().isEmpty()) {
++            // reset first flag
++            daemonApp->first = false;
++
++            // determine session type
++            QString autologinSession = mainConfig.Autologin.Session.get();
++            // not configured: try last successful logged in
++            if (autologinSession.isEmpty()) {
++                autologinSession = stateConfig.Last.Session.get();
++            }
++            if (findSessionEntry(mainConfig.Wayland.SessionDir.get(), autologinSession)) {
++                m_autologinSession.setTo(Session::WaylandSession, autologinSession);
++            } else if (findSessionEntry(mainConfig.X11.SessionDir.get(), autologinSession)) {
++                m_autologinSession.setTo(Session::X11Session, autologinSession);
++            } else {
++                qCritical() << "Unable to find autologin session entry" << autologinSession;
++            }
++        }
+     }
+ 
+     Display::~Display() {
+@@ -213,31 +234,6 @@ namespace SDDM {
+         return m_displayServer->start();
+     }
+ 
+-    bool Display::attemptAutologin() {
+-        Session::Type sessionType = Session::X11Session;
+-
+-        // determine session type
+-        QString autologinSession = mainConfig.Autologin.Session.get();
+-        // not configured: try last successful logged in
+-        if (autologinSession.isEmpty()) {
+-            autologinSession = stateConfig.Last.Session.get();
+-        }
+-        if (findSessionEntry(mainConfig.Wayland.SessionDir.get(), autologinSession)) {
+-            sessionType = Session::WaylandSession;
+-        } else if (findSessionEntry(mainConfig.X11.SessionDir.get(), autologinSession)) {
+-            sessionType = Session::X11Session;
+-        } else {
+-            qCritical() << "Unable to find autologin session entry" << autologinSession;
+-            return false;
+-        }
+-
+-        Session session;
+-        session.setTo(sessionType, autologinSession);
+-
+-        m_auth->setAutologin(true);
+-        return startAuth(mainConfig.Autologin.User.get(), QString(), session);
+-    }
+-
+     void Display::startSocketServerAndGreeter() {
+         // start socket server
+         m_socketServer->start(m_displayServer->display());
+@@ -276,13 +272,12 @@ namespace SDDM {
+         // log message
+         qDebug() << "Display server started.";
+ 
+-        if ((daemonApp->first || mainConfig.Autologin.Relogin.get()) &&
+-            !mainConfig.Autologin.User.get().isEmpty()) {
++        if (m_autologinSession.isValid()) {
+             // reset first flag
+             daemonApp->first = false;
+ 
+-            const bool autologinStarted = attemptAutologin();
+-            if (!autologinStarted)
++            m_auth->setAutologin(true);
++            if (!startAuth(mainConfig.Autologin.User.get(), QString(), m_autologinSession))
+                 handleAutologinFailure();
+ 
+             return;
+diff --git a/src/daemon/Display.h b/src/daemon/Display.h
+index b215852ff..d0b23c479 100644
+--- a/src/daemon/Display.h
++++ b/src/daemon/Display.h
+@@ -72,7 +72,6 @@ namespace SDDM {
+         void login(QLocalSocket *socket,
+                    const QString &user, const QString &password,
+                    const Session &session);
+-        bool attemptAutologin();
+         void displayServerStarted();
+ 
+     signals:
+@@ -103,6 +102,8 @@ namespace SDDM {
+         QString m_sessionName;
+         QString m_reuseSessionId;
+ 
++        Session m_autologinSession;
++
+         Auth *m_auth { nullptr };
+         DisplayServer *m_displayServer { nullptr };
+         Seat *m_seat { nullptr };
+
+From 203db8a2ec091a19c1f9a738c68a289a2c4dadc4 Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Jul 2024 21:19:58 +0200
+Subject: [PATCH 4/5] Reset daemonApp->first in the Display constructor
+
+Simplifies the code and makes really sure that only the first display has
+this set.
+---
+ src/daemon/Display.cpp | 12 +++---------
+ 1 file changed, 3 insertions(+), 9 deletions(-)
+
+diff --git a/src/daemon/Display.cpp b/src/daemon/Display.cpp
+index 56b9b8a10..9167ebf39 100644
+--- a/src/daemon/Display.cpp
++++ b/src/daemon/Display.cpp
+@@ -175,9 +175,6 @@ namespace SDDM {
+         // Load autologin configuration (whether to autologin, user, session, session type)
+         if ((daemonApp->first || mainConfig.Autologin.Relogin.get()) &&
+             !mainConfig.Autologin.User.get().isEmpty()) {
+-            // reset first flag
+-            daemonApp->first = false;
+-
+             // determine session type
+             QString autologinSession = mainConfig.Autologin.Session.get();
+             // not configured: try last successful logged in
+@@ -192,6 +189,9 @@ namespace SDDM {
+                 qCritical() << "Unable to find autologin session entry" << autologinSession;
+             }
+         }
++
++        // reset first flag
++        daemonApp->first = false;
+     }
+ 
+     Display::~Display() {
+@@ -254,9 +254,6 @@ namespace SDDM {
+ 
+         // start greeter
+         m_greeter->start();
+-
+-        // reset first flag
+-        daemonApp->first = false;
+     }
+ 
+     void Display::handleAutologinFailure() {
+@@ -273,9 +270,6 @@ namespace SDDM {
+         qDebug() << "Display server started.";
+ 
+         if (m_autologinSession.isValid()) {
+-            // reset first flag
+-            daemonApp->first = false;
+-
+             m_auth->setAutologin(true);
+             if (!startAuth(mainConfig.Autologin.User.get(), QString(), m_autologinSession))
+                 handleAutologinFailure();
+
+From b65fa4cacb1d48023cf8c7d53a758086739f904a Mon Sep 17 00:00:00 2001
+From: Fabian Vogt <fabian@ritter-vogt.de>
+Date: Mon, 15 Jul 2024 21:23:53 +0200
+Subject: [PATCH 5/5] If autologin is used, avoid starting a display server for
+ the greeter
+
+Introduce a new "early autologin" path that starts the session without
+starting the display server first. This avoids starting a rootful X just
+to then ignore it and start a Wayland session in a separate VT.
+---
+ src/daemon/Display.cpp | 29 ++++++++++++++++++++++++++---
+ src/daemon/Display.h   |  2 +-
+ 2 files changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/src/daemon/Display.cpp b/src/daemon/Display.cpp
+index 9167ebf39..e10977ebd 100644
+--- a/src/daemon/Display.cpp
++++ b/src/daemon/Display.cpp
+@@ -231,6 +231,18 @@ namespace SDDM {
+ 
+         m_started = true;
+ 
++        // Handle autologin early, unless it needs the display server to be up
++        // (rootful X + X11 autologin session).
++        if (m_autologinSession.isValid()
++            && !(m_displayServerType == X11DisplayServerType
++                 && m_autologinSession.type() == Session::X11Session)) {
++            m_auth->setAutologin(true);
++            if (startAuth(mainConfig.Autologin.User.get(), QString(), m_autologinSession))
++                return true;
++            else
++                return handleAutologinFailure();
++         }
++
+         return m_displayServer->start();
+     }
+ 
+@@ -256,10 +268,17 @@ namespace SDDM {
+         m_greeter->start();
+     }
+ 
+-    void Display::handleAutologinFailure() {
++    bool Display::handleAutologinFailure() {
+         qWarning() << "Autologin failed!";
+         m_auth->setAutologin(false);
+-        startSocketServerAndGreeter();
++        // For late autologin handling only the greeter needs to be started.
++        if (m_displayServerType == X11DisplayServerType
++            && m_autologinSession.type() == Session::X11Session) {
++            startSocketServerAndGreeter();
++            return true;
++        } else {
++            return m_displayServer->start();
++        }
+     }
+ 
+     void Display::displayServerStarted() {
+@@ -269,7 +288,11 @@ namespace SDDM {
+         // log message
+         qDebug() << "Display server started.";
+ 
+-        if (m_autologinSession.isValid()) {
++        // Handle autologin late if it needs the display server to be up
++        // (rootful X + X11 autologin session).
++        if (m_autologinSession.isValid()
++            && (m_displayServerType == X11DisplayServerType
++                && m_autologinSession.type() == Session::X11Session)) {
+             m_auth->setAutologin(true);
+             if (!startAuth(mainConfig.Autologin.User.get(), QString(), m_autologinSession))
+                 handleAutologinFailure();
+diff --git a/src/daemon/Display.h b/src/daemon/Display.h
+index d0b23c479..c2741eab6 100644
+--- a/src/daemon/Display.h
++++ b/src/daemon/Display.h
+@@ -89,7 +89,7 @@ namespace SDDM {
+                        const Session &session);
+ 
+         void startSocketServerAndGreeter();
+-        void handleAutologinFailure();
++        bool handleAutologinFailure();
+ 
+         DisplayServerType m_displayServerType = X11DisplayServerType;
+ 
