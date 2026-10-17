@@ -1,30 +1,34 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : hipblaslt
-version    : 7.2.0
-release    : 4
+version    : '7.14'
+release    : 5
 source     :
-    # Note: this is actually NOT 7.0.2 but a newer commit around 7.1.0 which has
-    # some new fixes that are quite hard to backport.
-    - git|https://github.com/ROCm/rocm-libraries.git : rocm-7.2.0
+    - git|https://github.com/ROCm/rocm-libraries.git : therock-7.14
+    - git|https://github.com/wjakob/nanobind.git : 9b3afa9dbdc23641daf26fadef7743e7127ff92f
 homepage   : https://github.com/ROCm/hipBLASLt
 license    : MIT
 component  : programming.library
 summary    : hipBLASLt is a library that provides general matrix-matrix operations with a flexible API and extends functionalities beyond a traditional BLAS library
 description: |
     hipBLASLt is a library that provides general matrix-matrix operations. It has a flexible API that extends functionalities beyond a traditional BLAS library, such as adding flexibility to matrix data layouts, input types, compute types, and algorithmic implementations and heuristics.
-networking : yes # TODO: figure out why nanobind refuse to work
+clang      : true
 builddeps  :
+    # Used as correctness criteria for hipblaslt-bench
     - pkgconfig(lapack)
     - pkgconfig(python3)
     - pkgconfig(gtest)
     - pkgconfig(libdrm_amdgpu)
+    - pkgconfig(fmt)
+    - pkgconfig(spdlog)
+    - pkgconfig(yaml-cpp)
+    # Used as correctness criteria for hipblaslt-bench
     - amd-blis-devel
     - hipblas-common-devel
     - libboost-devel
-    - roctracer-devel
-    # TODO(GZGavinZhao): investigate why it's not linking to this specific
-    # libomp.so
+    - libdivide
     - rocm-openmp
+    - amdsmi-devel
+    - roctracer-devel
     - msgpack-cxx
     - python-joblib
     - python-msgpack
@@ -50,10 +54,6 @@ environment: |
     export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export CMAKE_PREFIX_PATH=/usr/lib64/llvm-rocm
-    export TENSILE_ROCM_ASSEMBLER_PATH=$HIP_CLANG_PATH/clang
-    export TENSILE_ROCM_OFFLOAD_BUNDLER_PATH=$HIP_CLANG_PATH/clang-offload-bundler
-    # For Tensile toolchain detection to work
-    export PATH="$PATH:$HIP_CLANG_PATH"
 
     if [ -e /usr/bin/sccache ]; then
         export CMAKE_C_COMPILER_LAUNCHER=sccache
@@ -63,26 +63,34 @@ environment: |
         export Tensile_CXX_COMPILER_LAUNCHER=sccache
     fi
 
-    # It seems that hipBLASLt only supports GPUs with WMMA
-    export AMDGPU_TARGETS="gfx1100;gfx1101;gfx1103;gfx1150;gfx1151;gfx1200;gfx1201"
+    export AMDGPU_TARGETS="gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
 setup      : |
-    %patch -p1 -i $pkgfiles/0005-hipblaslt-Enable-msgpack-compression.patch
-    %patch -p1 -i $pkgfiles/0006-hipblaslt-tensilelite-interning.patch
+    # %patch -p1 -i $pkgfiles/0005-hipblaslt-Enable-msgpack-compression.patch
+    # %patch -p1 -i $pkgfiles/0006-hipblaslt-tensilelite-interning.patch
     %patch -p1 -i $pkgfiles/0007-hipblaslt-Find-blis-using-pkg-config.patch
 
+    pushd projects/hipblaslt
+      sed -i 's|set(ROCROLLER_ENABLE_FETCH ON)|set(ROCROLLER_ENABLE_FETCH OFF)|' CMakeLists.txt
+    popd
+
     %cmake_ninja -S projects/hipblaslt -Wno-dev -L \
-      -DCMAKE_C_COMPILER=$HIP_CLANG_PATH/clang \
-      -DCMAKE_CXX_COMPILER=$HIP_CLANG_PATH/clang++ \
+      -DCMAKE_C_COMPILER=amdclang \
+      -DCMAKE_CXX_COMPILER=amdclang++ \
       -DCMAKE_INSTALL_LIBDIR=lib%LIBSUFFIX% \
       -DROCM_SYMLINK_LIBS=OFF \
-      -DROCM_FOUND=ON \
       -DHIPBLASLT_BUILD_SHARED_LIBS=ON \
-      -DHIPBLASLT_ENABLE_ROCROLLER=OFF \
+      -DHIPBLASLT_ENABLE_ROCROLLER=ON \
+      -DHIPBLASLT_ENABLE_OPENMP=ON \
       -DHIPBLASLT_BUNDLE_PYTHON_DEPS=ON \
       -DHIPBLASLT_BUILD_TESTING=OFF \
       -DHIPBLASLT_ENABLE_SAMPLES=OFF \
       -DTENSILELITE_BUILD_PARALLEL_LEVEL=%YJOBS% \
+      -DTENSILELITE_OFFLOADBUNDLER=$HIP_CLANG_PATH/clang-offload-bundler \
       -DGPU_TARGETS="$AMDGPU_TARGETS" \
+      -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=ON \
+      -DCMAKE_INSTALL_RPATH=/usr/lib64/llvm-rocm/lib \
+      -DOpenMP_ROOT=/usr/lib64/llvm-rocm \
+      -DFETCHCONTENT_SOURCE_DIR_NANOBIND=$sources/nanobind.git \
 build      : |
     %ninja_build
 install    : |
