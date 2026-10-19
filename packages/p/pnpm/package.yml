@@ -1,20 +1,52 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : pnpm
-version    : 11.8.0
-release    : 5
+version    : 12.14.0
+release    : 6
 source     :
-    - https://registry.npmjs.org/pnpm/-/pnpm-11.8.0.tgz : 1e963a5c4ca5168550ba03fc4ee8d873a772b072b7fce63b48fff27d720e2e98
+    - https://github.com/pnpm/pnpm/archive/refs/tags/v12.14.0.tar.gz : 493c61b27f55435962a2e9c6602eba16aad544e488760540ff8d4967831b7f86
+    # Frozen node-gyp tree from the same release; the binary looks for dist/ beside itself.
+    # ypkg extracts only the first source, so this tarball stays packed.
+    - https://github.com/pnpm/pnpm/releases/download/v12.14.0/pnpm-linux-x64.tar.gz : 3910c3852136bed5bc1511b9137a45fd4357ed6b3970d9d08893641e9005867e
 homepage   : https://pnpm.io
 license    : MIT
 component  : programming.tools
-extract    : false
 summary    : Fast, disk space efficient package manager
 description: |
     Fast, disk space efficient package manager
 networking : true
 builddeps  :
+    - git
     - nodejs
+    - rust
 rundeps    :
     - nodejs
+    - python3
+setup      : |
+    %cargo_fetch
+
+    # deps-restorer embeds a bundle generated from the ESM loader; generate it
+    # with the pnpm binary shipped in the release tarball before the cargo build.
+    mkdir -p .bootstrap
+    tar -xf ${sources}/pnpm-linux-x64.tar.gz -C .bootstrap pnpm dist
+    .bootstrap/pnpm install \
+        --frozen-lockfile \
+        --filter @pnpm/esm-loader \
+        --ignore-scripts
+    node pnpm/esm-loader/scripts/bundle-runtime.mjs
+build      : |
+    %cargo_build -p pnpm-cli --bin pnpm
 install    : |
-    npm install -g --prefix "${installdir}/usr" ${sources}/pnpm-${version}.tgz
+    %install_dir ${installdir}/usr/bin ${installdir}/%libdir%/pnpm
+    %install_exe ./target/release/pnpm ${installdir}/%libdir%/pnpm/pnpm
+    ln -srv ${installdir}/%libdir%/pnpm/pnpm ${installdir}/usr/bin/pnpm
+    tar -xf ${sources}/pnpm-linux-x64.tar.gz -C ${installdir}/%libdir%/pnpm dist
+
+    # Aliases upstream ships next to the binary in its npm package
+    %install_bin pnpm/npm/pnpm/{pn,pnpx,pnx}
+
+    %install_dir ${installdir}/usr/share/{bash-completion/completions,fish/vendor_completions.d,zsh/site-functions}
+    ./target/release/pnpm completion bash > ${installdir}/usr/share/bash-completion/completions/pnpm
+    ./target/release/pnpm completion fish > ${installdir}/usr/share/fish/vendor_completions.d/pnpm.fish
+    ./target/release/pnpm completion zsh > ${installdir}/usr/share/zsh/site-functions/_pnpm
+
+    %install_license LICENSE
