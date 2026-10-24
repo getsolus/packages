@@ -7,8 +7,9 @@ The package folder also contains a specialized Taskfile.yml which augments the m
 ## Update Procedure
 1. Ensure that your clone of the packages repository is up to date, and that you're on the `main` branch.
 2. Go to this package: `gotopkg appstream-catalog`.
-3. Run `go-task infra:generate-appstream` . You must have `infrastructure-tooling`, ssh access to teaparty and be part of the ferryd group on teaparty for this to succeed.
-   - NOTE: As the generated tarballs are behind a CDN it may take a few minutes to propagate.
+<!-- 3. Run `go-task infra:generate-appstream` . You must have `infrastructure-tooling`, ssh access to teaparty and be part of the ferryd group on teaparty for this to succeed. -->
+   <!-- - NOTE: As the generated tarballs are behind a CDN it may take a few minutes to propagate. -->
+3. ssh into teaparty, `run sudo systemd-nspawn -D /srv/solus-container/ --bind /srv/asgen-workspace/ --bind /srv/ferryd/root -M solus-container /usr/local/bin/appstream-generator -w /srv/asgen-workspace/ -c /srv/asgen-workspace/asgen-config.json run`, log out, and wait a bit.
 4. Run `update-appstream-sources.py`
 5. Run `git diff`, if the shasums of the sources are different run `go-task build`.
 6. Install the resulting `.eopkg` and make sure GNOME Software or Discover recognize packages (ideally, search for something which you know was added in the most recent sync).
