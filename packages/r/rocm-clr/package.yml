@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : rocm-clr
-version    : 7.2.0
-release    : 11
+version    : '7.14'
+release    : 12
 source     :
-    - https://github.com/ROCm/rocm-systems/archive/refs/tags/rocm-7.2.0.tar.gz : 728ea7e9bf16e6ed217a0fd1a8c9afaba2dae2e7908fa4e27201e67c803c5638
-    - https://github.com/ROCm/llvm-project/archive/refs/tags/rocm-7.2.0.tar.gz#HIPCC-7.2.0.tar.gz : e86138d2a63fbcbdf64668d55573b26ae944d0f0ae5a3f5bb59bf7bdb3124d3f
+    - https://github.com/ROCm/rocm-systems/archive/refs/tags/therock-7.14.tar.gz : 8cadf0d5c0f53f334b7b940a78619d1746c913b26ae719e2a09e20a6f7128330
+    - https://github.com/ROCm/llvm-project/archive/refs/tags/therock-7.14.tar.gz#HIPCC-7.14.tar.gz : db365c1f0ab500eeee04a990d29d79a6bb667874f8069f7b69920ca62c352d2f
 homepage   : https://github.com/ROCm/clr
 license    : MIT
 component  : programming.library
@@ -20,6 +20,7 @@ builddeps  :
     - python-cppheaderparser
     - rocm-cmake
     - rocm-compilersupport-devel
+    - rocm-core-devel
     - rocm-device-libs-devel
     - rocm-llvm
     - rocm-runtime-devel
@@ -38,15 +39,18 @@ patterns   :
     - ^rocm-hip:
       - /usr/bin/hip*
       - /usr/bin/roc-*
+      - /usr/bin/hrr-*
       - /usr/include/hip*
       - /usr/lib64/cmake/hip*
       - /usr/lib64/libamdhip64.so
       - /usr/lib64/libhiprtc.so
       - /usr/lib64/libhiprtc-builtins.so
     - ^rocm-opencl:
+      - /usr/bin/rocm-clinfo
       - /usr/include/rocm-opencl
       - /usr/lib64/libamdocl64.so
       - /usr/lib64/libcltrace.so
+      - /usr/share/OpenCL
 replaces   :
     - ^rocm-hip:
       - rocm-hip-devel
@@ -58,6 +62,7 @@ environment: |
     export HIP_DEVICE_LIB_PATH=/usr/lib64/amdgcn/bitcode
     export HIP_CLANG_PATH=/usr/lib64/llvm-rocm/bin
     export HIP_PLATFORM=amd
+    export ROCM_LIBPATCH_VERSION=0
 
     export HIP_DIR=$workdir/projects/hip
     export ROCTRACER_DIR=$workdir/projects/roctracer
@@ -67,25 +72,21 @@ environment: |
 setup      : |
     pushd $sources
         mkdir -p $HIPCC_DIR
-        tar --strip-components=3 -C $HIPCC_DIR -xf $sources/HIPCC-%version%.tar.gz llvm-project-rocm-%version%/amd/hipcc
+        tar --strip-components=3 -C $HIPCC_DIR -xf $sources/HIPCC-%version%.tar.gz llvm-project-therock-%version%/amd/hipcc
     popd
 
     pushd $HIPCC_DIR
-        %patch -p3 -i $pkgfiles/0014-Add-HIP_CLANG_LAUNCHER-for-launching-Clang-through-a.patch
         %cmake_ninja -DHIPCC_BACKWARD_COMPATIBILITY=OFF
         %ninja_build
     popd
 
     pushd projects/clr/opencl
-        # Add soname to amdocl and cltrace:
-        # Upstream doesn't want this because they don't guarentee ABI.
-        # Just use the package version. SOVERSION can be major.minor as patch releases
-        # are unlikely to break anything.
-        echo "set_target_properties(amdocl PROPERTIES VERSION %version% SOVERSION $(v=%version%;echo ${v%%.*}))" \
-            >> amdocl/CMakeLists.txt
-        echo "libamdocl64.so.%{rocm_release}" > config/amdocl64.icd
+        # cltrace still needs soname manually (upstream does not set VERSION/SOVERSION)
         echo "set_target_properties(cltrace PROPERTIES VERSION %version% SOVERSION $(v=%version%;echo ${v%%.*}))" \
             >> tools/cltrace/CMakeLists.txt
+
+        # Don't install in /usr/lib64/opencl, just install in /usr/lib64
+        sed -i 's|AMDOCL_INSTALL_LIBDIR ${PROJECT_NAME}|AMDOCL_INSTALL_LIBDIR ""|' CMakeLists.txt
     popd
 
     %apply_patches
@@ -99,14 +100,18 @@ setup      : |
       -DBUILD_ICD=OFF \
       -DPROF_API_HEADER_PATH=$ROCTRACER_DIR/inc/ext \
       -DHIP_ENABLE_ROCPROFILER_REGISTER=ON \
+      -DTHEROCK_FLAG_STAMP_LIBRARY_GIT_VERSIONS=OFF \
       -DBUILD_TESTS=OFF
 build      : |
     %ninja_build
 install    : |
     %ninja_install
 
-    install -dm00644 $installdir/usr/share/OpenCL/vendors
-    echo "libamdocl64.so.7" >> $installdir/usr/share/OpenCL/vendors/amdocl64.icd
+    install -Dm00644 $workdir/projects/clr/opencl/packaging/amdocl64.icd \
+        $installdir/usr/share/OpenCL/vendors/amdocl64.icd
+
+    # Upstream installs ICD + ld.so.conf to /etc/; not wanted on Solus
+    rm -rf $installdir/usr/etc
 
     # Avoid file conflicts with opencl-headers package:
     install -dm00644 $installdir/usr/include/rocm-opencl
@@ -114,3 +119,6 @@ install    : |
 
     # Avoid file conflicts with clinfo package:
     mv $installdir/usr/bin/clinfo $installdir/usr/bin/rocm-clinfo
+
+    # Don't install OpenCL docs
+    rm -rf $installdir/usr/share/doc/opencl*
