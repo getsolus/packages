@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : ghostty
-version    : 1.3.1
-release    : 19
+version    : 1.4.0
+release    : 20
 source     :
-    - https://github.com/ghostty-org/ghostty/archive/refs/tags/v1.3.1.tar.gz : 265837d3026b433f0e6b4e49d43153b915b0a19513f7edd8a8e693c559bd415b
+    - https://github.com/ghostty-org/ghostty/archive/refs/tags/v1.4.0.tar.gz : 2e2a2516f9bea89a4991ad7c9401b77682eed366387a5b1d7c629472b5d11a43
 homepage   : https://ghostty.org/
 license    : MIT
 component  : system.utils
@@ -13,39 +13,52 @@ description: |
 networking : true
 builddeps  :
     - pkgconfig(blueprint-compiler)
+    - pkgconfig(egl)
     - pkgconfig(fontconfig)
     - pkgconfig(freetype2)
+    - pkgconfig(gtk4)
     - pkgconfig(gtk4-layer-shell-0)
     - pkgconfig(harfbuzz)
     - pkgconfig(libadwaita-1)
+    - pkgconfig(libhwy)
     - pkgconfig(libpng)
+    - pkgconfig(libxml-2.0)
     - pkgconfig(oniguruma)
+    - pkgconfig(zlib)
+    - gettext
+    - glslang-devel
+    - ncurses
     - pandoc
     - zig
 environment: |
-    export ZIG_GLOBAL_CACHE_DIR=$workdir/zig-cache
+    export ZIG_GLOBAL_CACHE_DIR=${workdir}/zig-cache
     export DESTDIR=%installroot%
 setup      : |
-    %patch -p1 -i $pkgfiles/11449.patch
-    %patch -p1 -i $pkgfiles/11965.patch
-    %patch -p1 -i $pkgfiles/12025.patch
-    
-    # See PACKAGING.md at the root of the ghostty repo
-    # So we can use `--system` flag
-    ./nix/build-support/fetch-zig-cache.sh
+    %patch -p1 -i ${pkgfiles}/0001-Do-not-build-static-libghostty-vt.patch
+
+    # Fetch the full dependency tree (including lazy deps) into the global cache.
+    # Zig 0.17 stores packages as tarballs, but --system wants unpacked directories.
+    zig build --fetch=all
+
+    mkdir -p offline
+    for f in "$ZIG_GLOBAL_CACHE_DIR"/p/*.tar.gz; do
+        bsdtar -xf "$f" -C offline
+    done
 build      : |
     zig build %JOBS% \
-        --release=fast \
         --prefix %PREFIX% \
+        --system offline \
+        --summary all \
         -Doptimize=ReleaseFast \
+        -Dstrip=false \
         -Dcpu=baseline \
-        --system "$ZIG_GLOBAL_CACHE_DIR/p"
+        -Dversion-string="${version}"
 install    : |
-    mkdir -p $installdir/usr/share/xdg-terminals
-    cp $installdir/usr/share/applications/com.mitchellh.ghostty.desktop \
-       $installdir/usr/share/xdg-terminals/com.mitchellh.ghostty.desktop
+    mkdir -p ${installdir}/usr/share/xdg-terminals
+    cp ${installdir}/usr/share/applications/com.mitchellh.ghostty.desktop \
+       ${installdir}/usr/share/xdg-terminals/com.mitchellh.ghostty.desktop
 
-    # Conflicts with ncurses
-    rm -rv $installdir/usr/share/terminfo/g
+    # g/ghostty is owned by ncurses. x/xterm-ghostty stays in this package.
+    rm -rv ${installdir}/usr/share/terminfo/g
 
     %install_license LICENSE

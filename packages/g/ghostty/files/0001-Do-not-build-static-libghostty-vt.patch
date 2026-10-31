@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Reilly Brogan <reilly@reillybrogan.com>
+Date: Tue, 27 Oct 2026 15:45:29 -0500
+Subject: [PATCH] Do not build the static libghostty-vt library
+
+The static archive is only useful to downstream Zig consumers that depend
+on ghostty as a package; distributions ship the shared library instead.
+Gate the artifact on config.is_dep so a plain build never compiles it, and
+stop installing the matching static pkg-config module.
+
+Origin: vendor
+Forwarded: not-needed
+Last-Update: 2026-10-27
+---
+ build.zig                  | 32 ++++++--------------------------
+ src/build/GhosttyLibVt.zig |  9 ++-------
+ 2 files changed, 8 insertions(+), 33 deletions(-)
+
+--- a/build.zig
++++ b/build.zig
+@@ -154,36 +154,16 @@
+         _ = b.addFail("cannot execute the ABI manifest for a native freestanding target");
+     }
+ 
+-    // libghostty-vt static lib
+-    const libghostty_vt_static = try buildpkg.GhosttyLibVt.initStatic(
+-        b,
+-        &mod,
+-    );
++    // libghostty-vt static lib. Only built when Ghostty is used as a
++    // dependency; distributions ship the shared library alone.
+     if (config.is_dep) {
++        const libghostty_vt_static = try buildpkg.GhosttyLibVt.initStatic(
++            b,
++            &mod,
++        );
+         // If we're a dependency, we need to install everything as-is
+         // so that dep.artifact("ghostty-vt-static") works.
+         libghostty_vt_static.install(b.getInstallStep());
+-    } else {
+-        // If we're not a dependency, we rename the static lib to
+-        // be idiomatic. On Windows, we use a distinct name to avoid
+-        // colliding with the DLL import library (ghostty-vt.lib).
+-        const static_lib_name = if (config.target.result.os.tag == .windows)
+-            "ghostty-vt-static.lib"
+-        else
+-            "libghostty-vt.a";
+-        b.getInstallStep().dependOn(&b.addInstallLibFile(
+-            libghostty_vt_static.output,
+-            static_lib_name,
+-        ).step);
+-
+-        if (native_freestanding) {
+-            b.getInstallStep().dependOn(&b.addInstallDirectory(.{
+-                .source_dir = b.path("include/ghostty"),
+-                .install_dir = .header,
+-                .install_subdir = "ghostty",
+-                .include_extensions = &.{".h"},
+-            }).step);
+-        }
+     }
+ 
+     // libghostty-vt xcframework (Apple only, universal binary).
+--- a/src/build/GhosttyLibVt.zig
++++ b/src/build/GhosttyLibVt.zig
+@@ -633,11 +633,6 @@
+             "share/pkgconfig/libghostty-vt.pc",
+         ).step);
+     }
+-    if (self.pkg_config_static) |pkg_config_static| {
+-        step.dependOn(&b.addInstallFileWithDir(
+-            pkg_config_static,
+-            .prefix,
+-            "share/pkgconfig/libghostty-vt-static.pc",
+-        ).step);
+-    }
++    // The static libghostty-vt archive is not built, so the static
++    // pkg-config module is not installed either.
+ }
