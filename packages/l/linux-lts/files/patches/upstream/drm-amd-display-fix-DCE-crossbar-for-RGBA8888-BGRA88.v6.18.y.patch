@@ -1,0 +1,125 @@
+From 71770a0c7c102b73d3bee254fa91440c859b5817 Mon Sep 17 00:00:00 2001
+From: Harry Wentland <harry.wentland@amd.com>
+Date: Thu, 27 Aug 2026 17:20:45 -0400
+Subject: [PATCH] drm/amd/display: fix DCE crossbar for RGBA8888/BGRA8888
+
+DCE has no native "alpha in LSB" 32bpp encoding. For 8888 formats
+GRPH_CONTROL only offers the ARGB layout (GRPH_FORMAT 0), and channel
+reordering is done through the GRPH_SWAP_CNTL crossbar. That crossbar
+was only programming the red and blue selects, so RGBA8888 came out as
+ARGB8888 and BGRA8888 was (incorrectly) treated like ABGR8888 - in both
+cases the alpha byte stayed in the MSB instead of the LSB.
+
+Program the full R/G/B/A crossbar so the alpha-in-LSB layouts are
+reordered correctly:
+
+  ARGB8888  R<-R G<-G B<-B A<-A  (no swap)
+  ABGR8888  R<-B G<-G B<-R A<-A  (existing R/B swap)
+  RGBA8888  R<-A G<-R B<-G A<-B
+  BGRA8888  R<-G G<-R B<-A A<-B
+
+Add the GRPH_GREEN_CROSSBAR/GRPH_ALPHA_CROSSBAR register fields to the
+DCP mask lists and field struct so they can be programmed.
+
+Assisted-by: Copilot:claude-opus-4.8
+Signed-off-by: Harry Wentland <harry.wentland@amd.com>
+---
+ .../drm/amd/display/dc/dce/dce_mem_input.c    | 41 +++++++++++++------
+ .../drm/amd/display/dc/dce/dce_mem_input.h    |  6 +++
+ 2 files changed, 34 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.c b/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.c
+index 08cde29a4a7a..4f1b8b2750d9 100644
+--- a/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.c
++++ b/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.c
+@@ -558,25 +558,40 @@ static void program_grph_pixel_format(
+ 	struct dce_mem_input *dce_mi,
+ 	enum surface_pixel_format format)
+ {
+-	uint32_t red_xbar = 0, blue_xbar = 0; /* no swap */
++	/* Crossbar per output channel: 0 R, 1 G, 2 B, 3 A source (see
++	 * DCP_GRPH_*_CROSSBAR in the enum headers). DCE unpacks all 32bpp
++	 * as ARGB, so alpha-in-LSB layouts are reordered via the crossbar.
++	 */
++	uint32_t red_xbar = 0, green_xbar = 0, blue_xbar = 0, alpha_xbar = 0;
+ 	uint32_t grph_depth = 0, grph_format = 0;
+ 	uint32_t sign = 0, floating = 0;
+ 
+-	if (format == SURFACE_PIXEL_FORMAT_GRPH_ABGR8888 ||
+-			/*todo: doesn't look like we handle BGRA here,
+-			 *  should problem swap endian*/
+-		format == SURFACE_PIXEL_FORMAT_GRPH_ABGR2101010 ||
+-		format == SURFACE_PIXEL_FORMAT_GRPH_ABGR2101010_XR_BIAS ||
+-		format == SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616 ||
+-		format == SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F) {
+-		/* ABGR formats */
+-		red_xbar = 2;
+-		blue_xbar = 2;
++	switch (format) {
++	case SURFACE_PIXEL_FORMAT_GRPH_ABGR8888:
++	case SURFACE_PIXEL_FORMAT_GRPH_ABGR2101010:
++	case SURFACE_PIXEL_FORMAT_GRPH_ABGR2101010_XR_BIAS:
++	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616:
++	case SURFACE_PIXEL_FORMAT_GRPH_ABGR16161616F:
++		/* ABGR: swap R and B */
++		red_xbar = 2;  /* R from B */
++		blue_xbar = 2; /* B from R */
++		break;
++	case SURFACE_PIXEL_FORMAT_GRPH_RGBA8888:
++		/* rotate ARGB -> RGBA */
++		red_xbar = 3;   /* R from A */
++		green_xbar = 3; /* G from R */
++		blue_xbar = 3;  /* B from G */
++		alpha_xbar = 3; /* A from B */
++		break;
++	default:
++		break;
+ 	}
+ 
+-	REG_SET_2(GRPH_SWAP_CNTL, 0,
++	REG_SET_4(GRPH_SWAP_CNTL, 0,
+ 			GRPH_RED_CROSSBAR, red_xbar,
+-			GRPH_BLUE_CROSSBAR, blue_xbar);
++			GRPH_GREEN_CROSSBAR, green_xbar,
++			GRPH_BLUE_CROSSBAR, blue_xbar,
++			GRPH_ALPHA_CROSSBAR, alpha_xbar);
+ 
+ 	switch (format) {
+ 	case SURFACE_PIXEL_FORMAT_GRPH_PALETA_256_COLORS:
+diff --git a/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.h b/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.h
+index e34e445a4013..a593842ee879 100644
+--- a/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.h
++++ b/drivers/gpu/drm/amd/display/dc/dce/dce_mem_input.h
+@@ -189,7 +189,9 @@ struct dce_mem_input_registers {
+ 	SFB(blk, GRPH_PITCH, GRPH_PITCH, mask_sh),\
+ 	SFB(blk, HW_ROTATION, GRPH_ROTATION_ANGLE, mask_sh),\
+ 	SFB(blk, GRPH_SWAP_CNTL, GRPH_RED_CROSSBAR, mask_sh),\
++	SFB(blk, GRPH_SWAP_CNTL, GRPH_GREEN_CROSSBAR, mask_sh),\
+ 	SFB(blk, GRPH_SWAP_CNTL, GRPH_BLUE_CROSSBAR, mask_sh),\
++	SFB(blk, GRPH_SWAP_CNTL, GRPH_ALPHA_CROSSBAR, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_SELECT, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_R_SIGN, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_G_SIGN, mask_sh),\
+@@ -213,7 +215,9 @@ struct dce_mem_input_registers {
+ 	SFB(blk, GRPH_Y_END, GRPH_Y_END, mask_sh),\
+ 	SFB(blk, GRPH_PITCH, GRPH_PITCH, mask_sh),\
+ 	SFB(blk, GRPH_SWAP_CNTL, GRPH_RED_CROSSBAR, mask_sh),\
++	SFB(blk, GRPH_SWAP_CNTL, GRPH_GREEN_CROSSBAR, mask_sh),\
+ 	SFB(blk, GRPH_SWAP_CNTL, GRPH_BLUE_CROSSBAR, mask_sh),\
++	SFB(blk, GRPH_SWAP_CNTL, GRPH_ALPHA_CROSSBAR, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_SELECT, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_R_SIGN, mask_sh),\
+ 	SFB(blk, PRESCALE_GRPH_CONTROL, GRPH_PRESCALE_G_SIGN, mask_sh),\
+@@ -344,7 +348,9 @@ struct dce_mem_input_registers {
+ 	type GRPH_PITCH; \
+ 	type GRPH_ROTATION_ANGLE; \
+ 	type GRPH_RED_CROSSBAR; \
++	type GRPH_GREEN_CROSSBAR; \
+ 	type GRPH_BLUE_CROSSBAR; \
++	type GRPH_ALPHA_CROSSBAR; \
+ 	type GRPH_PRESCALE_SELECT; \
+ 	type GRPH_PRESCALE_R_SIGN; \
+ 	type GRPH_PRESCALE_G_SIGN; \
+-- 
+2.55.0
+
