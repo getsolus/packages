@@ -1,35 +1,30 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : binutils
-version    : 2.45.1
-release    : 83
+version    : '2.47'
+release    : 84
 source     :
-    # - https://ftpmirror.gnu.org/gnu/binutils/binutils-2.45.1.tar.xz : f6e4d41fd5fc778b06b7891457b3620da5ecea1006c6a4a41ae998109f85a800
-    # Stable 2.45 series
-    - git|https://github.com/bminor/binutils-gdb.git : 48324fde1e284293dd3d570dba597cb644921c92
+    # Stable 2.47 series
+    - git|https://forge.sourceware.org/binutils-gdb/binutils-gdb-mirror.git : 3ec5b508f9607866a34469a6718b433a076d8119
 homepage   : https://www.gnu.org/software/binutils
 license    : GPL-3.0-or-later
 component  :
     - system.devel
     - gold : programming.tools
+    - gprofng : programming.tools
     - libs : programming.library
 summary    :
     - Binutils contains a linker, an assembler, and other tools for handling object files
-    - gold : binutils gold linker
+    - gold : The GOLD linker, a faster alternative to the BFD linker
+    - gprofng : Next Generation code profiling tool
     - libs : Runtime libraries for binutils
-description: |
-    The Binutils package contains a linker, an assembler, and other tools for handling object files.
-patterns   :
-    - libs :
-        - /usr/lib64/libbfd-*.so
-        - /usr/lib64/libopcodes-*.so
-        - /usr/lib64/libsframe.so.*
-    - gold :
-        - /usr/bin/ld.gold
-        - /usr/share/locale/*/LC_MESSAGES/gold.mo
-    - main :
-        - /usr/lib64/libctf*.so.*
-        - /usr/lib64/libgprofng.so.*
-mancompress: true
+description:
+    - The Binutils package contains a linker, an assembler, and other tools for handling object files.
+    - gold : This package provides the GOLD linker, which can be used as an alternative to the default binutils linker (ld.bfd). The GOLD is generally faster than the BFD linker, and it supports features such as Identical Code Folding and Incremental linking.  Unfortunately it is not as well maintained as the BFD linker, and it may become deprecated in the future.
+    - gprofng : Next Generation code profiling tool.
+    - libs : Library files for binutils, typically pulled in as a dependency of another package.
+optimize   :
+    - lto
+    - speed
 builddeps  :
     - pkgconfig(jansson)
     - pkgconfig(libblake3)
@@ -38,58 +33,90 @@ builddeps  :
     - dejagnu
     - rust
 rundeps    :
-    - gold : binutils
+    - devel :
+        - binutils-gprofng
+    - gold :
+        - binutils
 setup      : |
+    %patch -p1 -i ${pkgfiles}/0001-Proper-stateless.patch
+    %patch -p1 -i ${pkgfiles}/ld-as-needed.patch
+    %patch -p1 -i ${pkgfiles}/0001-Use-BLAKE3-for-build-id-hashing.patch
+
+    # Seems to be a bashism or automake regression, causes the literal binary `/usr/bin/gp-{archive,collect-app,display-html,display-src,display-text}` to be created
+    %patch -p1 -i ${pkgfiles}/0001-Revert-gprofng-Fix-cross-compilation-binary-name.patch
+
+    # Non release builds mess up the sonames
     sed -i '/^development=/s/true/false/' bfd/development.sh
 
-    %apply_patches
     buildArch="x86_64-solus-linux"
 
     mkdir build && pushd build
-    ../configure --prefix=/usr \
-                 --libdir=%libdir% \
-                 --with-lib-path="/usr/lib64:/usr/lib32" \
-                 --enable-64-bit-bfd \
-                 --enable-colored-disassembly \
-                 --enable-compressed-debug-sections=all \
-                 --enable-default-compressed-debug-sections-algorithm=zstd \
-                 --enable-default-execstack=no \
-                 --enable-default-hash-style=gnu \
-                 --enable-deterministic-archives \
-                 --enable-gold \
-                 --enable-jansson \
-                 --enable-ld=default \
-                 --enable-multilib \
-                 --enable-new-dtags \
-                 --enable-pgo-build=lto \
-                 --enable-plugins \
-                 --enable-relro=yes \
-                 --enable-secureplt \
-                 --enable-shared \
-                 --enable-threads \
-                 --enable-warn-execstack=yes \
-                 --disable-gdb \
-                 --disable-gdbserver \
-                 --disable-libdecnumber \
-                 --disable-readline \
-                 --disable-rpath \
-                 --disable-sim \
-                 --disable-static \
-                 --disable-werror \
-                 --with-blake3=yes \
-                 --with-xxhash=yes \
-                 --with-zstd=yes \
-                 --build=$buildArch \
-                 --target=$buildArch
+    ../configure \
+        --prefix=/usr \
+        --libdir=%libdir% \
+        --disable-gdb \
+        --disable-gdbserver \
+        --disable-libdecnumber \
+        --disable-readline \
+        --disable-rpath \
+        --disable-sim \
+        --disable-static \
+        --disable-werror \
+        --enable-64-bit-bfd \
+        --enable-colored-disassembly \
+        --enable-compressed-debug-sections=all \
+        --enable-default-compressed-debug-sections-algorithm=zstd \
+        --enable-default-execstack=no \
+        --enable-default-hash-style=gnu \
+        --enable-deterministic-archives \
+        --enable-gold \
+        --enable-jansson \
+        --enable-ld=default \
+        --enable-multilib \
+        --enable-new-dtags \
+        --enable-pgo-build=lto \
+        --enable-plugins \
+        --enable-relro=yes \
+        --enable-secureplt \
+        --enable-shared \
+        --enable-threads \
+        --enable-warn-execstack=yes \
+        --with-lib-path="/usr/lib64:/usr/lib32" \
+        --with-blake3=yes \
+        --with-xxhash=yes \
+        --with-zstd=yes \
+        --build=$buildArch \
+        --target=${buildArch}
 build      : |
     %make tooldir=/usr -C build -O
 install    : |
     %make_install tooldir=/usr -C build
+    %install_license COPYING*
 
     # Better stateless
-    install -dm00755 $installdir/usr/share/defaults/gprofng
-    mv $installdir/usr/etc/gprofng.rc $installdir/usr/share/defaults/gprofng
-    rmdir -v $installdir/usr/etc
+    %install_dir ${installdir}/usr/share/defaults/gprofng
+    mv ${installdir}/usr/etc/gprofng.rc ${installdir}/usr/share/defaults/gprofng
+    rmdir -v ${installdir}/usr/etc
 # check      : |
 #     unset LDFLAGS
 #     %make -k check-gas check-binutils check-ld -C build || :
+patterns   :
+    - libs :
+        - /usr/lib64/libbfd-*.so
+        - /usr/lib64/libopcodes-*.so
+        - /usr/lib64/libsframe.so.*
+    - gold :
+        - /usr/bin/ld.gold
+        - /usr/share/locale/*/LC_MESSAGES/gold.mo
+    - gprofng :
+        - /usr/bin/gp-*
+        - /usr/bin/gprof*
+        - /usr/lib/gprofng
+        - /usr/lib64/libgprofng.so.*
+        - /usr/share/defaults/gprofng
+        - /usr/share/doc/gprofng
+        - /usr/share/info/gprof*.info
+        - /usr/share/locale/**/**/gprof.mo
+        - /usr/share/man/man1/gprof*
+    - main :
+        - /usr/lib64/libctf*.so.*
