@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : glibc
 version    : '2.44'
-release    : 146
+release    : 147
 source     :
     # release/2.44/master
-    - git|https://forge.sourceware.org/glibc/glibc-mirror.git : 1f5026241027260e9280039698bca031484c82ad
+    - git|https://forge.sourceware.org/glibc/glibc-mirror.git : a527fd2510fe3407e93d0dc0d4b542ff13f65afb
 homepage   : https://www.gnu.org/software/libc/
 license    :
     - GPL-2.0-or-later
@@ -50,20 +50,20 @@ environment: |
     # The point of doing this and not tracking the kernel version of linux-lts is that some users may have manually compiled older kernels or be running
     # in a container. We don't want to break such users, but there still needs to be a cutoff.
 
-    export COMMON_GLIBC_OPTIONS="\
-        %CONFOPTS% \
-        --build=${BUILDHOST} \
-        --disable-build-nscd \
-        --disable-nscd \
-        --disable-sframe \
-        --enable-bind-now \
-        --enable-kernel=6.1 \
-        --enable-multi-arch \
-        --enable-stack-protector=strong \
-        --enable-systemtap \
-        --with-pkgversion='Solus' \
+    export COMMON_GLIBC_OPTIONS=(
+        %CONFOPTS%
+        --build=${BUILDHOST}
+        --disable-build-nscd
+        --disable-nscd
+        --enable-bind-now
+        --enable-fortify-source
+        --enable-kernel=6.1
+        --enable-multi-arch
+        --enable-stack-protector=strong
+        --enable-systemtap
+        --with-pkgversion='Solus'
         --with-selinux=no
-    "
+    )
 setup      : |
     %patch -p1 -i ${pkgfiles}/perf/0001-Remove-RELR-dependency-check.patch
     %patch -p1 -i ${pkgfiles}/solus/0001-ldd-Force-correct-RTLDLIST.patch
@@ -79,12 +79,18 @@ setup      : |
 
     mkdir build && cd build
 
-    cet=""
+    _arch_options=()
     if [[ ! -z "${EMUL32BUILD}" ]]; then
-        cet="--disable-cet"
+        _arch_options+=(--disable-cet)
     else
-        # Only supported on x86_64 as of glibc v2.39
-        cet="--enable-cet=permissive"
+        _arch_options+=(
+            # Only supported on x86_64 as of glibc v2.39.
+            # TODO: Figure out if we can build with strict CET. aerynOS packages
+            # for 64-bit are built with '-fcf-protection', but ours are not.
+            --enable-cet=permissive
+            # SFrame is only supported on x86_64/aarch64 (not the 32-bit target)
+            --enable-sframe
+        )
     fi
 
     echo "LD_SO_CACHE=/var/cache/ldconfig/ld.so.cache" >> configparms
@@ -96,8 +102,8 @@ setup      : |
     echo "complocaledir=/usr/lib/locale" >> configparms
 
     ../configure \
-        ${COMMON_GLIBC_OPTIONS} \
-        ${cet}
+        "${COMMON_GLIBC_OPTIONS[@]}" \
+        "${_arch_options[@]}"
 build      : |
     %make -C build
 
