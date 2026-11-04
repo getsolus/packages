@@ -1,24 +1,61 @@
 # yaml-language-server: $schema=/usr/share/ypkg/schema/schema.json
 name       : python-proton-vpn-core-api
-version    : 5.2.5
-release    : 22
+version    : 6.1.1
+release    : 23
 source     :
-    - https://github.com/ProtonVPN/python-proton-vpn-api-core/archive/refs/tags/v5.2.5.tar.gz : 5724b974c299736954105ae19fc497e724c71345e9e27708e389209bae02c322
+    - https://github.com/ProtonVPN/python-proton-vpn-api-core/archive/refs/tags/v6.1.1.tar.gz : 9b8a4eca0c59c53c51e95862fb00c31f146f38d2ee88bb3fbda24ed53fdefa67
+    - https://github.com/ProtonVPN/protun/archive/refs/tags/v2.2.1.tar.gz#protun.tar.gz : 4bf7eab3255332ffd97e1906a79d048fddb0d1bc40b6caefb899de9106e322cc
 homepage   : https://github.com/ProtonVPN/python-proton-vpn-api-core
 license    : GPL-3.0-or-later
 component  : programming.python
 summary    : The proton-vpn-core-api component
 description: |
     The proton-vpn-core-api acts as a facade to the other Proton VPN components, exposing a uniform API to the available Proton VPN services.
+networking : true
 builddeps  :
+    - pkgconfig(libmnl)
+    - pkgconfig(libnftnl)
     - python-build
     - python-installer
     - python-setuptools
     - python-wheel
+    - rust
+setup      : |
+    tar -xvf ${sources}/protun.tar.gz -C  ${workdir}/dependencies/protun --strip-components=1
+    # https://github.com/ProtonVPN/python-proton-vpn-api-core/issues/31
+    %patch -p1 -i ${pkgfiles}/fix-protun-dbus-startup-race.patch
+    export CARGO_REGISTRIES_PROTON_INDEX="sparse+https://rust-registry.proton.me/index/"
+    %cargo_fetch
 build      : |
+    # Build the Rust part first
+    %cargo_build \
+      --bin nm-protun-service \
+      --bin proton-vpn-kill-switch-service \
+      --lib \
+      --features 'protun,python,core,local_agent,kill_switch,telemetry'
+
+    # This file is needed for the Python build
+    %install_exe ${workdir}/target/release/libproton_vpn_platform.so ${workdir}/proton/vpn/platform.abi3.so
+    # Python build
     %pyproject_build
 install    : |
     %pyproject_install
+
+    # Install binaries and helper script
+    %install_exe target/release/nm-protun-service -t ${installdir}/usr/libexec/
+    %install_exe target/release/proton-vpn-kill-switch-service -t ${installdir}/usr/libexec/
+    %install_exe resources/proton-vpn-disable-kill-switch -t ${installdir}/usr/libexec/
+
+    # Install config, services and polkit agent
+    %install_file resources/nm-protun-service.conf ${installdir}/usr/share/dbus-1/system.d/nm-protun-service.conf
+    %install_file resources/proton-vpn-kill-switch.conf ${installdir}/usr/share/dbus-1/system.d/me.proton.vpn.kill_switch.conf
+    %install_file resources/proton-vpn-kill-switch.dbus-service ${installdir}/usr/share/dbus-1/system-services/me.proton.vpn.kill_switch.service
+    %install_file resources/me.proton.vpn.kill-switch.disable.policy ${installdir}/usr/share/polkit-1/actions/me.proton.vpn.kill-switch.disable.policy
+    %install_file resources/proton-vpn-kill-switch-boot.service ${installdir}/usr/lib/systemd/system/proton-vpn-kill-switch-boot.service
+    sed -i 's|program=.*|program=/usr/libexec/nm-protun-service|'  resources/nm-protun.name
+    %install_file resources/nm-protun.name ${installdir}/usr/lib64/NetworkManager/VPN/nm-protun.name
+
 replaces   :
+    - python-proton-vpn-local-agent
     - python-proton-vpn-logger
     - python-proton-vpn-network-manager
