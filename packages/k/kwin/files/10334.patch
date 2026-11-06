@@ -1,0 +1,71 @@
+From ec6731cc505bc3989e9ce99020eadbbd8517447c Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Fri, 6 Nov 2026 17:40:29 +0100
+Subject: [PATCH 1/2] core/gbmgraphicsbufferallocator: override the modifier
+ with INVALID where needed
+
+With some modifier-aware drivers, allocating a buffer with the INVALID modifier
+can result in a modifier that isn't actually in the requested list.
+This can cause severe issues for the rest of KWin, since it assumes that
+allocating a buffer with a given modifier list actually results in a buffer
+with a modifier that is in that list.
+
+This caused constant re-allocations with Nouveau, both reducing performance and
+causing black flicker on some Nvidia GPUs.
+
+BUG: 527421
+---
+ src/core/gbmgraphicsbufferallocator.cpp | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/src/core/gbmgraphicsbufferallocator.cpp b/src/core/gbmgraphicsbufferallocator.cpp
+index d27fc00542f..03bf6fcb176 100644
+--- a/src/core/gbmgraphicsbufferallocator.cpp
++++ b/src/core/gbmgraphicsbufferallocator.cpp
+@@ -181,6 +181,13 @@ static GraphicsBuffer *allocateDmaBuf(gbm_device *device, dev_t deviceId, const
+             if (!attributes.has_value()) {
+                 return nullptr;
+             }
++            if (!options.modifiers.contains(attributes->modifier)) {
++                // some modifier-aware drivers pick an explicit modifier (that isn't in the list)
++                // when the list contains DRM_FORMAT_MOD_INVALID.
++                // Override the modifier here, so the rest of KWin can still assume allocation
++                // to pick a modifier that's actually in the list.
++                attributes->modifier = DRM_FORMAT_MOD_INVALID;
++            }
+             return new GbmGraphicsBuffer(std::move(attributes.value()));
+         }
+     }
+-- 
+GitLab
+
+
+From 955a893b27ef6bd556e894ef20dc45e0e9baa460 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Fri, 6 Nov 2026 17:44:28 +0100
+Subject: [PATCH 2/2] backends/drm: also clear non-shadowbuffer swapchain
+ damage tracking
+
+Otherwise the buffer clearing can end up not being taken into account for the
+actual scene rendering.
+
+CCBUG: 527421
+---
+ src/backends/drm/drm_egl_layer_surface.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/backends/drm/drm_egl_layer_surface.cpp b/src/backends/drm/drm_egl_layer_surface.cpp
+index e3bbc0184b2..607a7b0efd4 100644
+--- a/src/backends/drm/drm_egl_layer_surface.cpp
++++ b/src/backends/drm/drm_egl_layer_surface.cpp
+@@ -459,6 +459,7 @@ std::shared_ptr<DrmFramebuffer> EglGbmLayerSurface::doRenderTestBuffer(Surface *
+         if (surface->importSwapchain) {
+             surface->importSwapchain->resetDamageTracking();
+         }
++        surface->gbmSwapchain->resetBufferAge();
+         surface->currentSlot = slot;
+         surface->currentFramebuffer = ret;
+         return ret;
+-- 
+GitLab
+
