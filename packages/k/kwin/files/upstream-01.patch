@@ -1,0 +1,46 @@
+From c9d720793bbcef9483ab290673032d39441c0e6f Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Thu, 29 Oct 2026 15:54:18 +0100
+Subject: [PATCH] compositor: handle possibly missing render device
+
+Commit 6783f9610c moved the cross-GPU direct scanout check from
+backends/drm into the compositor, but dropped the null check on the
+render device. GpuManager's compatibleRenderDevice() returns nullptr
+for scanout devices that have no render device to pair with, such as
+evdi DisplayLink outputs. This caused deviceId() to be called on a null
+pointer whenever a buffer from another device is considered for direct
+scanout on such an output.
+
+On systems with a DisplayLink dock, this crashes kwin_wayland as soon
+as a fullscreen surface is shown on an evdi output.
+
+This change restores the previous behavior: If there is no compatible
+render device, treat the buffer as coming from another GPU and refuse
+direct scanout.
+
+BUG: 527984
+
+
+(cherry picked from commit 43a74990f34159e68a12e85dc1ff1d9b0d908ee3)
+
+Co-authored-by: Fae Schiewe <schiewe@uwuware.com>
+---
+ src/compositor.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/compositor.cpp b/src/compositor.cpp
+index 658d550818a..0aa0e57d6b9 100644
+--- a/src/compositor.cpp
++++ b/src/compositor.cpp
+@@ -478,7 +478,7 @@ static bool prepareDirectScanout(RenderView *view, LogicalOutput *logicalOutput,
+         return false;
+     }
+     const auto compatibleDevice = GpuManager::self()->compatibleRenderDevice(layer->scanoutDevice());
+-    if (attrs->device != layer->scanoutDevice()->deviceId() && attrs->device != compatibleDevice->deviceId()) {
++    if (attrs->device != layer->scanoutDevice()->deviceId() && (!compatibleDevice || attrs->device != compatibleDevice->deviceId())) {
+         // Disallow direct scanout between GPUs, as
+         // - there are some significant driver bugs with direct scanout from other GPUs,
+         //   like https://gitlab.freedesktop.org/drm/amd/-/issues/2075
+-- 
+GitLab
+
