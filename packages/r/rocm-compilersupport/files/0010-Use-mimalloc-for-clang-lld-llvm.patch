@@ -1,4 +1,4 @@
-From b99c151746fff721aaf95b3ab79ed04acf0096b4 Mon Sep 17 00:00:00 2001
+From e6ba0d166bc093dd10ae355ea3f4b504ab9df15d Mon Sep 17 00:00:00 2001
 From: Reilly Brogan <reilly@reillybrogan.com>
 Date: Mon, 16 Dec 2024 16:52:13 -0600
 Subject: [PATCH 10/15] Use mimalloc for clang/lld/llvm
@@ -65,23 +65,23 @@ index cf1b31f8c0c6..f0d1134621e7 100644
  
    std::string ToolPath = llvm::sys::fs::getMainExecutable(argv[0], nullptr);
 diff --git a/clang/tools/driver/CMakeLists.txt b/clang/tools/driver/CMakeLists.txt
-index a9fa61f9f75e..b29f4a475758 100644
+index db9e0de9b59e..0358c85f4257 100644
 --- a/clang/tools/driver/CMakeLists.txt
 +++ b/clang/tools/driver/CMakeLists.txt
-@@ -65,6 +65,11 @@ clang_target_link_libraries(clang
-   clangFrontendTool
+@@ -67,6 +67,11 @@ clang_target_link_libraries(clang
    clangSerialization
    )
-+ 
+ 
 +target_link_libraries(clang
 +  PRIVATE
 +  LLVMMimalloc
 +  )
- 
++
  if(WIN32 AND NOT CYGWIN)
    # Prevent versioning if the buildhost is targeting for Win32.
+ else()
 diff --git a/clang/tools/driver/driver.cpp b/clang/tools/driver/driver.cpp
-index 6cf64d70c939..576a414f8d9a 100644
+index f22c4b7050b8..08dab218be34 100644
 --- a/clang/tools/driver/driver.cpp
 +++ b/clang/tools/driver/driver.cpp
 @@ -30,6 +30,7 @@
@@ -92,7 +92,7 @@ index 6cf64d70c939..576a414f8d9a 100644
  #include "llvm/Option/ArgList.h"
  #include "llvm/Option/OptTable.h"
  #include "llvm/Option/Option.h"
-@@ -244,6 +245,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
+@@ -241,6 +242,7 @@ static int ExecuteCC1Tool(SmallVectorImpl<const char *> &ArgV,
  
  int clang_main(int Argc, char **Argv, const llvm::ToolContext &ToolContext) {
    noteBottomOfStack();
@@ -101,7 +101,7 @@ index 6cf64d70c939..576a414f8d9a 100644
                          " and include the crash backtrace, preprocessed "
                          "source, and associated run script.\n");
 diff --git a/lld/tools/lld/CMakeLists.txt b/lld/tools/lld/CMakeLists.txt
-index 8498a91597a9..9416f38ebd91 100644
+index 1d1a7ff448b7..d8c702ef02fe 100644
 --- a/lld/tools/lld/CMakeLists.txt
 +++ b/lld/tools/lld/CMakeLists.txt
 @@ -34,6 +34,11 @@ lld_target_link_libraries(lld
@@ -137,27 +137,27 @@ index d6800fa1eea4..4a134e337011 100644
  
    if (::getenv("FORCE_LLD_DIAGNOSTICS_CRASH")) {
 diff --git a/llvm/CMakeLists.txt b/llvm/CMakeLists.txt
-index af28bf016910..c16124440dd5 100644
+index 0a5430dcf83e..0880481bdc78 100644
 --- a/llvm/CMakeLists.txt
 +++ b/llvm/CMakeLists.txt
-@@ -621,6 +621,8 @@ set(LLVM_ENABLE_ICU "OFF" CACHE STRING "Use ICU for text encoding conversion sup
+@@ -657,6 +657,8 @@ option(LLVM_ENABLE_THREADS "Use threads if available." ON)
  
- set(LLVM_ENABLE_ICONV "OFF" CACHE STRING "Use iconv for text encoding conversion support if available. Can be ON, OFF, or FORCE_ON")
+ set(LLVM_ENABLE_ICU "OFF" CACHE STRING "Use ICU for text encoding conversion support if available. Can be ON, OFF, or FORCE_ON")
  
 +set(LLVM_ENABLE_MIMALLOC "ON" CACHE STRING "Use mimalloc for memory allocations. Can be ON, OFF, or FORCE_ON")
 +
- set(LLVM_ENABLE_ZLIB "ON" CACHE STRING "Use zlib for compression/decompression if available. Can be ON, OFF, or FORCE_ON")
- 
- set(LLVM_ENABLE_ZSTD "ON" CACHE STRING "Use zstd for compression/decompression if available. Can be ON, OFF, or FORCE_ON")
+ # After Windows 10 1903, icu.lib is available.
+ if(WIN32 AND CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL "10.0.18362")
+   cmake_dependent_option(LLVM_ENABLE_WINDOWS_ICU "Use Windows vendored ICU if possible" OFF LLVM_ENABLE_ICU OFF)
 diff --git a/llvm/cmake/config-ix.cmake b/llvm/cmake/config-ix.cmake
-index ed2bfa6df68f..8ef440ea64fb 100644
+index 3111c8dfe6c1..fb721431d7c4 100644
 --- a/llvm/cmake/config-ix.cmake
 +++ b/llvm/cmake/config-ix.cmake
 @@ -162,6 +162,23 @@ if(HAVE_LIBPTHREAD)
    set(LLVM_PTHREAD_LIB ${CMAKE_THREAD_LIBS_INIT})
  endif()
  
-+# Mimalloc will set the PACKAGE_VERSION in it's cmake files, which breaks other parts of the build.
++# Mimalloc will set PACKAGE_VERSION in its cmake files, which breaks other parts of the build.
 +# Temporarily store the current value and set it back afterwards.
 +set(TEMP_VERSION ${PACKAGE_VERSION})
 +set(mimalloc_FOUND 0)
@@ -178,7 +178,7 @@ index ed2bfa6df68f..8ef440ea64fb 100644
    if(LLVM_ENABLE_ZLIB STREQUAL FORCE_ON)
      find_package(ZLIB REQUIRED)
 diff --git a/llvm/include/llvm/Config/llvm-config.h.cmake b/llvm/include/llvm/Config/llvm-config.h.cmake
-index aec8c37b05a0..67f4e50c0d42 100644
+index 1fc1c49120f8..46d84bf53d60 100644
 --- a/llvm/include/llvm/Config/llvm-config.h.cmake
 +++ b/llvm/include/llvm/Config/llvm-config.h.cmake
 @@ -97,6 +97,9 @@
@@ -210,10 +210,10 @@ index 000000000000..e9bf4ef87b16
 +
 +#endif
 diff --git a/llvm/lib/CMakeLists.txt b/llvm/lib/CMakeLists.txt
-index a9432977718c..004577dff063 100644
+index 3166d39cd5af..e01cc82a52df 100644
 --- a/llvm/lib/CMakeLists.txt
 +++ b/llvm/lib/CMakeLists.txt
-@@ -25,6 +25,7 @@ add_subdirectory(Analysis)
+@@ -27,6 +27,7 @@ add_subdirectory(DTLTO)
  add_subdirectory(LTO)
  add_subdirectory(MC)
  add_subdirectory(MCA)
@@ -281,10 +281,10 @@ index 4d0718f8cefe..763512760a46 100644
  add_llvm_tool_symlink(llvm-lib llvm-ar)
  add_llvm_tool_symlink(llvm-dlltool llvm-ar)
 diff --git a/llvm/tools/llvm-ar/llvm-ar.cpp b/llvm/tools/llvm-ar/llvm-ar.cpp
-index ac3824419537..226b68a03224 100644
+index 320a903b59e8..9d52d642d728 100644
 --- a/llvm/tools/llvm-ar/llvm-ar.cpp
 +++ b/llvm/tools/llvm-ar/llvm-ar.cpp
-@@ -18,6 +18,7 @@
+@@ -19,6 +19,7 @@
  #include "llvm/Object/Archive.h"
  #include "llvm/Object/ArchiveWriter.h"
  #include "llvm/Object/SymbolicFile.h"
@@ -292,7 +292,7 @@ index ac3824419537..226b68a03224 100644
  #include "llvm/Support/Chrono.h"
  #include "llvm/Support/CommandLine.h"
  #include "llvm/Support/ConvertUTF.h"
-@@ -1511,6 +1512,8 @@ static int ranlib_main(int argc, char **argv) {
+@@ -1512,6 +1513,8 @@ static int ranlib_main(int argc, char **argv) {
  int llvm_ar_main(int argc, char **argv, const llvm::ToolContext &) {
    ToolName = argv[0];
  
@@ -302,5 +302,5 @@ index ac3824419537..226b68a03224 100644
    llvm::InitializeAllTargetMCs();
    llvm::InitializeAllAsmParsers();
 -- 
-2.52.0
+2.54.0
 
