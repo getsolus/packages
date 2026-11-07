@@ -1,0 +1,127 @@
+From 3e780397e9a0b0819fc530babfbfb49892702df7 Mon Sep 17 00:00:00 2001
+From: Fangzhi Zuo <jerry.zuo@amd.com>
+Date: Tue, 13 Oct 2026 19:08:12 +0800
+Subject: [PATCH 23/33] [FROM-ML] drm/amd/display: align VRR timing gate with
+ FreeSync module
+
+[Why & How]
+Use mod_freesync_calc_nominal_field_rate() when validating per-CRTC VRR
+timing so atomic check uses the same stream timing basis as the later
+FreeSync VRR parameter builder.
+
+The previous gate compared the vtotal required for the sink's advertised
+maximum refresh against the mode's nominal vtotal. That rejects every
+mode below the panel's maximum refresh, even though VRR only needs to
+vary below the mode's nominal refresh.
+
+Cap the usable maximum at the mode nominal refresh and require a 10 Hz
+minimum span above min_vfreq, matching the FreeSync module's
+MIN_REFRESH_RANGE. This enables the affected 4K120 and 1080p60 modes
+while continuing to reject degenerate ranges such as 720x576p50.
+
+Fixes: 2553022aea6f ("drm/amd/display: reject invalid per-mode FreeSync timing")
+Reviewed-by: Harry Wentland <harry.wentland@amd.com>
+Signed-off-by: Fangzhi Zuo <jerry.zuo@amd.com>
+Signed-off-by: Ray Wu <ray.wu@amd.com>
+Tested-by: Pei-Hsin Yang <peihsiny@valvesoftware.com>
+---
+ .../display/amdgpu_dm/amdgpu_dm_freesync.c    | 43 +++++++++++++------
+ .../amdgpu_dm/tests/amdgpu_dm_freesync_test.c |  8 +++-
+ 2 files changed, 36 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
+index 92f784ad142e..620d42353328 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_freesync.c
+@@ -112,24 +112,28 @@ void amdgpu_dm_reset_freesync_config_for_crtc(
+ }
+ EXPORT_IF_KUNIT(amdgpu_dm_reset_freesync_config_for_crtc);
+ 
+-static bool amdgpu_dm_is_vrr_timing_valid(const struct drm_display_mode *mode,
+-		int max_vfreq)
++/* FreeSync module gates ACTIVE_VARIABLE on this minimum refresh span (Hz). */
++#define AMDGPU_DM_VRR_MIN_REFRESH_RANGE 10
++
++static bool amdgpu_dm_is_vrr_timing_valid(const struct dc_stream_state *stream,
++					  int min_vfreq, int max_vfreq)
+ {
+-	u64 numerator, denominator, vtotal_at_max_refresh;
++	u64 nominal_vfreq_uhz, usable_max_vfreq_uhz;
+ 
+-	/*
+-	 * Leave the existing decision unchanged without complete timing data;
+-	 * otherwise, the computed vtotal must not be below the nominal vtotal.
+-	 */
+-	if (!mode->clock || !mode->htotal || !mode->vtotal || max_vfreq <= 0)
++	/* Without complete timing/range data, leave the existing decision. */
++	if (!stream || !stream->timing.pix_clk_100hz ||
++	    !stream->timing.h_total || !stream->timing.v_total ||
++	    min_vfreq <= 0 || max_vfreq <= 0)
+ 		return true;
+ 
+-	numerator = (u64)mode->clock * 1000;
+-	denominator = (u64)mode->htotal * max_vfreq;
+-	vtotal_at_max_refresh =
+-		div64_u64(numerator + denominator - 1, denominator);
++	/* Match the FreeSync module's nominal-rate calculation. */
++	nominal_vfreq_uhz = mod_freesync_calc_nominal_field_rate(stream);
++	usable_max_vfreq_uhz = min_t(u64, (u64)max_vfreq * 1000000,
++				     nominal_vfreq_uhz);
+ 
+-	return vtotal_at_max_refresh >= mode->vtotal;
++	return usable_max_vfreq_uhz >=
++	       (u64)min_vfreq * 1000000 +
++	       (u64)AMDGPU_DM_VRR_MIN_REFRESH_RANGE * 1000000;
+ }
+ 
+ void amdgpu_dm_get_freesync_config_for_crtc(
+@@ -148,7 +152,18 @@ void amdgpu_dm_get_freesync_config_for_crtc(
+ 
+ 	aconnector = to_amdgpu_dm_connector(new_con_state->base.connector);
+ 
+-	vrr_timing_valid = amdgpu_dm_is_vrr_timing_valid(mode, aconnector->max_vfreq);
++	vrr_timing_valid = amdgpu_dm_is_vrr_timing_valid(new_crtc_state->stream,
++							 aconnector->min_vfreq,
++							 aconnector->max_vfreq);
++	if (!vrr_timing_valid)
++		drm_dbg_kms(new_con_state->base.connector->dev,
++			    "VRR invalid %s %s %dx%d@%d %d-%d clk=%u h=%u v=%u\n",
++			    new_con_state->base.connector->name, mode->name,
++			    mode->hdisplay, mode->vdisplay, vrefresh,
++			    aconnector->min_vfreq, aconnector->max_vfreq,
++			    new_crtc_state->stream->timing.pix_clk_100hz,
++			    new_crtc_state->stream->timing.h_total,
++			    new_crtc_state->stream->timing.v_total);
+ 
+ 	new_crtc_state->vrr_supported = new_con_state->freesync_capable &&
+ 					vrefresh >= aconnector->min_vfreq &&
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_freesync_test.c b/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_freesync_test.c
+index 028d3c4365fa..f0329bb5c3a0 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_freesync_test.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/tests/amdgpu_dm_freesync_test.c
+@@ -331,8 +331,11 @@ static void dm_test_freesync_config_invalid_timing(struct kunit *test)
+ 	struct dm_test_freesync_ctx *ctx = dm_test_freesync_ctx_alloc(test);
+ 
+ 	ctx->conn_state->freesync_capable = true;
+-	ctx->aconnector->min_vfreq = 40;
++	ctx->aconnector->min_vfreq = 45;
+ 	ctx->aconnector->max_vfreq = 60;
++	ctx->stream->timing.pix_clk_100hz = 270000;
++	ctx->stream->timing.h_total = 864;
++	ctx->stream->timing.v_total = 625;
+ 	ctx->crtc_state->base.mode.clock = 27000;
+ 	ctx->crtc_state->base.mode.hdisplay = 720;
+ 	ctx->crtc_state->base.mode.vdisplay = 576;
+@@ -345,6 +348,9 @@ static void dm_test_freesync_config_invalid_timing(struct kunit *test)
+ 	KUNIT_EXPECT_EQ(test, (int)ctx->crtc_state->freesync_config.state,
+ 			(int)VRR_STATE_UNSUPPORTED);
+ 
++	ctx->stream->timing.pix_clk_100hz = 5940000;
++	ctx->stream->timing.h_total = 4400;
++	ctx->stream->timing.v_total = 2250;
+ 	ctx->crtc_state->base.mode.clock = 594000;
+ 	ctx->crtc_state->base.mode.hdisplay = 3840;
+ 	ctx->crtc_state->base.mode.vdisplay = 2160;
+-- 
+2.56.0
+

@@ -1,0 +1,90 @@
+From 6d5a6bb8bfb89e686c4d74486224ec4d279a16d5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Tomasz=20Paku=C5=82a?= <tomasz.pakula.oficjalny@gmail.com>
+Date: Mon, 16 Feb 2026 17:45:04 +0100
+Subject: [PATCH 30/33] [FROM-ML] drm/amd/display: Support HDMI VRRmax=0
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+[Why]
+VRRmax=0 is a valid value and means that the upper bound is guared by
+the selected video mode.
+
+[How]
+In this context, saved vrr max is the max possible refresh rate ever.
+Try getting upper VRR bound from AMD vsdbif it exists or rely on the
+limitations of BRR in VTEM info frames.
+
+I found through testing, that TVs seem to reject VTEM when BRR is set
+to over 1023 Hz. Use this as the last resort VRRmax. 1023 is the max
+value for a 10-bit field as well.
+
+Signed-off-by: Tomasz Pakuła <tomasz.pakula.oficjalny@gmail.com>
+---
+ .../display/amdgpu_dm/amdgpu_dm_connector.c   | 20 +++++++++++++++----
+ .../amd/display/modules/inc/mod_info_packet.h |  2 ++
+ 2 files changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+index 30ba9c307f0b..011bf2e6ffe2 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+@@ -74,6 +74,7 @@
+ #include <media/cec-notifier.h>
+ 
+ #include "modules/inc/mod_freesync.h"
++#include "modules/inc/mod_info_packet.h"
+ #include "modules/inc/mod_power.h"
+ 
+ #include "amdgpu_dm_trace.h"
+@@ -3853,10 +3854,21 @@ STATIC_IFN_KUNIT int parse_hdmi_amd_vsdb(struct amdgpu_dm_connector *aconnector,
+ }
+ EXPORT_IF_KUNIT(parse_hdmi_amd_vsdb);
+ 
+-static void monitor_range_from_hdmi(struct drm_display_info *display)
++static void monitor_range_from_hdmi(struct drm_display_info *display,
++				    const struct amdgpu_hdmi_vsdb_info *vsdb)
+ {
++	u16 vrr_max = display->hdmi.vrr_cap.vrr_max;
++
++	/* Try getting upper vrr bound from AMD vsdb */
++	if (vrr_max == 0)
++		vrr_max = vsdb->max_refresh_rate_hz;
++
++	/* Use max possible BRR value as a last resort */
++	if (vrr_max == 0)
++		vrr_max = VTEM_BRR_MAX;
++
+ 	display->monitor_range.min_vfreq = display->hdmi.vrr_cap.vrr_min;
+-	display->monitor_range.max_vfreq = display->hdmi.vrr_cap.vrr_max;
++	display->monitor_range.max_vfreq = vrr_max;
+ }
+ 
+ /**
+@@ -4031,8 +4043,8 @@ void amdgpu_dm_update_freesync_caps(struct drm_connector *connector,
+ 
+ 		i = parse_hdmi_amd_vsdb(amdgpu_dm_connector, edid, &vsdb_info);
+ 		/* Prefer HDMI VRR */
+-		if (hdmi_vrr->supported && hdmi_vrr->vrr_max > 0) {
+-			monitor_range_from_hdmi(&connector->display_info);
++		if (hdmi_vrr->supported) {
++			monitor_range_from_hdmi(&connector->display_info, &vsdb_info);
+ 			memset(&amdgpu_dm_connector->vsdb_info, 0,
+ 			       sizeof(amdgpu_dm_connector->vsdb_info));
+ 			sink->edid_caps.freesync_vcp_code = 0;
+diff --git a/drivers/gpu/drm/amd/display/modules/inc/mod_info_packet.h b/drivers/gpu/drm/amd/display/modules/inc/mod_info_packet.h
+index 5181d889fe7f..b6422f6c7ab6 100644
+--- a/drivers/gpu/drm/amd/display/modules/inc/mod_info_packet.h
++++ b/drivers/gpu/drm/amd/display/modules/inc/mod_info_packet.h
+@@ -34,6 +34,8 @@ struct dc_stream_state;
+ struct dc_info_packet;
+ struct mod_vrr_params;
+ 
++#define VTEM_BRR_MAX 1023
++
+ void set_vsc_packet_colorimetry_data(
+ 		const struct dc_stream_state *stream,
+ 		struct dc_info_packet *info_packet,
+-- 
+2.56.0
+

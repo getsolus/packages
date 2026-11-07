@@ -1,0 +1,78 @@
+From ff349f20e2576740df3d71eeb0871fa5144c8f1e Mon Sep 17 00:00:00 2001
+From: Ilya Bakoulin <Ilya.Bakoulin@amd.com>
+Date: Fri, 2 Oct 2026 15:32:27 -0400
+Subject: [PATCH 15/33] [FROM-ML] drm/amd/display: Add HDMI RR and SCDC skips
+
+[Why/How]
+- Add debug key to avoid enabling RR by default.
+- Skip SCDC access if sink or SCDC cap not present
+
+Reviewed-by: Relja (Reggie) Vojvodic <relja.vojvodic@amd.com>
+Reviewed-by: Chris Park <chris.park@amd.com>
+Signed-off-by: Ilya Bakoulin <Ilya.Bakoulin@amd.com>
+Signed-off-by: Roman Li <roman.li@amd.com>
+---
+ drivers/gpu/drm/amd/display/dc/dc.h                      | 1 +
+ drivers/gpu/drm/amd/display/dc/link/link_detection.c     | 4 +++-
+ drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c | 9 ++++++++-
+ 3 files changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/dc/dc.h b/drivers/gpu/drm/amd/display/dc/dc.h
+index eb28b41707b8..33a4006235c1 100644
+--- a/drivers/gpu/drm/amd/display/dc/dc.h
++++ b/drivers/gpu/drm/amd/display/dc/dc.h
+@@ -1286,6 +1286,7 @@ struct dc_debug_options {
+ 	uint32_t dml21_disable_pstate_method_mask;
+ 	union fw_assisted_mclk_switch_version fams_version;
+ 	union dmub_fams2_global_feature_config fams2_config;
++	bool skip_hdmi_rr_enable;
+ 	unsigned int force_cositing;
+ 	unsigned int disable_spl;
+ 	unsigned int force_easf;
+diff --git a/drivers/gpu/drm/amd/display/dc/link/link_detection.c b/drivers/gpu/drm/amd/display/dc/link/link_detection.c
+index 1384197578ec..276673e79613 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/link_detection.c
++++ b/drivers/gpu/drm/amd/display/dc/link/link_detection.c
+@@ -1389,8 +1389,10 @@ static bool detect_link_and_local_sink(struct dc_link *link,
+ 			read_idcc_data(link->ddc, HDMI_IDCC_SCOPE_RW_CA,
+ 				link->hdmi_cable_id.raw, 0, 4);
+ 		}
+-		if (sink->edid_caps.rr_capable)
++
++		if (sink->edid_caps.rr_capable && !dc->debug.skip_hdmi_rr_enable)
+ 			hdmi_frl_write_read_request_enable(link->ddc);
++
+ 		/* When FreeSync is toggled through OSD,
+ 		 * we see same EDID no matter what. Check MCCS caps
+ 		 * to see if we should update FreeSync caps now.
+diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c
+index 6123b10977bf..db798656c8a8 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c
+@@ -579,6 +579,9 @@ void write_scdc_data(struct ddc_service *ddc_service,
+ 	uint8_t write_buffer[2] = {0};
+ 	/*Lower than 340 Scramble bit from SCDC caps*/
+ 
++	if (!ddc_service->link->local_sink)
++		return;
++
+ 	if (ddc_service->link->local_sink &&
+ 		(ddc_service->link->local_sink->edid_caps.panel_patch.skip_scdc_overwrite ||
+ 		!ddc_service->link->local_sink->edid_caps.scdc_present))
+@@ -615,8 +618,12 @@ void read_scdc_data(struct ddc_service *ddc_service)
+ 	uint8_t offset = HDMI_SCDC_TMDS_CONFIG;
+ 	uint8_t tmds_config = 0;
+ 
++	if (!ddc_service->link->local_sink)
++		return;
++
+ 	if (ddc_service->link->local_sink &&
+-		ddc_service->link->local_sink->edid_caps.panel_patch.skip_scdc_overwrite)
++			(ddc_service->link->local_sink->edid_caps.panel_patch.skip_scdc_overwrite ||
++			!ddc_service->link->local_sink->edid_caps.scdc_present))
+ 		return;
+ 
+ 	link_query_ddc_data(ddc_service, slave_address, &offset,
+-- 
+2.56.0
+
