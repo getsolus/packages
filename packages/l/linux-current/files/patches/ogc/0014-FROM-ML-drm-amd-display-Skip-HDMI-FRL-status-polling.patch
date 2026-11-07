@@ -1,0 +1,43 @@
+From 26ef827a31469f85ec519ccee79c405ca1bbd31f Mon Sep 17 00:00:00 2001
+From: Fangzhi Zuo <jerry.zuo@amd.com>
+Date: Thu, 24 Sep 2026 14:45:24 -0400
+Subject: [PATCH 14/33] [FROM-ML] drm/amd/display: Skip HDMI FRL status polling
+ while link is down
+
+[WHY]
+Hotplugging an HDMI FRL sink can wedge DMCUB when a poll-driven retrain
+lands on a link whose PHY has just been torn down. The status polling
+path can program PHY EQ on the disabled PHY, after which the sink SCDC
+reads back version 0 and the display fails to light up.
+
+[HOW]
+Skip FRL status polling unless the link is actively driving a stream.
+The check runs under dc_lock, so it is serialized with link detection
+and modesets while the PHY is being torn down.
+
+Signed-off-by: Fangzhi Zuo <jerry.zuo@amd.com>
+Reviewed-by: Harry Wentland <harry.wentland@amd.com>
+---
+ drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+index a961cefacdac..97f3c210857c 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+@@ -3189,8 +3189,10 @@ static void hdmi_frl_status_polling_work(struct work_struct *work)
+ 			if (dc_link->frl_link_settings.frl_link_rate == 0)
+ 				continue;
+ 
+-		link_update =
+-			dc_link_frl_poll_status_flag(dc_link);
++			if (!dc_link->link_status.link_active)
++				continue;
++
++			link_update = dc_link_frl_poll_status_flag(dc_link);
+ 			if (link_update) {
+ 				link_detected =
+ 					dc_link_detect(
+-- 
+2.56.0
+

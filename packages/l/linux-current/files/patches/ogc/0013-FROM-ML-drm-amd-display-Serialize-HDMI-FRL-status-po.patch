@@ -1,0 +1,79 @@
+From 7a139c36ab99784e8bb1aa2d2cd297bebfe1b394 Mon Sep 17 00:00:00 2001
+From: Fangzhi Zuo <jerry.zuo@amd.com>
+Date: Thu, 24 Sep 2026 14:45:18 -0400
+Subject: [PATCH 13/33] [FROM-ML] drm/amd/display: Serialize HDMI FRL status
+ polling against link detect
+
+[WHY]
+The HDMI FRL status polling work can run concurrently with link detect
+after an unplug/replug. Both paths access the same link through DDC and may
+perform FRL link training, while the polling path also reads link state
+without holding dc_lock.
+
+[HOW]
+Use mutex_trylock() to serialize the complete link walk, FRL status
+polling, and retraining sequence with dc_lock. If the lock is busy,
+defer the background poll to the next 200ms cycle instead of blocking
+an active detect, modeset, or flip.
+
+Signed-off-by: Fangzhi Zuo <jerry.zuo@amd.com>
+Reviewed-by: Harry Wentland <harry.wentland@amd.com>
+---
+ .../display/amdgpu_dm/amdgpu_dm_connector.c   | 35 +++++++++++--------
+ 1 file changed, 21 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+index 3f26aa7f3442..a961cefacdac 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_connector.c
+@@ -3173,26 +3173,33 @@ static void hdmi_frl_status_polling_work(struct work_struct *work)
+ 	struct dc *dc = dm->dc;
+ 	struct dc_link *dc_link;
+ 	bool link_update = false;
++	bool link_detected;
+ 
+-	for (int i = 0; i < MAX_LINKS; i++) {
+-		dc_link = dc->links[i];
++	/* Defer to the next cycle rather than block on a busy dc_lock. */
++	if (mutex_trylock(&dm->dc_lock)) {
++		for (int i = 0; i < MAX_LINKS; i++) {
++			dc_link = dc->links[i];
+ 
++			if (!dc_link || !dc_link->local_sink)
++				continue;
+ 
+-		if (!dc_link || !dc_link->local_sink)
+-			continue;
+-
+-		if (!dc_is_hdmi_signal(dc_link->connector_signal))
+-			continue;
++			if (!dc_is_hdmi_signal(dc_link->connector_signal))
++				continue;
+ 
+-		if (dc_link->frl_link_settings.frl_link_rate == 0)
+-			continue;
++			if (dc_link->frl_link_settings.frl_link_rate == 0)
++				continue;
+ 
+-		link_update = dc_link_frl_poll_status_flag(dc_link);
+-		if (link_update) {
+-			mutex_lock(&dm->dc_lock);
+-			dc_link_detect(dc_link, DETECT_REASON_RETRAIN);
+-			mutex_unlock(&dm->dc_lock);
++		link_update =
++			dc_link_frl_poll_status_flag(dc_link);
++			if (link_update) {
++				link_detected =
++					dc_link_detect(
++						dc_link, DETECT_REASON_RETRAIN);
++				if (!link_detected)
++					DRM_ERROR("HDMI FRL retrain failed\n");
++			}
+ 		}
++		mutex_unlock(&dm->dc_lock);
+ 	}
+ 
+ 	queue_delayed_work(dm->hdmi_frl_status_polling_wq,
+-- 
+2.56.0
+

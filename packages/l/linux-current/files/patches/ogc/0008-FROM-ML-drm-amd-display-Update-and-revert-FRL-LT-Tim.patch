@@ -1,0 +1,80 @@
+From 16fd68395bdd67514849e3514f261d00e2131882 Mon Sep 17 00:00:00 2001
+From: Relja Vojvodic <Relja.Vojvodic@amd.com>
+Date: Wed, 5 Aug 2026 14:36:32 +0800
+Subject: [PATCH 08/33] [FROM-ML] drm/amd/display: Update and revert FRL LT
+ Timeout behaviour
+
+[Why & How]
+- Revert logic to fallback to polling if LT no timeout is set
+- Update LT timeout to 300ms for appropriate link rates
+
+Reviewed-by: Nicholas Kazlauskas <nicholas.kazlauskas@amd.com>
+Signed-off-by: Relja Vojvodic <Relja.Vojvodic@amd.com>
+Signed-off-by: Tom Chung <chiahsuan.chung@amd.com>
+---
+ .../display/dc/link/protocols/link_hdmi_frl.c | 32 +++++++++----------
+ 1 file changed, 15 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c
+index 714168e1ece6..7f930097da18 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c
+@@ -528,10 +528,10 @@ static enum link_result hdmi_frl_perform_link_training(struct ddc_service *ddc_s
+ 
+ 		FRL_INFO("FRL LINK TRAINING:  Poll for FLT_UPDATE.\n");
+ 		/*LTS:3: Start Link Training*/
+-		/*Start FLT Timer = 200 ms*/
++		/*Start FLT Timer = 200 ms, or 300ms if link rate >= 16Gbps*/
+ 		num_polls = 0;
+-		if (flt_no_timeout)
+-			max_polls = 500;
++		if (link_settings->frl_link_rate >= HDMI_FRL_LINK_RATE_16GBPS)
++			max_polls = 155;
+ 
+ 		while (num_polls < max_polls) {
+ 			flt_poll_cur_time = dm_get_timestamp(ddc_service->ctx);
+@@ -572,7 +572,7 @@ static enum link_result hdmi_frl_perform_link_training(struct ddc_service *ddc_s
+ 				FRL_INFO("FRL LINK TRAINING:  TxFFE = %d.\n", current_FFE);
+ 				override_FFE = false;
+ 			}
+-			if (scdc_update.fields.FLT_UPDATE) {
++			if (scdc_update.fields.FLT_UPDATE || flt_no_timeout) {
+ 				offset = HDMI_SCDC_LTP_REQ;
+ 				link_query_ddc_data(ddc_service, slave_address,
+ 								&offset, sizeof(offset), ltp_req.byte,
+@@ -680,21 +680,19 @@ static enum link_result hdmi_frl_perform_link_training(struct ddc_service *ddc_s
+ 				/* Workaround for DEDCN3AG-111
+ 				 * HDMI-FRL Incorrect Serialization Order for LTP4
+ 				 */
++				if (flt_no_timeout) {
++					return LINK_RESULT_SUCCESS;
++				}
+ 			}
+-
+-		}
+-		if (flt_no_timeout) {
+-			return LINK_RESULT_SUCCESS;
+-		} else {
+-			FRL_INFO("FRL LINK TRAINING:  FAILED - Timeout waiting for FLT_UPDATE to be set by sink.\n");
+-			write_buffer[0] = HDMI_SCDC_CONFIG_1;
+-			/*FRL_RATE*/
+-			write_buffer[1] = HDMI_FRL_LINK_RATE_DISABLE | (0 << 4);
+-			link_query_ddc_data(ddc_service, slave_address,
+-					write_buffer, sizeof(write_buffer), NULL, 0);
+-			hdmi_frl_LTS_clear_Link_Setting(ddc_service);
+-			result = LINK_RESULT_TIMEOUT;
+ 		}
++		FRL_INFO("FRL LINK TRAINING:  FAILED - Timeout waiting for FLT_UPDATE to be set by sink.\n");
++		write_buffer[0] = HDMI_SCDC_CONFIG_1;
++		/*FRL_RATE*/
++		write_buffer[1] = HDMI_FRL_LINK_RATE_DISABLE | (0 << 4);
++		link_query_ddc_data(ddc_service, slave_address,
++				write_buffer, sizeof(write_buffer), NULL, 0);
++		hdmi_frl_LTS_clear_Link_Setting(ddc_service);
++		result = LINK_RESULT_TIMEOUT;
+ 	} else {
+ 		FRL_INFO("FRL LINK TRAINING:  FAILED - FLT_READY not set by sink.\n");
+ 		result = LINK_RESULT_TIMEOUT;
+-- 
+2.56.0
+

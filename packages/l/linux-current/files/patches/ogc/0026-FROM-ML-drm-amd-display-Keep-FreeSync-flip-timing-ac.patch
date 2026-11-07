@@ -1,0 +1,88 @@
+From b6dfd93160f23a5d002f14fe87f51c773f81e7b6 Mon Sep 17 00:00:00 2001
+From: Davey Hughes <davidralphhughes@gmail.com>
+Date: Wed, 28 Oct 2026 15:54:12 -0700
+Subject: [PATCH 26/33] [FROM-ML] drm/amd/display: Keep FreeSync flip timing
+ across plane resets
+
+dm_update_plane_state() replaces the DC plane with a newly allocated one
+whenever the plane is reset. The new plane's flip timing is zero, and
+mod_freesync_handle_preflip() runs before DC stores the new plane's
+first flip timestamp, so FreeSync takes the 32-bit microsecond timestamp
+itself as the last render time: the monotonic clock modulo about 71.6
+minutes.
+
+On a panel with below-the-range compensation (BTR), that engages BTR and
+pins the frame time at the BTR mid-point (13.447 ms on a 48-165 Hz
+panel). A panel without BTR (max refresh below twice the min) goes
+through the fixed refresh path instead and locks to its max refresh
+after six frames.
+
+It takes a reset on every flip to keep the panel there, and color
+management changes reset the plane. DRM sets color_mgmt_changed whenever
+a color property is given a different blob, even one with the same
+contents, and KWin 6.8.1 with HDR enabled and its color accuracy setting
+at "Prefer efficiency" sets a new GAMMA_LUT blob on every commit
+(current KWin master no longer does). Plane resets for CRTC color
+changes, added by
+commit 7316c4ad2996 ("drm/amd/display: Reset planes for color management
+changes"), and later for plane color properties and colorops, made this
+reachable on every flip.
+
+Copy the flip timing from the old DC plane into the new one when the
+plane stays on the same CRTC. Do it in amdgpu_dm_commit_planes() before
+the preflip, after drm_atomic_helper_wait_for_dependencies() has waited
+for the previous commit, so the copy holds that commit's flip and does
+not race with DC writing it. This covers both the BTR and the fixed
+refresh path. A plane that is newly enabled or moved to another CRTC
+still starts without history.
+
+Fixes: 180db303ff46 ("drm/amd/display: Add below the range support for FreeSync")
+Cc: stable@vger.kernel.org
+Signed-off-by: Davey Hughes <davidralphhughes@gmail.com>
+---
+ .../gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+index 9965b0040f4c..34c02550eee2 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -3797,6 +3797,25 @@ static void dm_arm_vblank_event_pre_programming(struct amdgpu_crtc *acrtc,
+ 		drm_crtc_vblank_get(&acrtc->base);
+ }
+ 
++/*
++ * FreeSync times each frame from the plane's previous flip, and a plane
++ * reset gives the new DC plane zeroed flip timing, so copy it over. Do
++ * this at commit time, not in atomic check: by then the previous commit
++ * has finished writing it.
++ */
++static void
++dm_plane_inherit_flip_time(struct dc_plane_state *dc_plane_state,
++			   struct drm_plane_state *old_plane_state,
++			   struct drm_plane_state *new_plane_state)
++{
++	struct dc_plane_state *old_dc_plane_state =
++		to_dm_plane_state(old_plane_state)->dc_state;
++
++	if (old_dc_plane_state && old_dc_plane_state != dc_plane_state &&
++	    old_plane_state->crtc == new_plane_state->crtc)
++		dc_plane_state->time = old_dc_plane_state->time;
++}
++
+ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
+ 				    struct drm_device *dev,
+ 				    struct amdgpu_display_manager *dm,
+@@ -3896,6 +3915,9 @@ static void amdgpu_dm_commit_planes(struct drm_atomic_commit *state,
+ 		if (!dc_plane)
+ 			continue;
+ 
++		dm_plane_inherit_flip_time(dc_plane, old_plane_state,
++					   new_plane_state);
++
+ 		bundle->surface_updates[planes_count].surface = dc_plane;
+ 		if (new_pcrtc_state->color_mgmt_changed || new_plane_state->color_mgmt_changed) {
+ 			bundle->surface_updates[planes_count].gamma = &dc_plane->gamma_correction;
+-- 
+2.56.0
+
