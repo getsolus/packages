@@ -1,0 +1,133 @@
+From c8028b3e2e0d985ae181a0d66aeafed698663445 Mon Sep 17 00:00:00 2001
+From: Dmitry Kazakov <dimula73@gmail.com>
+Date: Tue, 20 Oct 2026 15:03:14 +0200
+Subject: [PATCH] Fix DBus (and global menu) initialization broken by probing
+
+When we create a temporary QGuiApplication, it may also
+create some platform-specific interfaces, like QPlatformMenu
+and QPlatformSystemTrayIcon. These interfaces may trigger
+DBus initialization, which requires the app to start an event
+loop to exit the so called "suspended delivery" state, which
+blocks processing of DBus requests until the app is fully
+initialized and ready to actually accept them.
+
+The fix consists of two separate parts. Firstly, it calls
+setDesktopSettingsAware(false) on all the platforms,
+which disables creation of QPlatformMenu and
+QPlatformSystemTrayIcon for the temporary aps.
+This itself lets us fix the issue by mere avoiding
+DBus initialization.
+
+But there is still no guarantee that no other part of
+Qt would trigger DBus initialization, so the patch also
+adds the second part, which forces the temporary app
+to process the event queue before exiting.
+
+For testing purposes, both workrounds can be disabled
+with environment variables:
+
+export KRITA_DISABLE_TEMPORARY_APP_EVENTS_PROCESSING_WORKAROUND=1
+
+export KRITA_DISABLE_DESKTOP_UNAWARE_PROBING_WORKAROUND=1
+
+BUG:515889
+---
+ libs/ui/opengl/KisOpenGLModeProber.cpp | 63 +++++++++++++++++++++-----
+ 1 file changed, 52 insertions(+), 11 deletions(-)
+
+diff --git a/libs/ui/opengl/KisOpenGLModeProber.cpp b/libs/ui/opengl/KisOpenGLModeProber.cpp
+index b49786640a8..bf1a0daabe2 100644
+--- a/libs/ui/opengl/KisOpenGLModeProber.cpp
++++ b/libs/ui/opengl/KisOpenGLModeProber.cpp
+@@ -100,6 +100,24 @@ private:
+     bool m_oldValue = false;
+ };
+ 
++#ifdef HAVE_DBUS
++struct DisableDesktopAwareSetter
++{
++    DisableDesktopAwareSetter()
++        : m_oldValue(QGuiApplication::desktopSettingsAware())
++    {
++        QGuiApplication::setDesktopSettingsAware(false);
++    }
++
++    ~DisableDesktopAwareSetter() {
++        QGuiApplication::setDesktopSettingsAware(m_oldValue);
++    }
++
++private:
++    bool m_oldValue = false;
++};
++#endif
++
+ struct SurfaceFormatSetter
+ {
+     SurfaceFormatSetter(const QSurfaceFormat &format)
+@@ -162,6 +180,9 @@ KisOpenGLModeProber::probeFormat(const KisOpenGL::RendererConfig &rendererConfig
+     QScopedPointer<SurfaceFormatSetter> formatSetter;
+     QScopedPointer<EnvironmentSetter> rendererSetter;
+     QScopedPointer<EnvironmentSetter> portalSetter;
++#ifdef HAVE_DBUS
++    QScopedPointer<DisableDesktopAwareSetter> desktopAwareSetter;
++#endif
+     QScopedPointer<QGuiApplication> application;
+ 
+     int argc = 1;
+@@ -183,22 +204,42 @@ KisOpenGLModeProber::probeFormat(const KisOpenGL::RendererConfig &rendererConfig
+         portalSetter.reset(new EnvironmentSetter(QLatin1String("QT_NO_XDG_DESKTOP_PORTAL"), QLatin1String("1")));
+         formatSetter.reset(new SurfaceFormatSetter(format));
+ 
+-        // Disable this workaround for plasma (BUG:408015), because it causes 
+-        // a crash on Windows with Qt 5.15.7
+-        const bool runningInKDE =  qEnvironmentVariableIsSet("KDE_FULL_SESSION");
+-        const bool isInAppimage = qEnvironmentVariableIsSet("APPIMAGE");
+-
+-        if (runningInKDE && !isInAppimage) {
+-            QGuiApplication::setDesktopSettingsAware(false);
++#ifdef HAVE_DBUS
++        if (!qEnvironmentVariableIsSet("KRITA_DISABLE_DESKTOP_UNAWARE_PROBING_WORKAROUND")) {
++            // When QGuiApplication is created, it also creates platform-specific GUI
++            // elements, like QPlatformMenu and QPlatformSystemTrayIcon. These classes
++            // can utilize DBus for communicating the platform. If we create a DBus
++            // connection, but do not start an event loop, then the connection will
++            // stuck in a "suspended delivery" state and will not be able to process
++            // anything. See bug 408015 and bug 515889
++            desktopAwareSetter.reset(new DisableDesktopAwareSetter());
+         }
++#endif /* HAVE_DBUS */
+ 
+         application.reset(new QGuiApplication(argc, &argv));
++    }
+ 
+-        if (runningInKDE && !isInAppimage) {
+-            QGuiApplication::setDesktopSettingsAware(true);
+-        }
+-
++#ifdef HAVE_DBUS
++    if (!qEnvironmentVariableIsSet("KRITA_DISABLE_TEMPORARY_APP_EVENTS_PROCESSING_WORKAROUND")) {
++        // If an application has been created, force it to process
++        // all the queued events and exit. Some internal
++        // Qt systems' initialization process rely on the queued
++        // events to be processed. See bug 515889.
++        QScopeGuard forceEventProcessingGuard([&]() {
++            if (!application)
++                return;
++
++            QMetaObject::invokeMethod(
++                application.data(),
++                [app = application.data()]() {
++                    app->quit();
++                },
++                Qt::QueuedConnection);
++
++            application->exec();
++        });
+     }
++#endif /* HAVE_DBUS */
+ 
+     QWindow surface;
+     surface.setFormat(format);
+-- 
+GitLab
+
