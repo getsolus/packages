@@ -1,0 +1,116 @@
+From 47f038220448a57e3b071b9d1d70c835e7387128 Mon Sep 17 00:00:00 2001
+From: Xaver Hugl <xaver.hugl@kde.org>
+Date: Sat, 21 Nov 2026 02:00:06 +0100
+Subject: [PATCH] backends/libinput: only process device add events on startup
+
+Since things like switch state are only communicated through events and can't
+be queried, we need to delay non-ADDED events until the rest of KWin is set up
+and has created the appropriate input event filters.
+
+BUG: 528936
+
+
+(cherry picked from commit 9f867631fb33f114650d7ce7c152dff9bddc9e04)
+
+Co-authored-by: Xaver Hugl <xaver.hugl@kde.org>
+---
+ src/backends/libinput/connection.cpp | 48 ++++++++++++++++++----------
+ src/backends/libinput/connection.h   |  2 ++
+ 2 files changed, 33 insertions(+), 17 deletions(-)
+
+diff --git a/src/backends/libinput/connection.cpp b/src/backends/libinput/connection.cpp
+index 4966e7ce172..ba9dcb51661 100644
+--- a/src/backends/libinput/connection.cpp
++++ b/src/backends/libinput/connection.cpp
+@@ -137,7 +137,16 @@ void Connection::setup()
+     // NOTE We need the initial device list for the startup of other parts of KWin,
+     // like tablet mode and output configuration
+     QMetaObject::invokeMethod(this, &Connection::doSetup, Qt::BlockingQueuedConnection);
+-    processEvents();
++    QMutexLocker locker(&m_mutex);
++    for (auto it = m_eventQueue.begin(); it != m_eventQueue.end();) {
++        auto &event = *it;
++        if (event->type() == LIBINPUT_EVENT_DEVICE_ADDED) {
++            addDevice(event->nativeDevice());
++            it = m_eventQueue.erase(it);
++        } else {
++            it++;
++        }
++    }
+ }
+ 
+ void Connection::doSetup()
+@@ -269,22 +278,7 @@ void Connection::processEvents()
+         m_eventQueue.pop_front();
+         switch (event->type()) {
+         case LIBINPUT_EVENT_DEVICE_ADDED: {
+-            auto device = new Device(event->nativeDevice());
+-            device->moveToThread(thread());
+-            m_devices << device;
+-
+-            applyDeviceConfig(device);
+-            applyScreenToDevice(device);
+-
+-            connect(device, &Device::outputNameChanged, this, [this, device] {
+-                // If the output name changes from something to empty we need to
+-                // re-run the assignment heuristic so that an output is assigned
+-                if (device->outputName().isEmpty()) {
+-                    applyScreenToDevice(device);
+-                }
+-            });
+-
+-            Q_EMIT deviceAdded(device);
++            addDevice(event->nativeDevice());
+             break;
+         }
+         case LIBINPUT_EVENT_DEVICE_REMOVED: {
+@@ -618,6 +612,26 @@ void Connection::processEvents()
+     }
+ }
+ 
++void Connection::addDevice(libinput_device *nativeDevice)
++{
++    auto device = new Device(nativeDevice);
++    device->moveToThread(thread());
++    m_devices << device;
++
++    applyDeviceConfig(device);
++    applyScreenToDevice(device);
++
++    connect(device, &Device::outputNameChanged, this, [this, device] {
++        // If the output name changes from something to empty we need to
++        // re-run the assignment heuristic so that an output is assigned
++        if (device->outputName().isEmpty()) {
++            applyScreenToDevice(device);
++        }
++    });
++
++    Q_EMIT deviceAdded(device);
++}
++
+ void Connection::updateScreens()
+ {
+     QMutexLocker locker(&m_mutex);
+diff --git a/src/backends/libinput/connection.h b/src/backends/libinput/connection.h
+index 0eccd47358f..0dde61f104f 100644
+--- a/src/backends/libinput/connection.h
++++ b/src/backends/libinput/connection.h
+@@ -24,6 +24,7 @@ class QSocketNotifier;
+ class QThread;
+ 
+ struct libinput_tablet_tool;
++struct libinput_device;
+ 
+ namespace KWin
+ {
+@@ -82,6 +83,7 @@ private:
+     void applyScreenToDevice(Device *device);
+     void doSetup();
+     TabletTool *getOrCreateTool(libinput_tablet_tool *tool);
++    void addDevice(libinput_device *nativeDevice);
+ 
+     std::unique_ptr<QSocketNotifier> m_notifier;
+     QRecursiveMutex m_mutex;
+-- 
+GitLab
+
