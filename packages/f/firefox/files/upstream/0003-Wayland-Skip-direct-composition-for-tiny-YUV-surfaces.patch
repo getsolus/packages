@@ -1,0 +1,45 @@
+From 7b01f285cfdd45d1884a69a2da7aec7abbc2bc9e Mon Sep 17 00:00:00 2001
+From: Alan Liu <haoping.liu@amd.com>
+Date: Mon, 23 Nov 2026 09:31:06 +0000
+Subject: [PATCH] Bug 2091979 - [Linux] Don't use direct composition for YUV
+ surfaces smaller than 2x2 r=stransky,gtk-reviewers
+
+YUV 4:2:0 buffers with a width or height of 1 can't be imported by EGL
+(EGL_BAD_ALLOC with Mesa), so compositors fail the
+zwp_linux_buffer_params_v1 import and Firefox crashes on the protocol
+error. VideoOutput sends such a 1x1 black image when a disabled
+MediaStreamTrack is shown in a video element, e.g. when a video call
+turns the camera off.
+
+161 has no BufferSurface::SupportsDirectComposition(); direct composition is
+decided in DMABUFTextureHostOGL::PushDisplayItems(), so the size check is
+applied there instead. YUV SHM surfaces are uploaded as textures on 161 and
+never use direct composition.
+
+Differential Revision: https://phabricator.services.mozilla.com/D342518
+
+Origin: https://github.com/mozilla-firefox/firefox/commit/7b01f285cfdd45d1884a69a2da7aec7abbc2bc9e
+Forwarded: not-needed
+Last-Update: 2026-11-23
+---
+ gfx/layers/opengl/DMABUFTextureHostOGL.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+index 72be536..fb398ad 100644
+--- a/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
++++ b/gfx/layers/opengl/DMABUFTextureHostOGL.cpp
+@@ -193,7 +193,13 @@ void DMABUFTextureHostOGL::PushDisplayItems(
+   }
+   bool preferCompositorSurface =
+       aFlags.contains(PushDisplayItemFlag::PREFER_COMPOSITOR_SURFACE);
++  // YUV 4:2:0 surfaces need at least 2x2 pixels to be imported by EGL and
++  // Wayland compositors; smaller ones can't be used for direct composition.
++  bool hasValidYUVSize =
++      mSurface->GetSurfaceType() != BufferSurface::SURFACE_YUV ||
++      (mSurface->GetWidth() >= 2 && mSurface->GetHeight() >= 2);
+   bool supportsDirectComposition =
++      hasValidYUVSize &&
+       widget::GetGlobalDMABufFormats()->SupportsDirectComposition(
+           mSurface->GetFormat());
+ 

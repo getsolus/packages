@@ -1,0 +1,115 @@
+From 5d6e481d72fb8072da4c13d5da7d5d7a42afae8d Mon Sep 17 00:00:00 2001
+From: Tymur Boiko <tboiko@nvidia.com>
+Date: Thu, 19 Nov 2026 13:34:10 +0000
+Subject: [PATCH] Bug 2076178 - Disable YUV direct composition on NVIDIA
+ Wayland. r=stransky,gtk-reviewers
+
+Mutter's GR88/GR1616 chroma-plane imports can fail with NVIDIA EGL,
+even when NV12/P010 is advertised, causing a fatal Wayland error.
+
+Use GfxInfo to disable direct YUV composition on non-Mesa NVIDIA
+Wayland configurations, covering NV12, P010 and YUV420. Cache the policy
+in gfxVars and apply it through BufferSurface::SupportsDirectComposition()
+so WebRender renders RGB instead. Keep Vulkan decoding and the native
+compositor enabled. Lift the block when fixed Mutter configurations can
+be identified.
+
+This uses the existing RGB fallback, with the same HDR limitations as before.
+
+Tested NV12, P010 and software-decoded YUV420 playback with the workaround
+enabled. Disabling it reproduces Wayland error 7 for NV12 and P010.
+
+Differential Revision: https://phabricator.services.mozilla.com/D335012
+
+Origin: https://github.com/mozilla-firefox/firefox/commit/5d6e481d72fb8072da4c13d5da7d5d7a42afae8d
+Forwarded: not-needed
+Last-Update: 2026-11-23
+---
+ gfx/config/gfxVars.h          |  1 +
+ gfx/thebes/gfxPlatformGtk.cpp |  7 +++++++
+ widget/GfxInfoFeatureDefs.inc |  2 ++
+ widget/gtk/DMABufFormats.cpp  |  6 +++---
+ widget/gtk/GfxInfo.cpp        | 11 +++++++++++
+ 5 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/gfx/config/gfxVars.h b/gfx/config/gfxVars.h
+index 9c446d8c8dabc..81c6c6956d670 100644
+--- a/gfx/config/gfxVars.h
++++ b/gfx/config/gfxVars.h
+@@ -102,6 +102,7 @@ class MOZ_STACK_CLASS gfxVarsCollectUpdates;
+   _(UseEGL, bool, false)                                           \
+   _(DrmRenderDevice, nsCString, nsCString())                       \
+   _(UseDMABuf, bool, false)                                        \
++  _(UseDMABufYUVDirectComposition, bool, false)                    \
+   _(UseDMABufWebGL, bool, true)                                    \
+   _(DMABufModifiersXRGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
+   _(DMABufModifiersARGB, ArrayOfuint64_t, nsTArray<uint64_t>())    \
+diff --git a/gfx/thebes/gfxPlatformGtk.cpp b/gfx/thebes/gfxPlatformGtk.cpp
+index bce78bbddd375..ad064c0de7ac6 100644
+--- a/gfx/thebes/gfxPlatformGtk.cpp
++++ b/gfx/thebes/gfxPlatformGtk.cpp
+@@ -225,6 +225,13 @@ void gfxPlatformGtk::InitDmabufConfig() {
+       feature.ForceDisable(FeatureStatus::Failed, "Failed to configure",
+                            failureId);
+     }
++    status = nsIGfxInfo::FEATURE_STATUS_UNKNOWN;
++    gfxVars::SetUseDMABufYUVDirectComposition(
++        NS_SUCCEEDED(gfxInfo->GetFeatureStatus(
++            nsIGfxInfo::FEATURE_DMABUF_YUV_DIRECT_COMPOSITION, failureId,
++            &status)) &&
++        status == nsIGfxInfo::FEATURE_STATUS_OK);
++
+     // Make sure we have DMABuf formats available.
+     (void)GetGlobalDMABufFormats();
+   }
+diff --git a/widget/GfxInfoFeatureDefs.inc b/widget/GfxInfoFeatureDefs.inc
+index 6e86b431c243e..ad632ac65736b 100644
+--- a/widget/GfxInfoFeatureDefs.inc
++++ b/widget/GfxInfoFeatureDefs.inc
+@@ -165,3 +165,5 @@ GFXINFO_FEATURE(WEBGL_ANGLE_METAL, "webgl.angle-metal")
+ GFXINFO_FEATURE(WEBRENDER_ANGLE_METAL, "webrender.angle-metal")
+ /* Whether WebRender is supported via ANGLE's OpenGL/OpenGL ES backend. */
+ GFXINFO_FEATURE(WEBRENDER_ANGLE_GL, "webrender.angle-gl")
++/* Whether YUV DMA-BUFs can be passed directly to the Wayland compositor. */
++GFXINFO_FEATURE(DMABUF_YUV_DIRECT_COMPOSITION, "dmabuf-yuv-direct-composition")
+diff --git a/widget/gtk/DMABufFormats.cpp b/widget/gtk/DMABufFormats.cpp
+index 42c2913349728..621d69e33e4cc 100644
+--- a/widget/gtk/DMABufFormats.cpp
++++ b/widget/gtk/DMABufFormats.cpp
+@@ -531,11 +531,11 @@ bool GlobalDMABufFormats::SupportsDirectComposition(
+     case gfx::SurfaceFormat::B8G8R8X8:
+       return true;
+     case gfx::SurfaceFormat::NV12:
+-      return !!mFormatNV12;
++      return mFormatNV12 && gfxVars::UseDMABufYUVDirectComposition();
+     case gfx::SurfaceFormat::YUV420:
+-      return !!mFormatYUV420;
++      return mFormatYUV420 && gfxVars::UseDMABufYUVDirectComposition();
+     case gfx::SurfaceFormat::P010:
+-      return !!mFormatP010;
++      return mFormatP010 && gfxVars::UseDMABufYUVDirectComposition();
+     case gfx::SurfaceFormat::R10G10B10A2_UINT32:
+       return !!mFormatABGR2101010;
+     default:
+diff --git a/widget/gtk/GfxInfo.cpp b/widget/gtk/GfxInfo.cpp
+index 779a907492d13..eeecb021864af 100644
+--- a/widget/gtk/GfxInfo.cpp
++++ b/widget/gtk/GfxInfo.cpp
+@@ -1276,6 +1276,17 @@ const nsTArray<RefPtr<GfxDriverInfo>>& GfxInfo::GetGfxDriverInfo() {
+         "");
+ #endif
+ 
++    // Bug 2076178: Mutter imports NV12/P010 chroma as GR88/GR1616, which
++    // NVIDIA EGL rejects. Use WebRender's RGB fallback until this is fixed.
++    // Lift this block for fixed Mutter versions once they can be identified.
++    APPEND_TO_DRIVER_BLOCKLIST_EXT(
++        OperatingSystem::Linux, ScreenSizeStatus::All, BatteryStatus::All,
++        WindowProtocol::Wayland, DriverVendor::NonMesaAll,
++        DeviceFamily::NvidiaAll,
++        nsIGfxInfo::FEATURE_DMABUF_YUV_DIRECT_COMPOSITION,
++        nsIGfxInfo::FEATURE_BLOCKED_DEVICE, DRIVER_COMPARISON_IGNORED,
++        V(0, 0, 0, 0), "FEATURE_FAILURE_BUG_2076178", "");
++
+     ////////////////////////////////////
+     // FEATURE_HARDWARE_VIDEO_DECODING
+     APPEND_TO_DRIVER_BLOCKLIST_EXT(

@@ -1,0 +1,465 @@
+From cb24fc0b765df47312f72125ee2fff8db3e47a84 Mon Sep 17 00:00:00 2001
+From: Mitar <mitar.git@tnode.com>
+Date: Fri, 13 Nov 2026 13:37:38 +0000
+Subject: [PATCH] Bug 2090791 - [Linux] Launch local handler applications
+ through GIO r=stransky,gtk-reviewers
+
+An executable chosen as the handler of a MIME type or URI scheme, or named
+by a mailcap file, was run with nsIProcess, while applications from
+desktop entries are launched through GIO. Such a handler received no
+activation token on Wayland, inherited MOZ_APP_LAUNCHER, which the GIO
+launch context unsets for third-party handlers (bug 1494436), and stayed
+in Firefox's cgroup, where GLib cannot give it a systemd scope of its own.
+
+nsIGIOService::CreateAppFromExecutable() describes the executable as a
+desktop entry whose Exec key passes the URI unchanged (%u with
+X-GIO-NoFuse) or the path of the local file (%f). The path is quoted,
+and % is doubled. We fall back to nsIProcess when GLib refuses the
+executable: when it is no executable file, so that the error is still
+reported, and when its path contains %, as GLib checks the Exec
+key before it turns %% back into %. OpenBSD keeps nsIProcess.
+
+On Wayland the launch waits for the activation token, as for other GIO
+handlers, so errors after the executable check are logged instead of
+returned, and GLib spawns the handler through gio-launch-desktop, so it is
+no longer a direct child of Firefox.
+
+Differential Revision: https://phabricator.services.mozilla.com/D340772
+
+Origin: https://github.com/mozilla-firefox/firefox/commit/cb24fc0b765df47312f72125ee2fff8db3e47a84
+Forwarded: not-needed
+Last-Update: 2026-11-23
+---
+ toolkit/system/gnome/nsGIOService.cpp         |  72 +++++++++
+ tools/@types/generated/lib.gecko.xpcom.d.ts   |   2 +
+ uriloader/exthandler/nsLocalHandlerApp.cpp    |  21 +++
+ uriloader/exthandler/nsMIMEInfoImpl.cpp       |  29 +++-
+ uriloader/exthandler/nsMIMEInfoImpl.h         |  10 ++
+ .../tests/unit/test_launch_local_handler.js   | 149 ++++++++++++++++++
+ uriloader/exthandler/tests/unit/xpcshell.toml |   3 +
+ widget/gtk/GRefPtr.h                          |   6 +
+ xpcom/system/nsIGIOService.idl                |  10 ++
+ 9 files changed, 300 insertions(+), 2 deletions(-)
+ create mode 100644 uriloader/exthandler/tests/unit/test_launch_local_handler.js
+
+diff --git a/toolkit/system/gnome/nsGIOService.cpp b/toolkit/system/gnome/nsGIOService.cpp
+index 5a684f0554e75..22755934cfc0b 100644
+--- a/toolkit/system/gnome/nsGIOService.cpp
++++ b/toolkit/system/gnome/nsGIOService.cpp
+@@ -1308,3 +1308,75 @@ nsGIOService::CreateAppFromCommand(nsACString const& cmd,
+   mozApp.forget(appInfo);
+   return NS_OK;
+ }
++
++/**
++ * Create application info which runs an executable with one argument, the URI
++ * the application is launched with, or the path of the local file it names.
++ * @param aExecutable executable to run
++ * @param aAppName application name
++ * @param aPassURI true to pass the URI unchanged, false to pass the path
++ * @param aAppInfo location where created GAppInfo is stored
++ * @return NS_OK when object is created, NS_ERROR_FILE_NOT_FOUND when
++ * aExecutable is not an executable file or its path contains %, which GLib
++ * does not accept, NS_ERROR_NOT_IMPLEMENTED on OpenBSD, or NS_ERROR_FAILURE
++ * otherwise.
++ */
++NS_IMETHODIMP
++nsGIOService::CreateAppFromExecutable(nsIFile* aExecutable,
++                                      nsACString const& aAppName, bool aPassURI,
++                                      nsIGIOMimeApp** aAppInfo) {
++  NS_ENSURE_ARG(aExecutable);
++  *aAppInfo = nullptr;
++
++#ifdef __OpenBSD__
++  // g_app_info_launch_uris_openbsd() runs g_app_info_get_executable(), the Exec
++  // key up to its first space, with the path of a file URI only.
++  return NS_ERROR_NOT_IMPLEMENTED;
++#else
++  nsAutoCString path;
++  nsresult rv = aExecutable->GetNativePath(path);
++  NS_ENSURE_SUCCESS(rv, rv);
++
++  LOG("nsGIOService::CreateAppFromExecutable() %s : %s",
++      PromiseFlatCString(aAppName).get(), path.get());
++
++  GUniquePtr<gchar> quoted(g_shell_quote(path.get()));
++  nsAutoCString exec(quoted.get());
++  // In the Exec key, % starts a field code. GLib checks that the Exec key names
++  // an executable file before it expands field codes, so it refuses a path
++  // with % (https://gitlab.gnome.org/GNOME/glib/-/work_items/4111).
++  exec.ReplaceSubstring("%"_ns, "%%"_ns);
++  // %u passes the URI as it is, as X-GIO-NoFuse below keeps GLib from passing
++  // the path of a file URI instead, and %f passes the path of the local file.
++  exec.Append(aPassURI ? " %u" : " %f");
++
++  RefPtr<GKeyFile> keyFile = dont_AddRef(g_key_file_new());
++  g_key_file_set_string(keyFile, G_KEY_FILE_DESKTOP_GROUP,
++                        G_KEY_FILE_DESKTOP_KEY_TYPE,
++                        G_KEY_FILE_DESKTOP_TYPE_APPLICATION);
++  g_key_file_set_string(keyFile, G_KEY_FILE_DESKTOP_GROUP,
++                        G_KEY_FILE_DESKTOP_KEY_NAME,
++                        PromiseFlatCString(aAppName).get());
++  g_key_file_set_string(keyFile, G_KEY_FILE_DESKTOP_GROUP,
++                        G_KEY_FILE_DESKTOP_KEY_EXEC, exec.get());
++  g_key_file_set_boolean(keyFile, G_KEY_FILE_DESKTOP_GROUP,
++                         G_KEY_FILE_DESKTOP_KEY_NO_DISPLAY, TRUE);
++  // The activation token, which nsGIOMimeApp::LaunchWithURI() requests on
++  // Wayland, is passed only to an application with startup notification.
++  g_key_file_set_boolean(keyFile, G_KEY_FILE_DESKTOP_GROUP,
++                         G_KEY_FILE_DESKTOP_KEY_STARTUP_NOTIFY, TRUE);
++  g_key_file_set_boolean(keyFile, G_KEY_FILE_DESKTOP_GROUP, "X-GIO-NoFuse",
++                         TRUE);
++
++  // GLib refuses an Exec key which does not name an executable file.
++  RefPtr<GAppInfo> app_info =
++      dont_AddRef(G_APP_INFO(g_desktop_app_info_new_from_keyfile(keyFile)));
++  if (!app_info) {
++    LOG("  quit, not an executable file");
++    return NS_ERROR_FILE_NOT_FOUND;
++  }
++  RefPtr<nsGIOMimeApp> mozApp = new nsGIOMimeApp(app_info.forget());
++  mozApp.forget(aAppInfo);
++  return NS_OK;
++#endif
++}
+diff --git a/tools/@types/generated/lib.gecko.xpcom.d.ts b/tools/@types/generated/lib.gecko.xpcom.d.ts
+index 3e51283c772fa..3c3e0af2a8220 100644
+--- a/tools/@types/generated/lib.gecko.xpcom.d.ts
++++ b/tools/@types/generated/lib.gecko.xpcom.d.ts
+@@ -25310,6 +25310,8 @@ interface nsIGIOService extends nsISupports {
+   createAppFromCommand(cmd: string, appName: string): nsIGIOMimeApp;
+   /** <!-- binding_to(idl, method, XPIDL_nsIGIOService_findAppFromCommand) --> */
+   findAppFromCommand(cmd: string): nsIGIOMimeApp;
++  /** <!-- binding_to(idl, method, XPIDL_nsIGIOService_createAppFromExecutable) --> */
++  createAppFromExecutable(executable: nsIFile, appName: string, passURI: boolean): nsIGIOMimeApp;
+   /** <!-- binding_to(idl, method, XPIDL_nsIGIOService_getDescriptionForMimeType) --> */
+   getDescriptionForMimeType(mimeType: string): string;
+   /** <!-- binding_to(idl, attribute, XPIDL_nsIGIOService_isRunningUnderFlatpak) --> */
+diff --git a/uriloader/exthandler/nsLocalHandlerApp.cpp b/uriloader/exthandler/nsLocalHandlerApp.cpp
+index 5d0ab093e081b..90ca1280f2081 100644
+--- a/uriloader/exthandler/nsLocalHandlerApp.cpp
++++ b/uriloader/exthandler/nsLocalHandlerApp.cpp
+@@ -8,6 +8,10 @@
+ #include "nsComponentManagerUtils.h"
+ #include "mozilla/dom/Promise.h"
+ #include "nsProxyRelease.h"
++#ifdef MOZ_WIDGET_GTK
++#  include "nsIGIOService.h"
++#  include "nsServiceManagerUtils.h"
++#endif
+ 
+ // XXX why does nsMIMEInfoImpl have a threadsafe nsISupports?  do we need one
+ // here too?
+@@ -188,6 +192,23 @@ nsLocalHandlerApp::Equals(nsIHandlerApp* aHandlerApp, bool* _retval) {
+ NS_IMETHODIMP
+ nsLocalHandlerApp::LaunchWithURI(
+     nsIURI* aURI, mozilla::dom::BrowsingContext* aBrowsingContext) {
++#ifdef MOZ_WIDGET_GTK
++  // Launch through GIO, as handler applications from desktop entries are, so
++  // that the handler receives an activation token on Wayland. When GIO cannot
++  // run the executable, nsIProcess reports the error.
++  nsCOMPtr<nsIGIOService> gio = do_GetService(NS_GIOSERVICE_CONTRACTID);
++  if (gio && mExecutable) {
++    nsAutoString name;
++    GetName(name);
++    nsCOMPtr<nsIGIOMimeApp> app;
++    if (NS_SUCCEEDED(gio->CreateAppFromExecutable(mExecutable,
++                                                  NS_ConvertUTF16toUTF8(name),
++                                                  true, getter_AddRefs(app)))) {
++      return app->LaunchWithURI(aURI, aBrowsingContext);
++    }
++  }
++#endif
++
+   // pass the entire URI to the handler.
+   nsAutoCString spec;
+   aURI->GetAsciiSpec(spec);
+diff --git a/uriloader/exthandler/nsMIMEInfoImpl.cpp b/uriloader/exthandler/nsMIMEInfoImpl.cpp
+index e7de7823f4553..825f81d866779 100644
+--- a/uriloader/exthandler/nsMIMEInfoImpl.cpp
++++ b/uriloader/exthandler/nsMIMEInfoImpl.cpp
+@@ -21,6 +21,10 @@
+ #include "mozilla/StaticPrefs_browser.h"
+ #include "xpcpublic.h"
+ #include "nsIGIOService.h"
++#ifdef MOZ_WIDGET_GTK
++#  include "nsNetUtil.h"
++#  include "nsServiceManagerUtils.h"
++#endif
+ 
+ static bool sInitializedOurData = false;
+ mozilla::StaticRefPtr<nsIFile> sOurAppFile;
+@@ -341,7 +345,7 @@ nsMIMEInfoBase::LaunchWithFile(nsIFile* aFile) {
+     rv = localHandler->GetExecutable(getter_AddRefs(executable));
+     NS_ENSURE_SUCCESS(rv, rv);
+ 
+-    return LaunchWithIProcess(executable, aFile->NativePath());
++    return LaunchAppWithFile(executable, aFile);
+   }
+ 
+   return NS_ERROR_INVALID_ARG;
+@@ -477,6 +481,27 @@ nsresult nsMIMEInfoBase::LaunchWithIProcess(nsIFile* aApp, const int aArgc,
+   return process->Runw(false, aArgv, aArgc);
+ }
+ 
++/* static */
++nsresult nsMIMEInfoBase::LaunchAppWithFile(nsIFile* aApp, nsIFile* aFile) {
++#ifdef MOZ_WIDGET_GTK
++  // GIO passes the path of the file which the file URI names. When GIO cannot
++  // run the executable, nsIProcess reports the error.
++  nsCOMPtr<nsIGIOService> gio = do_GetService(NS_GIOSERVICE_CONTRACTID);
++  nsCOMPtr<nsIURI> uri;
++  if (gio && NS_SUCCEEDED(NS_NewFileURI(getter_AddRefs(uri), aFile))) {
++    nsAutoString name;
++    aApp->GetLeafName(name);
++    nsCOMPtr<nsIGIOMimeApp> app;
++    if (NS_SUCCEEDED(gio->CreateAppFromExecutable(
++            aApp, NS_ConvertUTF16toUTF8(name), false, getter_AddRefs(app)))) {
++      return app->LaunchWithURI(uri, nullptr);
++    }
++  }
++#endif
++
++  return LaunchWithIProcess(aApp, aFile->NativePath());
++}
++
+ // nsMIMEInfoImpl implementation
+ NS_IMETHODIMP
+ nsMIMEInfoImpl::GetDefaultDescription(nsAString& aDefaultDescription) {
+@@ -538,7 +563,7 @@ nsresult nsMIMEInfoImpl::LaunchDefaultWithFile(nsIFile* aFile) {
+     return NS_ERROR_FILE_NOT_FOUND;
+   }
+ 
+-  return LaunchWithIProcess(defaultApp, aFile->NativePath());
++  return LaunchAppWithFile(defaultApp, aFile);
+ }
+ 
+ NS_IMETHODIMP
+diff --git a/uriloader/exthandler/nsMIMEInfoImpl.h b/uriloader/exthandler/nsMIMEInfoImpl.h
+index b67f18ab58ecb..ccace1d00b7a2 100644
+--- a/uriloader/exthandler/nsMIMEInfoImpl.h
++++ b/uriloader/exthandler/nsMIMEInfoImpl.h
+@@ -135,6 +135,16 @@ class nsMIMEInfoBase : public nsIMIMEInfo {
+   static nsresult LaunchWithIProcess(nsIFile* aApp, const int aArgc,
+                                      const char16_t** aArgv);
+ 
++  /**
++   * Launch an application with the path of a file as its only argument.
++   * With GTK, the application is launched through GIO, as applications from
++   * desktop entries are, and otherwise with LaunchWithIProcess.
++   *
++   * @param aApp The application to launch (may not be null)
++   * @param aFile The file whose path to pass on the command line
++   */
++  static nsresult LaunchAppWithFile(nsIFile* aApp, nsIFile* aFile);
++
+   /**
+    * Given a file: nsIURI, return the associated nsIFile
+    *
+diff --git a/uriloader/exthandler/tests/unit/test_launch_local_handler.js b/uriloader/exthandler/tests/unit/test_launch_local_handler.js
+new file mode 100644
+index 0000000000000..7e33a0870e4b7
+--- /dev/null
++++ b/uriloader/exthandler/tests/unit/test_launch_local_handler.js
+@@ -0,0 +1,149 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++"use strict";
++
++// A local handler application receives the URI it is launched with, or the
++// path of the file it opens, as its only argument, unchanged, and so does a
++// default application from a mailcap file.
++
++// Characters which shells, URIs and desktop entries treat specially.
++const SPECIAL = ` %f %% 'single' "double" \\ $HOME #hash ?query ä`;
++
++const tempDir = do_get_tempdir();
++const outFile = tempDir.clone();
++outFile.append("argument.txt");
++
++let writeArgument;
++
++add_setup(function () {
++  writeArgument = do_get_cwd();
++  writeArgument.append("WriteArgument");
++  Assert.ok(writeArgument.exists(), "WriteArgument exists");
++
++  // WriteArgument needs the libraries next to the application.
++  Services.env.set(
++    "LD_LIBRARY_PATH",
++    Services.dirsvc.get("GreD", Ci.nsIFile).path
++  );
++  Services.env.set("WRITE_ARGUMENT_FILE", outFile.path);
++});
++
++function localHandler(executable) {
++  let handler = Cc["@mozilla.org/uriloader/local-handler-app;1"].createInstance(
++    Ci.nsILocalHandlerApp
++  );
++  handler.executable = executable;
++  return handler;
++}
++
++function createFile(name) {
++  let file = tempDir.clone();
++  file.append(name);
++  file.createUnique(Ci.nsIFile.NORMAL_FILE_TYPE, 0o644);
++  return file;
++}
++
++async function launchedArgument(launch) {
++  launch();
++  await TestUtils.waitForCondition(
++    async () =>
++      (await IOUtils.exists(outFile.path)) &&
++      (await IOUtils.stat(outFile.path)).size > 0,
++    "WriteArgument wrote its argument"
++  );
++  let argument = await IOUtils.readUTF8(outFile.path);
++  await IOUtils.remove(outFile.path);
++  return argument;
++}
++
++function textMIMEInfo(handler) {
++  let mimeInfo = Cc["@mozilla.org/mime;1"]
++    .getService(Ci.nsIMIMEService)
++    .getFromTypeAndExtension("text/plain", "txt");
++  mimeInfo.preferredApplicationHandler = handler;
++  mimeInfo.preferredAction = Ci.nsIHandlerInfo.useHelperApp;
++  return mimeInfo;
++}
++
++add_task(async function test_file() {
++  let file = createFile(`file${SPECIAL}.txt`);
++  let mimeInfo = textMIMEInfo(localHandler(writeArgument));
++  Assert.equal(
++    await launchedArgument(() => mimeInfo.launchWithFile(file)),
++    file.path
++  );
++});
++
++async function checkExecutablePath(name) {
++  let dir = tempDir.clone();
++  dir.append(`handler ${name}`);
++  dir.createUnique(Ci.nsIFile.DIRECTORY_TYPE, 0o755);
++  writeArgument.copyTo(dir, `Write Argument ${name}`);
++  let executable = dir.clone();
++  executable.append(`Write Argument ${name}`);
++  executable.permissions = 0o755;
++
++  let file = createFile("file.txt");
++  let mimeInfo = textMIMEInfo(localHandler(executable));
++  Assert.equal(
++    await launchedArgument(() => mimeInfo.launchWithFile(file)),
++    file.path
++  );
++}
++
++add_task(async function test_executable_path() {
++  await checkExecutablePath(SPECIAL.replaceAll("%", ""));
++});
++
++add_task(async function test_executable_path_percent() {
++  // GLib does not accept an executable path with %, which then runs with
++  // nsIProcess.
++  await checkExecutablePath("%f %%");
++});
++
++add_task(async function test_uri() {
++  let uri = Services.io.newURI(
++    "https://example.com/a%20b/%25f?c='d'&e=%22f%22#g"
++  );
++  let handler = localHandler(writeArgument);
++  Assert.equal(
++    await launchedArgument(() => handler.launchWithURI(uri)),
++    uri.asciiSpec
++  );
++});
++
++add_task(async function test_file_uri() {
++  // A file URI is passed as the URI, not as the path of the file.
++  let uri = Services.io.newFileURI(createFile(`file${SPECIAL}.txt`));
++  let handler = localHandler(writeArgument);
++  Assert.equal(
++    await launchedArgument(() => handler.launchWithURI(uri)),
++    uri.asciiSpec
++  );
++});
++
++add_task(async function test_mailcap_default() {
++  let mailcap = tempDir.clone();
++  mailcap.append("mailcap");
++  await IOUtils.writeUTF8(
++    mailcap.path,
++    `application/x-launch-local-handler-test; ${writeArgument.path}\n`
++  );
++  Services.prefs.setStringPref("helpers.private_mailcap_file", mailcap.path);
++  registerCleanupFunction(() =>
++    Services.prefs.clearUserPref("helpers.private_mailcap_file")
++  );
++
++  let mimeInfo = Cc["@mozilla.org/mime;1"]
++    .getService(Ci.nsIMIMEService)
++    .getFromTypeAndExtension("application/x-launch-local-handler-test", null);
++  Assert.equal(mimeInfo.defaultDescription, writeArgument.path);
++  mimeInfo.preferredAction = Ci.nsIHandlerInfo.useSystemDefault;
++
++  let file = createFile(`file${SPECIAL}.bin`);
++  Assert.equal(
++    await launchedArgument(() => mimeInfo.launchWithFile(file)),
++    file.path
++  );
++});
+diff --git a/uriloader/exthandler/tests/unit/xpcshell.toml b/uriloader/exthandler/tests/unit/xpcshell.toml
+index f43507064e42b..5c1153846b92c 100644
+--- a/uriloader/exthandler/tests/unit/xpcshell.toml
++++ b/uriloader/exthandler/tests/unit/xpcshell.toml
+@@ -66,6 +66,9 @@ support-files = ["handlers.json"]
+ # ContentDispatchChooser is not built on Android (see toolkit/moz.build).
+ skip-if = ["os == 'android'"]
+ 
++["test_launch_local_handler.js"]
++run-if = ["os == 'linux'"]
++
+ ["test_punycodeURIs.js"]
+ skip-if = [
+   "os == 'win' && msix", # https://bugzilla.mozilla.org/show_bug.cgi?id=1809485
+diff --git a/widget/gtk/GRefPtr.h b/widget/gtk/GRefPtr.h
+index a7a3d0bd0fc86..f054a0cc7a0d2 100644
+--- a/widget/gtk/GRefPtr.h
++++ b/widget/gtk/GRefPtr.h
+@@ -78,6 +78,12 @@ struct RefPtrTraits<GDBusNodeInfo> {
+   }
+ };
+ 
++template <>
++struct RefPtrTraits<GKeyFile> {
++  static void AddRef(GKeyFile* aObject) { g_key_file_ref(aObject); }
++  static void Release(GKeyFile* aObject) { g_key_file_unref(aObject); }
++};
++
+ }  // namespace mozilla
+ 
+ #endif
+diff --git a/xpcom/system/nsIGIOService.idl b/xpcom/system/nsIGIOService.idl
+index 1cbf2a3a9fc78..7b2cba3360361 100644
+--- a/xpcom/system/nsIGIOService.idl
++++ b/xpcom/system/nsIGIOService.idl
+@@ -82,6 +82,16 @@ interface nsIGIOService : nsISupports
+   /* Find the application info by given command */
+   nsIGIOMimeApp      findAppFromCommand(in AUTF8String cmd);
+ 
++  /* Create application info which runs the given executable with one
++     argument: the URI the application is launched with, unchanged, when
++     passURI is true, or else the path of the local file which the URI names.
++     Throws NS_ERROR_FILE_NOT_FOUND when the executable is not an executable
++     file, and when its path contains %, which GLib does not accept, and
++     NS_ERROR_NOT_IMPLEMENTED on OpenBSD. */
++  nsIGIOMimeApp      createAppFromExecutable(in nsIFile executable,
++                                             in AUTF8String appName,
++                                             in boolean passURI);
++
+   /* Obtain a description for the given MIME type */
+   AUTF8String        getDescriptionForMimeType(in AUTF8String mimeType);
+ 
