@@ -1,0 +1,247 @@
+From 96f89f6d6ed158c4739bb6902cf24c02fa58be18 Mon Sep 17 00:00:00 2001
+From: Joey Riches <josephriches@gmail.com>
+Date: Sun, 8 Nov 2026 17:24:18 +0000
+Subject: [PATCH 1/1] packagekit: Use pk's transaction progress callbacks for
+ reporting
+
+Previously, G-S attempted to implicitly attribute progress per-app to
+report progress updates. However, this does not work for internally
+parallelized packagekit backends which may download concurrently or
+install dependencies in parallel.
+
+Let's just rely on the progress callbacks from packagekit instead which
+provides the aggregated transactional value.
+---
+ lib/gs-plugin-job-update-apps.c           | 13 +++++++++
+ plugins/packagekit/gs-packagekit-helper.c | 31 ++++++++++++++++++--
+ plugins/packagekit/gs-packagekit-helper.h |  6 +++-
+ plugins/packagekit/gs-plugin-packagekit.c | 35 ++++++++++++++++++++---
+ 4 files changed, 78 insertions(+), 7 deletions(-)
+
+diff --git a/lib/gs-plugin-job-update-apps.c b/lib/gs-plugin-job-update-apps.c
+index b5efbf37f..9dc6336a5 100644
+--- a/lib/gs-plugin-job-update-apps.c
++++ b/lib/gs-plugin-job-update-apps.c
+@@ -364,6 +364,14 @@ progress_cb (gpointer user_data)
+ 		 * download operation is blocked on waiting for metered data permission
+ 		 * to download, so the UI can represent that better. */
+ 		g_signal_emit (self, signals[SIGNAL_PROGRESS], 0, (guint) progress);
++
++		/* Plugins are only given a filtered copy of the app list, so an
++		 * overall progress value applied to their copy would not reach the
++		 * caller. An aggregate value cannot be attributed to any one app,
++		 * so mirror it onto the original list for download-only jobs. */
++		if ((self->flags & GS_PLUGIN_UPDATE_APPS_FLAGS_NO_APPLY) != 0)
++			gs_app_list_override_progress (self->apps, (guint) progress);
++
+ 		self->last_reported_progress = progress;
+ 	}
+ 
+@@ -447,6 +455,11 @@ finish_op (GTask  *task,
+ 		progress_cb (self);
+ 	}
+ 
++	/* Drop any overall progress override so that subsequent operations can
++	 * report per-app progress again. */
++	if ((self->flags & GS_PLUGIN_UPDATE_APPS_FLAGS_NO_APPLY) != 0)
++		gs_app_list_override_progress (self->apps, GS_APP_PROGRESS_UNKNOWN);
++
+ 	g_source_destroy (self->progress_source);
+ 	g_clear_pointer (&self->plugins_progress, g_hash_table_unref);
+ 
+diff --git a/plugins/packagekit/gs-packagekit-helper.c b/plugins/packagekit/gs-packagekit-helper.c
+index da36c8f89..9c44cf8a0 100644
+--- a/plugins/packagekit/gs-packagekit-helper.c
++++ b/plugins/packagekit/gs-packagekit-helper.c
+@@ -22,6 +22,9 @@ struct _GsPackagekitHelper {
+ 
+ 	GsApp			*progress_app;  /* (owned) (nullable) */
+ 	GsAppList		*progress_list;  /* (owned) (nullable) */
++	gboolean		 progress_list_updates_apps;
++	GsPluginProgressCallback progress_callback;  /* (nullable) */
++	gpointer		 progress_user_data;
+ 	GsPlugin		*plugin;  /* (owned) (not nullable) */
+ 	gboolean		 allow_emit_updates_changed;
+ };
+@@ -80,8 +83,18 @@ gs_packagekit_helper_cb (PkProgress *progress, PkProgressType type, gpointer use
+ 		gint percentage = pk_progress_get_percentage (progress);
+ 		if (app != NULL && percentage >= 0 && percentage <= 100)
+ 			gs_app_set_progress (app, (guint) percentage);
+-		if (self->progress_list != NULL && percentage >= 0 && percentage <= 100)
++		if (self->progress_list != NULL && percentage >= 0 && percentage <= 100) {
+ 			gs_app_list_override_progress (self->progress_list, (guint) percentage);
++
++			if (self->progress_list_updates_apps) {
++				for (guint i = 0; i < gs_app_list_length (self->progress_list); i++) {
++					GsApp *app_tmp = gs_app_list_index (self->progress_list, i);
++					gs_app_set_progress (app_tmp, (guint) percentage);
++				}
++			}
++		}
++		if (self->progress_callback != NULL && percentage >= 0 && percentage <= 100)
++			self->progress_callback (plugin, (guint) percentage, self->progress_user_data);
+ 	}
+ 
+ 	/* Only go from TRUE to FALSE - it doesn't make sense for a package
+@@ -116,12 +129,26 @@ gs_packagekit_helper_set_progress_app (GsPackagekitHelper *self, GsApp *progress
+ }
+ 
+ void
+-gs_packagekit_helper_set_progress_list (GsPackagekitHelper *self, GsAppList *progress_list)
++gs_packagekit_helper_set_progress_list (GsPackagekitHelper *self,
++					 GsAppList *progress_list,
++					 gboolean update_apps)
+ {
+ 	g_return_if_fail (GS_IS_PACKAGEKIT_HELPER (self));
+ 	g_return_if_fail (progress_list == NULL || GS_IS_APP_LIST (progress_list));
+ 
+ 	g_set_object (&self->progress_list, progress_list);
++	self->progress_list_updates_apps = update_apps;
++}
++
++void
++gs_packagekit_helper_set_progress_callback (GsPackagekitHelper       *self,
++					     GsPluginProgressCallback  progress_callback,
++					     gpointer                  progress_user_data)
++{
++	g_return_if_fail (GS_IS_PACKAGEKIT_HELPER (self));
++
++	self->progress_callback = progress_callback;
++	self->progress_user_data = progress_user_data;
+ }
+ 
+ /*
+diff --git a/plugins/packagekit/gs-packagekit-helper.h b/plugins/packagekit/gs-packagekit-helper.h
+index 1620a0bfa..83e66d8e1 100644
+--- a/plugins/packagekit/gs-packagekit-helper.h
++++ b/plugins/packagekit/gs-packagekit-helper.h
+@@ -26,7 +26,11 @@ void		 gs_packagekit_helper_add_app		(GsPackagekitHelper	*self,
+ void		 gs_packagekit_helper_set_progress_app	(GsPackagekitHelper	*self,
+ 							 GsApp			*progress_app);
+ void		 gs_packagekit_helper_set_progress_list	(GsPackagekitHelper	*self,
+-							 GsAppList		*progress_list);
++							 GsAppList		*progress_list,
++							 gboolean		 update_apps);
++void		 gs_packagekit_helper_set_progress_callback	(GsPackagekitHelper	*self,
++							 GsPluginProgressCallback progress_callback,
++							 gpointer		 progress_user_data);
+ void		 gs_packagekit_helper_set_allow_emit_updates_changed
+ 							(GsPackagekitHelper	*self,
+ 							 gboolean		 allow_emit_updates_changed);
+diff --git a/plugins/packagekit/gs-plugin-packagekit.c b/plugins/packagekit/gs-plugin-packagekit.c
+index a208904bc..a14b07096 100644
+--- a/plugins/packagekit/gs-plugin-packagekit.c
++++ b/plugins/packagekit/gs-plugin-packagekit.c
+@@ -595,6 +595,7 @@ finish_install_apps_enable_repo_op (GTask  *task,
+ 	g_autoptr(GPtrArray) overall_remote_package_ids = NULL;
+ 	g_autoptr(GPtrArray) overall_local_package_ids = NULL;
+ 	g_autoptr(PkTask) task_install = NULL;
++	g_autoptr(GsAppList) progress_apps = NULL;
+ 	g_autoptr(GError) local_error = NULL;
+ 
+ 	if (error_owned != NULL && data->saved_enable_repo_error == NULL)
+@@ -799,6 +800,15 @@ finish_install_apps_enable_repo_op (GTask  *task,
+ 	task_install = gs_packagekit_task_new (GS_PLUGIN (self));
+ 	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_install), GS_PACKAGEKIT_TASK_QUESTION_TYPE_INSTALL, interactive);
+ 
++	/* Use the PackageKit transaction pct callback */
++	progress_apps = gs_app_list_new ();
++	gs_app_list_add_list (progress_apps, data->remote_apps_to_install);
++	gs_app_list_add_list (progress_apps, data->local_apps_to_install);
++	gs_packagekit_helper_set_progress_list (data->progress_data, progress_apps, TRUE);
++	gs_packagekit_helper_set_progress_callback (data->progress_data,
++						    data->progress_callback,
++						    data->progress_user_data);
++
+ 	data->n_pending_install_ops = 1;  /* to track setup */
+ 
+ 	/* Install the remote packages. */
+@@ -1147,12 +1157,17 @@ gs_plugin_packagekit_uninstall_apps_async (GsPlugin                           *p
+ 	/* NULL-terminate the array. */
+ 	g_ptr_array_add (overall_package_ids, NULL);
+ 
+-	/* Set up a #PkTask to handle the D-Bus calls to packagekitd.
+-	 * FIXME: Tie @progress_callback to number of completed operations. */
++	/* Set up a #PkTask to handle the D-Bus calls to packagekitd. */
+ 	data->progress_data = gs_packagekit_helper_new (GS_PLUGIN (self));
+ 	task_uninstall = gs_packagekit_task_new (GS_PLUGIN (self));
+ 	gs_packagekit_task_setup (GS_PACKAGEKIT_TASK (task_uninstall), GS_PACKAGEKIT_TASK_QUESTION_TYPE_NONE, interactive);
+ 
++	/* Use the PackageKit transaction pct callback */
++	gs_packagekit_helper_set_progress_list (data->progress_data, data->apps_to_uninstall, TRUE);
++	gs_packagekit_helper_set_progress_callback (data->progress_data,
++						    data->progress_callback,
++						    data->progress_user_data);
++
+ 	/* Update the app’s and its addons‘ states. */
+ 	for (guint i = 0; i < gs_app_list_length (data->apps_to_uninstall); i++) {
+ 		GsApp *app = gs_app_list_index (data->apps_to_uninstall, i);
+@@ -3185,6 +3200,8 @@ gs_plugin_packagekit_refine_add_history (GsApp *app, GVariant *dict)
+ static void gs_plugin_packagekit_download_async (GsPluginPackagekit    *self,
+                                                  GsAppList             *list,
+                                                  gboolean               interactive,
++                                                 GsPluginProgressCallback progress_callback,
++                                                 gpointer               progress_user_data,
+                                                  GsPluginEventCallback  event_callback,
+                                                  void                  *event_user_data,
+                                                  GCancellable          *cancellable,
+@@ -3275,6 +3292,7 @@ prepare_update_get_updates_cb (GObject      *source_object,
+ 
+ 	/* It’s OK to call this with an empty list; it’ll return immediately */
+ 	gs_plugin_packagekit_download_async (self, list, interactive,
++					     NULL, NULL,
+ 					     prepare_update_event_cb, NULL,
+ 					     cancellable,
+ 					     prepare_update_download_cb, g_steal_pointer (&task));
+@@ -4751,6 +4769,8 @@ typedef struct {
+ 	GsAppList *progress_list;  /* (owned) */
+ 
+ 	gboolean interactive;
++	GsPluginProgressCallback progress_callback;
++	gpointer progress_user_data;
+ 	GsPluginEventCallback event_callback;
+ 	void *event_user_data;
+ 
+@@ -4788,6 +4808,8 @@ static void
+ gs_plugin_packagekit_download_async (GsPluginPackagekit    *self,
+                                      GsAppList             *list,
+                                      gboolean               interactive,
++                                     GsPluginProgressCallback progress_callback,
++                                     gpointer               progress_user_data,
+                                      GsPluginEventCallback  event_callback,
+                                      void                  *event_user_data,
+                                      GCancellable          *cancellable,
+@@ -4806,6 +4828,8 @@ gs_plugin_packagekit_download_async (GsPluginPackagekit    *self,
+ 	data->download_list = gs_app_list_new ();
+ 	data->progress_list = g_object_ref (list);
+ 	data->interactive = interactive;
++	data->progress_callback = progress_callback;
++	data->progress_user_data = progress_user_data;
+ 	data->event_callback = event_callback;
+ 	data->event_user_data = event_user_data;
+ 	data->helper = gs_packagekit_helper_new (plugin);
+@@ -4954,7 +4978,10 @@ download_get_updates_cb (GObject      *source_object,
+ 		GsApp *app = gs_app_list_index (data->download_list, i);
+ 		gs_packagekit_helper_add_app (data->helper, app);
+ 	}
+-	gs_packagekit_helper_set_progress_list (data->helper, data->progress_list);
++	gs_packagekit_helper_set_progress_list (data->helper, data->progress_list, FALSE);
++	gs_packagekit_helper_set_progress_callback (data->helper,
++						    data->progress_callback,
++						    data->progress_user_data);
+ 
+ 	/* make 'download' operation always low priority, so other interactive
+ 	   operations get to run when a download is in progress */
+@@ -5082,8 +5109,8 @@ gs_plugin_packagekit_update_apps_async (GsPlugin                           *plug
+ 	g_task_set_source_tag (task, gs_plugin_packagekit_update_apps_async);
+ 
+ 	if (!(flags & GS_PLUGIN_UPDATE_APPS_FLAGS_NO_DOWNLOAD)) {
+-		/* FIXME: Add progress reporting */
+ 		gs_plugin_packagekit_download_async (self, apps, interactive,
++						     progress_callback, progress_user_data,
+ 						     event_callback, event_user_data,
+ 						     cancellable, update_apps_download_cb, g_steal_pointer (&task));
+ 	} else {
+-- 
+2.56.1
+
